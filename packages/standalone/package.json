@@ -51,6 +51,7 @@
     "@jungjaehoon/mama-server": "workspace:*",
     "@jungjaehoon/mama-core": "workspace:*",
     "better-sqlite3": "^12.8.0",
+    "grammy": "^1.42.0",
     "js-yaml": "^4.1.1"
   },
   "devDependencies": {

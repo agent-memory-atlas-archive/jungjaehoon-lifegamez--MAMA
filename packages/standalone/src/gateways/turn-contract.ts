@@ -1,0 +1,59 @@
+import type { JsonValue } from '@jungjaehoon/mama-core/knowledge';
+import type { StimulusReceipt } from '@jungjaehoon/mama-core/runtime/runtime';
+import type { NativeTurnResultRecord } from '@jungjaehoon/mama-core/runtime/native-input-journal';
+import type { MessageSource, NormalizedMessage } from './types.js';
+
+/** The narrow producer contract used by a gateway: accept, do not run a model. */
+export interface OwnerMessageInput {
+  /** The Telegram sourceMessageRef becomes the mailbox stimulus identity. */
+  id: string;
+  channelKey: string;
+  occurredAt: number;
+  text: string;
+  replyTo?: string | null;
+  payload?: JsonValue;
+}
+
+export interface TurnIntake {
+  acceptOwnerMessage(input: OwnerMessageInput): StimulusReceipt;
+  isPending?(sourceMessageRef: string): boolean;
+}
+
+export interface TurnOutcomeBase {
+  response: string;
+  sessionId: string;
+  duration: number;
+}
+
+export type TurnProvenance =
+  | { status: 'available'; modelRunId: string }
+  | { status: 'unavailable'; reason: 'backend_no_run' | 'commit_failed' };
+
+export interface CompletedTurn extends TurnOutcomeBase {
+  outcome: 'completed';
+  provenance: TurnProvenance;
+  sourceTurnId: string;
+  sourceMessageRef: string;
+}
+
+export interface SharedReplyTurn extends TurnOutcomeBase {
+  outcome: 'shared_reply';
+  response: '';
+  sourceTurnId: string;
+  sourceMessageRef: string;
+  replySourceMessageRef: string;
+}
+
+export type ProcessingResult = CompletedTurn | SharedReplyTurn;
+
+export interface SessionDirectory {
+  listSessions(
+    source: MessageSource
+  ): ReadonlyArray<{ readonly channelId: string; readonly channelName?: string | null }>;
+  updateChannelName(source: MessageSource, channelId: string, channelName: string): boolean;
+}
+
+/** Kept as the neutral name used by gateway consumers. */
+export type TurnProcessor = TurnIntake;
+
+export type { NativeTurnResultRecord, NormalizedMessage };

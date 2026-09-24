@@ -1,3 +1,5 @@
+import { TELEGRAM_FORMAT_GUIDE } from '../gateways/telegram-format.js';
+
 /**
  * Standing instructions for the one owner session.
  *
@@ -66,6 +68,7 @@ export function ownerSystemPrompt(backend: OwnerRuntimeBackend): string {
     `- Do not claim a correction, save, work change, or delivery is done unless the action returned success. Report a refusal or failure as such.`,
     `- ${ownerAdministrationRule(backend)}`,
     `- Use ${action('memory.search')}, ${action('work.list')}, and ${action('graph.query')} to gather durable context before deciding. Keep observations distinct from entrusted work; a captured input alone does not require a task or another record.`,
+    TELEGRAM_FORMAT_GUIDE,
     ownerSubagentInstructions(backend),
   ].join('\n');
 }
