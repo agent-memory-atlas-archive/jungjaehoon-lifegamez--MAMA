@@ -10,6 +10,11 @@ export interface SQLiteRunResult {
   lastInsertRowid: number | bigint;
 }
 
+export interface SQLiteOpenOptions {
+  readonly?: boolean;
+  fileMustExist?: boolean;
+}
+
 export interface SQLiteStatement {
   all: (...params: unknown[]) => unknown[];
   get: (...params: unknown[]) => unknown;
@@ -22,8 +27,8 @@ export default class Database {
   private db: BetterSqlite3.Database;
   readonly driver = 'better-sqlite3' as const;
 
-  constructor(path: string) {
-    this.db = new BetterSqlite3(path);
+  constructor(path: string, options?: SQLiteOpenOptions) {
+    this.db = new BetterSqlite3(path, options);
   }
 
   prepare(sql: string): SQLiteStatement {

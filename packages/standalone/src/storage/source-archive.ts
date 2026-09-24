@@ -684,14 +684,19 @@ export class RawStore {
     }
   }
 
-  listPendingProjections(connectorName: string, limit = 100): PendingProjection[] {
+  listPendingProjections(
+    connectorName: string,
+    limit = 100,
+    afterSequence = 0
+  ): PendingProjection[] {
     const rows = this.getDb(connectorName)
       .prepare(
         `SELECT sequence, payload_json
          FROM pending_core_projections
+         WHERE sequence > ?
          ORDER BY sequence ASC LIMIT ?`
       )
-      .all(Math.min(1000, Math.max(1, Math.floor(limit)))) as Array<{
+      .all(afterSequence, Math.min(1000, Math.max(1, Math.floor(limit)))) as Array<{
       sequence: number;
       payload_json: string;
     }>;
