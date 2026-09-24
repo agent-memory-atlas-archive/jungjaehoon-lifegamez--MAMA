@@ -6,6 +6,7 @@ import type {
   ConnectorConfig,
   ConnectorsConfig,
 } from './framework/types.js';
+import { LOADABLE_CONNECTORS } from './index.js';
 
 export type ConnectorConfigLoadErrorCode = 'read_error' | 'parse_error' | 'validation_error';
 
@@ -39,6 +40,12 @@ const ROLES = new Set<ChannelConfig['role']>([
 
 class ConfigValidationError extends Error {}
 
+const W1_CONNECTOR_NAMES = new Set<string>(LOADABLE_CONNECTORS);
+
+interface ValidationState {
+  readonly ignored: string[];
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -55,8 +62,23 @@ function text(value: unknown, field: string): string {
   return value;
 }
 
-function channel(value: unknown, field: string): ChannelConfig {
+function collectIgnoredKeys(
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+  field: string,
+  state: ValidationState
+): void {
+  for (const key of Object.keys(value)) {
+    if (allowed.includes(key)) continue;
+    // Channel ids and names are data, not key names: report the key once, with the id masked.
+    const name = `${field.replace(/\.channels\.[^.]+$/, '.channels.*')}.${key}`;
+    if (!state.ignored.includes(name)) state.ignored.push(name);
+  }
+}
+
+function channel(value: unknown, field: string, state: ValidationState): ChannelConfig {
   const raw = record(value, field);
+  collectIgnoredKeys(raw, ['role', 'name', 'boardId'], field, state);
   if (typeof raw.role !== 'string' || !ROLES.has(raw.role as ChannelConfig['role'])) {
     throw new ConfigValidationError(`${field}.role must be a valid channel role`);
   }
@@ -66,17 +88,22 @@ function channel(value: unknown, field: string): ChannelConfig {
   return result;
 }
 
-function channels(value: unknown, field: string): Record<string, ChannelConfig> {
+function channels(
+  value: unknown,
+  field: string,
+  state: ValidationState
+): Record<string, ChannelConfig> {
   const raw = record(value, field);
   const result = Object.create(null) as Record<string, ChannelConfig>;
   for (const [key, value] of Object.entries(raw)) {
-    result[key] = channel(value, `${field}.${key}`);
+    result[key] = channel(value, `${field}.${key}`, state);
   }
   return result;
 }
 
-function auth(value: unknown, field: string): AuthConfig {
+function auth(value: unknown, field: string, state: ValidationState): AuthConfig {
   const raw = record(value, field);
+  collectIgnoredKeys(raw, ['type', 'tokenName'], field, state);
   if (raw.type !== 'token' && raw.type !== 'none') {
     throw new ConfigValidationError(`${field}.type must be token or none`);
   }
@@ -85,8 +112,9 @@ function auth(value: unknown, field: string): AuthConfig {
   return result;
 }
 
-function connector(value: unknown, field: string): ConnectorConfig {
+function connector(value: unknown, field: string, state: ValidationState): ConnectorConfig {
   const raw = record(value, field);
+  collectIgnoredKeys(raw, ['enabled', 'pollIntervalMinutes', 'channels', 'auth'], field, state);
   if (typeof raw.enabled !== 'boolean') {
     throw new ConfigValidationError(`${field}.enabled must be boolean`);
   }
@@ -102,26 +130,36 @@ function connector(value: unknown, field: string): ConnectorConfig {
   return {
     enabled: raw.enabled,
     pollIntervalMinutes: raw.pollIntervalMinutes,
-    channels: channels(raw.channels, `${field}.channels`),
-    auth: auth(raw.auth, `${field}.auth`),
+    channels: channels(raw.channels, `${field}.channels`, state),
+    auth: auth(raw.auth, `${field}.auth`, state),
   };
 }
 
-function validate(value: unknown): ConnectorsConfig {
+function validate(value: unknown): { config: ConnectorsConfig; ignored: readonly string[] } {
   const raw = record(value, 'connectors');
   const result = Object.create(null) as ConnectorsConfig;
+  const ignored: string[] = [];
+  const state: ValidationState = { ignored };
   const normalized = new Set<string>();
   let index = 0;
   for (const [name, value] of Object.entries(raw)) {
     const key = name.toLowerCase();
+    if (!W1_CONNECTOR_NAMES.has(key)) {
+      ignored.push(name);
+      continue;
+    }
     if (normalized.has(key)) {
       throw new ConfigValidationError(`connectors contain a case collision at entry ${index}`);
     }
     normalized.add(key);
-    result[key] = connector(value, `connectors.${name}`);
+    result[key] = connector(value, `connectors.${name}`, state);
     index += 1;
   }
-  return result;
+  return { config: result, ignored: Object.freeze(ignored) };
+}
+
+function warnIgnored(names: readonly string[]): void {
+  if (names.length > 0) console.warn(`ignored in W1: ${names.join(', ')}`);
 }
 
 function failure(
@@ -173,7 +211,9 @@ export function loadConnectorConfig(path: string): ConnectorConfigLoadResult {
   }
 
   try {
-    const config = validate(parsed);
+    const validated = validate(parsed);
+    const config = validated.config;
+    warnIgnored(validated.ignored);
     return {
       ok: true,
       config,

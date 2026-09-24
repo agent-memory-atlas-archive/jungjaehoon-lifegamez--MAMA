@@ -45,6 +45,10 @@ export interface ParseConfigOptions {
   home?: string;
 }
 
+interface ParseState {
+  readonly ignored: string[];
+}
+
 export class ConfigError extends Error {
   constructor(message: string) {
     super(message);
@@ -72,10 +76,19 @@ function object(value: unknown, path: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function keys(value: Record<string, unknown>, allowed: readonly string[], path: string): void {
+function collectIgnoredKeys(
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+  path: string,
+  state: ParseState
+): void {
   for (const key of Object.keys(value)) {
-    if (!allowed.includes(key)) throw new ConfigError(`${path}.${key} is not supported in W1`);
+    if (!allowed.includes(key)) state.ignored.push(path === '' ? key : `${path}.${key}`);
   }
+}
+
+function warnIgnored(names: readonly string[]): void {
+  if (names.length > 0) console.warn(`ignored in W1: ${names.join(', ')}`);
 }
 
 function text(value: unknown, path: string): string {
@@ -112,9 +125,9 @@ function configPath(value: string, home: string): string {
   return isAbsolute(expanded) ? expanded : resolve(home, expanded);
 }
 
-function parseAgent(value: unknown, home: string): W1AgentConfig {
+function parseAgent(value: unknown, home: string, state: ParseState): W1AgentConfig {
   const raw = object(value, 'agent');
-  keys(raw, AGENT_KEYS, 'agent');
+  collectIgnoredKeys(raw, AGENT_KEYS, 'agent', state);
   const backend = text(raw.backend, 'agent.backend');
   if (backend !== 'claude' && backend !== 'codex') {
     throw new ConfigError('agent.backend must be claude or codex');
@@ -133,7 +146,7 @@ function parseAgent(value: unknown, home: string): W1AgentConfig {
   let tools: W1AgentConfig['tools'];
   if (raw.tools !== undefined) {
     const toolConfig = object(raw.tools, 'agent.tools');
-    keys(toolConfig, ['mcp_config'], 'agent.tools');
+    collectIgnoredKeys(toolConfig, ['mcp_config'], 'agent.tools', state);
     tools = {
       ...(toolConfig.mcp_config === undefined
         ? {}
@@ -155,45 +168,82 @@ function parseAgent(value: unknown, home: string): W1AgentConfig {
   };
 }
 
-export function parseConfig(value: unknown, options: ParseConfigOptions = {}): W1Config {
+function deriveTelegramOwnerIds(
+  telegramRaw: Record<string, unknown>,
+  allowedChats: readonly string[]
+): string[] {
+  if (telegramRaw.owner_user_ids !== undefined) {
+    return Array.from(
+      new Set(
+        stringList(telegramRaw.owner_user_ids, 'telegram.owner_user_ids').map((id) => id.trim())
+      )
+    );
+  }
+
+  const normalizedAllowedChatIds = Array.from(new Set(allowedChats.map((chatId) => chatId.trim())));
+  const positiveAllowedChatIds = normalizedAllowedChatIds.filter((chatId) =>
+    /^[1-9]\d*$/.test(chatId)
+  );
+  const [onlyOwnerId] = positiveAllowedChatIds;
+  return onlyOwnerId === undefined ? [] : positiveAllowedChatIds.length === 1 ? [onlyOwnerId] : [];
+}
+
+function parseConfigValue(
+  value: unknown,
+  options: ParseConfigOptions = {}
+): { config: W1Config; ignored: readonly string[] } {
   const home = options.home ?? homedir();
+  const state: ParseState = { ignored: [] };
   const raw = object(value, 'config');
-  keys(raw, CONFIG_KEYS, 'config');
+  collectIgnoredKeys(raw, CONFIG_KEYS, '', state);
   if (raw.version !== 1) throw new ConfigError('version must be 1');
   const database = object(raw.database, 'database');
-  keys(database, ['path'], 'database');
+  collectIgnoredKeys(database, ['path'], 'database', state);
   const logging = object(raw.logging, 'logging');
-  keys(logging, ['level', 'file'], 'logging');
+  collectIgnoredKeys(logging, ['level', 'file'], 'logging', state);
   const level = text(logging.level, 'logging.level');
   if (!['debug', 'info', 'warn', 'error'].includes(level)) {
     throw new ConfigError('logging.level is not supported');
   }
   const telegramRaw = raw.telegram === undefined ? {} : object(raw.telegram, 'telegram');
-  keys(telegramRaw, ['enabled', 'token', 'allowed_chats', 'owner_user_ids', 'polling'], 'telegram');
+  collectIgnoredKeys(
+    telegramRaw,
+    ['enabled', 'token', 'allowed_chats', 'owner_user_ids', 'polling'],
+    'telegram',
+    state
+  );
   if (typeof (telegramRaw.enabled ?? false) !== 'boolean') {
     throw new ConfigError('telegram.enabled must be boolean');
   }
   if (telegramRaw.polling !== undefined && typeof telegramRaw.polling !== 'boolean') {
     throw new ConfigError('telegram.polling must be boolean');
   }
+  const allowedChats = stringList(telegramRaw.allowed_chats, 'telegram.allowed_chats');
   return {
-    version: 1,
-    agent: parseAgent(raw.agent, home),
-    database: { path: configPath(text(database.path, 'database.path'), home) },
-    logging: {
-      level: level as W1Config['logging']['level'],
-      file: configPath(text(logging.file, 'logging.file'), home),
+    config: {
+      version: 1,
+      agent: parseAgent(raw.agent, home, state),
+      database: { path: configPath(text(database.path, 'database.path'), home) },
+      logging: {
+        level: level as W1Config['logging']['level'],
+        file: configPath(text(logging.file, 'logging.file'), home),
+      },
+      telegram: {
+        enabled: (telegramRaw.enabled ?? false) as boolean,
+        ...(telegramRaw.token === undefined
+          ? {}
+          : { token: text(telegramRaw.token, 'telegram.token') }),
+        allowed_chats: allowedChats,
+        owner_user_ids: deriveTelegramOwnerIds(telegramRaw, allowedChats),
+        polling: (telegramRaw.polling ?? false) as boolean,
+      },
     },
-    telegram: {
-      enabled: (telegramRaw.enabled ?? false) as boolean,
-      ...(telegramRaw.token === undefined
-        ? {}
-        : { token: text(telegramRaw.token, 'telegram.token') }),
-      allowed_chats: stringList(telegramRaw.allowed_chats, 'telegram.allowed_chats'),
-      owner_user_ids: stringList(telegramRaw.owner_user_ids, 'telegram.owner_user_ids'),
-      polling: (telegramRaw.polling ?? false) as boolean,
-    },
+    ignored: Object.freeze(state.ignored),
   };
+}
+
+export function parseConfig(value: unknown, options: ParseConfigOptions = {}): W1Config {
+  return parseConfigValue(value, options).config;
 }
 
 export function defaultConfigPath(home = homedir()): string {
@@ -209,5 +259,7 @@ export function loadConfig(options: LoadConfigOptions = {}): W1Config {
     const message = error instanceof Error ? error.message : String(error);
     throw new ConfigError(`Cannot load config ${path}: ${message}`);
   }
-  return parseConfig(parsed, { home: options.home });
+  const loaded = parseConfigValue(parsed, { home: options.home });
+  warnIgnored(loaded.ignored);
+  return loaded.config;
 }

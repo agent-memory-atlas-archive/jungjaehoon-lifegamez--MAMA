@@ -36,6 +36,7 @@ export interface NativeEventInput {
 
 export interface StimulusIntake {
   accept(stimulus: Stimulus): StimulusReceipt;
+  isPending?(sourceMessageRef: string): boolean;
   acceptOwnerMessage(input: OwnerMessageInput): StimulusReceipt;
   acceptSourceDelta(delta: SourceDelta): StimulusReceipt;
   acceptScheduled(input: ScheduledInput): StimulusReceipt;
@@ -48,6 +49,8 @@ export interface StimulusDeliveryOptions {
   onSourceResult?: (row: MailboxRow, result: NativeTurnResult) => void | Promise<void>;
   onScheduledNoop?: (row: MailboxRow) => void | Promise<void>;
   onNativeEventResult?: (row: MailboxRow, result: NativeTurnResult) => void | Promise<void>;
+  onDelivered?: (row: MailboxRow) => void | Promise<void>;
+  onFailed?: (row: MailboxRow, error: unknown) => void | Promise<void>;
 }
 
 function sourceRefId(delta: SourceDelta, sourceId: string): string {
@@ -84,13 +87,17 @@ function sourcePayload(delta: SourceDelta): JsonValue {
 }
 
 export function createStimulusIntake(
-  runtime: Pick<RuntimeHandle, 'accept'>,
+  runtime: Pick<RuntimeHandle, 'accept' | 'mailbox'>,
   principalId: string
 ): StimulusIntake {
   const ownerPayload = (input: OwnerMessageInput): JsonValue =>
     input.payload === undefined ? { text: input.text } : { text: input.text, input: input.payload };
   return {
     accept: (stimulus) => runtime.accept({ ...stimulus, principalId }),
+    isPending: (sourceMessageRef) => {
+      const row = runtime.mailbox?.readInput(sourceMessageRef, principalId);
+      return row?.status === 'pending' || row?.status === 'claimed';
+    },
     acceptOwnerMessage: (input) =>
       runtime.accept({
         id: input.id,
@@ -169,24 +176,28 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Stimul
     try {
       if (row.kind === 'scheduled') {
         await options.onScheduledNoop?.(row);
-        return;
+      } else {
+        if (
+          row.kind !== 'owner_message' &&
+          row.kind !== 'source_delta' &&
+          row.kind !== 'native_event'
+        ) {
+          throw new Error('Stimulus kind is missing; no owner turn can be assembled');
+        }
+        const result = await context.run(assembledContent(options.standingText, row), {
+          sessionKey: OWNER_RUNTIME_SESSION_KEY,
+          source: row.kind,
+          channelId: row.channelKey,
+          sourceMessageRef: row.stimulusId,
+        });
+        if (row.kind === 'owner_message') await options.onOwnerResult?.(row, result);
+        if (row.kind === 'source_delta') await options.onSourceResult?.(row, result);
+        if (row.kind === 'native_event') await options.onNativeEventResult?.(row, result);
       }
-      if (
-        row.kind !== 'owner_message' &&
-        row.kind !== 'source_delta' &&
-        row.kind !== 'native_event'
-      ) {
-        throw new Error('Stimulus kind is missing; no owner turn can be assembled');
-      }
-      const result = await context.run(assembledContent(options.standingText, row), {
-        sessionKey: OWNER_RUNTIME_SESSION_KEY,
-        source: row.kind,
-        channelId: row.channelKey,
-        sourceMessageRef: row.stimulusId,
-      });
-      if (row.kind === 'owner_message') await options.onOwnerResult?.(row, result);
-      if (row.kind === 'source_delta') await options.onSourceResult?.(row, result);
-      if (row.kind === 'native_event') await options.onNativeEventResult?.(row, result);
+      await options.onDelivered?.(row);
+    } catch (error) {
+      await options.onFailed?.(row, error);
+      throw error;
     } finally {
       release();
     }

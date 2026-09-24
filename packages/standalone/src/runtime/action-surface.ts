@@ -1,4 +1,6 @@
 import {
+  appendOperationToolTrace,
+  appendToolTrace,
   coreActionRegistrations,
   createCatalog,
   createDispatcher,
@@ -55,6 +57,17 @@ export interface ActionSurface {
   ): Promise<Awaited<ReturnType<ActionDispatcher>>>;
 }
 
+function traceSummary(value: unknown): string | null {
+  if (value === undefined) return null;
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(value) ?? String(value);
+  } catch {
+    serialized = String(value);
+  }
+  return serialized.length <= 4_000 ? serialized : `${serialized.slice(0, 3_997)}...`;
+}
+
 export function createActionSurface(options: ActionSurfaceOptions): ActionSurface {
   const core = coreActionRegistrations(options.knowledge, options.adapter).filter(({ contract }) =>
     ['graph.query', 'memory.save', 'memory.search', 'work.list'].includes(contract.name)
@@ -65,7 +78,34 @@ export function createActionSurface(options: ActionSurfaceOptions): ActionSurfac
     ...minimalWorkActionRegistrations({ knowledge: options.knowledge }),
   ];
   const catalog = createCatalog(registrations);
-  const dispatch = createDispatcher(catalog);
+  const dispatch = createDispatcher(catalog, {
+    observeCall: async ({ action, operationId, input, result, durationMs, context }) => {
+      const session = context.session;
+      const common = {
+        tool_name: action,
+        gateway_call_id: session?.gatewayCallId ?? null,
+        input_summary: traceSummary(input),
+        output_summary: traceSummary(result),
+        execution_status: result.status,
+        duration_ms: durationMs,
+        ...(result.status === 'failed' ? { failure_code: result.error.code } : {}),
+      };
+      if (session?.modelRunId) {
+        const trace = await appendToolTrace(options.adapter, {
+          ...common,
+          model_run_id: session.modelRunId,
+        });
+        return trace.trace_id;
+      }
+      if (!operationId) return undefined;
+      const trace = appendOperationToolTrace(options.adapter, {
+        ...common,
+        operation_id: operationId,
+        actor_principal_id: context.access.principalId,
+      });
+      return trace.trace_id;
+    },
+  });
   const ownerAccess: JudgmentAccess = {
     principalId: options.ownerPrincipalId,
     agentId: options.agentId,

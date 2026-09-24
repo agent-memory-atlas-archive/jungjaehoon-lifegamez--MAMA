@@ -43,6 +43,7 @@ export interface NativeDriverOptions {
   requestTimeout: number;
   effort: RuntimeEffort;
   codexHome?: string;
+  pluginDir?: string;
   mcpConfigPath?: string;
   createSubagentBridge: (info: SubagentBridgeRequest) => Promise<SubagentBridge | null>;
 }
@@ -66,6 +67,7 @@ export interface NativeSessionOptions {
   timeout?: number;
   runTokenBudget?: number;
   codexHome?: string;
+  pluginDir?: string;
   codexSandbox?: RuntimeSandbox;
   mcpConfigPath?: string;
   mcpServerPath?: string;
@@ -141,6 +143,7 @@ function driverOptions(
     requestTimeout: options.timeout ?? 120_000,
     effort: options.effort ?? 'medium',
     ...(options.codexHome === undefined ? {} : { codexHome: options.codexHome }),
+    ...(options.pluginDir === undefined ? {} : { pluginDir: options.pluginDir }),
     ...(options.mcpConfigPath === undefined ? {} : { mcpConfigPath: options.mcpConfigPath }),
     createSubagentBridge: bridge,
   };
@@ -175,6 +178,7 @@ function createDriver(
     model: options.model,
     mcpConfigPath,
     dangerouslySkipPermissions: true,
+    pluginDir: nativeOptions.pluginDir,
     requestTimeout: nativeOptions.requestTimeout,
     effort: nativeOptions.effort as 'low' | 'medium' | 'high' | 'max',
   });

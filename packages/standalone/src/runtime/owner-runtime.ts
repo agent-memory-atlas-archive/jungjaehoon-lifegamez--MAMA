@@ -23,6 +23,7 @@ import { ownerSystemPrompt } from './owner-system-prompt.js';
 import {
   createStimulusDelivery,
   createStimulusIntake,
+  type StimulusDeliveryOptions,
   type StimulusIntake,
 } from './stimulus-delivery.js';
 
@@ -49,6 +50,13 @@ export interface OwnerRuntimeOptions {
   codexSandbox?: RuntimeSandbox;
   mcpConfigPath?: string;
   mcpServerPath?: string;
+  pluginDir?: string;
+  onOwnerResult?: StimulusDeliveryOptions['onOwnerResult'];
+  onSourceResult?: StimulusDeliveryOptions['onSourceResult'];
+  onScheduledNoop?: StimulusDeliveryOptions['onScheduledNoop'];
+  onNativeEventResult?: StimulusDeliveryOptions['onNativeEventResult'];
+  onStimulusDelivered?: StimulusDeliveryOptions['onDelivered'];
+  onStimulusFailed?: StimulusDeliveryOptions['onFailed'];
 }
 
 export interface OwnerRuntime {
@@ -150,6 +158,7 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
         ...(options.codexSandbox === undefined ? {} : { codexSandbox: options.codexSandbox }),
         ...(options.mcpConfigPath === undefined ? {} : { mcpConfigPath: options.mcpConfigPath }),
         ...(options.mcpServerPath === undefined ? {} : { mcpServerPath: options.mcpServerPath }),
+        ...(options.pluginDir === undefined ? {} : { pluginDir: options.pluginDir }),
         modelRun: options.modelRun ?? runtimeModelRun(options, database.adapter),
       });
     }
@@ -160,7 +169,21 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       principals: [{ access, credentialPath: options.credentialPath }],
       mailbox: { adapter: database.adapter },
       nativeSession,
-      delivery: createStimulusDelivery({ standingText }),
+      delivery: createStimulusDelivery({
+        standingText,
+        ...(options.onOwnerResult === undefined ? {} : { onOwnerResult: options.onOwnerResult }),
+        ...(options.onSourceResult === undefined ? {} : { onSourceResult: options.onSourceResult }),
+        ...(options.onScheduledNoop === undefined
+          ? {}
+          : { onScheduledNoop: options.onScheduledNoop }),
+        ...(options.onNativeEventResult === undefined
+          ? {}
+          : { onNativeEventResult: options.onNativeEventResult }),
+        ...(options.onStimulusDelivered === undefined
+          ? {}
+          : { onDelivered: options.onStimulusDelivered }),
+        ...(options.onStimulusFailed === undefined ? {} : { onFailed: options.onStimulusFailed }),
+      }),
       reclaimStaleSocket: true,
     });
     const intake = createStimulusIntake(intakeRuntime, options.ownerPrincipalId);

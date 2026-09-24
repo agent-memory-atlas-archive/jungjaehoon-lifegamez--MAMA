@@ -39,14 +39,20 @@ describe('W1 runtime configuration', () => {
     expect(parsed).not.toHaveProperty('multi_agent');
   });
 
-  it('rejects unknown top-level and nested configuration fields', () => {
-    expect(() => parseConfig({ ...validConfig(), multi_agent: {} })).toThrow(/multi_agent/);
-    expect(() =>
+  it('ignores retired fields but still rejects invalid W1 fields', () => {
+    expect(parseConfig({ ...validConfig(), multi_agent: {} })).toMatchObject(validConfig());
+    expect(
       parseConfig({
         ...validConfig(),
         agent: { ...validConfig().agent, max_turns: 2 },
       })
-    ).toThrow(/agent\.max_turns/);
+    ).toMatchObject(validConfig());
+    expect(() =>
+      parseConfig({
+        ...validConfig(),
+        agent: { ...validConfig().agent, timeout: 0 },
+      })
+    ).toThrow(/agent\.timeout/);
   });
 
   it('loads YAML from an explicit path and fails on a missing required section', () => {
