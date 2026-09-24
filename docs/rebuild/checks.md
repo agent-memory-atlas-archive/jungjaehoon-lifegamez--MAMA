@@ -79,3 +79,28 @@ jq -c '.entries[] | {key, state, updatedAt, nextChunkIndex, deliveryUncertain}' 
 - Live cause: Kagemusha timestamps were epoch-ms and the 102-row window was present; bare configured channel ids did not match the namespaced connector key, so all rows were filtered.
 - Live cause: native receipt acceptance updated `mailbox_inputs` to `acked` before final delivery; failed native turns now remain claimed/uncertain until reconciliation, while pre-dispatch failures use mailbox retry.
 - Still open: full suites are socket-blocked in this sandbox only (`listen EPERM`); no socket workaround or daemon/live rerun was performed.
+
+## W1 source-delta handle correction — 2026-09-25
+
+- Result: source deltas now carry the projected `observationRef` from connector index projection through mailbox payload and rendered stimulus; no C1 owner-check claim.
+- Evidence: real connector-runtime fixture with two observations reaches the mailbox and dispatches real `source.read` for both handles; connector and polling tests pass, while socket-backed W1 delivery remains sandbox-blocked by `listen EPERM`.
+- Still open: supervisor rerun of the native W1 path and live model/receipt evidence.
+
+## W1 action-contract descriptions — 2026-09-25
+
+- Result: source, work, memory, and graph query input fields now expose concise descriptions with example shapes, including nested fields; no new inputs were added.
+- Evidence: core catalog contract test passes all 10 tests and standalone source/work contract tests pass; no C1 owner-check claim.
+- Still open: full standalone verification and live model confirmation that the described source handle is selected.
+
+## W1 scheduled producer removal — 2026-09-25
+
+- Result: daemon no longer creates the W1 periodic scheduled no-op or returns a scheduled resource; direct scheduled intake and generic scheduled delivery remain in place.
+- Evidence: daemon bootstrap tests pass; the scheduled delivery test remains unchanged but is socket-blocked in this sandbox before its assertions.
+- Still open: full standalone/root verification and supervisor confirmation that no scheduled mailbox rows are produced during the live run.
+
+## W1 real-path integration verification — 2026-09-25
+
+- Result: corrected the integration test’s action ledger; no product change was needed.
+- Evidence: the real delta payload supplied both observation handles to two real `source.read` dispatches, `work.create` returned a commitment, and all full suites pass: core 113/829, standalone 41/84, MCP 13 files with 121 passed and 14 skipped.
+- Cause: the fixture double called `work.create` but never recorded `actionNames.push('work.create')`, so the assertion reported a false stop before creation.
+- Still open: live provider/model/Telegram owner evidence and the C1 owner check remain outside this test.

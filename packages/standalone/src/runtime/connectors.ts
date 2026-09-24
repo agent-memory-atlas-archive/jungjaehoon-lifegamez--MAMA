@@ -12,6 +12,7 @@ import {
 import {
   RawStore,
   mapNormalizedItemsToConnectorEventIndexInputs,
+  type RawIndexProjection,
   type RawIndexSink,
 } from '../storage/source-archive.js';
 import { upsertConnectorEventIndex } from '../connectors/framework/event-index.js';
@@ -45,9 +46,20 @@ export interface ConnectorRuntime {
 
 function coreIndexSink(adapter: DatabaseInstance): RawIndexSink {
   return (connectorName, items) => {
-    for (const input of mapNormalizedItemsToConnectorEventIndexInputs(connectorName, items)) {
-      upsertConnectorEventIndex(adapter, input);
-    }
+    return mapNormalizedItemsToConnectorEventIndexInputs(connectorName, items).map((input) => {
+      const record = upsertConnectorEventIndex(adapter, input);
+      const observationRef = record.current_observation_id;
+      if (observationRef === null || observationRef.trim() === '') {
+        throw new Error(
+          `Connector index projection omitted current observation ref for ${connectorName}:${input.source_id}`
+        );
+      }
+      const projection: RawIndexProjection = {
+        sourceId: input.source_id,
+        observationRef,
+      };
+      return projection;
+    });
   };
 }
 

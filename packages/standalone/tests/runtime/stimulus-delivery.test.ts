@@ -64,6 +64,7 @@ describe('one stimulus intake and delivery', () => {
       refs: [
         {
           connector: 'collector',
+          observationRef: 'obs-1',
           sourceId: 'source-1',
           sourceEntityId: 'entity-1',
           sourceAt: '2026-01-01T00:00:00.000Z',
@@ -72,6 +73,7 @@ describe('one stimulus intake and delivery', () => {
         },
         {
           connector: 'collector',
+          observationRef: 'obs-2',
           sourceId: 'source-2',
           sourceEntityId: 'entity-2',
           sourceAt: '2026-01-01T00:01:00.000Z',
@@ -126,6 +128,7 @@ describe('one stimulus intake and delivery', () => {
       refs: [
         {
           connector: 'collector',
+          observationRef: 'obs-1',
           sourceId: 'source-1',
           sourceEntityId: 'entity-1',
           sourceAt: '2026-01-01T00:00:00.000Z',

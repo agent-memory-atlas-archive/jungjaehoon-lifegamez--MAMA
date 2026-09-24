@@ -36,8 +36,12 @@ describe('PollingScheduler', () => {
     const order: string[] = [];
     const scheduler = new PollingScheduler(rawStore, root, {
       now: () => Date.parse('2024-01-02T00:00:00.000Z'),
-      rawIndexSink: async () => {
+      rawIndexSink: async (_connector, items) => {
         order.push('index');
+        return items.map((item) => ({
+          sourceId: item.sourceId,
+          observationRef: `obs:${item.sourceId}`,
+        }));
       },
     });
     const registry = new ConnectorRegistry();
@@ -78,7 +82,8 @@ describe('PollingScheduler', () => {
     const rawStore = new RawStore(root);
     const scheduler = new PollingScheduler(rawStore, root, {
       now: () => 10_000,
-      rawIndexSink: vi.fn(),
+      rawIndexSink: (_connector, items) =>
+        items.map((item) => ({ sourceId: item.sourceId, observationRef: `obs:${item.sourceId}` })),
     });
     const registry = new ConnectorRegistry();
     registry.register(
@@ -109,7 +114,8 @@ describe('PollingScheduler', () => {
     const rawStore = new RawStore(root);
     const scheduler = new PollingScheduler(rawStore, root, {
       now: () => Date.parse('2024-01-02T00:00:00.000Z'),
-      rawIndexSink: vi.fn(),
+      rawIndexSink: (_connector, items) =>
+        items.map((item) => ({ sourceId: item.sourceId, observationRef: `obs:${item.sourceId}` })),
     });
     const registry = new ConnectorRegistry();
     const items = Array.from({ length: 1001 }, (_, index) => ({
@@ -138,7 +144,10 @@ describe('PollingScheduler', () => {
     const root = mkdtempSync(join(tmpdir(), 'poll-scheduler-overlap-'));
     roots.push(root);
     const rawStore = new RawStore(root);
-    const scheduler = new PollingScheduler(rawStore, root, { rawIndexSink: vi.fn() });
+    const scheduler = new PollingScheduler(rawStore, root, {
+      rawIndexSink: (_connector, items) =>
+        items.map((item) => ({ sourceId: item.sourceId, observationRef: `obs:${item.sourceId}` })),
+    });
     const registry = new ConnectorRegistry();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {

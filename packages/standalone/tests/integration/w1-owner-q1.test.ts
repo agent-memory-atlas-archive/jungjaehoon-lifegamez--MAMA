@@ -45,9 +45,9 @@ function config(root: string): W1Config {
   };
 }
 
-function fixtureConnector(item: NormalizedItem): IConnector {
+function fixtureConnector(items: readonly NormalizedItem[]): IConnector {
   return {
-    name: item.source,
+    name: items[0]?.source ?? 'fixture',
     type: 'api',
     init: vi.fn(async () => {}),
     dispose: vi.fn(async () => {}),
@@ -58,7 +58,7 @@ function fixtureConnector(item: NormalizedItem): IConnector {
     })),
     getAuthRequirements: vi.fn(() => []),
     authenticate: vi.fn(async () => true),
-    poll: vi.fn(async () => [item]),
+    poll: vi.fn(async () => [...items]),
   };
 }
 
@@ -92,10 +92,18 @@ describe('W1 owner question integration', () => {
       observedAt: now,
       type: 'message',
     };
+    const secondItem: NormalizedItem = {
+      ...item,
+      sourceId: 'source-2',
+      sourceEntityId: 'entity-2',
+      content: 'A second work update with a review decision.',
+      timestamp: new Date(now - 500),
+    };
     const actionNames: string[] = [];
     const responses: Array<{ sourceRef: string; response: string }> = [];
     let owner: OwnerRuntime | undefined;
     let gatewayIntake: TurnIntake | undefined;
+    let sourceObservationRefs: string[] = [];
 
     const model: NativeSessionHandle = {
       runTurn: vi.fn(async (content, request) => {
@@ -116,39 +124,42 @@ describe('W1 owner question integration', () => {
           turnId: `fixture-turn-${request.nativeInputId}`,
         });
         const text = content[0]?.type === 'text' ? (content[0].text ?? '') : '';
-        if (text.includes('owner question')) {
+        if (text.includes('kind: source_delta')) {
           const surface = owner!.surface;
           const session = {
             modelRunId: modelRun.model_run_id,
-            gatewayCallId: 'fixture-search',
+            gatewayCallId: 'fixture-source-delta',
           };
-          const search = await surface.hostToolCall(
-            'source.search',
-            { source: 'slack', query: 'work', detail: 'full', limit: 10 },
-            'tool-search',
-            { session }
-          );
-          actionNames.push('source.search');
-          const hit = (search as { data?: { hits?: Array<{ observationRef?: string }> } }).data
-            ?.hits?.[0];
-          const observationRef = hit?.observationRef;
-          if (!observationRef) throw new Error('fixture search omitted an observation ref');
-          await surface.hostToolCall(
-            'source.read',
-            { source: 'slack', observationRef },
-            'tool-read',
-            { session: { ...session, gatewayCallId: 'fixture-read' } }
-          );
-          actionNames.push('source.read');
+          const payloadLine = text.split('\n').find((line) => line.startsWith('payload: '));
+          if (!payloadLine) throw new Error('fixture source delta omitted its payload');
+          const payload = JSON.parse(payloadLine.slice('payload: '.length)) as {
+            refs?: Array<{ connector?: unknown; observationRef?: unknown }>;
+          };
+          if (!Array.isArray(payload.refs)) throw new Error('fixture source delta omitted refs');
+          const readInputs = payload.refs.map((ref) => {
+            if (typeof ref.connector !== 'string' || typeof ref.observationRef !== 'string') {
+              throw new Error('fixture source delta omitted a readable observation handle');
+            }
+            return { source: ref.connector, observationRef: ref.observationRef };
+          });
+          sourceObservationRefs = readInputs.map((input) => input.observationRef);
+          for (const [index, input] of readInputs.entries()) {
+            const read = await surface.hostToolCall('source.read', input, `tool-read-${index}`, {
+              session: { ...session, gatewayCallId: `fixture-read-${index}` },
+            });
+            if (read.status !== 'completed') throw new Error('fixture source.read failed');
+            actionNames.push('source.read');
+          }
           const created = await surface.hostToolCall(
             'work.create',
             {
               topic: 'work topic',
               summary: 'record the current work',
-              sourceRefs: [observationRef],
-              links: [
-                { relation: 'derived_from', target: { kind: 'observation', id: observationRef } },
-              ],
+              sourceRefs: sourceObservationRefs,
+              links: sourceObservationRefs.map((observationRef) => ({
+                relation: 'derived_from',
+                target: { kind: 'observation', id: observationRef },
+              })),
               set: { title: 'current work', assignee: 'assignee-key', roles: [] },
             },
             'tool-create',
@@ -156,13 +167,32 @@ describe('W1 owner question integration', () => {
           );
           const commitmentId = (created as { data?: { commitmentId?: string } }).data?.commitmentId;
           if (!commitmentId) throw new Error('fixture work.create omitted a commitment id');
-          await surface.hostToolCall('work.list', { limit: 20 }, 'tool-list', {
-            session: { ...session, gatewayCallId: 'fixture-list' },
+          actionNames.push('work.create');
+          commitModelRun(owner!.database.adapter, modelRun.model_run_id, 'fixture source delta', 5);
+          return {
+            response: `Source delta read ${sourceObservationRefs.length} observations.`,
+            turns: 1,
+            history: [],
+            totalUsage: { input_tokens: 3, output_tokens: 2 },
+            stopReason: 'end_turn' as const,
+            modelRunId: null,
+            modelRunProvenance: 'backend_no_run' as const,
+          };
+        }
+        if (text.includes('owner question')) {
+          const surface = owner!.surface;
+          const session = {
+            modelRunId: modelRun.model_run_id,
+            gatewayCallId: 'fixture-list',
+          };
+          const listed = await surface.hostToolCall('work.list', { limit: 20 }, 'tool-list', {
+            session,
           });
+          if (listed.status !== 'completed') throw new Error('fixture work.list failed');
           actionNames.push('work.list');
           commitModelRun(owner!.database.adapter, modelRun.model_run_id, 'fixture answer', 5);
           return {
-            response: `Current work is assigned with citation ${observationRef}.`,
+            response: 'Current work is assigned with source evidence.',
             turns: 1,
             history: [],
             totalUsage: { input_tokens: 3, output_tokens: 2 },
@@ -213,7 +243,7 @@ describe('W1 owner question integration', () => {
         startConnectorRuntime: async (options) =>
           startConnectorRuntime({
             ...options,
-            loadConnector: async () => fixtureConnector(item),
+            loadConnector: async () => fixtureConnector([item, secondItem]),
           }),
         createTelegramGateway: (options) => {
           gatewayIntake = options.intake;
@@ -230,9 +260,11 @@ describe('W1 owner question integration', () => {
     });
 
     await vi.waitFor(() => expect(responses).toHaveLength(1));
-    expect(actionNames).toEqual(['source.search', 'source.read', 'work.list']);
+    expect(actionNames).toContain('work.list');
+    expect(actionNames.filter((name) => name === 'source.read')).toHaveLength(2);
+    expect(actionNames).toContain('work.create');
     expect(responses[0]).toMatchObject({ sourceRef: 'telegram:chat:message-1' });
-    expect(responses[0]?.response).toContain('citation');
+    expect(responses[0]?.response).toContain('source evidence');
     const logLines = (logger.info as ReturnType<typeof vi.fn>).mock.calls.map(
       ([line]) => line as string
     );
@@ -251,7 +283,7 @@ describe('W1 owner question integration', () => {
 
     const database = owner!.database.adapter;
     expect(database.prepare('SELECT COUNT(*) AS count FROM mailbox_inputs').get()).toEqual({
-      count: 3,
+      count: 2,
     });
     expect(database.prepare('SELECT COUNT(*) AS count FROM model_runs').get()).toEqual({
       count: 2,
@@ -267,6 +299,11 @@ describe('W1 owner question integration', () => {
         .prepare('SELECT content FROM connector_event_index WHERE source_id = ?')
         .get('source-1')
     ).toEqual({ content: item.content });
+    expect(
+      database
+        .prepare('SELECT content FROM connector_event_index WHERE source_id = ?')
+        .get('source-2')
+    ).toEqual({ content: secondItem.content });
     expect(
       database
         .prepare('SELECT status FROM mailbox_inputs WHERE stimulus_id = ?')

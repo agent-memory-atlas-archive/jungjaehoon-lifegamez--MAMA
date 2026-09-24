@@ -7,6 +7,7 @@ import type { PendingProjection, RawIndexSink, RawStore } from '../../storage/so
 
 export interface SourceObservationRef {
   connector: string;
+  observationRef: string;
   sourceId: string;
   sourceEntityId: string;
   sourceAt: string;
@@ -63,12 +64,17 @@ function boundedPreview(items: readonly NormalizedItem[]): string[] {
   return lines;
 }
 
-function observationRef(connector: string, item: NormalizedItem): SourceObservationRef {
+function sourceObservationRef(
+  connector: string,
+  item: NormalizedItem,
+  observationRef: string
+): SourceObservationRef {
   if (typeof item.observedAt !== 'number' || !Number.isFinite(item.observedAt)) {
     throw new Error('A committed source item must have a finite observation time');
   }
   return {
     connector,
+    observationRef,
     sourceId: item.sourceId,
     sourceEntityId: item.sourceEntityId ?? item.sourceId,
     sourceAt: item.timestamp.toISOString(),
@@ -183,7 +189,26 @@ export class PollingScheduler {
       if (pending.length > 0 && this.rawIndexSink === undefined) {
         throw new Error(`Raw index projection is not configured for connector ${name}`);
       }
-      for (const item of pending) await this.rawIndexSink?.(name, [item]);
+      const observationRefs = new Map<string, string>();
+      for (const item of pending) {
+        const projections = await this.rawIndexSink!(name, [item]);
+        if (projections.length !== 1) {
+          throw new Error(
+            `Raw index projection must return one observation ref for ${name}:${item.sourceId}`
+          );
+        }
+        const projection = projections[0]!;
+        if (
+          projection.sourceId !== item.sourceId ||
+          typeof projection.observationRef !== 'string' ||
+          projection.observationRef.trim() === ''
+        ) {
+          throw new Error(
+            `Raw index projection returned the wrong observation ref for ${name}:${item.sourceId}`
+          );
+        }
+        observationRefs.set(item.sourceId, projection.observationRef);
+      }
 
       const byChannel = new Map<string, NormalizedItem[]>();
       for (const item of pending) {
@@ -197,7 +222,13 @@ export class PollingScheduler {
           collector: name,
           channel,
           coalesceKey: `source:${name}:${channel}`,
-          refs: items.map((item) => observationRef(name, item)),
+          refs: items.map((item) => {
+            const ref = observationRefs.get(item.sourceId);
+            if (ref === undefined) {
+              throw new Error(`Missing projected observation ref for ${name}:${item.sourceId}`);
+            }
+            return sourceObservationRef(name, item, ref);
+          }),
           preview: boundedPreview(items),
         });
       }

@@ -13,6 +13,7 @@ export interface WorkPorts {
 }
 
 const nullableText: ActionSchemaObject = {
+  description: 'Optional text value; null clears the field, e.g. "reviewed" or null.',
   oneOf: [{ type: 'string' }, { type: 'null' }],
 };
 
@@ -20,42 +21,98 @@ const workPatchSchema: ActionSchemaObject = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    title: nullableText,
-    description: nullableText,
-    status: nullableText,
-    priority: nullableText,
-    dueAt: nullableText,
-    deadline: nullableText,
+    title: { ...nullableText, description: 'Work title, e.g. "Prepare release" or null.' },
+    description: {
+      ...nullableText,
+      description: 'Work description, e.g. "Collect review" or null.',
+    },
+    status: { ...nullableText, description: 'Work status, e.g. "open" or null.' },
+    priority: { ...nullableText, description: 'Work priority, e.g. "high" or null.' },
+    dueAt: { ...nullableText, description: 'Due-time text, e.g. "2026-09-30" or null.' },
+    deadline: { ...nullableText, description: 'Deadline text, e.g. "Friday" or null.' },
     deadlineOffsetMinutes: {
+      description: 'Deadline offset from the stated event, e.g. 60 or null.',
       oneOf: [{ type: 'integer', minimum: -840, maximum: 840 }, { type: 'null' }],
     },
-    completionCriteria: { type: 'string', pattern: '\\S' },
-    assignee: nullableText,
-    assigneeText: nullableText,
-    latestEvent: nullableText,
-    confirmed: { oneOf: [{ type: 'boolean' }, { type: 'null' }] },
-    roles: { oneOf: [{ type: 'array', items: {} }, { type: 'null' }] },
-    data: { oneOf: [{ type: 'object' }, { type: 'null' }] },
+    completionCriteria: {
+      type: 'string',
+      pattern: '\\S',
+      description: 'Evidence-based completion rule, e.g. "Owner approves".',
+    },
+    assignee: { ...nullableText, description: 'Assigned person text, e.g. "person_123" or null.' },
+    assigneeText: {
+      ...nullableText,
+      description: 'Unresolved assignee text, e.g. "reviewer" or null.',
+    },
+    latestEvent: {
+      ...nullableText,
+      description: 'Latest work event text, e.g. "review requested" or null.',
+    },
+    confirmed: {
+      description: 'Whether the patch is confirmed, e.g. true or null.',
+      oneOf: [{ type: 'boolean' }, { type: 'null' }],
+    },
+    roles: {
+      description: 'Role entries for the work, e.g. [] or null.',
+      oneOf: [{ type: 'array', items: {} }, { type: 'null' }],
+    },
+    data: {
+      description: 'Product-specific structured fields, e.g. {"stage":"review"} or null.',
+      oneOf: [{ type: 'object' }, { type: 'null' }],
+    },
   },
 };
 
 const commandFields: Record<string, ActionSchemaObject> = {
-  topic: { type: 'string', minLength: 1 },
-  summary: { type: 'string', minLength: 1 },
-  reasoning: { type: 'string', minLength: 1 },
-  scopes: { type: 'array', items: scopeRefSchema },
-  sourceRefs: { type: 'array', items: { type: 'string', minLength: 1 } },
-  links: { type: 'array', items: recordLinkSchema },
-  eventDatetime: { oneOf: [{ type: 'number' }, { type: 'null' }] },
-  recordedAt: { type: 'number' },
-  event: { type: 'object' },
+  topic: { type: 'string', minLength: 1, description: 'Work topic key, e.g. "release".' },
+  summary: {
+    type: 'string',
+    minLength: 1,
+    description: 'What changed and why, e.g. "Review is requested".',
+  },
+  reasoning: {
+    type: 'string',
+    minLength: 1,
+    description: 'Decision reasoning, e.g. "The source confirms the handoff".',
+  },
+  scopes: {
+    type: 'array',
+    description: 'Work visibility scopes, e.g. [{"kind":"project","id":"project_123"}].',
+    items: scopeRefSchema,
+  },
+  sourceRefs: {
+    type: 'array',
+    description: 'Source observation handles, e.g. ["obs_123"].',
+    items: { type: 'string', minLength: 1 },
+  },
+  links: {
+    type: 'array',
+    description:
+      'Evidence graph links, e.g. [{"relation":"derived_from","target":{"kind":"observation","id":"obs_123"}}].',
+    items: recordLinkSchema,
+  },
+  eventDatetime: {
+    description: 'Event time as epoch milliseconds or null, e.g. 1760000000000.',
+    oneOf: [{ type: 'number' }, { type: 'null' }],
+  },
+  recordedAt: {
+    type: 'number',
+    description: 'Record time as epoch milliseconds, e.g. 1760000000000.',
+  },
+  event: { type: 'object', description: 'Structured event details, e.g. {"kind":"review"}.' },
 };
 
 const createSchema: ActionSchemaObject = {
   type: 'object',
   required: ['topic', 'summary', 'set'],
   additionalProperties: false,
-  properties: { ...commandFields, set: workPatchSchema },
+  properties: {
+    ...commandFields,
+    set: {
+      ...workPatchSchema,
+      description: 'Fields to set on the new work item, e.g. {"title":"Prepare release"}.',
+    },
+  },
 };
 
 const reviseSchema: ActionSchemaObject = {
@@ -64,10 +121,25 @@ const reviseSchema: ActionSchemaObject = {
   additionalProperties: false,
   properties: {
     ...commandFields,
-    commitmentId: { type: 'string', minLength: 1 },
-    expectedRevision: { type: 'integer', minimum: 0 },
-    set: workPatchSchema,
-    clear: { type: 'array', items: { type: 'string' } },
+    commitmentId: {
+      type: 'string',
+      minLength: 1,
+      description: 'Commitment handle to revise, e.g. "commitment_123".',
+    },
+    expectedRevision: {
+      type: 'integer',
+      minimum: 0,
+      description: 'Revision read before editing, e.g. 2.',
+    },
+    set: {
+      ...workPatchSchema,
+      description: 'Fields to update on the existing work item, e.g. {"assignee":null}.',
+    },
+    clear: {
+      type: 'array',
+      description: 'Patch fields to clear, e.g. ["assignee"].',
+      items: { type: 'string' },
+    },
   },
 };
 

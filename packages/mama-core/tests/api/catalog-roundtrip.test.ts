@@ -102,6 +102,38 @@ describe('Story R2: action catalog and dispatch roundtrip', () => {
     expect(() => catalog.describe('memory.read.topic')).toThrow(UnknownActionError);
   });
 
+  it('describes every memory, work, and graph query input field', () => {
+    const catalog = createCatalog(coreActionRegistrations(knowledge, getAdapter()));
+    const visit = (schema: unknown, path: string): void => {
+      if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return;
+      const value = schema as {
+        properties?: Record<string, unknown>;
+        items?: unknown;
+        oneOf?: unknown[];
+      };
+      for (const [name, property] of Object.entries(value.properties ?? {})) {
+        const field = property as { description?: unknown };
+        expect(field.description, `${path}.${name}`).toEqual(expect.any(String));
+        expect(String(field.description).trim(), `${path}.${name}`).not.toBe('');
+        visit(property, `${path}.${name}`);
+      }
+      visit(value.items, `${path}[]`);
+      for (const [index, branch] of (value.oneOf ?? []).entries()) {
+        visit(branch, `${path}.oneOf[${index}]`);
+      }
+    };
+
+    for (const contract of catalog.list()) {
+      if (
+        contract.name === 'graph.query' ||
+        contract.name.startsWith('memory.') ||
+        contract.name.startsWith('work.')
+      ) {
+        visit(contract.inputSchema, contract.name);
+      }
+    }
+  });
+
   it('keeps memory listing navigable while full reasoning stays available on demand', async () => {
     const adapter = getAdapter();
     const scopeId = ensureMemoryScope(adapter, 'project', 'scope-test');

@@ -57,6 +57,11 @@ export interface PendingProjection extends NormalizedItem {
   pendingProjectionId: number;
 }
 
+export interface RawIndexProjection {
+  sourceId: string;
+  observationRef: string;
+}
+
 interface ConnectorEventIndexInput {
   source_connector: string;
   source_type: string;
@@ -141,7 +146,10 @@ CREATE INDEX IF NOT EXISTS idx_pending_core_projection_sequence
 
 const CONTENT_HASH_PATTERN = /^[a-f0-9]{64}$/;
 
-export type RawIndexSink = (connectorName: string, items: NormalizedItem[]) => void | Promise<void>;
+export type RawIndexSink = (
+  connectorName: string,
+  items: NormalizedItem[]
+) => RawIndexProjection[] | Promise<RawIndexProjection[]>;
 
 export interface RawVersionReadResult {
   status: 'available' | 'version_unavailable';

@@ -7,7 +7,6 @@ import type { TurnIntake } from '../../src/gateways/turn-contract.js';
 import {
   bootDaemon,
   type DaemonGateway,
-  type DaemonScheduledTick,
   type DaemonLogger,
 } from '../../src/cli/commands/daemon.js';
 import type { W1Config } from '../../src/runtime/config.js';
@@ -84,11 +83,6 @@ describe('daemon bootstrap', () => {
       }),
       deliverResponse: vi.fn(async () => {}),
     };
-    const scheduled: DaemonScheduledTick = {
-      stop: vi.fn(() => {
-        order.push('scheduled:stop');
-      }),
-    };
     const daemon = await bootDaemon({
       home: root,
       configPath: join(mamaRoot, 'config.yaml'),
@@ -104,14 +98,10 @@ describe('daemon bootstrap', () => {
           return connectors as never;
         }),
         createTelegramGateway: vi.fn(() => gateway),
-        createScheduledTick: vi.fn(() => {
-          order.push('scheduled:start');
-          return scheduled;
-        }),
       },
     });
 
-    expect(order).toEqual(['owner:start', 'connectors:start', 'telegram:start', 'scheduled:start']);
+    expect(order).toEqual(['owner:start', 'connectors:start', 'telegram:start']);
     expect(existsSync(join(mamaRoot, 'workspace', '.git', 'HEAD'))).toBe(true);
     expect(readFileSync(join(mamaRoot, 'workspace', '.git', 'HEAD'), 'utf8')).toBe(
       'ref: refs/heads/main\n'
@@ -124,8 +114,6 @@ describe('daemon bootstrap', () => {
       'owner:start',
       'connectors:start',
       'telegram:start',
-      'scheduled:start',
-      'scheduled:stop',
       'telegram:stop',
       'connectors:stop',
       'owner:stop',
@@ -152,7 +140,6 @@ describe('daemon bootstrap', () => {
       stop: vi.fn(async () => {}),
       deliverResponse: vi.fn(async () => {}),
     };
-    const scheduled: DaemonScheduledTick = { stop: vi.fn(() => {}) };
     const daemon = await bootDaemon({
       home: root,
       configPath: join(mamaRoot, 'config.yaml'),
@@ -161,7 +148,6 @@ describe('daemon bootstrap', () => {
         createOwnerRuntime: vi.fn(async () => owner as never),
         startConnectorRuntime: vi.fn(async () => ({ stop: vi.fn(async () => {}) }) as never),
         createTelegramGateway: vi.fn(() => gateway),
-        createScheduledTick: vi.fn(() => scheduled),
       },
     });
 

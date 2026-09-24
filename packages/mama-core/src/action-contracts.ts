@@ -8,6 +8,8 @@
 
 /** JSON-Schema subset the catalog validates against. */
 export interface ActionSchemaObject {
+  /** Short caller-facing meaning and example shape for this input field. */
+  description?: string;
   type?: 'object' | 'array' | 'string' | 'number' | 'integer' | 'boolean' | 'null';
   properties?: Record<string, ActionSchemaObject>;
   required?: readonly string[];

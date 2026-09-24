@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
@@ -22,7 +21,6 @@ import { defaultConfigPath, loadConfig, type W1Config } from '../../runtime/conf
 import { ensureMamaMcpConfig, resolveActionServerPath } from '../runtime/action-mcp-config.js';
 import type { SourceDelta } from '../../connectors/framework/polling-scheduler.js';
 
-const SCHEDULED_TICK_INTERVAL_MS = 60_000;
 const OWNER_PRINCIPAL_ID = 'owner';
 const OWNER_AGENT_ID = 'owner-agent';
 const OWNER_MEMORY_SCOPES = [{ kind: 'global' as const, id: 'system' }];
@@ -37,10 +35,6 @@ export interface DaemonGateway {
   start(): Promise<void>;
   stop(): Promise<void>;
   deliverResponse(sourceRef: string, response: string): Promise<void>;
-}
-
-export interface DaemonScheduledTick {
-  stop(): Promise<void> | void;
 }
 
 export interface DaemonPaths {
@@ -64,19 +58,10 @@ export interface DaemonIsolationOptions {
   mcpServerPath?: string;
 }
 
-export interface DaemonScheduledTickOptions {
-  intake: Pick<StimulusIntake, 'acceptScheduled'>;
-  logger: DaemonLogger;
-  now?: () => number;
-  setInterval?: (handler: () => void, timeout: number) => ReturnType<typeof setInterval>;
-  clearInterval?: (timer: ReturnType<typeof setInterval>) => void;
-}
-
 export interface DaemonBootDependencies {
   createOwnerRuntime?: (options: OwnerRuntimeOptions) => Promise<OwnerRuntime>;
   startConnectorRuntime?: (options: ConnectorRuntimeOptions) => Promise<ConnectorRuntime>;
   createTelegramGateway?: (options: TelegramGatewayOptions) => DaemonGateway;
-  createScheduledTick?: (options: DaemonScheduledTickOptions) => DaemonScheduledTick;
   ensureIsolation?: (options: DaemonIsolationOptions) => void;
 }
 
@@ -95,7 +80,6 @@ export interface DaemonHandle {
   readonly owner: OwnerRuntime;
   readonly connectors: ConnectorRuntime;
   readonly gateway: DaemonGateway | null;
-  readonly scheduled: DaemonScheduledTick;
   stop(): Promise<void>;
 }
 
@@ -198,42 +182,6 @@ function loggedOwnerIntake(intake: StimulusIntake, logger: DaemonLogger): TurnIn
   };
 }
 
-export function createScheduledNoopTick(options: DaemonScheduledTickOptions): DaemonScheduledTick {
-  const now = options.now ?? Date.now;
-  const setIntervalFn = options.setInterval ?? setInterval;
-  const clearIntervalFn = options.clearInterval ?? clearInterval;
-  let stopped = false;
-
-  const tick = (): void => {
-    if (stopped) return;
-    const id = `scheduled:${randomUUID()}`;
-    try {
-      const receipt = options.intake.acceptScheduled({
-        id,
-        channelKey: 'scheduled',
-        occurredAt: now(),
-      });
-      stimulusAccepted(options.logger, 'scheduled', id, receipt);
-    } catch (error) {
-      stimulusFailed(options.logger, 'scheduled', id);
-      throw error;
-    }
-  };
-
-  tick();
-  const timer = setIntervalFn(tick, SCHEDULED_TICK_INTERVAL_MS);
-  if (typeof timer === 'object' && timer !== null && 'unref' in timer) {
-    (timer as { unref?: () => void }).unref?.();
-  }
-  return {
-    stop: () => {
-      if (stopped) return;
-      stopped = true;
-      clearIntervalFn(timer);
-    },
-  };
-}
-
 async function stopOne(
   logger: DaemonLogger,
   name: string,
@@ -258,7 +206,6 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
   let owner: OwnerRuntime | undefined;
   let connectors: ConnectorRuntime | undefined;
   let gateway: DaemonGateway | null = null;
-  let scheduled: DaemonScheduledTick | undefined;
   let stopped = false;
   let currentStage = 'config';
 
@@ -266,7 +213,6 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
     if (stopped) return;
     stopped = true;
     const errors: unknown[] = [];
-    if (scheduled) await stopOne(logger, 'scheduled', () => scheduled!.stop(), errors);
     if (gateway) await stopOne(logger, 'telegram', () => gateway!.stop(), errors);
     if (connectors) await stopOne(logger, 'connectors', () => connectors!.stop(), errors);
     if (owner) await stopOne(logger, 'owner_runtime', () => owner!.stop(), errors);
@@ -370,18 +316,12 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
       stage(logger, 'telegram:disabled');
     }
 
-    currentStage = 'scheduled';
-    const scheduledFactory = dependencies.createScheduledTick ?? createScheduledNoopTick;
-    scheduled = scheduledFactory({ intake: owner.intake, logger });
-    stage(logger, 'scheduled');
-
     return {
       config,
       paths,
       owner,
       connectors,
       gateway,
-      scheduled,
       stop: stopResources,
     };
   } catch (error) {

@@ -2,10 +2,24 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {
+  createCatalog,
+  createDispatcher,
+  type ActionContext,
+  type NativeDeliveryContext,
+  type NativeTurnResult,
+} from '@jungjaehoon/mama-core';
+import { Mailbox, type Stimulus } from '@jungjaehoon/mama-core/runtime/mailbox';
 import { startConnectorRuntime } from '../../src/runtime/connectors.js';
 import type { IConnector, NormalizedItem } from '../../src/connectors/framework/types.js';
 import { openCoreDatabase } from '../../src/runtime/core-db.js';
 import { RawStore } from '../../src/storage/source-archive.js';
+import { sourceActionRegistrations } from '../../src/api/source-actions.js';
+import { createStoredSourceReader } from '../../src/api/stored-source-reader.js';
+import {
+  createStimulusDelivery,
+  createStimulusIntake,
+} from '../../src/runtime/stimulus-delivery.js';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -82,7 +96,8 @@ describe('connector runtime', () => {
       trelloStatePath,
       kagemushaDbPath,
       clock: () => now,
-      rawIndexSink: vi.fn(),
+      rawIndexSink: (_connector, items) =>
+        items.map((item) => ({ sourceId: item.sourceId, observationRef: `obs:${item.sourceId}` })),
       acceptSourceDelta: async (delta) => {
         deltas.push(delta);
       },
@@ -174,6 +189,146 @@ describe('connector runtime', () => {
       expect(raw.query('slack', new Date(0))).toHaveLength(1);
     } finally {
       raw.close();
+      await database.close();
+    }
+  });
+
+  it('carries every connector delta ref through the mailbox into real source.read dispatch', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'connector-runtime-source-read-'));
+    roots.push(root);
+    const configPath = join(root, 'connectors.json');
+    const rawPath = join(root, 'raw');
+    const statePath = join(root, 'state');
+    const database = await openCoreDatabase({ path: join(root, 'core.db') });
+    const rawStore = new RawStore(rawPath);
+    const mailbox = new Mailbox(database.adapter);
+    const stored = createStoredSourceReader({
+      adapter: database.adapter,
+      ownerPrincipalId: () => 'owner',
+      rawStore: () => rawStore,
+    });
+    const catalog = createCatalog(sourceActionRegistrations({ stored }));
+    const dispatch = createDispatcher(catalog);
+    const access: ActionContext['access'] = {
+      principalId: 'owner',
+      agentId: 'agent',
+      actions: ['source.read'],
+      connectors: ['slack'],
+      scopes: [],
+    };
+    const runtime = {
+      mailbox,
+      accept: (stimulus: Stimulus) => {
+        const inputId = mailbox.enqueue(stimulus);
+        return {
+          inputId: inputId === null ? null : stimulus.id,
+          state: inputId === null ? 'duplicate' : 'accepted',
+        } as const;
+      },
+    };
+    const intake = createStimulusIntake(runtime, 'owner');
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        slack: {
+          enabled: true,
+          pollIntervalMinutes: 5,
+          channels: { 'channel-key': { role: 'hub' } },
+          auth: { type: 'none' },
+        },
+      }),
+      'utf8'
+    );
+    const now = Date.parse('2024-01-02T00:00:00.000Z');
+    const items: NormalizedItem[] = [
+      {
+        source: 'slack',
+        sourceId: 'source-1',
+        channel: 'channel-key',
+        author: 'actor-key',
+        content: 'first source body',
+        timestamp: new Date(now - 2_000),
+        type: 'message',
+      },
+      {
+        source: 'slack',
+        sourceId: 'source-2',
+        channel: 'channel-key',
+        author: 'actor-key',
+        content: 'second source body',
+        timestamp: new Date(now - 1_000),
+        type: 'message',
+      },
+    ];
+    const connectorRuntime = await startConnectorRuntime({
+      configPath,
+      rawPath,
+      statePath,
+      coreAdapter: database.adapter,
+      acceptSourceDelta: async (delta) => {
+        intake.acceptSourceDelta(delta);
+      },
+      loadConnector: async (name) => fake(name, items),
+      setInterval: vi.fn(() => 1 as unknown as ReturnType<typeof setInterval>),
+      clearInterval: vi.fn(),
+    });
+
+    try {
+      const row = mailbox.claimNext();
+      expect(row).not.toBeNull();
+      expect(row?.kind).toBe('source_delta');
+      const delivery = createStimulusDelivery({ standingText: 'standing policy' });
+      const reads: string[] = [];
+      const context: NativeDeliveryContext = {
+        nativeInputId: 'native-input',
+        resultForReceipt: () => null,
+        run: async (content): Promise<NativeTurnResult> => {
+          const text = content[0]?.type === 'text' ? (content[0].text ?? '') : '';
+          const payloadLine = text.split('\n').find((line) => line.startsWith('payload: '));
+          if (!payloadLine) throw new Error('rendered source delta omitted payload');
+          const payload = JSON.parse(payloadLine.slice('payload: '.length)) as {
+            refs?: Array<{ connector?: unknown; observationRef?: unknown }>;
+          };
+          if (!Array.isArray(payload.refs)) throw new Error('rendered source delta omitted refs');
+          for (const [index, ref] of payload.refs.entries()) {
+            if (typeof ref.connector !== 'string' || typeof ref.observationRef !== 'string') {
+              throw new Error('rendered source delta omitted a source.read handle');
+            }
+            const result = await dispatch(
+              {
+                action: 'source.read',
+                input: { source: ref.connector, observationRef: ref.observationRef },
+                operationId: `read-${index}`,
+              },
+              { access }
+            );
+            expect(result.status).toBe('completed');
+            reads.push(ref.observationRef);
+          }
+          return {
+            response: 'read every source delta ref',
+            turns: 1,
+            history: [],
+            totalUsage: { input_tokens: 1, output_tokens: 1 },
+            stopReason: 'end_turn',
+            modelRunId: null,
+            modelRunProvenance: 'backend_no_run',
+          };
+        },
+        steer: async () => {
+          throw new Error('steer is not used by this delivery test');
+        },
+        wasDispatched: () => false,
+        onInputDispatch: () => {},
+        onAccepted: () => {},
+      };
+
+      await delivery.deliver(row!, context);
+      expect(row?.refs.map((ref) => ref.observationRef)).toEqual(reads);
+      expect(reads).toHaveLength(2);
+    } finally {
+      await connectorRuntime.stop();
+      rawStore.close();
       await database.close();
     }
   });

@@ -25,6 +25,7 @@ function storedReader(ports: SourcePorts): StoredSourceReader {
 }
 
 const timeValue: ActionSchemaObject = {
+  description: 'Epoch milliseconds or timezone-aware ISO time, e.g. 1760000000000.',
   oneOf: [
     { type: 'integer', minimum: 0 },
     {
@@ -39,19 +40,59 @@ const sourceSchema = {
   required: ['source'],
   additionalProperties: false,
   properties: {
-    source: { type: 'string' as const, pattern: '\\S' },
-    view: { type: 'string' as const, enum: ['stored'] },
-    detail: { type: 'string' as const, enum: ['compact', 'full'] },
-    channel: { type: 'string' as const },
+    source: {
+      type: 'string' as const,
+      pattern: '\\S',
+      description: 'Connector name, e.g. "slack"; do not put the message id here.',
+    },
+    view: { type: 'string' as const, enum: ['stored'], description: 'Read view, e.g. "stored".' },
+    detail: {
+      type: 'string' as const,
+      enum: ['compact', 'full'],
+      description: 'Search result detail, e.g. "full".',
+    },
+    channel: {
+      type: 'string' as const,
+      description: 'Connector channel filter, e.g. "channel_123".',
+    },
     from: timeValue,
     to: timeValue,
-    query: { type: 'string' as const },
-    limit: { type: 'integer' as const, minimum: 1, maximum: 100 },
-    cursor: { type: 'string' as const },
-    observationRef: { type: 'string' as const, pattern: '\\S' },
-    content_offset: { type: 'integer' as const, minimum: 0 },
-    content_limit: { type: 'integer' as const, minimum: 1, maximum: 4_000 },
+    query: {
+      type: 'string' as const,
+      description: 'Text to find in preserved observations, e.g. "review".',
+    },
+    limit: {
+      type: 'integer' as const,
+      minimum: 1,
+      maximum: 100,
+      description: 'Maximum search hits, e.g. 20.',
+    },
+    cursor: {
+      type: 'string' as const,
+      description: 'Opaque search page cursor, e.g. "cursor_20".',
+    },
+    observationRef: {
+      type: 'string' as const,
+      pattern: '\\S',
+      description: 'Exact stored observation handle returned by search/delta, e.g. "obs_123".',
+    },
+    content_offset: {
+      type: 'integer' as const,
+      minimum: 0,
+      description: 'Character offset for a bounded read, e.g. 0.',
+    },
+    content_limit: {
+      type: 'integer' as const,
+      minimum: 1,
+      maximum: 4_000,
+      description: 'Maximum characters returned by a read, e.g. 4000.',
+    },
   },
+};
+
+const sourceReadSchema = {
+  ...sourceSchema,
+  required: ['source', 'observationRef'] as const,
 };
 
 export function sourceActionRegistrations(ports: SourcePorts): ActionRegistration[] {
@@ -81,7 +122,7 @@ export function sourceActionRegistrations(ports: SourcePorts): ActionRegistratio
         readsConnector: { fromInput: 'source' },
         summary:
           'Read a bounded slice of one preserved source observation by citation reference. Continue with nextRead until complete.',
-        inputSchema: sourceSchema,
+        inputSchema: sourceReadSchema,
         examples: [
           {
             title: 'Read cited source evidence',

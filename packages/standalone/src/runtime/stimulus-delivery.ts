@@ -56,14 +56,21 @@ export interface StimulusDeliveryOptions {
   onFailed?: (row: MailboxRow, error: unknown) => void | Promise<void>;
 }
 
-function sourceRefId(delta: SourceDelta, sourceId: string): string {
-  return `${delta.collector}:${sourceId}`;
+function sourceObservationHandle(ref: SourceDelta['refs'][number]): string {
+  if (typeof ref.observationRef !== 'string' || ref.observationRef.trim() === '') {
+    throw new Error(`Source delta ref ${ref.connector}:${ref.sourceId} has no observationRef`);
+  }
+  return ref.observationRef;
+}
+
+function sourceRefId(ref: SourceDelta['refs'][number]): string {
+  return `${ref.connector}:${sourceObservationHandle(ref)}`;
 }
 
 export function sourceDeltaStimulusId(delta: SourceDelta): string {
   if (delta.refs.length === 0)
     throw new Error('A source delta requires at least one observation ref');
-  const refs = delta.refs.map((ref) => `${ref.connector}:${ref.sourceId}`).sort();
+  const refs = delta.refs.map((ref) => sourceRefId(ref)).sort();
   const digest = createHash('sha256')
     .update(canonicalizeJSON({ coalesceKey: delta.coalesceKey, refs }))
     .digest('hex');
@@ -78,6 +85,7 @@ function sourcePayload(delta: SourceDelta): JsonValue {
     coalesceKey: delta.coalesceKey,
     refs: delta.refs.map((ref) => ({
       connector: ref.connector,
+      observationRef: sourceObservationHandle(ref),
       sourceId: ref.sourceId,
       sourceEntityId: ref.sourceEntityId,
       sourceAt: ref.sourceAt,
@@ -118,8 +126,8 @@ export function createStimulusIntake(
         principalId,
         channelKey: delta.channel,
         refs: delta.refs.map((ref) => ({
-          refId: sourceRefId(delta, ref.sourceId),
-          observationRef: ref.sourceId,
+          refId: sourceRefId(ref),
+          observationRef: sourceObservationHandle(ref),
         })),
         preview: [...delta.preview],
         coalesceKey: delta.coalesceKey,

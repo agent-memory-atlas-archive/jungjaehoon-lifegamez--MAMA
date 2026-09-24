@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createCatalog, createDispatcher, type ActionContext } from '@jungjaehoon/mama-core';
 import { sourceActionRegistrations } from '../../src/api/source-actions.js';
+import { minimalWorkActionRegistrations } from '../../src/api/work-actions.js';
 
 const access: ActionContext['access'] = {
   principalId: 'owner-test',
@@ -23,7 +24,44 @@ describe('minimal source actions', () => {
       type: 'integer',
       minimum: 1,
       maximum: 4_000,
+      description: 'Maximum characters returned by a read, e.g. 4000.',
     });
+    expect(catalog.describe('source.read').inputSchema.required).toEqual([
+      'source',
+      'observationRef',
+    ]);
+  });
+
+  it('describes every source and work input field, including nested fields', () => {
+    const knowledge = {
+      createWork: vi.fn(),
+      reviseWork: vi.fn(),
+    };
+    const catalog = createCatalog([
+      ...sourceActionRegistrations({}),
+      ...minimalWorkActionRegistrations({ knowledge }),
+    ]);
+
+    const visit = (schema: unknown, path: string): void => {
+      if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return;
+      const value = schema as {
+        properties?: Record<string, unknown>;
+        items?: unknown;
+        oneOf?: unknown[];
+      };
+      for (const [name, property] of Object.entries(value.properties ?? {})) {
+        const field = property as { description?: unknown };
+        expect(field.description, `${path}.${name}`).toEqual(expect.any(String));
+        expect(String(field.description).trim(), `${path}.${name}`).not.toBe('');
+        visit(property, `${path}.${name}`);
+      }
+      visit(value.items, `${path}[]`);
+      for (const [index, branch] of (value.oneOf ?? []).entries()) {
+        visit(branch, `${path}.oneOf[${index}]`);
+      }
+    };
+
+    for (const contract of catalog.list()) visit(contract.inputSchema, contract.name);
   });
 
   it('dispatches stored search/read and refuses an ungranted connector', async () => {

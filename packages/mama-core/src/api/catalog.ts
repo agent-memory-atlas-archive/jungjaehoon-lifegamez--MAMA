@@ -169,8 +169,16 @@ const refSchema: ActionSchemaObject = {
   required: ['kind', 'id'],
   additionalProperties: false,
   properties: {
-    kind: { type: 'string', enum: TWIN_REF_KINDS },
-    id: { type: 'string', minLength: 1 },
+    kind: {
+      type: 'string',
+      enum: TWIN_REF_KINDS,
+      description: 'Referenced graph kind, e.g. "work".',
+    },
+    id: {
+      type: 'string',
+      minLength: 1,
+      description: 'Stable id within the kind, e.g. "work_123".',
+    },
   },
 };
 
@@ -178,8 +186,14 @@ const msRangeSchema: ActionSchemaObject = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    start: { type: 'number' },
-    end: { type: 'number' },
+    start: {
+      type: 'number',
+      description: 'Inclusive epoch-millisecond start, e.g. 1760000000000.',
+    },
+    end: {
+      type: 'number',
+      description: 'Inclusive epoch-millisecond end, e.g. 1760086400000.',
+    },
   },
 };
 
@@ -188,8 +202,12 @@ export const scopeRefSchema: ActionSchemaObject = {
   required: ['kind', 'id'],
   additionalProperties: false,
   properties: {
-    kind: { type: 'string', enum: MEMORY_SCOPE_KINDS },
-    id: { type: 'string', minLength: 1 },
+    kind: {
+      type: 'string',
+      enum: MEMORY_SCOPE_KINDS,
+      description: 'Scope kind, e.g. "project".',
+    },
+    id: { type: 'string', minLength: 1, description: 'Scope identifier, e.g. "project_123".' },
   },
 };
 
@@ -200,6 +218,7 @@ export const recordLinkSchema: ActionSchemaObject = {
   properties: {
     relation: {
       type: 'string',
+      description: 'Relationship to the target, e.g. "derived_from".',
       enum: [
         'supersedes',
         'refines',
@@ -215,8 +234,14 @@ export const recordLinkSchema: ActionSchemaObject = {
         'amends',
       ],
     },
-    target: refSchema,
-    attrs: { type: 'object' },
+    target: {
+      ...refSchema,
+      description: 'Target graph reference, e.g. {"kind":"observation","id":"obs_123"}.',
+    },
+    attrs: {
+      type: 'object',
+      description: 'Optional relationship metadata, e.g. {"confidence":0.8}.',
+    },
   },
 };
 
@@ -244,40 +269,113 @@ const workGraphQuerySchema: ActionSchemaObject = {
     view: {
       type: 'string',
       enum: ['overview', 'browse', 'neighbors', 'timeline', 'paths', 'detail'],
+      description: 'Graph view to execute, e.g. "neighbors".',
     },
-    seeds: { type: 'array', items: refSchema },
+    seeds: {
+      type: 'array',
+      description: 'Starting graph references, e.g. [{"kind":"work","id":"work_123"}].',
+      items: refSchema,
+    },
     search: {
       type: 'object',
       required: ['text'],
       additionalProperties: false,
+      description: 'Optional registered-name search, e.g. {"text":"release"}.',
       properties: {
-        text: { type: 'string', minLength: 1 },
-        kinds: { type: 'array', items: { type: 'string', enum: TWIN_REF_KINDS } },
+        text: {
+          type: 'string',
+          minLength: 1,
+          description: 'Name text to resolve, e.g. "release".',
+        },
+        kinds: {
+          type: 'array',
+          description: 'Kinds to restrict the search, e.g. ["work"].',
+          items: { type: 'string', enum: TWIN_REF_KINDS },
+        },
       },
     },
-    section: { type: 'string', enum: ['summary', 'reasoning', 'payload'] },
-    textOffset: { type: 'integer', minimum: 0 },
-    textLimit: { type: 'integer', minimum: 1 },
-    from: refSchema,
-    to: refSchema,
-    maxDepth: { type: 'integer', minimum: 0 },
-    direction: { type: 'string', enum: ['in', 'out', 'both'] },
-    relations: { type: 'array', items: { type: 'string', minLength: 1 } },
-    history: { type: 'string', enum: ['current', 'all'] },
-    eventRange: msRangeSchema,
-    recordedRange: msRangeSchema,
-    asOf: { type: 'number' },
-    limit: { type: 'integer', minimum: 1 },
-    cursor: { type: 'string', minLength: 1 },
+    section: {
+      type: 'string',
+      enum: ['summary', 'reasoning', 'payload'],
+      description: 'Detail section to expand, e.g. "summary".',
+    },
+    textOffset: {
+      type: 'integer',
+      minimum: 0,
+      description: 'Character offset for detail text, e.g. 0.',
+    },
+    textLimit: {
+      type: 'integer',
+      minimum: 1,
+      description: 'Maximum detail characters, e.g. 4000.',
+    },
+    from: {
+      ...refSchema,
+      description: 'Path/timeline start reference, e.g. {"kind":"work","id":"work_123"}.',
+    },
+    to: {
+      ...refSchema,
+      description: 'Path/timeline end reference, e.g. {"kind":"memory","id":"mem_123"}.',
+    },
+    maxDepth: {
+      type: 'integer',
+      minimum: 0,
+      description: 'Maximum graph traversal depth, e.g. 2.',
+    },
+    direction: {
+      type: 'string',
+      enum: ['in', 'out', 'both'],
+      description: 'Edge direction, e.g. "both".',
+    },
+    relations: {
+      type: 'array',
+      description: 'Relationship names to include, e.g. ["derived_from"].',
+      items: { type: 'string', minLength: 1 },
+    },
+    history: {
+      type: 'string',
+      enum: ['current', 'all'],
+      description: 'History mode, e.g. "current".',
+    },
+    eventRange: {
+      ...msRangeSchema,
+      description: 'Occurrence-time window, e.g. {"start":1760000000000}.',
+    },
+    recordedRange: {
+      ...msRangeSchema,
+      description: 'Recorded-time window, e.g. {"end":1760086400000}.',
+    },
+    asOf: {
+      type: 'number',
+      description: 'Read state at epoch milliseconds, e.g. 1760000000000.',
+    },
+    limit: { type: 'integer', minimum: 1, description: 'Maximum returned graph rows, e.g. 25.' },
+    cursor: {
+      type: 'string',
+      minLength: 1,
+      description: 'Opaque page cursor, e.g. "cursor_25".',
+    },
   },
 };
 
 /** Read knobs every work read shares; show adds the identity filters. */
 const workReadFields: Record<string, ActionSchemaObject> = {
-  asOf: { type: 'integer', minimum: 0 },
-  history: { type: 'string', enum: ['current', 'all'] },
-  limit: { type: 'integer', minimum: 1, maximum: 100 },
-  cursor: { type: 'string', minLength: 1 },
+  asOf: {
+    type: 'integer',
+    minimum: 0,
+    description: 'Read work as of epoch milliseconds, e.g. 1760000000000.',
+  },
+  history: {
+    type: 'string',
+    enum: ['current', 'all'],
+    description: 'Revision view, e.g. "all".',
+  },
+  limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Maximum work rows, e.g. 25.' },
+  cursor: {
+    type: 'string',
+    minLength: 1,
+    description: 'Opaque work page cursor, e.g. "cursor_25".',
+  },
 };
 
 const workListSchema: ActionSchemaObject = {
@@ -291,8 +389,16 @@ const workShowSchema: ActionSchemaObject = {
   additionalProperties: false,
   properties: {
     ...workReadFields,
-    commitmentId: { type: 'string', minLength: 1 },
-    rowId: { type: 'integer', minimum: 0 },
+    commitmentId: {
+      type: 'string',
+      minLength: 1,
+      description: 'Commitment handle, e.g. "commitment_123".',
+    },
+    rowId: {
+      type: 'integer',
+      minimum: 0,
+      description: 'Legacy numeric commitment row id, e.g. 123.',
+    },
   },
 };
 
@@ -301,8 +407,8 @@ const observationEvidenceSchema: ActionSchemaObject = {
   required: ['kind', 'id'],
   additionalProperties: false,
   properties: {
-    kind: { const: 'observation' },
-    id: { type: 'string', minLength: 1 },
+    kind: { const: 'observation', description: 'Evidence kind; use "observation".' },
+    id: { type: 'string', minLength: 1, description: 'Observation handle, e.g. "obs_123".' },
   },
 };
 
@@ -410,19 +516,43 @@ const memorySearchSchema: ActionSchemaObject = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    query: { type: 'string', minLength: 1 },
-    limit: { type: 'integer', minimum: 1 },
-    scopes: { type: 'array', items: scopeRefSchema },
-    threshold: { type: 'number', minimum: 0, maximum: 1 },
-    strict: { type: 'boolean' },
-    strictness: { type: 'string', enum: ['recall', 'balanced', 'strict'] },
-    disableRecency: { type: 'boolean' },
-    includeRelated: { type: 'boolean' },
-    topicPrefix: { type: 'string', minLength: 1 },
-    minLexicalSupport: { type: 'boolean' },
-    diagnostics: { type: 'boolean' },
-    rerankWithLearned: { type: 'boolean' },
-    useReranking: { type: 'boolean' },
+    query: {
+      type: 'string',
+      minLength: 1,
+      description: 'Memory text to recall, e.g. "release decision".',
+    },
+    limit: { type: 'integer', minimum: 1, description: 'Maximum memory results, e.g. 5.' },
+    scopes: {
+      type: 'array',
+      description: 'Optional admitted scope filter, e.g. [{"kind":"project","id":"project_123"}].',
+      items: scopeRefSchema,
+    },
+    threshold: {
+      type: 'number',
+      minimum: 0,
+      maximum: 1,
+      description: 'Minimum relevance score, e.g. 0.7.',
+    },
+    strict: { type: 'boolean', description: 'Use strict legacy filtering, e.g. true.' },
+    strictness: {
+      type: 'string',
+      enum: ['recall', 'balanced', 'strict'],
+      description: 'Recall strictness mode, e.g. "balanced".',
+    },
+    disableRecency: { type: 'boolean', description: 'Disable recency weighting, e.g. true.' },
+    includeRelated: { type: 'boolean', description: 'Include related graph records, e.g. true.' },
+    topicPrefix: {
+      type: 'string',
+      minLength: 1,
+      description: 'Exact topic prefix for ledger listing, e.g. "work/".',
+    },
+    minLexicalSupport: {
+      type: 'boolean',
+      description: 'Require lexical query support, e.g. true.',
+    },
+    diagnostics: { type: 'boolean', description: 'Include search diagnostics, e.g. true.' },
+    rerankWithLearned: { type: 'boolean', description: 'Apply the learned ranker, e.g. true.' },
+    useReranking: { type: 'boolean', description: 'Allow host-provided reranking, e.g. true.' },
   },
 };
 
@@ -447,11 +577,31 @@ const memorySourceSchema: ActionSchemaObject = {
   additionalProperties: false,
   properties: {
     // No enum. The core does not hold a list of who may use it.
-    package: { type: 'string', minLength: 1 },
-    source_type: { type: 'string', minLength: 1 },
-    user_id: { type: 'string', minLength: 1 },
-    channel_id: { type: 'string', minLength: 1 },
-    project_id: { type: 'string', minLength: 1 },
+    package: {
+      type: 'string',
+      minLength: 1,
+      description: 'Producer package name, e.g. "owner-agent".',
+    },
+    source_type: {
+      type: 'string',
+      minLength: 1,
+      description: 'Producer action/source type, e.g. "memory.save".',
+    },
+    user_id: {
+      type: 'string',
+      minLength: 1,
+      description: 'User scope identifier, e.g. "user_123".',
+    },
+    channel_id: {
+      type: 'string',
+      minLength: 1,
+      description: 'Channel scope identifier, e.g. "channel_123".',
+    },
+    project_id: {
+      type: 'string',
+      minLength: 1,
+      description: 'Project scope identifier, e.g. "project_123".',
+    },
   },
 };
 
@@ -460,39 +610,102 @@ const memorySaveSchema: ActionSchemaObject = {
   required: ['topic', 'kind', 'summary', 'details', 'source'],
   additionalProperties: false,
   properties: {
-    topic: { type: 'string', minLength: 1 },
-    kind: { type: 'string', enum: MEMORY_KINDS },
-    summary: { type: 'string', minLength: 1 },
-    details: { type: 'string', minLength: 1 },
-    confidence: { type: 'number', minimum: 0, maximum: 1 },
-    status: { type: 'string', enum: MEMORY_STATUSES },
-    scopes: { type: 'array', items: scopeRefSchema },
-    source: memorySourceSchema,
-    eventDate: { type: 'string', minLength: 1 },
-    eventDateTime: { type: 'number' },
-    itemId: { oneOf: [{ type: 'string', minLength: 1 }, { type: 'null' }] },
+    topic: {
+      type: 'string',
+      minLength: 1,
+      description: 'Memory topic key, e.g. "release_window".',
+    },
+    kind: {
+      type: 'string',
+      enum: MEMORY_KINDS,
+      description: 'Memory record kind, e.g. "decision".',
+    },
+    summary: {
+      type: 'string',
+      minLength: 1,
+      description: 'Short durable statement, e.g. "Release is Tuesday".',
+    },
+    details: {
+      type: 'string',
+      minLength: 1,
+      description: 'Supporting explanation, e.g. "Owner confirmed after review".',
+    },
+    confidence: {
+      type: 'number',
+      minimum: 0,
+      maximum: 1,
+      description: 'Confidence from 0 to 1, e.g. 0.9.',
+    },
+    status: {
+      type: 'string',
+      enum: MEMORY_STATUSES,
+      description: 'Lifecycle status, e.g. "active".',
+    },
+    scopes: {
+      type: 'array',
+      description: 'Memory visibility scopes, e.g. [{"kind":"project","id":"project_123"}].',
+      items: scopeRefSchema,
+    },
+    source: {
+      ...memorySourceSchema,
+      description: 'Origin metadata, e.g. {"package":"owner-agent","source_type":"memory.save"}.',
+    },
+    eventDate: { type: 'string', minLength: 1, description: 'Event date text, e.g. "2026-09-25".' },
+    eventDateTime: {
+      type: 'number',
+      description: 'Event time as epoch milliseconds, e.g. 1760000000000.',
+    },
+    itemId: {
+      description: 'Optional related item id, e.g. "work_123" or null.',
+      oneOf: [{ type: 'string', minLength: 1 }, { type: 'null' }],
+    },
     actors: {
       type: 'array',
+      description:
+        'People and roles evidenced by the memory, e.g. [{"personId":"person_123","role":"reviewer"}].',
       items: {
         type: 'object',
         required: ['personId', 'role'],
         additionalProperties: false,
         properties: {
-          personId: { type: 'string', minLength: 1 },
-          role: { type: 'string', minLength: 1 },
+          personId: {
+            type: 'string',
+            minLength: 1,
+            description: 'Actor person handle, e.g. "person_123".',
+          },
+          role: {
+            type: 'string',
+            minLength: 1,
+            description: 'Role in the memory event, e.g. "reviewer".',
+          },
         },
       },
     },
-    links: { type: 'array', items: recordLinkSchema },
+    links: {
+      type: 'array',
+      description:
+        'Evidence or graph links, e.g. [{"relation":"derived_from","target":{"kind":"observation","id":"obs_123"}}].',
+      items: recordLinkSchema,
+    },
     replaces: {
       type: 'array',
+      description:
+        'Earlier records this one supersedes, e.g. [{"id":"mem_old","reason":"corrected"}].',
       items: {
         type: 'object',
         additionalProperties: false,
         required: ['id', 'reason'],
         properties: {
-          id: { type: 'string', minLength: 1 },
-          reason: { type: 'string', minLength: 1 },
+          id: {
+            type: 'string',
+            minLength: 1,
+            description: 'Existing memory id to replace, e.g. "mem_old".',
+          },
+          reason: {
+            type: 'string',
+            minLength: 1,
+            description: 'Why the old record is replaced, e.g. "owner corrected it".',
+          },
         },
       },
     },
@@ -762,10 +975,16 @@ export function coreActionRegistrations(
           type: 'object',
           additionalProperties: false,
           properties: {
-            id: { type: 'string' },
-            outcome: { type: 'string' },
-            failure_reason: { type: 'string' },
-            limitation: { type: 'string' },
+            id: { type: 'string', description: 'Memory id to amend, e.g. "mem_123".' },
+            outcome: { type: 'string', description: 'Outcome label, e.g. "SUCCESS".' },
+            failure_reason: {
+              type: 'string',
+              description: 'Why the outcome failed, e.g. "missing review".',
+            },
+            limitation: {
+              type: 'string',
+              description: 'Known limitation, e.g. "only one channel checked".',
+            },
           },
           required: ['id', 'outcome'],
         },
@@ -816,9 +1035,19 @@ export function coreActionRegistrations(
           type: 'object',
           additionalProperties: false,
           properties: {
-            summary: { type: 'string' },
-            open_files: { type: 'array', items: { type: 'string' } },
-            next_steps: { type: 'string' },
+            summary: {
+              type: 'string',
+              description: 'Checkpoint summary, e.g. "Projection handle is wired".',
+            },
+            open_files: {
+              type: 'array',
+              description: 'Files to reopen, e.g. ["src/runtime.ts"].',
+              items: { type: 'string' },
+            },
+            next_steps: {
+              type: 'string',
+              description: 'Next work to resume, e.g. "run the integration test".',
+            },
           },
           required: ['summary'],
         },
@@ -948,7 +1177,7 @@ export function coreActionRegistrations(
           type: 'object',
           additionalProperties: false,
           properties: {
-            limit: { type: 'number' },
+            limit: { type: 'number', description: 'Maximum checkpoints, e.g. 10.' },
           },
         },
         examples: [{ title: 'What was handed off recently', input: { limit: 10 } }],
@@ -969,11 +1198,23 @@ export function coreActionRegistrations(
           type: 'object',
           additionalProperties: false,
           properties: {
-            status: { type: 'string' },
-            order: { type: 'string', enum: ['recent', 'stale'] },
-            limit: { type: 'number' },
-            detail: { type: 'string', enum: ['compact', 'full'] },
-            scopes: { type: 'array', items: scopeRefSchema },
+            status: { type: 'string', description: 'Memory lifecycle filter, e.g. "active".' },
+            order: {
+              type: 'string',
+              enum: ['recent', 'stale'],
+              description: 'List order, e.g. "recent".',
+            },
+            limit: { type: 'number', description: 'Maximum listed memories, e.g. 20.' },
+            detail: {
+              type: 'string',
+              enum: ['compact', 'full'],
+              description: 'Reasoning detail, e.g. "compact".',
+            },
+            scopes: {
+              type: 'array',
+              description: 'Admitted scope filter, e.g. [{"kind":"project","id":"project_123"}].',
+              items: scopeRefSchema,
+            },
           },
         },
         examples: [
@@ -1017,9 +1258,13 @@ export function coreActionRegistrations(
           type: 'object',
           additionalProperties: false,
           properties: {
-            project: { type: 'string' },
-            limit: { type: 'number' },
-            scopes: { type: 'array', items: scopeRefSchema },
+            project: { type: 'string', description: 'Project label to inspect, e.g. "release".' },
+            limit: { type: 'number', description: 'Maximum project decisions, e.g. 20.' },
+            scopes: {
+              type: 'array',
+              description: 'Admitted scope filter, e.g. [{"kind":"project","id":"project_123"}].',
+              items: scopeRefSchema,
+            },
           },
         },
         examples: [
@@ -1053,11 +1298,23 @@ export function coreActionRegistrations(
           type: 'object',
           additionalProperties: false,
           properties: {
-            view: { type: 'string', enum: ['graph', 'nodes', 'detail', 'similarity'] },
-            id: { type: 'string' },
-            ids: { type: 'array', items: { type: 'string' } },
-            limit: { type: 'number' },
-            scopes: { type: 'array', items: scopeRefSchema },
+            view: {
+              type: 'string',
+              enum: ['graph', 'nodes', 'detail', 'similarity'],
+              description: 'Memory graph view, e.g. "detail".',
+            },
+            id: { type: 'string', description: 'One memory id for detail, e.g. "mem_123".' },
+            ids: {
+              type: 'array',
+              description: 'Memory ids for node lookup, e.g. ["mem_123"].',
+              items: { type: 'string' },
+            },
+            limit: { type: 'number', description: 'Maximum graph rows, e.g. 100.' },
+            scopes: {
+              type: 'array',
+              description: 'Admitted scope filter, e.g. [{"kind":"project","id":"project_123"}].',
+              items: scopeRefSchema,
+            },
           },
         },
         examples: [
@@ -1116,7 +1373,11 @@ export function coreActionRegistrations(
           type: 'object',
           additionalProperties: false,
           properties: {
-            scopes: { type: 'array', items: scopeRefSchema },
+            scopes: {
+              type: 'array',
+              description: 'Admitted scope filter, e.g. [{"kind":"project","id":"project_123"}].',
+              items: scopeRefSchema,
+            },
           },
         },
         examples: [{ title: 'What this workspace holds', input: {} }],
@@ -1136,8 +1397,15 @@ export function coreActionRegistrations(
           type: 'object',
           additionalProperties: false,
           properties: {
-            query: { type: 'string' },
-            scopes: { type: 'array', items: scopeRefSchema },
+            query: {
+              type: 'string',
+              description: 'Topic text to recall, e.g. "release decision".',
+            },
+            scopes: {
+              type: 'array',
+              description: 'Admitted scope filter, e.g. [{"kind":"project","id":"project_123"}].',
+              items: scopeRefSchema,
+            },
           },
           required: ['query'],
         },
@@ -1175,8 +1443,16 @@ export function coreActionRegistrations(
             // Nonblank at the contract, not only in exec: the deleted host tool
             // trimmed and refused a blank handle before dispatching, and a
             // whitespace id is not a handle.
-            memory_id: { type: 'string', pattern: '\\S' },
-            scopes: { type: 'array', items: scopeRefSchema },
+            memory_id: {
+              type: 'string',
+              pattern: '\\S',
+              description: 'Memory id whose provenance to resolve, e.g. "mem_123".',
+            },
+            scopes: {
+              type: 'array',
+              description: 'Admitted scope filter, e.g. [{"kind":"project","id":"project_123"}].',
+              items: scopeRefSchema,
+            },
           },
           required: ['memory_id'],
         },
@@ -1220,14 +1496,33 @@ export function coreActionRegistrations(
           type: 'object',
           additionalProperties: false,
           properties: {
-            trace_id: { type: 'string', minLength: 1 },
-            run_id: { type: 'string', minLength: 1 },
-            tool_name: { type: 'string', minLength: 1 },
-            cursor: { type: 'string', minLength: 1 },
-            limit: { type: 'number' },
-            evidence_only: { type: 'boolean' },
-            offset: { type: 'number' },
-            chars: { type: 'number' },
+            trace_id: {
+              type: 'string',
+              minLength: 1,
+              description: 'One tool trace handle, e.g. "trace_123".',
+            },
+            run_id: {
+              type: 'string',
+              minLength: 1,
+              description: 'Model run filter, e.g. "run_123".',
+            },
+            tool_name: {
+              type: 'string',
+              minLength: 1,
+              description: 'Tool name filter, e.g. "source.read".',
+            },
+            cursor: {
+              type: 'string',
+              minLength: 1,
+              description: 'Opaque trace page cursor, e.g. "cursor_25".',
+            },
+            limit: { type: 'number', description: 'Maximum traces, e.g. 25.' },
+            evidence_only: {
+              type: 'boolean',
+              description: 'Return only evidence-bearing traces, e.g. true.',
+            },
+            offset: { type: 'number', description: 'Character offset inside one trace, e.g. 0.' },
+            chars: { type: 'number', description: 'Maximum trace characters, e.g. 4000.' },
           },
         },
         examples: [
@@ -1489,13 +1784,34 @@ export function coreActionRegistrations(
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  view: { type: 'string', enum: ['changes', 'turn_inputs'] },
-                  effect_id: { type: 'integer', minimum: 1 },
-                  cursor: { type: 'integer', minimum: 0 },
-                  since: { type: 'string' },
-                  target_type: { type: 'string', enum: [...CHANGES_READ_TARGET_TYPES] },
-                  cause_state: { type: 'string', enum: [...CHANGES_READ_CAUSE_STATES] },
+                  view: {
+                    type: 'string',
+                    enum: ['changes', 'turn_inputs'],
+                    description: 'Changes view, e.g. "changes".',
+                  },
+                  effect_id: {
+                    type: 'integer',
+                    minimum: 1,
+                    description: 'Effect id for native-turn inputs, e.g. 1.',
+                  },
+                  cursor: {
+                    type: 'integer',
+                    minimum: 0,
+                    description: 'Numeric effect cursor, e.g. 0.',
+                  },
+                  since: { type: 'string', description: 'Window start, e.g. "7d" or an ISO time.' },
+                  target_type: {
+                    type: 'string',
+                    enum: [...CHANGES_READ_TARGET_TYPES],
+                    description: 'Changed target type, e.g. "memory".',
+                  },
+                  cause_state: {
+                    type: 'string',
+                    enum: [...CHANGES_READ_CAUSE_STATES],
+                    description: 'Cause attribution state, e.g. "unattributed".',
+                  },
                   limit: {
+                    description: 'Maximum changes or inputs, e.g. 25.',
                     oneOf: [
                       { type: 'integer', minimum: 1 },
                       { type: 'string', minLength: 1 },
