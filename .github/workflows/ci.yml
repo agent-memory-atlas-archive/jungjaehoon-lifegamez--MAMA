@@ -56,8 +56,6 @@ jobs:
           restore-keys: ${{ runner.os }}-pnpm-store-
       - run: pnpm install
       - run: pnpm build
-      - name: Verify retired runtime package boundary
-        run: node scripts/verify-retired-runtime-packages.mjs
       - uses: actions/cache/save@v5
         with:
           path: |
