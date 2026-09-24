@@ -102,7 +102,19 @@ importers:
       '@jungjaehoon/mama-core':
         specifier: workspace:*
         version: link:../mama-core
+      better-sqlite3:
+        specifier: ^12.8.0
+        version: 12.8.0
+      js-yaml:
+        specifier: ^4.1.1
+        version: 4.1.1
     devDependencies:
+      '@types/better-sqlite3':
+        specifier: ^7.6.13
+        version: 7.6.13
+      '@types/js-yaml':
+        specifier: ^4.0.9
+        version: 4.0.9
       typescript:
         specifier: ^5.4.0
         version: 5.9.3
@@ -632,6 +644,9 @@ packages:
 
   '@types/estree@1.0.8':
     resolution: {integrity: sha512-dWHzHa2WqEXI/O1E9OjrocMTKJl2mSrEolh1Iomrv6U+JuNwaHXsXx9bLu5gG7BUWFIN0skIQJQ/L1rIex4X6w==}
+
+  '@types/js-yaml@4.0.9':
+    resolution: {integrity: sha512-k4MGaQl5TGo/iipqb2UDG2UwjXziSWkh0uysQelTlJpX1qGlpUZYm8PnO4DxG1qBomtJUdYJ6qR6xdIah10JLg==}
 
   '@types/node@22.19.11':
     resolution: {integrity: sha512-BH7YwL6rA93ReqeQS1c4bsPpcfOmJasG+Fkr6Y59q83f9M1WcBRHR2vM+P9eOisYRcN3ujQoiZY8uk5W+1WL8w==}
@@ -2491,6 +2506,8 @@ snapshots:
       '@types/node': 25.3.0
 
   '@types/estree@1.0.8': {}
+
+  '@types/js-yaml@4.0.9': {}
 
   '@types/node@22.19.11':
     dependencies:

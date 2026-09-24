@@ -39,6 +39,7 @@
   },
   "files": [
     "dist",
+    "db",
     "README.md",
     "CHANGELOG.md"
   ],
@@ -46,9 +47,13 @@
     "access": "public"
   },
   "dependencies": {
-    "@jungjaehoon/mama-core": "workspace:*"
+    "@jungjaehoon/mama-core": "workspace:*",
+    "better-sqlite3": "^12.8.0",
+    "js-yaml": "^4.1.1"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/js-yaml": "^4.0.9",
     "typescript": "^5.4.0",
     "vitest": "^1.0.0"
   }
