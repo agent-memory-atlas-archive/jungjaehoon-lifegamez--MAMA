@@ -3,7 +3,7 @@ import type { DatabaseInstance, Knowledge } from '@jungjaehoon/mama-core';
 import { createActionSurface } from '../../src/runtime/action-surface.js';
 
 describe('W1 action surface', () => {
-  it('exposes exactly the seven owner actions and derives host tools from them', () => {
+  it('exposes exactly the eight owner actions and derives host tools from them', () => {
     const surface = createActionSurface({
       adapter: {} as DatabaseInstance,
       knowledge: {} as Knowledge,
@@ -13,6 +13,7 @@ describe('W1 action surface', () => {
       scopes: [{ kind: 'project', id: 'workspace-test' }],
     });
     const expected = [
+      'graph.query',
       'memory.save',
       'memory.search',
       'source.read',

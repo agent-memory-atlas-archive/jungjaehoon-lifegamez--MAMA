@@ -90,7 +90,7 @@ export function minimalWorkActionRegistrations(ports: WorkPorts): ActionRegistra
         name: 'work.create',
         recallableWrite: true,
         summary:
-          'Create one owner-work commitment. Product fields such as assignee and roles remain part of the revision patch.',
+          'Create one owner-work commitment. Product fields such as assignee and roles remain part of the revision patch; links with relation derived_from cite the observations the work rests on.',
         inputSchema: createSchema,
         examples: [
           {
@@ -121,7 +121,7 @@ export function minimalWorkActionRegistrations(ports: WorkPorts): ActionRegistra
         name: 'work.revise',
         recallableWrite: true,
         summary:
-          'Revise owner work at an expected revision. The required summary states what changed and why, in one or two sentences. Compare-and-set prevents overwriting a revision the caller did not read.',
+          'Revise owner work at an expected revision. The required summary states what changed and why, in one or two sentences. Compare-and-set prevents overwriting a revision the caller did not read; links with relation derived_from cite the observations the revision rests on.',
         inputSchema: reviseSchema,
         examples: [
           {

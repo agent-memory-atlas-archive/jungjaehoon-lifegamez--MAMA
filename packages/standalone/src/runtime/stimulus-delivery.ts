@@ -1,0 +1,196 @@
+import type { JsonValue } from '@jungjaehoon/mama-core/knowledge';
+import type { ContentBlock } from '@jungjaehoon/mama-core/runtime/drivers/types';
+import type { MailboxRow, Stimulus } from '@jungjaehoon/mama-core/runtime/mailbox';
+import type {
+  RuntimeHandle,
+  StimulusDelivery,
+  StimulusReceipt,
+} from '@jungjaehoon/mama-core/runtime/runtime';
+import type { NativeTurnResult } from '@jungjaehoon/mama-core/runtime/native-turn';
+import type { SourceDelta } from '../connectors/framework/polling-scheduler.js';
+
+export const OWNER_RUNTIME_SESSION_KEY = 'owner:runtime';
+
+export interface OwnerMessageInput {
+  id: string;
+  channelKey: string;
+  occurredAt: number;
+  text: string;
+  replyTo?: string | null;
+  payload?: JsonValue;
+}
+
+export interface ScheduledInput {
+  id: string;
+  channelKey: string;
+  occurredAt: number;
+  payload?: JsonValue;
+}
+
+export interface NativeEventInput {
+  id: string;
+  channelKey: string;
+  occurredAt: number;
+  payload?: JsonValue;
+}
+
+export interface StimulusIntake {
+  accept(stimulus: Stimulus): StimulusReceipt;
+  acceptOwnerMessage(input: OwnerMessageInput): StimulusReceipt;
+  acceptSourceDelta(delta: SourceDelta): StimulusReceipt;
+  acceptScheduled(input: ScheduledInput): StimulusReceipt;
+  acceptNativeEvent(input: NativeEventInput): StimulusReceipt;
+}
+
+export interface StimulusDeliveryOptions {
+  standingText: string;
+  onOwnerResult?: (row: MailboxRow, result: NativeTurnResult) => void | Promise<void>;
+  onSourceResult?: (row: MailboxRow, result: NativeTurnResult) => void | Promise<void>;
+  onScheduledNoop?: (row: MailboxRow) => void | Promise<void>;
+  onNativeEventResult?: (row: MailboxRow, result: NativeTurnResult) => void | Promise<void>;
+}
+
+function sourceRefId(delta: SourceDelta, sourceId: string): string {
+  return `${delta.collector}:${sourceId}`;
+}
+
+export function sourceDeltaStimulusId(delta: SourceDelta): string {
+  if (delta.refs.length === 0)
+    throw new Error('A source delta requires at least one observation ref');
+  return [
+    delta.collector,
+    delta.channel,
+    ...delta.refs.map((ref) => sourceRefId(delta, ref.sourceId)),
+  ].join(':');
+}
+
+function sourcePayload(delta: SourceDelta): JsonValue {
+  return {
+    kind: delta.kind,
+    collector: delta.collector,
+    channel: delta.channel,
+    coalesceKey: delta.coalesceKey,
+    refs: delta.refs.map((ref) => ({
+      connector: ref.connector,
+      sourceId: ref.sourceId,
+      sourceEntityId: ref.sourceEntityId,
+      sourceAt: ref.sourceAt,
+      observedAt: ref.observedAt,
+      contentHash: ref.contentHash,
+      ...(ref.metadata === undefined ? {} : { metadata: ref.metadata }),
+    })),
+    preview: [...delta.preview],
+  } as unknown as JsonValue;
+}
+
+export function createStimulusIntake(
+  runtime: Pick<RuntimeHandle, 'accept'>,
+  principalId: string
+): StimulusIntake {
+  const ownerPayload = (input: OwnerMessageInput): JsonValue =>
+    input.payload === undefined ? { text: input.text } : { text: input.text, input: input.payload };
+  return {
+    accept: (stimulus) => runtime.accept({ ...stimulus, principalId }),
+    acceptOwnerMessage: (input) =>
+      runtime.accept({
+        id: input.id,
+        kind: 'owner_message',
+        principalId,
+        channelKey: input.channelKey,
+        occurredAt: input.occurredAt,
+        ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }),
+        payload: ownerPayload(input),
+      }),
+    acceptSourceDelta: (delta) =>
+      runtime.accept({
+        id: sourceDeltaStimulusId(delta),
+        kind: 'source_delta',
+        principalId,
+        channelKey: delta.channel,
+        refs: delta.refs.map((ref) => ({
+          refId: sourceRefId(delta, ref.sourceId),
+          observationRef: ref.sourceId,
+        })),
+        preview: [...delta.preview],
+        coalesceKey: delta.coalesceKey,
+        occurredAt: Math.max(...delta.refs.map((ref) => Date.parse(ref.observedAt))),
+        payload: sourcePayload(delta),
+      }),
+    acceptScheduled: (input) =>
+      runtime.accept({
+        id: input.id,
+        kind: 'scheduled',
+        principalId,
+        channelKey: input.channelKey,
+        occurredAt: input.occurredAt,
+        ...(input.payload === undefined ? {} : { payload: input.payload }),
+      }),
+    acceptNativeEvent: (input) =>
+      runtime.accept({
+        id: input.id,
+        kind: 'native_event',
+        principalId,
+        channelKey: input.channelKey,
+        occurredAt: input.occurredAt,
+        ...(input.payload === undefined ? {} : { payload: input.payload }),
+      }),
+  };
+}
+
+function boundedStimulus(row: MailboxRow): string {
+  const lines = [
+    '## Bounded stimulus',
+    `kind: ${row.kind ?? 'unknown'}`,
+    `stimulus_id: ${row.stimulusId}`,
+    `channel: ${row.channelKey}`,
+    `occurred_at: ${new Date(row.occurredAt).toISOString()}`,
+    `preview: ${JSON.stringify(row.preview)}`,
+    `refs: ${JSON.stringify(row.refs)}`,
+  ];
+  if (row.payload !== undefined) lines.push(`payload: ${JSON.stringify(row.payload)}`);
+  return lines.join('\n');
+}
+
+function assembledContent(standingText: string, row: MailboxRow): ContentBlock[] {
+  return [{ type: 'text', text: `${standingText}\n\n${boundedStimulus(row)}` }];
+}
+
+/** Deliver every model-bearing kind through one serialized owner session. */
+export function createStimulusDelivery(options: StimulusDeliveryOptions): StimulusDelivery {
+  let serialTail = Promise.resolve();
+
+  const deliver: StimulusDelivery['deliver'] = async (row, context) => {
+    let release!: () => void;
+    const previous = serialTail;
+    serialTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      if (row.kind === 'scheduled') {
+        await options.onScheduledNoop?.(row);
+        return;
+      }
+      if (
+        row.kind !== 'owner_message' &&
+        row.kind !== 'source_delta' &&
+        row.kind !== 'native_event'
+      ) {
+        throw new Error('Stimulus kind is missing; no owner turn can be assembled');
+      }
+      const result = await context.run(assembledContent(options.standingText, row), {
+        sessionKey: OWNER_RUNTIME_SESSION_KEY,
+        source: row.kind,
+        channelId: row.channelKey,
+        sourceMessageRef: row.stimulusId,
+      });
+      if (row.kind === 'owner_message') await options.onOwnerResult?.(row, result);
+      if (row.kind === 'source_delta') await options.onSourceResult?.(row, result);
+      if (row.kind === 'native_event') await options.onNativeEventResult?.(row, result);
+    } finally {
+      release();
+    }
+  };
+
+  return { deliver, prefer: ['owner_message'] };
+}

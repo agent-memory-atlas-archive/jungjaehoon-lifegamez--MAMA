@@ -13,3 +13,10 @@ One entry per work item: result, evidence, what still fails. 3-5 lines each.
   kept, integrity ok. The original was only read.
 - Still open: release/publish jobs would publish the stub standalone if a release tag is pushed. The daemon
   is stopped until the W1 cutover.
+
+## W1 slice 3 — 2026-09-25
+
+- Result: one-owner native session, mailbox delivery/intake, eight-action surface, and owner assembly are implemented; no C1 owner-check claim.
+- Evidence: standalone build/typecheck/full suite pass (30 files, 59 tests); root lint passes; the focused core mailbox/native/runtime/action/commitment suites pass (9 files, 144 tests).
+- Regressions cover changed-payload refusal, restart payload identity, Codex/Claude action parity, Claude MCP repair, scheduled no-op delivery, serialized `owner:runtime` intake, and embedded `work.create`.
+- Still open: Telegram gateway and daemon bootstrap remain slices 4–5; real provider/model turns, receipts, daemon logs, Telegram delivery, and C1 are not verified in this sandbox.

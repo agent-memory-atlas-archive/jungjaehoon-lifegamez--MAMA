@@ -14,6 +14,7 @@ import { minimalWorkActionRegistrations } from '../api/work-actions.js';
 import type { StoredSourceReader } from '../api/stored-source-reader.js';
 
 const OWNER_ACTIONS = [
+  'graph.query',
   'source.search',
   'source.read',
   'work.create',
@@ -56,7 +57,7 @@ export interface ActionSurface {
 
 export function createActionSurface(options: ActionSurfaceOptions): ActionSurface {
   const core = coreActionRegistrations(options.knowledge, options.adapter).filter(({ contract }) =>
-    ['memory.save', 'memory.search', 'work.list'].includes(contract.name)
+    ['graph.query', 'memory.save', 'memory.search', 'work.list'].includes(contract.name)
   );
   const registrations = [
     ...core,

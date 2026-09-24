@@ -48,6 +48,7 @@
   },
   "dependencies": {
     "@slack/web-api": "^7.13.0",
+    "@jungjaehoon/mama-server": "workspace:*",
     "@jungjaehoon/mama-core": "workspace:*",
     "better-sqlite3": "^12.8.0",
     "js-yaml": "^4.1.1"
