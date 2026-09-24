@@ -21,8 +21,8 @@ It starts from what Kagemusha already does and adds two things.
 
 ## The engine is shared
 
-mama-core is not MAMA's private internals. A separate project (for example nh) can connect to it
-and build its own records: its own storage, its own principals, its own sources, with history,
+mama-core is not MAMA's private internals. A separate project (for example nh) must be able to
+connect to it and build its own records: its own storage, its own principals, its own sources, with history,
 evidence links and search. It does this without MAMA's product code or MAMA's data. Records,
 revisions, evidence and search belong to the engine. Each product's work vocabulary (task
 fields, roles, boards, reports) belongs to that product.
@@ -54,10 +54,12 @@ member permissions and non-owner input wait until the checks below pass on real 
 - Roles are context for the work, not a judgment of people. Record the evidence cross-checked in
   conversation. If it is not confirmed, mark it unconfirmed. An assignee field in a tool such as
   Trello is one piece of evidence, not the answer.
-- The board is a projection of the tasks. The wiki is the human-readable record of each case.
+- The board is the agent's live view of the work, written after reading the tasks and the
+  conversations, so it shows the same state as the tasks. The wiki is the human-readable record of
+  each case.
   Memory holds corrections and lessons.
-- Tasks, their history and the wiki are all semantically searchable. That is how similar cases are
-  found.
+- Tasks, their history and the wiki must all be semantically searchable. That is how similar cases
+  are found.
 
 ## Data and the present moment
 

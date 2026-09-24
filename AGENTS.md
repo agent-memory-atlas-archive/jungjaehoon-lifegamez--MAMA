@@ -72,10 +72,12 @@ cd packages/mama-core && npx vitest run -t "pattern"
 
 - **No PII:** no personal names, project names or channel IDs in source, comments, examples or
   test fixtures.
-- **Core knows no consumer.** `mama-core` never names MAMA's product, its paths (`~/.mama`) or its
-  work vocabulary. Other projects (such as nh) use it through public exports only. Engine
-  features (records, revisions, evidence links, search) go in core; product vocabulary stays in
-  the product.
+- **Core knows no consumer.** Other projects (such as nh) use `mama-core` through public exports
+  only. Engine features (records, revisions, evidence links, search) go in core; product vocabulary
+  stays in the product. A MAMA name inside core is a defect only when it makes the packed
+  second-consumer test fail.
+- **Build from evidence.** Before adding a mechanism, screen, field or action, name the code, the
+  data or the owner decision that requires it. Do not build from imagination.
 - **The agent judges, the host provides.** Meaning, relevance, identity and roles are not coded as
   rules. The host provides collection, storage, search, execution, permissions and receipts.
 - **Relocate before you delete.** Before removing a host step, lane brief or policy line, name the
