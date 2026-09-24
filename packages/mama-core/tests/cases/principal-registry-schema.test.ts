@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
-import { applyMigrationsThrough } from '../../src/test-utils.js';
+import { applyMigrationsThrough } from '../helpers/test-utils.js';
 
 function tableExists(db: Database.Database, name: string): boolean {
   const row = db
@@ -11,14 +11,18 @@ function tableExists(db: Database.Database, name: string): boolean {
 }
 
 describe('TG-01/TG-04 principal registry schema (migration 064)', () => {
-  it('applies migration 064 above the version-63 tip and creates both tables', () => {
+  it('applies migration 064 above the pre-064 tip and creates both tables', () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
 
     applyMigrationsThrough(db, 63);
-    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toMatchObject({
-      version: 63,
-    });
+    // The tip is whatever the last migration that stamps left behind, not 63:
+    // the retired connector migrations keep their numbers claimed by existing,
+    // and write no row.
+    const tip = db.prepare('SELECT MAX(version) AS version FROM schema_version').get() as {
+      version: number;
+    };
+    expect(tip.version).toBeLessThan(64);
     expect(tableExists(db, 'principals')).toBe(false);
     expect(tableExists(db, 'external_identities')).toBe(false);
 
@@ -87,7 +91,9 @@ describe('TG-01/TG-04 principal registry schema (migration 064)', () => {
     insertIdentity.run('discord', 'G1', '123', 'principal-member', 4);
 
     expect(
-      db.prepare("SELECT COUNT(*) AS count FROM external_identities WHERE external_id = '123'").get()
+      db
+        .prepare("SELECT COUNT(*) AS count FROM external_identities WHERE external_id = '123'")
+        .get()
     ).toEqual({ count: 3 });
 
     db.close();

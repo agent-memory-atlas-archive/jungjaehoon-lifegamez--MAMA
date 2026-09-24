@@ -2,7 +2,6 @@
  * MAMA Core - Main exports
  *
  * Shared modules for Memory-Augmented MCP Assistant.
- * Used by mcp-server, claude-code-plugin, and standalone packages.
  *
  * @module mama-core
  * @version 1.0.0
@@ -17,7 +16,7 @@ export {
   MODEL_NAME,
   EMBEDDING_PREFIX_SCHEME,
   type EmbeddingRole,
-} from './embeddings.js';
+} from './embedding/embedder.js';
 
 export { EmbeddingCache } from './embedding-cache.js';
 
@@ -28,7 +27,8 @@ export {
   closeDB,
   updateDecisionOutcome,
   getDbPath,
-  type DatabaseAdapter as DBManagerAdapter,
+  type DatabaseAdapter,
+  type DatabaseInstance,
   type PreparedStatement,
   type DecisionRecord,
   type OutcomeData,
@@ -39,7 +39,6 @@ export {
 
 export {
   createAdapter,
-  DatabaseAdapter,
   SQLiteAdapter,
   type AdapterConfig,
   type Statement,
@@ -49,6 +48,7 @@ export {
 
 import mama from './mama-api.js';
 export { mama };
+export { createMamaApi, type MamaApi } from './mama-api.js';
 
 export {
   MEMORY_SCOPE_KINDS,
@@ -77,21 +77,21 @@ export {
   type ExtractedMemoryUnit,
   type IngestConversationResult,
   type AuditFindingRecord,
+  canonicalizeContextScopes,
 } from './memory/types.js';
 export {
   saveMemory,
-  saveMemoryWithTrustedProvenance,
+  saveJudgmentRecord,
+  saveLegacyMemory,
   promoteMemoryStatus,
   recallMemory,
   buildProfile,
   ingestMemory,
-  ingestWithTrustedProvenance,
   evolveMemory,
   buildMemoryBootstrap,
   createAuditAck,
   recordMemoryAudit,
   ingestConversation,
-  ingestConversationWithTrustedProvenance,
   upsertChannelSummary,
   getChannelSummary,
 } from './memory/api.js';
@@ -105,6 +105,9 @@ export {
   type JudgmentAccess,
   type SourceIngestCommand,
   type SourceIngestReceipt,
+  type WorkGraphPage,
+  type WorkGraphQuery,
+  type WorkReference,
 } from './knowledge/index.js';
 export { queryRelevantTruth } from './memory/truth-store.js';
 export { createAuditFinding, listOpenAuditFindings } from './memory/finding-store.js';
@@ -115,10 +118,8 @@ export {
   listRecentMemoryEvents,
 } from './memory/event-store.js';
 export {
-  createTrustedProvenanceCapability,
-  assertTrustedProvenanceCapability,
-  type TrustedProvenanceCapability,
-  type TrustedMemoryWriteOptions,
+  normalizeMemoryWriteProvenance,
+  type NormalizedMemoryProvenance,
 } from './memory/provenance.js';
 export {
   getMemoryProvenance,
@@ -133,6 +134,39 @@ export {
   type MemoryProvenanceAuditListOptions,
 } from './memory/provenance-audit.js';
 export {
+  OBSERVATION_COLUMNS,
+  isEventVisibleNow,
+  isMessageRefVisible,
+  parseSourceRef,
+  resolveMemoryProvenanceLive,
+  toIndexedEvent,
+  type EventRow,
+  type LiveProvenanceOptions,
+} from './memory/provenance-live.js';
+export {
+  resolveMemoryProvenance,
+  type IndexedEvent,
+  type ParsedSourceRef,
+  type ProvenanceResolution,
+  type ProvenanceResolverDeps,
+  type ProvenanceSubjectRecord,
+  type RecordedSupport,
+  type ResolutionFailure,
+  type ResolvedEvent,
+  type UnresolvedSupport,
+} from './memory/provenance-resolver.js';
+export {
+  sanitizeRecallBundle,
+  sanitizeRecallText,
+  type SafeRecallBundle,
+  type SafeRecallMemory,
+} from './memory/recall-sanitize.js';
+export {
+  scanForSecrets,
+  scanMemoryWriteInput,
+  type SecretScanResult,
+} from './memory/secret-filter.js';
+export {
   MODEL_RUN_STATUSES,
   type ModelRunStatus,
   type BeginModelRunInput,
@@ -143,25 +177,20 @@ export {
   type ToolTraceScope,
   type ListToolTracesInput,
   type ToolTracePage,
-} from './model-runs/types.js';
+} from './runtime/model-run-types.js';
 export {
   beginModelRun,
-  beginModelRunInAdapter,
   commitModelRun,
-  commitModelRunInAdapter,
   failModelRun,
-  failModelRunInAdapter,
   getModelRun,
-  getModelRunInAdapter,
-} from './model-runs/store.js';
+} from './runtime/model-run-store.js';
 export {
   appendToolTrace,
   appendOperationToolTrace,
-  appendOperationToolTraceInAdapter,
   listToolTracesForRun,
   listToolTraces,
   readToolTrace,
-} from './model-runs/tool-trace-store.js';
+} from './runtime/tool-trace-store.js';
 export {
   TWIN_EDGE_SOURCES,
   TWIN_EDGE_TYPES,
@@ -175,43 +204,69 @@ export {
   type TwinRef,
   type TwinRefKind,
   type TwinScopeRef,
-} from './edges/types.js';
+} from './knowledge/twin-edge-types.js';
 export {
   getTwinEdge,
   insertTwinEdge,
   listTwinEdgesForRefs,
   mapTwinEdgeRow,
-} from './edges/store.js';
-export { listVisibleTwinEdgesForRefs } from './edges/ref-validation.js';
-export * from './context-compile/index.js';
-export * from './provenance/source-ref.js';
-export * from './cases/errors.js';
-export * from './agent-graph/index.js';
-export * from './storage/source-archive.js';
-export { default as SQLiteDatabase } from './storage/sqlite.js';
+} from './knowledge/judgments.js';
+export { listVisibleTwinEdgesForRefs } from './knowledge/access.js';
 export type {
-  SQLiteDatabase as SQLiteDatabaseType,
-  SQLiteRunResult,
-  SQLiteStatement,
-} from './storage/sqlite.js';
+  ActionCall,
+  ActionContract,
+  ActionExample,
+  ActionFailure,
+  ActionFailureKind,
+  ActionResult,
+  ActionSchemaObject,
+  ActionSessionFacts,
+} from './action-contracts.js';
+export {
+  createCatalog,
+  coreActionRegistrations,
+  UnknownActionError,
+  type ActionCatalog,
+  type ActionContext,
+  type ActionExec,
+  type ActionRegistration,
+  type MemoryReadAllowance,
+} from './api/catalog.js';
+export {
+  createDispatcher,
+  validateInput,
+  withCallReceipt,
+  type ActionDispatcher,
+  type DispatcherOptions,
+} from './api/dispatch.js';
+export { createClient, type Client, type ClientCall, type ClientOptions } from './client/client.js';
+export {
+  startRuntime,
+  type RuntimeHandle,
+  type RuntimePaths,
+  type StartRuntimeOptions,
+} from './runtime/runtime.js';
+export {
+  createActionIpcServer,
+  encodeFrame,
+  IpcTransportError,
+  newRequestId,
+  sendIpcRequest,
+  IPC_MAX_FRAME_BYTES,
+  type ActionIpcServer,
+  type ActionIpcServerOptions,
+  type IpcRequest,
+  type IpcResponse,
+} from './client/ipc.js';
+export * from './provenance/source-ref.js';
+export * from './knowledge/case-errors.js';
+export * from './knowledge/graph-query.js';
 export {
   canonicalizeJSON,
   targetRefHash,
   CanonicalizeError,
   type CanonicalizeErrorCode,
 } from './canonicalize.js';
-
-export {
-  loadConfig,
-  getModelName,
-  getEmbeddingDim,
-  getCacheDir,
-  updateConfig,
-  getConfigPath,
-  DEFAULT_CONFIG,
-  type MAMAConfig,
-  type ConfigUpdates,
-} from './config-loader.js';
 
 export {
   calculateRelevance,
@@ -224,24 +279,6 @@ export {
 } from './relevance-scorer.js';
 
 export {
-  learnDecision,
-  generateDecisionId,
-  getPreviousDecision,
-  createEdge,
-  createSupersedesEdge,
-  calculateCombinedConfidence,
-  detectRefinement,
-  updateConfidence,
-  VALID_EDGE_TYPES,
-  type EdgeType,
-  type DecisionDetection,
-  type ToolExecution,
-  type SessionContext,
-  type LearnDecisionResult,
-  type EvidenceItem,
-} from './decision-tracker.js';
-
-export {
   logProgress,
   logComplete,
   logFailed,
@@ -251,8 +288,6 @@ export {
 } from './progress-indicator.js';
 
 export { debug, info, warn, error, DebugLogger } from './debug-logger.js';
-
-export { formatTimeAgo } from './time-formatter.js';
 
 export {
   MAMAError,
@@ -300,24 +335,22 @@ export {
   type QueryIntentResult,
 } from './ollama-client.js';
 
-export { notifyInsight } from './notification-manager.js';
+// The shape a host states its one model in. `ollama-client` above is one such
+// model a host may wire; nothing in this library opens it by itself (§2.1).
+export type { TextCompletion, TextCompletionOptions } from './runtime/text-completion.js';
 
-export * from './cases/types.js';
-export * from './cases/store.js';
-export * from './cases/search-rollup.js';
-export * from './cases/timeline-range.js';
-export * from './connectors/event-index.js';
-export * from './connectors/observation-versions.js';
-export * from './connectors/observation-visibility.js';
-export * from './connectors/raw-query.js';
-export * from './connectors/types.js';
+export * from './knowledge/case-types.js';
+export * from './knowledge/case-store.js';
+export * from './knowledge/case-search-rollup.js';
+export * from './knowledge/case-timeline-range.js';
+export * from './knowledge/observations.js';
 export * from './identity/principal-repository.js';
-export * from './search/question-type.js';
-export * from './search/feedback-store.js';
-export * from './search/ranker-features.js';
-export * from './search/ranker-trainer.js';
-export * from './search/ranker-rescore.js';
-export * from './search/search-quality.js';
+export * from './knowledge/question-type.js';
+export * from './knowledge/feedback-store.js';
+export * from './knowledge/ranker-features.js';
+export * from './knowledge/ranker-trainer.js';
+export * from './knowledge/ranker-rescore.js';
+export * from './knowledge/search-quality.js';
 export * from './registry/store.js';
 export * from './registry/record-identity.js';
 export * from './registry/corrections.js';

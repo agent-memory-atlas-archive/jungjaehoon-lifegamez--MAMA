@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { cleanupTestDB, initTestDB } from '../../src/test-utils.js';
+import { cleanupTestDB, initTestDB } from '../helpers/test-utils.js';
 import { getAdapter } from '../../src/db-manager.js';
 
 describe('case-first substrate — case_truth schema', () => {

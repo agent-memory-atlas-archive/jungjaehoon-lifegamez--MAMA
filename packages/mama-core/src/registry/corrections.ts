@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 
-import { isObservationVersionVisible } from '../connectors/observation-visibility.js';
-import { getAdapter } from '../db-manager.js';
-import { assertTwinRefsVisible, TwinRefNotVisibleError } from '../edges/ref-validation.js';
+import { isObservationVersionVisible } from '../knowledge/observations.js';
+import type { DatabaseAdapter } from '../db-manager.js';
+import { assertTwinRefsVisible, TwinRefNotVisibleError } from '../knowledge/access.js';
 import type { MemoryScopeRef } from '../memory/types.js';
+import type { IdentityCorrection, IdentityCorrectionReceipt } from '../memory/judgment-types.js';
 import {
   addAliases,
   createNode,
@@ -14,57 +15,13 @@ import {
 } from './store.js';
 
 type Endpoint = 'from' | 'to';
-type Db = ReturnType<typeof getAdapter>;
+type Db = DatabaseAdapter;
 
-interface CorrectionBase {
-  commandId: string;
-  expectedRevision: number;
-  reason: string;
-  scopes?: readonly MemoryScopeRef[];
-  evidence?: ReadonlyArray<{ kind: 'observation'; id: string }>;
-}
-
-export type IdentityCorrection =
-  | (CorrectionBase & {
-      operation: 'add_alias';
-      nodeId: string;
-      alias: string;
-    })
-  | (CorrectionBase & {
-      operation: 'merge';
-      survivorId: string;
-      memberIds: readonly string[];
-    })
-  | (CorrectionBase & {
-      operation: 'split';
-      parentId: string;
-      children: ReadonlyArray<{ clientKey?: string; name: string; aliases?: readonly string[] }>;
-      assignments: readonly IdentityCorrectionAssignment[];
-    })
-  | (CorrectionBase & {
-      operation: 'assign_refs';
-      parentId: string;
-      assignments: readonly IdentityCorrectionAssignment[];
-    });
-
-interface IdentityCorrectionAssignmentBase {
-  edgeId: string;
-  endpoint: Endpoint;
-}
-
-export type IdentityCorrectionAssignment = IdentityCorrectionAssignmentBase &
-  (
-    | { targetNodeId: string | null; targetClientKey?: never }
-    | { targetClientKey: string; targetNodeId?: never }
-  );
-
-export interface IdentityCorrectionReceipt {
-  commandId: string;
-  identityRevision: number;
-  children: Array<{ clientKey: string; ref: { kind: 'registry'; id: string } }>;
-  changedSlots: Array<{ edgeId: string; endpoint: Endpoint }>;
-  unresolved: Array<{ edgeId: string; endpoint: Endpoint }>;
-}
+export type {
+  IdentityCorrection,
+  IdentityCorrectionAssignment,
+  IdentityCorrectionReceipt,
+} from '../memory/judgment-types.js';
 
 export interface TrustedIdentityCorrectionContext {
   principalId: string;
@@ -153,7 +110,7 @@ function nodeBindings(db: Db, nodeId: string): MemoryScopeRef[] {
 }
 
 function requireVisibleNode(db: Db, nodeId: string, scopes: readonly MemoryScopeRef[]): void {
-  const node = resolveNodeById(nodeId);
+  const node = resolveNodeById(db, nodeId);
   if (!node) {
     genericTargetUnavailable();
   }
@@ -385,7 +342,7 @@ export function appendIdentityCorrection(
       return JSON.parse(replay.receipt_json) as IdentityCorrectionReceipt;
     }
 
-    const current = currentIdentityRevision();
+    const current = currentIdentityRevision(db);
     if (current !== correction.expectedRevision) {
       throw new RegistryError(
         'REVISION_CONFLICT',
@@ -399,15 +356,19 @@ export function appendIdentityCorrection(
     const children: Array<{ clientKey: string; ref: { kind: 'registry'; id: string } }> = [];
 
     if (correction.operation === 'add_alias') {
-      addAliases(correction.nodeId, [correction.alias], requestedScopes);
+      addAliases(db, correction.nodeId, [correction.alias], requestedScopes);
     } else if (correction.operation === 'merge') {
       for (const memberId of correction.memberIds) {
-        mergeNodes({ loser: memberId, survivor: correction.survivorId, reason: correction.reason });
+        mergeNodes(db, {
+          loser: memberId,
+          survivor: correction.survivorId,
+          reason: correction.reason,
+        });
       }
     } else if (correction.operation === 'split') {
       for (const [index, child] of correction.children.entries()) {
-        const childId = createNode({
-          kind: resolveNodeById(correction.parentId)?.kind ?? '',
+        const childId = createNode(db, {
+          kind: resolveNodeById(db, correction.parentId)?.kind ?? '',
           name: child.name,
           aliases: child.aliases,
           parentId: correction.parentId,
@@ -499,10 +460,7 @@ export function appendIdentityCorrection(
   });
 }
 
-export function readIdentityAssignments(
-  edgeId: string,
-  adapter: Pick<Db, 'prepare'> = getAdapter()
-): IdentityAssignment[] {
+export function readIdentityAssignments(adapter: Db, edgeId: string): IdentityAssignment[] {
   const rows = adapter
     .prepare(
       `SELECT command_id, edge_id, endpoint, original_kind, original_id, resolved_node_id,

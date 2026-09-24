@@ -22,6 +22,10 @@ export interface RecordIdentity {
 }
 
 export interface RegistryScopeRef {
-  kind: 'global' | 'user' | 'channel' | 'project';
+  /**
+   * The consumer's word for what kind of scope this is. The core matches it; it
+   * does not read it. Closed lists of kinds used to live here, in three copies.
+   */
+  kind: string;
   id: string;
 }

@@ -15,7 +15,10 @@ describe('PR2B: HTTP embedding runtime removal', () => {
     };
     const rootSource = readFileSync(join(PACKAGE_ROOT, 'src/index.ts'), 'utf8');
 
-    expect(packageJson.exports['./embeddings']).toBe('./dist/embeddings.js');
+    // The subpath names a capability, not a file: W11 moved the module under
+    // `embedding/` and the published name stayed, because the plugin hooks
+    // import it by that name.
+    expect(packageJson.exports['./embeddings']).toBe('./dist/embedding/embedder.js');
     expect(packageJson.exports).not.toHaveProperty('./embedding-client');
     expect(packageJson.exports).not.toHaveProperty('./embedding-server');
     expect(packageJson.dependencies).not.toHaveProperty('ws');

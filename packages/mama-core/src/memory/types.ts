@@ -1,24 +1,37 @@
-import type { ConnectorEventSearchHit } from '../connectors/types.js';
+import { createHash } from 'node:crypto';
+
 import type { RecordActor } from '../registry/types.js';
+import type { RecordLink } from './judgment-types.js';
 import type {
   SearchHitDiagnostics,
   SearchQualityOptions,
   SearchStrictness,
-} from '../search/search-quality.js';
+} from '../knowledge/search-quality.js';
 
-export const MEMORY_SCOPE_KINDS = ['global', 'user', 'channel', 'project'] as const;
-export type MemoryScopeKind = (typeof MEMORY_SCOPE_KINDS)[number];
+/**
+ * The scope kinds this repository's own products happen to use.
+ *
+ * NOT the set of kinds that exist. A scope is a (kind, id) pair; the pair is the
+ * core's, the vocabulary is the consumer's. These are exported so a product can
+ * reuse a familiar word, and so nothing that already writes them has to change --
+ * they are not a gate. A consumer with a kind of its own passes it and the core
+ * carries it, because the core does not read the kind, it matches it.
+ */
+export const COMMON_MEMORY_SCOPE_KINDS = ['global', 'user', 'channel', 'project'] as const;
+/** Kept as the old name for callers that import it; same list, still not a gate. */
+export const MEMORY_SCOPE_KINDS = COMMON_MEMORY_SCOPE_KINDS;
+export type MemoryScopeKind = string;
 
-export const MEMORY_KINDS = [
-  'decision',
-  'preference',
-  'constraint',
-  'lesson',
-  'fact',
-  'task',
-  'schedule',
-  'compiled',
-] as const;
+/**
+ * What a memory can be.
+ *
+ * `task`, `schedule` and `compiled` were here and are not any more. Nothing writes
+ * them -- no call site in either package, no row in the live database -- and they name
+ * one product's board, cron and context-packet vocabulary rather than anything a
+ * memory is. The column's CHECK stays wider than this list, so removing them narrows
+ * what the core accepts without needing to rebuild a table.
+ */
+export const MEMORY_KINDS = ['decision', 'preference', 'constraint', 'lesson', 'fact'] as const;
 export type MemoryKind = (typeof MEMORY_KINDS)[number];
 
 export const MEMORY_STATUSES = ['active', 'superseded', 'contradicted', 'stale'] as const;
@@ -64,7 +77,12 @@ export interface MemoryScopeRef {
 }
 
 export interface MemorySourceRef {
-  package: 'mama-core' | 'mcp-server' | 'standalone' | 'claude-code-plugin';
+  /**
+   * Which package wrote this. A free string, not a union of the four packages that
+   * happened to exist when it was written: a second product installing this core would
+   * have had to be added to the core's own type before it could save anything.
+   */
+  package: string;
   source_type: string;
   user_id?: string;
   channel_id?: string;
@@ -87,6 +105,8 @@ export interface MemoryRecord {
   event_date?: string | null;
   /** Source event timestamp in milliseconds when known. Null if not set. */
   event_datetime?: number | null;
+  /** Maintained outcome projection (SUCCESS | FAILED | PARTIAL | pending). Null when unset. */
+  outcome?: string | null;
   retrieval_diagnostics?: SearchHitDiagnostics;
 }
 
@@ -130,8 +150,15 @@ export interface ProfileSnapshot {
 export interface RecallBundle {
   profile: ProfileSnapshot;
   memories: MemoryRecord[];
-  /** Phase 3: cross-connector event hits, populated when searchWithConnectorEvents=true */
-  connector_event_hits?: ConnectorEventSearchHit[];
+  /**
+   * Hits from a source outside the judgment log, when the caller asked for them.
+   *
+   * This was typed as the connector event index's row, which made the core's
+   * recall bundle depend on a package three of four consumers do not install. The
+   * shape is whatever the source produced; what the core states is that a hit is
+   * ranked and scored.
+   */
+  connector_event_hits?: SourceSearchHit[];
   graph_context: {
     primary: MemoryRecord[];
     expanded: MemoryRecord[];
@@ -145,8 +172,14 @@ export interface RecallBundle {
   };
 }
 
-/** Phase 3: unified search result type — memory-authored or connector-enriched. */
-export type MemorySearchResultHit = MemoryRecord | ConnectorEventSearchHit;
+/** A ranked hit from a source the core did not author. Its fields are the source's. */
+export interface SourceSearchHit extends Record<string, unknown> {
+  rank: number;
+  score: number;
+}
+
+/** A search result: authored by the judgment log, or found in a source. */
+export type MemorySearchResultHit = MemoryRecord | SourceSearchHit;
 
 export interface MemoryEventRecord {
   event_id: string;
@@ -251,6 +284,10 @@ export interface PublicSaveMemoryInput {
   entityObservationIds?: string[];
   itemId?: string | null;
   actors?: RecordActor[];
+  /** Explicit, scope-checked relationships from this new judgment. */
+  links?: RecordLink[];
+  /** Earlier records this judgment explicitly replaces; matching topic is not enough. */
+  replaces?: Array<{ id: string; reason: string }>;
 }
 
 export interface PublicIngestMemoryInput {
@@ -463,4 +500,64 @@ export interface ExtractedMemoryUnit {
 export interface IngestConversationResult {
   rawId: string;
   extractedMemories: Array<{ id: string; kind: MemoryKind; topic: string }>;
+}
+
+// --- Scope identity -------------------------------------------------------------
+//
+// Two scope lists naming the same scopes are the same list. The order and the hash below
+// are what makes that true, so they live with the type rather than with any one reader.
+
+const SCOPE_ORDER: Record<MemoryScopeRef['kind'], number> = {
+  project: 0,
+  channel: 1,
+  user: 2,
+  global: 3,
+};
+
+function assertScope(scope: MemoryScopeRef): MemoryScopeRef {
+  // A kind is nonblank text. Which kinds exist is the consumer's statement, not a
+  // list kept here -- this used to compare against COMMON_MEMORY_SCOPE_KINDS, so a
+  // consumer whose world had a kind of its own could not store one.
+  if (typeof scope.kind !== 'string' || scope.kind.trim().length === 0) {
+    throw new Error(`Memory scope kind must be nonblank text, got: ${String(scope.kind)}`);
+  }
+  const id = scope.id.trim();
+  if (id.length === 0) {
+    throw new Error('Memory scope id must not be empty');
+  }
+  return { kind: scope.kind, id };
+}
+
+function scopeKey(scope: MemoryScopeRef): string {
+  return `${scope.kind}\0${scope.id}`;
+}
+
+function sortScopes(scopes: MemoryScopeRef[]): MemoryScopeRef[] {
+  return [...scopes].sort((left, right) => {
+    const orderDiff = SCOPE_ORDER[left.kind] - SCOPE_ORDER[right.kind];
+    if (orderDiff !== 0) {
+      return orderDiff;
+    }
+    return left.id.localeCompare(right.id);
+  });
+}
+
+export function canonicalizeContextScopes(scopes: readonly MemoryScopeRef[] | undefined): {
+  scopes: MemoryScopeRef[];
+  scopeJson: string;
+  scopeHash: string;
+} {
+  const unique = new Map<string, MemoryScopeRef>();
+  for (const scope of scopes ?? []) {
+    const normalized = assertScope(scope);
+    unique.set(scopeKey(normalized), normalized);
+  }
+  const canonicalScopes = sortScopes([...unique.values()]);
+  const scopeJson = JSON.stringify(canonicalScopes);
+  const scopeHash = createHash('sha256').update(scopeJson).digest('hex');
+  return {
+    scopes: canonicalScopes,
+    scopeJson,
+    scopeHash,
+  };
 }

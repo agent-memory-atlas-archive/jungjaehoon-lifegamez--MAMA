@@ -5,7 +5,7 @@ import { buildMemoryAgentBootstrap } from '../../src/memory/bootstrap-builder.js
 import { createAuditFinding } from '../../src/memory/finding-store.js';
 import { appendMemoryEvent } from '../../src/memory/event-store.js';
 import { saveMemory } from '../../src/memory/api.js';
-import { getAdapter } from '../../src/db-manager.js';
+import { getAdapter, initDB } from '../../src/db-manager.js';
 import { upsertChannelSummary } from '../../src/memory/channel-summary-store.js';
 
 const TEST_DB = '/tmp/test-memory-v2-bootstrap-builder.db';
@@ -29,7 +29,7 @@ function insertContradictoryTruthRow(memoryId: string, truthStatus: 'active' | '
 describe('memory agent bootstrap builder', () => {
   const originalForceTier3 = process.env.MAMA_FORCE_TIER_3;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     [TEST_DB, `${TEST_DB}-journal`, `${TEST_DB}-wal`, `${TEST_DB}-shm`].forEach((file) => {
       try {
         fs.unlinkSync(file);
@@ -40,6 +40,7 @@ describe('memory agent bootstrap builder', () => {
 
     process.env.MAMA_DB_PATH = TEST_DB;
     process.env.MAMA_FORCE_TIER_3 = 'true';
+    await initDB();
   });
 
   afterAll(async () => {
@@ -59,7 +60,7 @@ describe('memory agent bootstrap builder', () => {
   });
 
   it('builds its truth snapshot from current decisions rather than stale projections', async () => {
-    const superseded = await saveMemory({
+    const superseded = await saveMemory(getAdapter(), {
       topic: 'memory_bootstrap',
       kind: 'decision',
       summary: 'Use npm in this repo',
@@ -69,7 +70,7 @@ describe('memory agent bootstrap builder', () => {
       scopes: [PROJECT_SCOPE],
       source: { package: 'mama-core', source_type: 'test', project_id: PROJECT_SCOPE.id },
     });
-    const active = await saveMemory({
+    const active = await saveMemory(getAdapter(), {
       topic: 'memory_bootstrap',
       kind: 'decision',
       summary: 'Use pnpm in this repo',
@@ -81,7 +82,7 @@ describe('memory agent bootstrap builder', () => {
     insertContradictoryTruthRow(superseded.id, 'active');
     insertContradictoryTruthRow(active.id, 'superseded');
 
-    await appendMemoryEvent({
+    await appendMemoryEvent(getAdapter(), {
       event_type: 'save',
       actor: 'memory_agent',
       topic: 'memory_bootstrap',
@@ -98,7 +99,7 @@ describe('memory agent bootstrap builder', () => {
       recommended_action: 'consult_memory',
     });
 
-    const packet = await buildMemoryAgentBootstrap({
+    const packet = await buildMemoryAgentBootstrap(getAdapter(), {
       scopes: [PROJECT_SCOPE],
       currentGoal: 'stabilize memory agent',
     });
@@ -114,13 +115,13 @@ describe('memory agent bootstrap builder', () => {
   });
 
   it('should include channel summary when channel scope is provided', async () => {
-    await upsertChannelSummary({
+    await upsertChannelSummary(getAdapter(), {
       channelKey: 'telegram:tg_test_001',
       summaryMarkdown: '## Channel Summary\n- Current DB direction: PostgreSQL',
       deltaHash: 'db:postgres',
     });
 
-    const packet = await buildMemoryAgentBootstrap({
+    const packet = await buildMemoryAgentBootstrap(getAdapter(), {
       scopes: [{ kind: 'channel', id: 'telegram:tg_test_001' }],
       channelKey: 'telegram:tg_test_001',
     });

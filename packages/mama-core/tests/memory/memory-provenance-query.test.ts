@@ -5,9 +5,8 @@ import { randomUUID } from 'node:crypto';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { closeDB, getAdapter } from '../../src/db-manager.js';
-import { saveMemoryWithTrustedProvenance } from '../../src/memory/api.js';
-import { createTrustedProvenanceCapability } from '../../src/memory/provenance.js';
+import { closeDB, getAdapter, initDB } from '../../src/db-manager.js';
+import { saveJudgmentRecord } from '../../src/memory/api.js';
 import {
   getMemoryProvenance,
   listMemoriesByEnvelopeHash,
@@ -31,7 +30,8 @@ function cleanupDb(): void {
 }
 
 async function saveFixture(topic: string, scope: MemoryScopeRef) {
-  return saveMemoryWithTrustedProvenance(
+  return saveJudgmentRecord(
+    getAdapter(),
     {
       topic,
       kind: 'decision',
@@ -40,15 +40,14 @@ async function saveFixture(topic: string, scope: MemoryScopeRef) {
       scopes: [scope],
       source: { package: 'mama-core', source_type: 'test', project_id: scope.id },
     },
+    { principalId: 'test-principal', agentId: 'main_agent', scopes: [scope] },
+    `test-cmd-${topic}`,
     {
-      capability: createTrustedProvenanceCapability(),
-      provenance: {
-        actor: 'main_agent',
-        envelope_hash: 'env_query',
-        gateway_call_id: 'gw_query',
-        model_run_id: 'model_query',
-        source_refs: [`message:${topic}`],
-      },
+      actor: 'main_agent',
+      envelopeHash: 'env_query',
+      gatewayCallId: 'gw_query',
+      modelRunId: 'model_query',
+      sourceRefs: [`message:${topic}`],
     }
   );
 }
@@ -75,6 +74,7 @@ describe('Story M2.1: Memory Provenance Query Helpers', () => {
     cleanupDb();
     process.env.MAMA_DB_PATH = TEST_DB;
     process.env.MAMA_FORCE_TIER_3 = 'true';
+    await initDB();
   });
 
   afterEach(async () => {
@@ -92,17 +92,17 @@ describe('Story M2.1: Memory Provenance Query Helpers', () => {
     it('looks up memories by memory id, envelope hash, gateway call id, and model run id', async () => {
       const saved = await saveFixture('query_helper_contract', PROJECT_A);
 
-      const byId = await getMemoryProvenance(saved.id);
+      const byId = await getMemoryProvenance(getAdapter(), saved.id);
       expect(byId?.source_refs).toEqual(['message:query_helper_contract']);
       expect(byId?.latest_event?.event_type).toBe('save');
 
-      await expect(listMemoriesByEnvelopeHash('env_query')).resolves.toMatchObject([
+      await expect(listMemoriesByEnvelopeHash(getAdapter(), 'env_query')).resolves.toMatchObject([
         { memory_id: saved.id },
       ]);
-      await expect(listMemoriesByGatewayCallId('gw_query')).resolves.toMatchObject([
+      await expect(listMemoriesByGatewayCallId(getAdapter(), 'gw_query')).resolves.toMatchObject([
         { memory_id: saved.id },
       ]);
-      await expect(listMemoriesByModelRunId('model_query')).resolves.toMatchObject([
+      await expect(listMemoriesByModelRunId(getAdapter(), 'model_query')).resolves.toMatchObject([
         { memory_id: saved.id },
       ]);
     });
@@ -113,20 +113,28 @@ describe('Story M2.1: Memory Provenance Query Helpers', () => {
       const projectA = await saveFixture('project_a_memory', PROJECT_A);
       const projectB = await saveFixture('project_b_memory', PROJECT_B);
 
-      const scoped = await listMemoriesByGatewayCallId('gw_query', { scopes: [PROJECT_A] });
+      const scoped = await listMemoriesByGatewayCallId(getAdapter(), 'gw_query', {
+        scopes: [PROJECT_A],
+      });
       expect(scoped.map((item) => item.memory_id)).toContain(projectA.id);
       expect(scoped.map((item) => item.memory_id)).not.toContain(projectB.id);
 
-      await expect(getMemoryProvenance(projectB.id, { scopes: [PROJECT_A] })).resolves.toBeNull();
+      await expect(
+        getMemoryProvenance(getAdapter(), projectB.id, { scopes: [PROJECT_A] })
+      ).resolves.toBeNull();
     });
 
     it('treats an empty scopes array as no scope filter', async () => {
       const projectA = await saveFixture('project_a_empty_scope_filter', PROJECT_A);
 
-      await expect(getMemoryProvenance(projectA.id, { scopes: [] })).resolves.toMatchObject({
+      await expect(
+        getMemoryProvenance(getAdapter(), projectA.id, { scopes: [] })
+      ).resolves.toMatchObject({
         memory_id: projectA.id,
       });
-      await expect(listMemoriesByGatewayCallId('gw_query', { scopes: [] })).resolves.toEqual(
+      await expect(
+        listMemoriesByGatewayCallId(getAdapter(), 'gw_query', { scopes: [] })
+      ).resolves.toEqual(
         expect.arrayContaining([expect.objectContaining({ memory_id: projectA.id })])
       );
     });
@@ -142,7 +150,7 @@ describe('Story M2.1: Memory Provenance Query Helpers', () => {
         setCreatedAt(hidden.id, 2_000 + index);
       }
 
-      const scoped = await listMemoriesByGatewayCallId('gw_query', {
+      const scoped = await listMemoriesByGatewayCallId(getAdapter(), 'gw_query', {
         scopes: [PROJECT_A],
         limit: 2,
       });

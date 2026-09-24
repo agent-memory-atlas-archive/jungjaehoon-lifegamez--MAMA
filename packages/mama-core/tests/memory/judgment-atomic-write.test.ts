@@ -2,8 +2,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { getAdapter } from '../../src/db-manager.js';
 import { appendJudgment } from '../../src/knowledge/judgments.js';
+import { createWork, reviseWork } from '../../src/knowledge/commitments.js';
 import { createNode } from '../../src/registry/store.js';
-import { cleanupTestDB, initTestDB } from '../../src/test-utils.js';
+import { cleanupTestDB, initTestDB } from '../helpers/test-utils.js';
 
 describe('Story R1/TG-03/TG-04/TG-05/TG-06: atomic agent judgment writes', () => {
   let dbPath = '';
@@ -36,6 +37,97 @@ describe('Story R1/TG-03/TG-04/TG-05/TG-06: atomic agent judgment writes', () =>
 
   afterAll(async () => cleanupTestDB(dbPath));
 
+  it('keeps one run and agent on its record, linked edge, and commitment stores', async () => {
+    const adapter = getAdapter();
+    const modelRunId = 'run-judgment-and-work';
+    const agentAccess = { ...access, agentId: 'mama-owner' };
+    const basis = await appendJudgment(
+      {
+        commandId: 'run-basis',
+        topic: 'source-review',
+        summary: 'Reviewed the source evidence',
+        recordKind: 'judgment',
+        modelRunId,
+      },
+      agentAccess,
+      { adapter }
+    );
+    const work = await createWork(
+      {
+        commandId: 'run-work',
+        topic: 'source-review',
+        summary: 'Follow up on the source evidence',
+        reasoning: 'The review found unfinished work',
+        set: { title: 'Follow up', completionCriteria: 'Evidence reviewed' },
+        links: [{ relation: 'derived_from', target: { kind: 'memory', id: basis.recordId } }],
+        modelRunId,
+      },
+      agentAccess,
+      { adapter }
+    );
+    for (const id of [basis.recordId, work.recordRef.id]) {
+      expect(
+        adapter.prepare('SELECT agent_id, model_run_id FROM decisions WHERE id = ?').get(id)
+      ).toEqual({ agent_id: 'mama-owner', model_run_id: modelRunId });
+    }
+    expect(
+      adapter
+        .prepare('SELECT agent_id, model_run_id, reason_text FROM twin_edges WHERE subject_id = ?')
+        .get(work.recordRef.id)
+    ).toEqual({
+      agent_id: 'mama-owner',
+      model_run_id: modelRunId,
+      reason_text: 'The review found unfinished work',
+    });
+    expect(
+      adapter
+        .prepare('SELECT agent_id, model_run_id FROM commitments WHERE commitment_id = ?')
+        .get(work.commitmentId)
+    ).toEqual({ agent_id: 'mama-owner', model_run_id: modelRunId });
+    expect(
+      adapter
+        .prepare(
+          'SELECT agent_id, model_run_id FROM commitment_assignments WHERE commitment_id = ?'
+        )
+        .get(work.commitmentId)
+    ).toEqual({ agent_id: 'mama-owner', model_run_id: modelRunId });
+
+    const nextRunId = 'run-work-revision';
+    const revised = await reviseWork(
+      {
+        commandId: 'run-work-revision',
+        commitmentId: work.commitmentId,
+        expectedRevision: 1,
+        topic: 'source-review',
+        summary: 'Follow-up evidence reviewed',
+        set: { status: 'done' },
+        modelRunId: nextRunId,
+      },
+      agentAccess,
+      { adapter }
+    );
+    expect(
+      adapter
+        .prepare('SELECT agent_id, model_run_id FROM decisions WHERE id = ?')
+        .get(revised.recordRef.id)
+    ).toEqual({ agent_id: 'mama-owner', model_run_id: nextRunId });
+    expect(
+      adapter
+        .prepare('SELECT agent_id, model_run_id FROM commitments WHERE commitment_id = ?')
+        .get(work.commitmentId)
+    ).toEqual({ agent_id: 'mama-owner', model_run_id: nextRunId });
+    expect(
+      adapter
+        .prepare(
+          'SELECT revision, model_run_id FROM commitment_assignments WHERE commitment_id = ? ORDER BY revision'
+        )
+        .all(work.commitmentId)
+    ).toEqual([
+      { revision: 1, model_run_id: modelRunId },
+      { revision: 2, model_run_id: nextRunId },
+    ]);
+  });
+
   it('AC #1 rejects an invisible reference without writing a judgment', async () => {
     await expect(
       appendJudgment(
@@ -46,7 +138,8 @@ describe('Story R1/TG-03/TG-04/TG-05/TG-06: atomic agent judgment writes', () =>
           recordKind: 'judgment',
           links: [{ relation: 'mentions', target: { kind: 'registry', id: 'missing' } }],
         },
-        access
+        access,
+        { adapter: getAdapter() }
       )
     ).rejects.toMatchObject({ code: 'REFERENCE_NOT_FOUND' });
     expect(getAdapter().prepare('SELECT COUNT(*) AS n FROM decisions').get()).toEqual({ n: 0 });
@@ -66,7 +159,8 @@ describe('Story R1/TG-03/TG-04/TG-05/TG-06: atomic agent judgment writes', () =>
           recordKind: 'judgment',
           links: [{ relation: 'mentions', target: unsupported }],
         },
-        access
+        access,
+        { adapter: getAdapter() }
       )
     ).rejects.toMatchObject({ code: 'REFERENCE_NOT_FOUND' });
     expect(getAdapter().prepare('SELECT COUNT(*) AS n FROM decisions').get()).toEqual({ n: 0 });
@@ -98,8 +192,8 @@ describe('Story R1/TG-03/TG-04/TG-05/TG-06: atomic agent judgment writes', () =>
       replaces: [{ id: 'memory-old', reason: 'new evidence' }],
       scopes: access.scopes,
     };
-    const receipt = await appendJudgment(command, access);
-    expect(await appendJudgment(command, access)).toEqual(receipt);
+    const receipt = await appendJudgment(command, access, { adapter: getAdapter() });
+    expect(await appendJudgment(command, access, { adapter: getAdapter() })).toEqual(receipt);
     expect(
       getAdapter()
         .prepare(
@@ -127,9 +221,11 @@ describe('Story R1/TG-03/TG-04/TG-05/TG-06: atomic agent judgment writes', () =>
       recordKind: 'judgment' as const,
       scopes: access.scopes,
     };
-    await appendJudgment(command, access);
+    await appendJudgment(command, access, { adapter: getAdapter() });
     await expect(
-      appendJudgment({ ...command, summary: 'different payload' }, access)
+      appendJudgment({ ...command, summary: 'different payload' }, access, {
+        adapter: getAdapter(),
+      })
     ).rejects.toMatchObject({ code: 'COMMAND_CONFLICT' });
     expect(getAdapter().prepare('SELECT COUNT(*) AS n FROM decisions').get()).toEqual({ n: 1 });
   });
@@ -141,12 +237,16 @@ describe('Story R1/TG-03/TG-04/TG-05/TG-06: atomic agent judgment writes', () =>
       summary: 'scope-bound payload',
       recordKind: 'judgment' as const,
     };
-    await appendJudgment(command, access);
+    await appendJudgment(command, access, { adapter: getAdapter() });
     await expect(
-      appendJudgment(command, {
-        ...access,
-        scopes: [{ kind: 'project', id: 'other-scope' }],
-      })
+      appendJudgment(
+        command,
+        {
+          ...access,
+          scopes: [{ kind: 'project', id: 'other-scope' }],
+        },
+        { adapter: getAdapter() }
+      )
     ).rejects.toMatchObject({ code: 'COMMAND_CONFLICT' });
     expect(getAdapter().prepare('SELECT COUNT(*) AS n FROM decisions').get()).toEqual({ n: 1 });
   });
@@ -163,6 +263,7 @@ describe('Story R1/TG-03/TG-04/TG-05/TG-06: atomic agent judgment writes', () =>
         },
         access,
         {
+          adapter: getAdapter(),
           embedder: {
             embed: async () => {
               throw new Error('synthetic embedder failure');
@@ -189,8 +290,8 @@ describe('Story R1/TG-03/TG-04/TG-05/TG-06: atomic agent judgment writes', () =>
       embed: async () => new Float32Array(384),
     };
     const [first, second] = await Promise.all([
-      appendJudgment(command, access, { embedder }),
-      appendJudgment(command, access, { embedder }),
+      appendJudgment(command, access, { adapter: getAdapter(), embedder }),
+      appendJudgment(command, access, { adapter: getAdapter(), embedder }),
     ]);
     expect(second).toEqual(first);
     expect(getAdapter().prepare('SELECT COUNT(*) AS n FROM decisions').get()).toEqual({ n: 1 });
@@ -210,7 +311,8 @@ describe('Story R1/TG-03/TG-04/TG-05/TG-06: atomic agent judgment writes', () =>
         },
         scopes: access.scopes,
       },
-      access
+      access,
+      { adapter: getAdapter() }
     );
     const commitmentId = create.work!.commitmentId;
     const revised = await appendJudgment(
@@ -227,7 +329,8 @@ describe('Story R1/TG-03/TG-04/TG-05/TG-06: atomic agent judgment writes', () =>
         },
         scopes: access.scopes,
       },
-      access
+      access,
+      { adapter: getAdapter() }
     );
     expect(revised.work?.revision).toBe(2);
     expect(
@@ -252,7 +355,8 @@ describe('Story R1/TG-03/TG-04/TG-05/TG-06: atomic agent judgment writes', () =>
           },
           scopes: access.scopes,
         },
-        access
+        access,
+        { adapter: getAdapter() }
       )
     ).rejects.toMatchObject({ code: 'STALE_REVISION' });
     expect(getAdapter().prepare('SELECT COUNT(*) AS n FROM decisions').get()).toEqual({ n: 2 });
@@ -268,7 +372,8 @@ describe('Story R1/TG-03/TG-04/TG-05/TG-06: atomic agent judgment writes', () =>
         work: { operation: 'create', set: { title: 'Withdraw me' } },
         scopes: access.scopes,
       },
-      access
+      access,
+      { adapter: getAdapter() }
     );
     const commitmentId = create.work!.commitmentId;
     await appendJudgment(
@@ -280,7 +385,8 @@ describe('Story R1/TG-03/TG-04/TG-05/TG-06: atomic agent judgment writes', () =>
         work: { operation: 'withdraw', commitmentId, expectedRevision: 1 },
         scopes: access.scopes,
       },
-      access
+      access,
+      { adapter: getAdapter() }
     );
     await expect(
       appendJudgment(
@@ -292,7 +398,8 @@ describe('Story R1/TG-03/TG-04/TG-05/TG-06: atomic agent judgment writes', () =>
           work: { operation: 'revise', commitmentId, expectedRevision: 2 },
           scopes: access.scopes,
         },
-        access
+        access,
+        { adapter: getAdapter() }
       )
     ).rejects.toMatchObject({ code: 'COMMITMENT_WITHDRAWN' });
   });
@@ -314,14 +421,15 @@ describe('Story R1/TG-03/TG-04/TG-05/TG-06: atomic agent judgment writes', () =>
           scopes: access.scopes,
           projections: { recordIdentity: { itemId: 'reg_nonexistent', actors: [] } },
         },
-        access
+        access,
+        { adapter: getAdapter() }
       )
     ).rejects.toMatchObject({ code: 'unknown_node' });
     expect(getAdapter().prepare('SELECT COUNT(*) AS n FROM decisions').get()).toEqual({ n: 0 });
   });
 
   it('AC #5 refuses an identity projection putting an item node in an actor slot', async () => {
-    const item = createNode({ kind: 'item', name: 'synthetic bound item' });
+    const item = createNode(getAdapter(), { kind: 'item', name: 'synthetic bound item' });
     await expect(
       appendJudgment(
         {
@@ -334,7 +442,8 @@ describe('Story R1/TG-03/TG-04/TG-05/TG-06: atomic agent judgment writes', () =>
             recordIdentity: { itemId: item, actors: [{ personId: item, role: 'worker' }] },
           },
         },
-        access
+        access,
+        { adapter: getAdapter() }
       )
     ).rejects.toMatchObject({ code: 'wrong_kind' });
     expect(getAdapter().prepare('SELECT COUNT(*) AS n FROM decisions').get()).toEqual({ n: 0 });

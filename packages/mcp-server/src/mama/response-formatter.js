@@ -9,9 +9,6 @@
  * @date 2025-11-25
  */
 
-// eslint-disable-next-line no-unused-vars
-const { info } = require('@jungjaehoon/mama-core/debug-logger');
-
 /**
  * Response Formatter for search results
  *

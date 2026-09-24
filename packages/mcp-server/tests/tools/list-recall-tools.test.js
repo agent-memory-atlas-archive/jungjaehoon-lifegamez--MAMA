@@ -10,10 +10,11 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { listDecisionsTool } from '../../src/tools/list-decisions.js';
-import { recallDecisionTool } from '../../src/tools/recall-decision.js';
-import { saveDecisionTool } from '../../src/tools/save-decision.js';
+import { createListDecisionsTool } from '../../src/tools/list-decisions.js';
+import { createRecallDecisionTool } from '../../src/tools/recall-decision.js';
+import { createSaveDecisionTool } from '../../src/tools/save-decision.js';
 import { initDB, getAdapter, closeDB } from '@jungjaehoon/mama-core/db-manager';
+import { createActionCall } from '../helpers/action-call.js';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
@@ -44,6 +45,10 @@ function insertSeedDecision(adapter, { id, topic, decision, reasoning, createdAt
 }
 
 describe('Story M4.1: list_decisions and recall_decision Tools (ported from mcp-server)', () => {
+  let saveDecisionTool;
+  let recallDecisionTool;
+  let listDecisionsTool;
+
   beforeAll(async () => {
     // Clean up any existing database files
     if (fs.existsSync(TEST_DB_PATH)) {
@@ -60,6 +65,12 @@ describe('Story M4.1: list_decisions and recall_decision Tools (ported from mcp-
 
     // Initialize test database
     await initDB();
+
+    const adapter = getAdapter();
+    const call = createActionCall(adapter);
+    saveDecisionTool = createSaveDecisionTool({ call });
+    recallDecisionTool = createRecallDecisionTool({ call });
+    listDecisionsTool = createListDecisionsTool({ call });
   });
 
   afterAll(async () => {

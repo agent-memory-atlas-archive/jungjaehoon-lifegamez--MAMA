@@ -44,7 +44,7 @@ describe('audit finding store', () => {
       recommended_action: 'consult_memory',
     });
 
-    const findings = await listOpenAuditFindings();
+    const findings = await listOpenAuditFindings(getAdapter());
     expect(findings.some((finding) => finding.summary === 'conflict found')).toBe(true);
   });
 });

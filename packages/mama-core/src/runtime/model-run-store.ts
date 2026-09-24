@@ -1,0 +1,681 @@
+import crypto from 'node:crypto';
+
+import type { DatabaseAdapter } from '../db-manager.js';
+import { MODEL_RUN_STATUSES } from './model-run-types.js';
+import type { BeginModelRunInput, ModelRunRecord, ModelRunStatus } from './model-run-types.js';
+
+type ModelRunAdapter = Pick<DatabaseAdapter, 'prepare'>;
+type NormalizedBeginModelRunInput = Pick<
+  ModelRunRecord,
+  | 'model_run_id'
+  | 'model_id'
+  | 'model_provider'
+  | 'prompt_version'
+  | 'tool_manifest_version'
+  | 'output_schema_version'
+  | 'agent_id'
+  | 'instance_id'
+  | 'envelope_hash'
+  | 'parent_model_run_id'
+  | 'input_snapshot_ref'
+  | 'input_refs_json'
+  | 'status'
+  | 'error_summary'
+  | 'token_count'
+  | 'cost_estimate'
+  | 'created_at'
+>;
+
+const BEGIN_REPLAY_FIELDS = [
+  'model_id',
+  'model_provider',
+  'prompt_version',
+  'tool_manifest_version',
+  'output_schema_version',
+  'agent_id',
+  'instance_id',
+  'envelope_hash',
+  'parent_model_run_id',
+  'input_snapshot_ref',
+  'input_refs_json',
+  'token_count',
+  'cost_estimate',
+] as const satisfies ReadonlyArray<keyof NormalizedBeginModelRunInput>;
+
+const STABLE_INPUT_REF_KEYS = new Set([
+  'request_idempotency_key',
+  'gateway_call_id',
+  'source_turn_id',
+  'turn_id',
+  'message_id',
+  'event_id',
+  'raw_event_id',
+  'trace_id',
+  'cache_key',
+]);
+
+function modelRunId(): string {
+  return `mr_${crypto.randomUUID().replace(/-/g, '')}`;
+}
+
+function nullableString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function formatInvalidValue(value: unknown): string {
+  return typeof value === 'string' ? JSON.stringify(value) : String(value);
+}
+
+function requireString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`model_runs.${field} must be a non-empty string: ${formatInvalidValue(value)}`);
+  }
+  return value;
+}
+
+function normalizeTimestamp(value: unknown): number {
+  if (value === undefined) {
+    return Date.now();
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.floor(value);
+  }
+  throw new Error(`model_runs.created_at must be a finite number: ${formatInvalidValue(value)}`);
+}
+
+function requireTimestamp(value: unknown, field: string, modelRunId: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`Invalid model_runs.${field} for ${modelRunId}: ${formatInvalidValue(value)}`);
+  }
+  return Math.floor(value);
+}
+
+function normalizeNumber(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.floor(value) : fallback;
+}
+
+function requireTokenCount(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error('model_runs.token_count must be a non-negative safe integer');
+  }
+  return value;
+}
+
+function normalizeCost(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function requireInputRefsObject(value: unknown, field: string): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  throw new Error(`model_runs.${field} must be a JSON object`);
+}
+
+function normalizeInputRefsJson(input: BeginModelRunInput): string | null {
+  if (typeof input.input_refs_json === 'string') {
+    try {
+      requireInputRefsObject(JSON.parse(input.input_refs_json) as unknown, 'input_refs_json');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Invalid model_runs.input_refs_json: ${message}`);
+    }
+    return input.input_refs_json;
+  }
+  if (input.input_refs === null || input.input_refs === undefined) {
+    return null;
+  }
+  const inputRefs = requireInputRefsObject(input.input_refs, 'input_refs');
+  try {
+    return JSON.stringify(inputRefs);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid model_runs.input_refs: ${message}`);
+  }
+}
+
+function parseInputRefs(row: { model_run_id: string; input_refs_json: unknown }): {
+  input_refs_json: string | null;
+  input_refs: Record<string, unknown> | null;
+} {
+  const inputRefsJson = nullableString(row.input_refs_json);
+  if (!inputRefsJson) {
+    return { input_refs_json: null, input_refs: null };
+  }
+  try {
+    const parsed = JSON.parse(inputRefsJson) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return {
+        input_refs_json: inputRefsJson,
+        input_refs: parsed as Record<string, unknown>,
+      };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid model_runs.input_refs_json for ${row.model_run_id}: ${message}`);
+  }
+  throw new Error(`Invalid model_runs.input_refs_json for ${row.model_run_id}: expected object`);
+}
+
+const MODEL_RUN_STATUS_SET = new Set<string>(MODEL_RUN_STATUSES);
+
+function requireModelRunStatus(value: unknown, modelRunId: string): ModelRunStatus {
+  if (typeof value === 'string' && MODEL_RUN_STATUS_SET.has(value)) {
+    return value as ModelRunStatus;
+  }
+  throw new Error(`Invalid model_runs.status for ${modelRunId}: ${formatInvalidValue(value)}`);
+}
+
+function normalizeBeginStatus(value: unknown, modelRunId: string): ModelRunStatus {
+  const status = requireModelRunStatus(value ?? 'running', modelRunId);
+  if (status !== 'running') {
+    throw new Error(`model_runs.status must begin in running status for ${modelRunId}: ${status}`);
+  }
+  return status;
+}
+
+function mapModelRunRow(row: Record<string, unknown>): ModelRunRecord {
+  const model_run_id = requireString(row.model_run_id, 'model_run_id');
+  const inputRefs = parseInputRefs({ model_run_id, input_refs_json: row.input_refs_json });
+  return {
+    model_run_id,
+    model_id: nullableString(row.model_id),
+    model_provider: nullableString(row.model_provider),
+    prompt_version: nullableString(row.prompt_version),
+    tool_manifest_version: nullableString(row.tool_manifest_version),
+    output_schema_version: nullableString(row.output_schema_version),
+    agent_id: nullableString(row.agent_id),
+    instance_id: nullableString(row.instance_id),
+    envelope_hash: nullableString(row.envelope_hash),
+    parent_model_run_id: nullableString(row.parent_model_run_id),
+    input_snapshot_ref: nullableString(row.input_snapshot_ref),
+    input_refs_json: inputRefs.input_refs_json,
+    input_refs: inputRefs.input_refs,
+    completion_summary: nullableString(row.completion_summary),
+    status: requireModelRunStatus(row.status, model_run_id),
+    error_summary: nullableString(row.error_summary),
+    token_count: normalizeNumber(row.token_count, 0),
+    cost_estimate: normalizeCost(row.cost_estimate),
+    created_at: requireTimestamp(row.created_at, 'created_at', model_run_id),
+    completed_at:
+      typeof row.completed_at === 'number' && Number.isFinite(row.completed_at)
+        ? Math.floor(row.completed_at)
+        : null,
+  };
+}
+
+function selectModelRun(adapter: ModelRunAdapter, id: string): ModelRunRecord | null {
+  const row = adapter
+    .prepare(
+      `
+        SELECT
+          model_run_id, model_id, model_provider, prompt_version, tool_manifest_version,
+          output_schema_version, agent_id, instance_id, envelope_hash, parent_model_run_id,
+          input_snapshot_ref, input_refs_json, completion_summary, status, error_summary,
+          token_count, cost_estimate, created_at, completed_at
+        FROM model_runs
+        WHERE model_run_id = ?
+      `
+    )
+    .get(id) as Record<string, unknown> | undefined;
+  return row ? mapModelRunRow(row) : null;
+}
+
+function requireModelRun(adapter: ModelRunAdapter, id: string): ModelRunRecord {
+  const run = selectModelRun(adapter, id);
+  if (!run) {
+    throw new Error(`Model run not found: ${id}`);
+  }
+  return run;
+}
+
+function normalizeBeginModelRunInput(
+  id: string,
+  input: BeginModelRunInput,
+  createdAt: number,
+  status: ModelRunStatus,
+  inputRefsJson: string | null
+): NormalizedBeginModelRunInput {
+  return {
+    model_run_id: id,
+    model_id: nullableString(input.model_id),
+    model_provider: nullableString(input.model_provider),
+    prompt_version: nullableString(input.prompt_version),
+    tool_manifest_version: nullableString(input.tool_manifest_version),
+    output_schema_version: nullableString(input.output_schema_version),
+    agent_id: nullableString(input.agent_id),
+    instance_id: nullableString(input.instance_id),
+    envelope_hash: nullableString(input.envelope_hash),
+    parent_model_run_id: nullableString(input.parent_model_run_id),
+    input_snapshot_ref: nullableString(input.input_snapshot_ref),
+    input_refs_json: inputRefsJson,
+    status,
+    error_summary: nullableString(input.error_summary),
+    token_count: normalizeNumber(input.token_count, 0),
+    cost_estimate: normalizeCost(input.cost_estimate),
+    created_at: createdAt,
+  };
+}
+
+function assertReplayHasIdempotencyDiscriminator(expected: NormalizedBeginModelRunInput): void {
+  if (expected.envelope_hash || hasStableInputRefs(expected.input_refs_json)) {
+    return;
+  }
+  throw new Error(
+    `Model run already exists and replay is missing an idempotency discriminator: ${expected.model_run_id}`
+  );
+}
+
+function hasStableInputRefs(inputRefsJson: string | null): boolean {
+  if (!inputRefsJson) {
+    return false;
+  }
+  const inputRefs = JSON.parse(inputRefsJson) as unknown;
+  return hasStableInputRef(inputRefs);
+}
+
+function hasStableInputRef(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  for (const [key, item] of Object.entries(value)) {
+    if (STABLE_INPUT_REF_KEYS.has(key) && isNonEmptyStableInputRefValue(item)) {
+      return true;
+    }
+    if (hasStableInputRef(item)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isNonEmptyStableInputRefValue(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return value.trim().length > 0;
+  }
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function pushReplayField(
+  fields: Array<keyof NormalizedBeginModelRunInput>,
+  field: keyof NormalizedBeginModelRunInput
+): void {
+  if (!fields.includes(field)) {
+    fields.push(field);
+  }
+}
+
+function replayFieldsForInput(
+  input: BeginModelRunInput
+): ReadonlyArray<keyof NormalizedBeginModelRunInput> {
+  const fields: Array<keyof NormalizedBeginModelRunInput> = [];
+  for (const field of BEGIN_REPLAY_FIELDS) {
+    if (field === 'input_refs_json') {
+      if (input.input_refs !== undefined || input.input_refs_json !== undefined) {
+        pushReplayField(fields, field);
+      }
+    } else if (input[field] !== undefined) {
+      pushReplayField(fields, field);
+    }
+  }
+  if (input.created_at !== undefined) {
+    pushReplayField(fields, 'created_at');
+  }
+  if (input.status !== undefined && input.status !== 'running') {
+    pushReplayField(fields, 'status');
+  }
+  if (input.error_summary !== undefined) {
+    pushReplayField(fields, 'error_summary');
+  }
+  return fields;
+}
+
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => canonicalJson(item));
+  }
+  if (value && typeof value === 'object') {
+    const object = value as Record<string, unknown>;
+    const sorted = Object.create(null) as Record<string, unknown>;
+    for (const key of Object.keys(object).sort()) {
+      Object.defineProperty(sorted, key, {
+        value: canonicalJson(object[key]),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return sorted;
+  }
+  return value;
+}
+
+function canonicalJsonString(value: string): string {
+  return JSON.stringify(canonicalJson(JSON.parse(value) as unknown));
+}
+
+function replayFieldMatches(
+  existing: ModelRunRecord,
+  expected: NormalizedBeginModelRunInput,
+  field: keyof NormalizedBeginModelRunInput
+): boolean {
+  if (field === 'input_refs_json') {
+    if (existing.input_refs_json === expected.input_refs_json) {
+      return true;
+    }
+    if (!existing.input_refs_json || !expected.input_refs_json) {
+      return existing.input_refs_json === expected.input_refs_json;
+    }
+    return (
+      canonicalJsonString(existing.input_refs_json) ===
+      canonicalJsonString(expected.input_refs_json)
+    );
+  }
+  return existing[field] === expected[field];
+}
+
+function assertExistingModelRunMatchesInput(
+  existing: ModelRunRecord,
+  expected: NormalizedBeginModelRunInput,
+  replayFields: ReadonlyArray<keyof NormalizedBeginModelRunInput>
+): void {
+  assertReplayHasIdempotencyDiscriminator(expected);
+  for (const field of replayFields) {
+    if (!replayFieldMatches(existing, expected, field)) {
+      throw new Error(`Model run already exists with different ${field}: ${existing.model_run_id}`);
+    }
+  }
+}
+
+function isDuplicateModelRunError(error: unknown): boolean {
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = (error as { code?: unknown }).code;
+    if (
+      code === 'SQLITE_CONSTRAINT' ||
+      code === 'SQLITE_CONSTRAINT_PRIMARYKEY' ||
+      code === 'SQLITE_CONSTRAINT_UNIQUE'
+    ) {
+      return true;
+    }
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return /UNIQUE constraint failed: model_runs\.model_run_id|PRIMARY KEY constraint failed/i.test(
+    message
+  );
+}
+
+function resolveExistingCommittedRun(
+  existing: ModelRunRecord,
+  summary: string | null,
+  tokenCount?: number
+): ModelRunRecord {
+  if (existing.status === 'committed') {
+    if (
+      existing.completion_summary === summary &&
+      (tokenCount === undefined || existing.token_count === tokenCount)
+    ) {
+      return existing;
+    }
+    if (tokenCount !== undefined && existing.token_count !== tokenCount) {
+      throw new Error(
+        `Model run already committed with different token_count: ${existing.model_run_id}`
+      );
+    }
+    throw new Error(
+      `Model run already committed with different completion_summary: ${existing.model_run_id}`
+    );
+  }
+  if (existing.status === 'failed') {
+    throw new Error(`Model run already failed: ${existing.model_run_id}`);
+  }
+  throw new Error(`Cannot commit model run in ${existing.status} status: ${existing.model_run_id}`);
+}
+
+function resolveExistingFailedRun(
+  existing: ModelRunRecord,
+  errorSummary: string | null,
+  tokenCount?: number
+): ModelRunRecord {
+  if (existing.status === 'failed') {
+    if (
+      existing.error_summary === errorSummary &&
+      (tokenCount === undefined || existing.token_count === tokenCount)
+    ) {
+      return existing;
+    }
+    if (tokenCount !== undefined && existing.token_count !== tokenCount) {
+      throw new Error(
+        `Model run already failed with different token_count: ${existing.model_run_id}`
+      );
+    }
+    throw new Error(
+      `Model run already failed with different error_summary: ${existing.model_run_id}`
+    );
+  }
+  if (existing.status === 'committed') {
+    throw new Error(`Model run already committed: ${existing.model_run_id}`);
+  }
+  throw new Error(`Cannot fail model run in ${existing.status} status: ${existing.model_run_id}`);
+}
+
+export function beginModelRun(adapter: ModelRunAdapter, input: BeginModelRunInput): ModelRunRecord {
+  const id = nullableString(input.model_run_id) ?? modelRunId();
+  const createdAt = normalizeTimestamp(input.created_at);
+  const status = normalizeBeginStatus(input.status, id);
+  const inputRefsJson = normalizeInputRefsJson(input);
+  const expected = normalizeBeginModelRunInput(id, input, createdAt, status, inputRefsJson);
+  const replayFields = replayFieldsForInput(input);
+
+  const existing = selectModelRun(adapter, id);
+  if (existing) {
+    assertExistingModelRunMatchesInput(existing, expected, replayFields);
+    return existing;
+  }
+
+  try {
+    adapter
+      .prepare(
+        `
+          INSERT INTO model_runs (
+            model_run_id, model_id, model_provider, prompt_version, tool_manifest_version,
+            output_schema_version, agent_id, instance_id, envelope_hash, parent_model_run_id,
+            input_snapshot_ref, input_refs_json, completion_summary, status, error_summary,
+            token_count, cost_estimate, created_at, completed_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `
+      )
+      .run(
+        id,
+        nullableString(input.model_id),
+        nullableString(input.model_provider),
+        nullableString(input.prompt_version),
+        nullableString(input.tool_manifest_version),
+        nullableString(input.output_schema_version),
+        nullableString(input.agent_id),
+        nullableString(input.instance_id),
+        nullableString(input.envelope_hash),
+        nullableString(input.parent_model_run_id),
+        nullableString(input.input_snapshot_ref),
+        inputRefsJson,
+        null,
+        status,
+        nullableString(input.error_summary),
+        normalizeNumber(input.token_count, 0),
+        normalizeCost(input.cost_estimate),
+        createdAt,
+        null
+      );
+  } catch (error) {
+    if (!isDuplicateModelRunError(error)) {
+      throw error;
+    }
+    const duplicate = selectModelRun(adapter, id);
+    if (duplicate) {
+      assertExistingModelRunMatchesInput(duplicate, expected, replayFields);
+      return duplicate;
+    }
+    throw error;
+  }
+
+  return requireModelRun(adapter, id);
+}
+
+export function commitModelRun(
+  adapter: ModelRunAdapter,
+  modelRunId: string,
+  summary?: string,
+  tokenCount?: number
+): ModelRunRecord {
+  const summaryValue = nullableString(summary);
+  const measuredTokens = requireTokenCount(tokenCount);
+  const existing = requireModelRun(adapter, modelRunId);
+  if (existing.status !== 'running') {
+    return resolveExistingCommittedRun(existing, summaryValue, measuredTokens);
+  }
+
+  const completedAt = Date.now();
+  const result = adapter
+    .prepare(
+      `
+        UPDATE model_runs
+        SET status = 'committed',
+            completion_summary = ?,
+            error_summary = NULL,
+            token_count = ?,
+            completed_at = ?
+        WHERE model_run_id = ? AND status = 'running'
+      `
+    )
+    .run(summaryValue, measuredTokens ?? existing.token_count, completedAt, modelRunId);
+
+  if (result.changes === 0) {
+    return resolveExistingCommittedRun(
+      requireModelRun(adapter, modelRunId),
+      summaryValue,
+      measuredTokens
+    );
+  }
+
+  return requireModelRun(adapter, modelRunId);
+}
+
+export function failModelRun(
+  adapter: ModelRunAdapter,
+  modelRunId: string,
+  errorSummary: string,
+  tokenCount?: number
+): ModelRunRecord {
+  const errorSummaryValue = nullableString(errorSummary);
+  const measuredTokens = requireTokenCount(tokenCount);
+  const existing = requireModelRun(adapter, modelRunId);
+  if (existing.status !== 'running') {
+    return resolveExistingFailedRun(existing, errorSummaryValue, measuredTokens);
+  }
+
+  const completedAt = Date.now();
+  const result = adapter
+    .prepare(
+      `
+        UPDATE model_runs
+        SET status = 'failed',
+            completion_summary = NULL,
+            error_summary = ?,
+            token_count = ?,
+            completed_at = ?
+        WHERE model_run_id = ? AND status = 'running'
+      `
+    )
+    .run(errorSummaryValue, measuredTokens ?? existing.token_count, completedAt, modelRunId);
+
+  if (result.changes === 0) {
+    return resolveExistingFailedRun(
+      requireModelRun(adapter, modelRunId),
+      errorSummaryValue,
+      measuredTokens
+    );
+  }
+
+  return requireModelRun(adapter, modelRunId);
+}
+
+export function getModelRun(adapter: ModelRunAdapter, modelRunId: string): ModelRunRecord | null {
+  return selectModelRun(adapter, modelRunId);
+}
+
+export interface ModelRunNativeInput {
+  inputId: number;
+  stimulusId: string;
+  kind: string;
+  principalId: string;
+  channelKey: string;
+  occurredAt: number;
+  status: string;
+  nativeState: string;
+}
+
+/** Read one run's native input cohort without copying payloads or inventing legacy principals. */
+export function listModelRunNativeInputs(
+  adapter: ModelRunAdapter,
+  modelRunId: string,
+  principalId: string,
+  options: { afterId?: number; limit?: number } = {}
+): { items: ModelRunNativeInput[]; nextCursor: number | null; runStatus: ModelRunStatus } {
+  requireString(principalId, 'principal_id');
+  const run = requireModelRun(adapter, modelRunId);
+  if (
+    run.input_refs?.principalId !== principalId ||
+    !(
+      (typeof run.input_refs.nativeInputId === 'string' && run.input_refs.nativeInputId.trim()) ||
+      (typeof run.input_refs.sourceMessageRef === 'string' &&
+        run.input_refs.sourceMessageRef.trim())
+    )
+  ) {
+    throw new Error('Model run has no matching principal-bound native input');
+  }
+  const afterId = options.afterId ?? 0;
+  const limit = options.limit ?? 25;
+  if (!Number.isSafeInteger(afterId) || afterId < 0) {
+    throw new Error('Model run native input cursor must be a non-negative integer');
+  }
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    throw new Error('Model run native input page limit must be 1 to 100');
+  }
+  const rows = adapter
+    .prepare(
+      `SELECT input_id, stimulus_id, kind, principal_id, channel_key,
+              occurred_at, status, native_state
+       FROM model_run_native_inputs
+       WHERE model_run_id=? AND principal_id=? AND input_id>?
+       ORDER BY input_id LIMIT ?`
+    )
+    .all(modelRunId, principalId, afterId, limit + 1) as Array<{
+    input_id: number;
+    stimulus_id: string;
+    kind: string;
+    principal_id: string;
+    channel_key: string;
+    occurred_at: number;
+    status: string;
+    native_state: string;
+  }>;
+  if (afterId === 0 && rows.length === 0) {
+    throw new Error('Model run has no accepted native turn receipt');
+  }
+  const page = rows.slice(0, limit);
+  return {
+    runStatus: run.status,
+    items: page.map((row) => ({
+      inputId: row.input_id,
+      stimulusId: row.stimulus_id,
+      kind: row.kind,
+      principalId: row.principal_id,
+      channelKey: row.channel_key,
+      occurredAt: row.occurred_at,
+      status: row.status,
+      nativeState: row.native_state,
+    })),
+    nextCursor: rows.length > limit ? page[page.length - 1].input_id : null,
+  };
+}

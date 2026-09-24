@@ -10,13 +10,13 @@
  * @module recall-decision
  */
 
-const mama = require('@jungjaehoon/mama-core/mama-api');
-
 /**
  * Create recall decision tool with dependencies
- * @param {Object} mamaApi - MAMA API instance
+ * @param {Object} deps - Injected dependencies
+ * @param {(action: string, input?: Object) => Promise<any>} deps.call -
+ *   Shared action-catalog caller
  */
-const createRecallDecisionTool = (mamaApi) => ({
+const createRecallDecisionTool = ({ call }) => ({
   name: 'recall_decision',
   description:
     'Recall exact-topic decision history without scopes, or semantic memory matches within supplied scopes. Explicit supersedes links are traversed; reusing a topic does not create a relationship.',
@@ -68,42 +68,40 @@ const createRecallDecisionTool = (mamaApi) => ({
         };
       }
 
-      if (scopes && scopes.length > 0) {
-        // Use v2 recallMemory for scope-aware semantic recall
-        const bundle = await mamaApi.recallMemory(topic, {
-          scopes,
-          includeHistory: true,
-        });
+      // One action reads the topic bundle; omitted scopes read the admitted
+      // corpus and explicit scopes must be a subset of it (bound server-side).
+      const bundle = await call('memory.read:topic', {
+        query: topic,
+        ...(scopes && scopes.length > 0 ? { scopes } : {}),
+      });
 
-        if (format === 'json') {
-          return { success: true, history: bundle, message: bundle };
-        }
-
-        const memories = bundle.memories || [];
-        let md = `🧠 **Recall: ${topic}** (${memories.length} results)\n\n`;
-        for (const m of memories) {
-          md += `### ${m.topic}\n`;
-          md += `${m.summary}\n`;
-          if (m.details && m.details !== m.summary) {
-            md += `> ${m.details}\n`;
-          }
-          md += `- Confidence: ${m.confidence} | Status: ${m.status}`;
-          if (m.event_date) {
-            md += ` | Event: ${m.event_date}`;
-          }
-          md += '\n\n';
-        }
-        return { success: true, history: md, message: md };
+      if (format === 'json') {
+        return { success: true, history: bundle, message: bundle };
       }
 
-      // Legacy path: topic-exact-match recall (no scopes)
-      const history = await mamaApi.recall(topic, { format });
-
-      return {
-        success: true,
-        history,
-        message: history,
-      };
+      const memories = bundle?.memories || [];
+      if (memories.length === 0) {
+        const empty = `❌ No decisions found for topic: ${topic}`;
+        return { success: true, history: empty, message: empty };
+      }
+      let md = `🧠 **Recall: ${topic}** (${memories.length} results)\n\n`;
+      for (const [index, m] of memories.entries()) {
+        const evolution = memories.length > 1 ? (index === 0 ? ' — latest' : ' — previous') : '';
+        md += `### ${m.topic}${evolution}\n`;
+        md += `${m.summary}\n`;
+        if (m.details && m.details !== m.summary) {
+          md += `> ${m.details}\n`;
+        }
+        md += `- Confidence: ${m.confidence} | Status: ${m.status}`;
+        if (m.outcome && m.outcome !== 'pending') {
+          md += ` | Outcome: ${m.outcome}`;
+        }
+        if (m.event_date) {
+          md += ` | Event: ${m.event_date}`;
+        }
+        md += '\n\n';
+      }
+      return { success: true, history: md, message: md };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
       return {
@@ -114,7 +112,4 @@ const createRecallDecisionTool = (mamaApi) => ({
   },
 });
 
-// Default instance with real dependency
-const recallDecisionTool = createRecallDecisionTool(mama);
-
-module.exports = { recallDecisionTool, createRecallDecisionTool };
+module.exports = { createRecallDecisionTool };

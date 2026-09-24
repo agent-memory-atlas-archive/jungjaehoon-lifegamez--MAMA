@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 
-import { getAdapter, initDB } from '../db-manager.js';
-import { getChannelSummary, upsertChannelSummaryInAdapter } from './channel-summary-store.js';
+import type { DatabaseAdapter } from '../db-manager.js';
+import { getChannelSummary, upsertChannelSummary } from './channel-summary-store.js';
 import { insertMemoryEventInTransaction } from './event-store.js';
 import { createAuditFinding } from './finding-store.js';
 import type { ChannelSummaryStateRecord, MemoryAuditAck, MemoryScopeRef } from './types.js';
@@ -184,10 +184,9 @@ function reduceState(
 }
 
 export async function getChannelSummaryState(
+  adapter: DatabaseAdapter,
   channelKey: string
 ): Promise<ChannelSummaryStateRecord | null> {
-  await initDB();
-  const adapter = getAdapter();
   const row = adapter
     .prepare(
       `
@@ -201,20 +200,21 @@ export async function getChannelSummaryState(
   return row ? deserializeState(row) : null;
 }
 
-export async function recordChannelAudit(input: {
-  channelKey: string;
-  turnId: string;
-  topic: string;
-  scopeRefs: MemoryScopeRef[];
-  ack: MemoryAuditAck;
-  savedMemories?: Array<{ id: string; topic: string; summary: string }>;
-}): Promise<{ eventIds: string[]; findingIds: string[]; state: ChannelSummaryStateRecord }> {
-  await initDB();
-  const adapter = getAdapter();
+export async function recordChannelAudit(
+  adapter: DatabaseAdapter,
+  input: {
+    channelKey: string;
+    turnId: string;
+    topic: string;
+    scopeRefs: MemoryScopeRef[];
+    ack: MemoryAuditAck;
+    savedMemories?: Array<{ id: string; topic: string; summary: string }>;
+  }
+): Promise<{ eventIds: string[]; findingIds: string[]; state: ChannelSummaryStateRecord }> {
   const timestamp = Date.now();
-  const legacySummary = await getChannelSummary(input.channelKey);
+  const legacySummary = await getChannelSummary(adapter, input.channelKey);
   const previous =
-    (await getChannelSummaryState(input.channelKey)) ??
+    (await getChannelSummaryState(adapter, input.channelKey)) ??
     (legacySummary
       ? createLegacySeedState(input.channelKey, legacySummary)
       : createEmptyState(input.channelKey));
@@ -289,7 +289,7 @@ export async function recordChannelAudit(input: {
         timestamp
       );
 
-    upsertChannelSummaryInAdapter(adapter, {
+    upsertChannelSummary(adapter, {
       channelKey: input.channelKey,
       summaryMarkdown: renderChannelSummaryMarkdown(state),
       deltaHash: state.state_hash,

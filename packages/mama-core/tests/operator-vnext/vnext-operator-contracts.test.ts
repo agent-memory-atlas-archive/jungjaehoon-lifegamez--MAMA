@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
-import { applyMigrationsThrough } from '../../src/test-utils.js';
+import { applyMigrationsThrough } from '../helpers/test-utils.js';
 
 function tableExists(db: Database.Database, name: string): boolean {
   const row = db

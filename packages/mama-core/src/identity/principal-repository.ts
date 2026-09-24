@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import type { DatabaseAdapter as DBManagerAdapter } from '../db-manager.js';
+import type { DatabaseAdapter } from '../db-manager.js';
 
 export interface PrincipalRow {
   principalId: string;
@@ -236,7 +236,7 @@ function mapPrincipal(row: PrincipalDatabaseRow): PrincipalRow {
 }
 
 export function createPrincipalRepository(
-  adapter: Pick<DBManagerAdapter, 'prepare' | 'transaction'>
+  adapter: Pick<DatabaseAdapter, 'prepare' | 'transaction'>
 ): PrincipalRepository {
   const resolveByExternalStatement = adapter.prepare(
     `SELECT p.principal_id, p.kind, p.status

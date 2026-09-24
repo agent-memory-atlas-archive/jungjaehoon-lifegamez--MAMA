@@ -1,14 +1,10 @@
-ALTER TABLE connector_event_index ADD COLUMN source_cursor TEXT;
-ALTER TABLE connector_event_index ADD COLUMN tenant_id TEXT;
-ALTER TABLE connector_event_index ADD COLUMN project_id TEXT;
-ALTER TABLE connector_event_index ADD COLUMN memory_scope_kind TEXT;
-ALTER TABLE connector_event_index ADD COLUMN memory_scope_id TEXT;
+-- Retired: this migration declared scope columns on the connector event index.
+--
+-- The index moved to the package that has connectors. Three of the four consumers
+-- of this core have none, and were running these statements against tables they
+-- never write. The schema is declared whole in standalone/db/migrations/001.
+--
+-- The file stays, and the number stays claimed: databases in the field recorded
+-- 34 as applied, and a number that comes back meaning something else is worse
+-- than a number that means nothing.
 
-CREATE INDEX IF NOT EXISTS idx_connector_event_scope
-  ON connector_event_index(tenant_id, project_id, memory_scope_kind, memory_scope_id);
-
-CREATE INDEX IF NOT EXISTS idx_connector_event_source_cursor
-  ON connector_event_index(source_connector, source_cursor);
-
-INSERT OR IGNORE INTO schema_version (version, description)
-VALUES (34, 'Add connector event scope columns');

@@ -16,7 +16,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { getAdapter } from '../db-manager.js';
+import type { DatabaseAdapter } from '../db-manager.js';
 import {
   REGISTRY_KINDS,
   type RegistryKind,
@@ -38,8 +38,12 @@ export class RegistryError extends Error {
   }
 }
 
-export function currentIdentityRevision(): number {
-  const row = adapter()
+type RegistryReadAdapter = Pick<DatabaseAdapter, 'prepare'>;
+
+type RegistryStoreAdapter = Pick<DatabaseAdapter, 'prepare' | 'transaction'>;
+
+export function currentIdentityRevision(adapter: RegistryReadAdapter): number {
+  const row = adapter
     .prepare('SELECT revision FROM registry_identity_state WHERE singleton = 1')
     .get() as { revision: number } | undefined;
   if (!row || !Number.isSafeInteger(row.revision) || row.revision < 0) {
@@ -48,9 +52,9 @@ export function currentIdentityRevision(): number {
   return row.revision;
 }
 
-export function rebuildRegistryProjections(): void {
-  const revision = currentIdentityRevision();
-  const row = adapter()
+export function rebuildRegistryProjections(adapter: RegistryReadAdapter): void {
+  const revision = currentIdentityRevision(adapter);
+  const row = adapter
     .prepare('SELECT MAX(committed_revision) AS revision FROM registry_corrections')
     .get() as { revision: number | null };
   if ((row.revision ?? 0) !== revision) {
@@ -81,17 +85,6 @@ export function normalizeAlias(value: string): string {
   return value.trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
-function adapter(): {
-  prepare(sql: string): {
-    run(...params: unknown[]): { changes: number };
-    get(...params: unknown[]): unknown;
-    all(...params: unknown[]): unknown[];
-  };
-  transaction<T>(fn: () => T): T;
-} {
-  return getAdapter() as never;
-}
-
 function toNode(row: NodeRow): RegistryNode {
   return {
     id: row.id,
@@ -112,15 +105,19 @@ function requireKind(kind: string): RegistryKind {
   return kind as RegistryKind;
 }
 
-function readNode(id: string): RegistryNode | null {
-  const row = adapter().prepare('SELECT * FROM registry_nodes WHERE id = ?').get(id) as
+function readNode(adapter: RegistryReadAdapter, id: string): RegistryNode | null {
+  const row = adapter.prepare('SELECT * FROM registry_nodes WHERE id = ?').get(id) as
     | NodeRow
     | undefined;
   return row ? toNode(row) : null;
 }
 
-function isNodeVisible(id: string, scopes?: readonly RegistryScopeRef[]): boolean {
-  const bindings = adapter()
+function isNodeVisible(
+  adapter: RegistryReadAdapter,
+  id: string,
+  scopes?: readonly RegistryScopeRef[]
+): boolean {
+  const bindings = adapter
     .prepare(
       'SELECT scope_kind AS kind, scope_id AS id FROM registry_scope_bindings WHERE node_id = ?'
     )
@@ -142,10 +139,10 @@ function isNodeVisible(id: string, scopes?: readonly RegistryScopeRef[]): boolea
  * Bounded: a cycle written by a bad merge would otherwise hang every lookup, so the walk
  * stops and reports rather than spinning.
  */
-function followMerges(id: string): RegistryNode | null {
-  let current = readNode(id);
+function followMerges(adapter: RegistryReadAdapter, id: string): RegistryNode | null {
+  let current = readNode(adapter, id);
   for (let hops = 0; current?.mergedInto && hops < 8; hops += 1) {
-    current = readNode(current.mergedInto);
+    current = readNode(adapter, current.mergedInto);
   }
   if (current?.mergedInto) {
     throw new RegistryError('merge_chain_too_long', `Merge chain from ${id} does not settle`);
@@ -159,6 +156,7 @@ function aliasScopes(scopes?: readonly RegistryScopeRef[]): readonly RegistrySco
 }
 
 function insertAlias(
+  adapter: RegistryReadAdapter,
   nodeId: string,
   kind: RegistryKind,
   alias: string,
@@ -170,7 +168,7 @@ function insertAlias(
     throw new RegistryError('empty_alias', 'An alias must contain at least one character');
   }
   for (const scope of aliasScopes(scopes)) {
-    const existing = adapter()
+    const existing = adapter
       .prepare(
         `SELECT node_id FROM registry_aliases
          WHERE kind = ? AND alias = ? AND scope_kind = ? AND scope_id = ?`
@@ -185,7 +183,7 @@ function insertAlias(
         `Alias "${alias}" is already registered in this scope.`
       );
     }
-    adapter()
+    adapter
       .prepare(
         `INSERT INTO registry_aliases
          (node_id, kind, alias, alias_display, scope_kind, scope_id, created_at)
@@ -195,15 +193,17 @@ function insertAlias(
   }
 }
 
-export function createNode(input: {
-  kind: RegistryKind | string;
-  name: string;
-  aliases?: readonly string[];
-  parentId?: string | null;
-  note?: string | null;
-  scopes?: readonly RegistryScopeRef[];
-}): string {
-  const db = adapter();
+export function createNode(
+  adapter: RegistryStoreAdapter,
+  input: {
+    kind: RegistryKind | string;
+    name: string;
+    aliases?: readonly string[];
+    parentId?: string | null;
+    note?: string | null;
+    scopes?: readonly RegistryScopeRef[];
+  }
+): string {
   const write = (): string => {
     const kind = requireKind(input.kind);
     const name = input.name.trim();
@@ -212,64 +212,70 @@ export function createNode(input: {
     }
     const id = `reg_${randomUUID().replace(/-/g, '').slice(0, 20)}`;
     const now = Date.now();
-    db.prepare(
-      `INSERT INTO registry_nodes (id, kind, name, parent_id, merged_into, merge_reason, note, created_at, updated_at)
+    adapter
+      .prepare(
+        `INSERT INTO registry_nodes (id, kind, name, parent_id, merged_into, merge_reason, note, created_at, updated_at)
        VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?)`
-    ).run(id, kind, name, input.parentId ?? null, input.note ?? null, now, now);
+      )
+      .run(id, kind, name, input.parentId ?? null, input.note ?? null, now, now);
     // The name is an alias too: asking for a node by the name it displays must work.
-    insertAlias(id, kind, name, now, input.scopes);
+    insertAlias(adapter, id, kind, name, now, input.scopes);
     for (const alias of input.aliases ?? []) {
-      insertAlias(id, kind, alias, now, input.scopes);
+      insertAlias(adapter, id, kind, alias, now, input.scopes);
     }
     for (const scope of input.scopes ?? []) {
       if (!scope.id.trim()) {
         throw new RegistryError('invalid_scope', 'Registry scope id must be nonblank');
       }
-      db.prepare(
-        `INSERT INTO registry_scope_bindings (node_id, scope_kind, scope_id)
+      adapter
+        .prepare(
+          `INSERT INTO registry_scope_bindings (node_id, scope_kind, scope_id)
            VALUES (?, ?, ?)`
-      ).run(id, scope.kind, scope.id);
+        )
+        .run(id, scope.kind, scope.id);
     }
     return id;
   };
-  return db.transaction(write);
+  return adapter.transaction(write);
 }
 
 export function addAliases(
+  adapter: RegistryStoreAdapter,
   nodeId: string,
   aliases: readonly string[],
   scopes?: readonly RegistryScopeRef[]
 ): void {
-  const db = adapter();
   const write = (): void => {
     if (scopes === undefined) {
       for (const alias of aliases) {
-        addAlias(nodeId, alias);
+        addAlias(adapter, nodeId, alias);
       }
       return;
     }
-    const node = readNode(nodeId);
+    const node = readNode(adapter, nodeId);
     if (!node || node.mergedInto) {
       throw new RegistryError('unknown_node', 'Registry node unavailable');
     }
     for (const alias of aliases) {
-      insertAlias(nodeId, node.kind, alias, Date.now(), scopes);
+      insertAlias(adapter, nodeId, node.kind, alias, Date.now(), scopes);
     }
   };
-  db.transaction(write);
+  adapter.transaction(write);
 }
 
-export function upsertNode(input: {
-  kind: RegistryKind | string;
-  name: string;
-  aliases?: readonly string[];
-  note?: string | null;
-  scopes?: readonly RegistryScopeRef[];
-  children?: ReadonlyArray<{ name: string; aliases?: readonly string[] }>;
-}): { id: string; created: boolean; children: string[] } {
-  const db = adapter();
+export function upsertNode(
+  adapter: RegistryStoreAdapter,
+  input: {
+    kind: RegistryKind | string;
+    name: string;
+    aliases?: readonly string[];
+    note?: string | null;
+    scopes?: readonly RegistryScopeRef[];
+    children?: ReadonlyArray<{ name: string; aliases?: readonly string[] }>;
+  }
+): { id: string; created: boolean; children: string[] } {
   const write = (): { id: string; created: boolean; children: string[] } => {
-    const existing = resolveAlias(input.name, input.kind, input.scopes);
+    const existing = resolveAlias(adapter, input.name, input.kind, input.scopes);
     if (existing) {
       if (input.children && input.children.length > 0) {
         throw new RegistryError(
@@ -277,13 +283,13 @@ export function upsertNode(input: {
           'Adding children to an existing node requires an explicit correction.'
         );
       }
-      addAliases(existing.id, input.aliases ?? [], input.scopes);
+      addAliases(adapter, existing.id, input.aliases ?? [], input.scopes);
       return { id: existing.id, created: false, children: [] };
     }
-    const id = createNode(input);
+    const id = createNode(adapter, input);
     const children =
       input.children && input.children.length > 0
-        ? splitNode({
+        ? splitNode(adapter, {
             parent: id,
             children: input.children,
             reason: input.note?.trim() || 'explicit parent declaration',
@@ -291,11 +297,11 @@ export function upsertNode(input: {
         : [];
     return { id, created: true, children };
   };
-  return db.transaction(write);
+  return adapter.transaction(write);
 }
 
-export function addAlias(nodeId: string, alias: string): void {
-  const node = readNode(nodeId);
+export function addAlias(adapter: RegistryReadAdapter, nodeId: string, alias: string): void {
+  const node = readNode(adapter, nodeId);
   if (!node) {
     throw new RegistryError('unknown_node', `No registry node ${nodeId}`);
   }
@@ -305,26 +311,27 @@ export function addAlias(nodeId: string, alias: string): void {
       `Node ${nodeId} was merged into ${node.mergedInto}; add the alias there`
     );
   }
-  const scopes = adapter()
+  const scopes = adapter
     .prepare(
       'SELECT scope_kind AS kind, scope_id AS id FROM registry_scope_bindings WHERE node_id = ?'
     )
     .all(nodeId) as RegistryScopeRef[];
-  insertAlias(nodeId, node.kind, alias, Date.now(), scopes);
+  insertAlias(adapter, nodeId, node.kind, alias, Date.now(), scopes);
 }
 
 /** The live node behind an id, following merges. Null when the id is unknown. */
-export function resolveNodeById(id: string): RegistryNode | null {
-  return followMerges(id);
+export function resolveNodeById(adapter: RegistryReadAdapter, id: string): RegistryNode | null {
+  return followMerges(adapter, id);
 }
 
 /** The node an alias names, following merges. `kind` narrows when the same word is both. */
 export function resolveAlias(
+  adapter: RegistryReadAdapter,
   alias: string,
   kind?: RegistryKind | string,
   scopes?: readonly RegistryScopeRef[]
 ): RegistryNode | null {
-  const candidates = resolveAliasCandidates(alias, { kind, scopes });
+  const candidates = resolveAliasCandidates(adapter, alias, { kind, scopes });
   if (candidates.length > 1) {
     throw new RegistryError('alias_ambiguous', 'Alias resolves to multiple visible nodes.');
   }
@@ -332,6 +339,7 @@ export function resolveAlias(
 }
 
 export function resolveAliasCandidates(
+  adapter: RegistryReadAdapter,
   alias: string,
   options?: { kind?: RegistryKind | string; scopes?: readonly RegistryScopeRef[] }
 ): RegistryNode[] {
@@ -344,7 +352,7 @@ export function resolveAliasCandidates(
       ? options.scopes
       : [{ kind: 'global' as const, id: '*' }];
   const whereKind = options?.kind ? 'kind = ? AND' : '';
-  const rows = adapter()
+  const rows = adapter
     .prepare(
       `SELECT node_id, alias_display FROM registry_aliases
        WHERE ${whereKind} alias = ?
@@ -359,11 +367,11 @@ export function resolveAliasCandidates(
     ) as Array<{ node_id: string; alias_display: string }>;
   const visible = rows
     .map((row) => {
-      const node = followMerges(row.node_id);
-      if (!node || !isNodeVisible(node.id, admitted)) {
+      const node = followMerges(adapter, row.node_id);
+      if (!node || !isNodeVisible(adapter, node.id, admitted)) {
         return null;
       }
-      const canonicalVisible = adapter()
+      const canonicalVisible = adapter
         .prepare(
           `SELECT 1 FROM registry_aliases
            WHERE node_id = ? AND alias = ?
@@ -383,12 +391,15 @@ export function resolveAliasCandidates(
   return unique;
 }
 
-export function listNodes(filter?: {
-  kind?: RegistryKind | string;
-  parentId?: string | null;
-  includeMerged?: boolean;
-  scopes?: readonly RegistryScopeRef[];
-}): RegistryNode[] {
+export function listNodes(
+  adapter: RegistryReadAdapter,
+  filter?: {
+    kind?: RegistryKind | string;
+    parentId?: string | null;
+    includeMerged?: boolean;
+    scopes?: readonly RegistryScopeRef[];
+  }
+): RegistryNode[] {
   const where: string[] = [];
   const params: unknown[] = [];
   if (filter?.kind) {
@@ -420,23 +431,22 @@ export function listNodes(filter?: {
   // rowid, not id: a split writes its children inside one millisecond, so `created_at`
   // alone would order them by random uuid and report the parts in the wrong order.
   const sql = `SELECT * FROM registry_nodes${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY created_at, rowid`;
-  return (
-    adapter()
-      .prepare(sql)
-      .all(...params) as NodeRow[]
-  ).map(toNode);
+  return (adapter.prepare(sql).all(...params) as NodeRow[]).map(toNode);
 }
 
 /**
  * Point one node's identity at another. The loser keeps its row as a tombstone so records
  * that still reference it resolve forward instead of dangling.
  */
-export function mergeNodes(input: { loser: string; survivor: string; reason: string }): void {
+export function mergeNodes(
+  adapter: RegistryStoreAdapter,
+  input: { loser: string; survivor: string; reason: string }
+): void {
   if (input.loser === input.survivor) {
     throw new RegistryError('merge_self', 'A node cannot merge into itself');
   }
-  const loser = readNode(input.loser);
-  const survivor = readNode(input.survivor);
+  const loser = readNode(adapter, input.loser);
+  const survivor = readNode(adapter, input.survivor);
   if (!loser) {
     throw new RegistryError('unknown_node', `No registry node ${input.loser}`);
   }
@@ -462,19 +472,21 @@ export function mergeNodes(input: { loser: string; survivor: string; reason: str
   const now = Date.now();
   // Aliases move rather than duplicate: (kind, alias) is unique, and the loser's rows are
   // exactly the spellings that must now reach the survivor.
-  const db = adapter();
-  db.transaction(() => {
-    db.prepare(
-      `INSERT OR IGNORE INTO registry_scope_bindings (node_id, scope_kind, scope_id)
+  adapter.transaction(() => {
+    adapter
+      .prepare(
+        `INSERT OR IGNORE INTO registry_scope_bindings (node_id, scope_kind, scope_id)
        SELECT ?, scope_kind, scope_id FROM registry_scope_bindings WHERE node_id = ?`
-    ).run(input.survivor, input.loser);
-    db.prepare('UPDATE registry_aliases SET node_id = ? WHERE node_id = ?').run(
-      input.survivor,
-      input.loser
-    );
-    db.prepare(
-      'UPDATE registry_nodes SET merged_into = ?, merge_reason = ?, updated_at = ? WHERE id = ?'
-    ).run(input.survivor, reason, now, input.loser);
+      )
+      .run(input.survivor, input.loser);
+    adapter
+      .prepare('UPDATE registry_aliases SET node_id = ? WHERE node_id = ?')
+      .run(input.survivor, input.loser);
+    adapter
+      .prepare(
+        'UPDATE registry_nodes SET merged_into = ?, merge_reason = ?, updated_at = ? WHERE id = ?'
+      )
+      .run(input.survivor, reason, now, input.loser);
   });
 }
 
@@ -484,14 +496,16 @@ export function mergeNodes(input: { loser: string; survivor: string; reason: str
  * Nothing is deleted: the parent stays resolvable by its own aliases, and existing records
  * keep pointing at it until someone decides which child they belong to.
  */
-export function splitNode(input: {
-  parent: string;
-  children: ReadonlyArray<{ name: string; aliases?: readonly string[] }>;
-  reason: string;
-}): string[] {
-  const db = adapter();
+export function splitNode(
+  adapter: RegistryStoreAdapter,
+  input: {
+    parent: string;
+    children: ReadonlyArray<{ name: string; aliases?: readonly string[] }>;
+    reason: string;
+  }
+): string[] {
   const write = (): string[] => {
-    const parent = readNode(input.parent);
+    const parent = readNode(adapter, input.parent);
     if (!parent) {
       throw new RegistryError('unknown_node', `No registry node ${input.parent}`);
     }
@@ -504,13 +518,13 @@ export function splitNode(input: {
     if (!input.reason.trim()) {
       throw new RegistryError('missing_reason', 'A split must record why');
     }
-    const parentScopes = adapter()
+    const parentScopes = adapter
       .prepare(
         'SELECT scope_kind AS kind, scope_id AS id FROM registry_scope_bindings WHERE node_id = ?'
       )
       .all(parent.id) as RegistryScopeRef[];
     return input.children.map((child) =>
-      createNode({
+      createNode(adapter, {
         kind: parent.kind,
         name: child.name,
         aliases: child.aliases,
@@ -520,5 +534,5 @@ export function splitNode(input: {
       })
     );
   };
-  return db.transaction(write);
+  return adapter.transaction(write);
 }

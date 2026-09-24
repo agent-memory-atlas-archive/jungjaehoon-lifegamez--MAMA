@@ -1,3 +1,4 @@
+import type { DatabaseAdapter } from '../db-manager.js';
 import { listRecentMemoryEvents } from './event-store.js';
 import { listOpenAuditFindings } from './finding-store.js';
 import { classifyProfileEntries } from './profile-builder.js';
@@ -13,17 +14,18 @@ interface BuildMemoryAgentBootstrapParams {
 }
 
 export async function buildMemoryAgentBootstrap(
+  adapter: DatabaseAdapter,
   params: BuildMemoryAgentBootstrapParams
 ): Promise<MemoryAgentBootstrap> {
   const [truthRows, findings, recentEvents, channelSummary] = await Promise.all([
-    queryRelevantTruth({
+    queryRelevantTruth(adapter, {
       query: '',
       scopes: params.scopes,
       includeHistory: false,
     }),
-    listOpenAuditFindings(),
-    listRecentMemoryEvents(10),
-    params.channelKey ? getChannelSummary(params.channelKey) : Promise.resolve(null),
+    listOpenAuditFindings(adapter),
+    listRecentMemoryEvents(adapter, 10),
+    params.channelKey ? getChannelSummary(adapter, params.channelKey) : Promise.resolve(null),
   ]);
 
   const scopedTruth = truthRows.filter((row) =>

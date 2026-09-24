@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { ingestConversation, ingestMemory } from '../../src/memory/api.js';
+import { getAdapter } from '../../src/db-manager.js';
 import fs from 'node:fs';
 
 const TEST_DB = '/tmp/test-memory-v2-extraction.db';
@@ -11,7 +12,7 @@ const TEST_DB = '/tmp/test-memory-v2-extraction.db';
  * extracted judgment.
  */
 describe('ingestConversation (source.ingest boundary)', () => {
-  beforeAll(() => {
+  beforeAll(async () => {
     [TEST_DB, `${TEST_DB}-journal`, `${TEST_DB}-wal`, `${TEST_DB}-shm`].forEach((file) => {
       try {
         fs.unlinkSync(file);
@@ -20,6 +21,8 @@ describe('ingestConversation (source.ingest boundary)', () => {
       }
     });
     process.env.MAMA_DB_PATH = TEST_DB;
+    const { initDB } = await import('../../src/db-manager.js');
+    await initDB();
   });
 
   afterAll(async () => {
@@ -45,7 +48,7 @@ describe('ingestConversation (source.ingest boundary)', () => {
       ).n,
       decisions: (adapter.prepare('SELECT COUNT(*) AS n FROM decisions').get() as { n: number }).n,
     };
-    const result = await ingestConversation({
+    const result = await ingestConversation(getAdapter(), {
       messages: [
         { role: 'user', content: 'I like using TypeScript.' },
         { role: 'assistant', content: 'TypeScript is great for type safety.' },
@@ -88,7 +91,7 @@ describe('ingestConversation (source.ingest boundary)', () => {
     };
 
     await expect(
-      ingestConversation({
+      ingestConversation(getAdapter(), {
         messages: [{ role: 'user', content: 'Some conversation content.' }],
         scopes: [],
         source: { package: 'mama-core', source_type: 'test' },
@@ -109,7 +112,7 @@ describe('ingestConversation (source.ingest boundary)', () => {
 
   it('rejects extract even when disabled', async () => {
     await expect(
-      ingestConversation({
+      ingestConversation(getAdapter(), {
         messages: [{ role: 'user', content: 'Some conversation content.' }],
         scopes: [],
         source: { package: 'mama-core', source_type: 'test' },
@@ -127,8 +130,8 @@ describe('ingestConversation (source.ingest boundary)', () => {
       scopes: [{ kind: 'project' as const, id: 'test:replay' }],
       source: { package: 'mama-core', source_type: 'test' },
     };
-    const first = await ingestConversation(input);
-    const second = await ingestConversation(input);
+    const first = await ingestConversation(getAdapter(), input);
+    const second = await ingestConversation(getAdapter(), input);
     expect(second.rawId).toBe(first.rawId);
   });
 
@@ -141,7 +144,7 @@ describe('ingestConversation (source.ingest boundary)', () => {
       ).n,
       decisions: (adapter.prepare('SELECT COUNT(*) AS n FROM decisions').get() as { n: number }).n,
     };
-    const result = await ingestMemory({
+    const result = await ingestMemory(getAdapter(), {
       content: 'Raw ingested evidence body.',
       scopes: [{ kind: 'project', id: 'test:ingest-memory' }],
       source: { package: 'mama-core', source_type: 'test' },
@@ -165,7 +168,7 @@ describe('ingestConversation (source.ingest boundary)', () => {
 
   it('should throw when messages array is empty', async () => {
     await expect(
-      ingestConversation({
+      ingestConversation(getAdapter(), {
         messages: [],
         scopes: [],
         source: { package: 'mama-core', source_type: 'test' },

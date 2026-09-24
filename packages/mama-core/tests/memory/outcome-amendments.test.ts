@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { getAdapter, updateDecisionOutcome } from '../../src/db-manager.js';
-import { cleanupTestDB, initTestDB } from '../../src/test-utils.js';
+import { cleanupTestDB, initTestDB } from '../helpers/test-utils.js';
 
 function seedDecision(id: string): void {
   getAdapter()

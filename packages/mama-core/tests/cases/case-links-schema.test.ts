@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
-import { applyMigrationsThrough } from '../../src/test-utils.js';
+import { applyMigrationsThrough } from '../helpers/test-utils.js';
 
 const MCP_MIGRATIONS_DIR = join(
   __dirname,

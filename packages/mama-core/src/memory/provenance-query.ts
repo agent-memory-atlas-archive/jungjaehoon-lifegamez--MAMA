@@ -1,4 +1,4 @@
-import { getAdapter, initDB } from '../db-manager.js';
+import type { DatabaseAdapter } from '../db-manager.js';
 import type { MemoryProvenanceRecord, MemoryScopeRef } from './types.js';
 import { listMemoryEventsForMemory } from './event-store.js';
 
@@ -20,11 +20,10 @@ type ProvenanceRow = {
 };
 
 export async function getMemoryProvenance(
+  adapter: DatabaseAdapter,
   memoryId: string,
   options: MemoryProvenanceQueryOptions = {}
 ): Promise<MemoryProvenanceRecord | null> {
-  await initDB();
-  const adapter = getAdapter();
   const row = adapter
     .prepare(
       `
@@ -36,42 +35,44 @@ export async function getMemoryProvenance(
     )
     .get(memoryId) as ProvenanceRow | undefined;
 
-  if (!row || !(await isVisibleMemory(row.id, options))) {
+  if (!row || !(await isVisibleMemory(adapter, row.id, options))) {
     return null;
   }
-  return toProvenanceRecord(row);
+  return toProvenanceRecord(adapter, row);
 }
 
 export async function listMemoriesByEnvelopeHash(
+  adapter: DatabaseAdapter,
   envelopeHash: string,
   options: MemoryProvenanceQueryOptions = {}
 ): Promise<MemoryProvenanceRecord[]> {
-  return listMemoriesByColumn('envelope_hash', envelopeHash, options);
+  return listMemoriesByColumn(adapter, 'envelope_hash', envelopeHash, options);
 }
 
 export async function listMemoriesByGatewayCallId(
+  adapter: DatabaseAdapter,
   gatewayCallId: string,
   options: MemoryProvenanceQueryOptions = {}
 ): Promise<MemoryProvenanceRecord[]> {
-  return listMemoriesByColumn('gateway_call_id', gatewayCallId, options);
+  return listMemoriesByColumn(adapter, 'gateway_call_id', gatewayCallId, options);
 }
 
 export async function listMemoriesByModelRunId(
+  adapter: DatabaseAdapter,
   modelRunId: string,
   options: MemoryProvenanceQueryOptions = {}
 ): Promise<MemoryProvenanceRecord[]> {
-  return listMemoriesByColumn('model_run_id', modelRunId, options);
+  return listMemoriesByColumn(adapter, 'model_run_id', modelRunId, options);
 }
 
 async function listMemoriesByColumn(
+  adapter: DatabaseAdapter,
   column: 'envelope_hash' | 'gateway_call_id' | 'model_run_id',
   value: string,
   options: MemoryProvenanceQueryOptions
 ): Promise<MemoryProvenanceRecord[]> {
-  await initDB();
-  const adapter = getAdapter();
   const limit = normalizeLimit(options.limit);
-  const visibility = buildVisibilityPredicate(options);
+  const visibility = buildVisibilityPredicate(adapter, options);
   const rows = adapter
     .prepare(
       `
@@ -87,13 +88,16 @@ async function listMemoriesByColumn(
 
   const records: MemoryProvenanceRecord[] = [];
   for (const row of rows) {
-    records.push(await toProvenanceRecord(row));
+    records.push(await toProvenanceRecord(adapter, row));
   }
 
   return records;
 }
 
-function buildVisibilityPredicate(options: MemoryProvenanceQueryOptions): {
+function buildVisibilityPredicate(
+  adapter: DatabaseAdapter,
+  options: MemoryProvenanceQueryOptions
+): {
   sql: string;
   params: string[];
 } {
@@ -101,7 +105,7 @@ function buildVisibilityPredicate(options: MemoryProvenanceQueryOptions): {
     return { sql: '', params: [] };
   }
 
-  const scopeIds = resolveMemoryScopeIds(options.scopes);
+  const scopeIds = resolveMemoryScopeIds(adapter, options.scopes);
   const legacyUnscopedPredicate = `
           NOT EXISTS (
             SELECT 1
@@ -142,10 +146,10 @@ function hasScopeFilter(
   return Array.isArray(options.scopes) && options.scopes.length > 0;
 }
 
-function resolveMemoryScopeIds(scopes: MemoryScopeRef[]): string[] {
+function resolveMemoryScopeIds(adapter: DatabaseAdapter, scopes: MemoryScopeRef[]): string[] {
   const scopeIds: string[] = [];
   for (const scope of scopes) {
-    const scopeId = resolveMemoryScopeId(scope.kind, scope.id);
+    const scopeId = resolveMemoryScopeId(adapter, scope.kind, scope.id);
     if (scopeId) {
       scopeIds.push(scopeId);
     }
@@ -153,8 +157,11 @@ function resolveMemoryScopeIds(scopes: MemoryScopeRef[]): string[] {
   return scopeIds;
 }
 
-async function toProvenanceRecord(row: ProvenanceRow): Promise<MemoryProvenanceRecord> {
-  const events = await listMemoryEventsForMemory(row.id);
+async function toProvenanceRecord(
+  adapter: DatabaseAdapter,
+  row: ProvenanceRow
+): Promise<MemoryProvenanceRecord> {
+  const events = await listMemoryEventsForMemory(adapter, row.id);
   return {
     memory_id: row.id,
     agent_id: row.agent_id,
@@ -168,6 +175,7 @@ async function toProvenanceRecord(row: ProvenanceRow): Promise<MemoryProvenanceR
 }
 
 async function isVisibleMemory(
+  adapter: DatabaseAdapter,
   memoryId: string,
   options: MemoryProvenanceQueryOptions
 ): Promise<boolean> {
@@ -175,9 +183,7 @@ async function isVisibleMemory(
     return true;
   }
 
-  await initDB();
-  const adapter = getAdapter();
-  const scopeIds = resolveMemoryScopeIds(options.scopes);
+  const scopeIds = resolveMemoryScopeIds(adapter, options.scopes);
 
   const bindingCount = adapter
     .prepare(
@@ -211,8 +217,11 @@ async function isVisibleMemory(
   return row?.visible === 1;
 }
 
-function resolveMemoryScopeId(kind: string, externalId: string): string | null {
-  const adapter = getAdapter();
+function resolveMemoryScopeId(
+  adapter: DatabaseAdapter,
+  kind: string,
+  externalId: string
+): string | null {
   const row = adapter
     .prepare(
       `

@@ -1,9 +1,26 @@
 import crypto from 'node:crypto';
 import { canonicalizeJSON } from '../canonicalize.js';
-import { initDB, getAdapter, ensureMemoryScopeInAdapter } from '../db-manager.js';
+import { ensureMemoryScope } from '../db-manager.js';
+import type { DatabaseAdapter } from '../db-manager.js';
+import { appendOutcomeAmendment } from './write-adapters.js';
+import { formatList, formatContext } from '../decision-formatter.js';
+import { warn as logWarn } from '../debug-logger.js';
+import type { TextCompletion } from '../runtime/text-completion.js';
+import { queryDecisionGraph, querySemanticEdges } from '../knowledge/graph-query.js';
+import {
+  rollUpSearchHits,
+  type SearchRollupLeafHit,
+  type SearchRollupResult,
+} from '../knowledge/case-search-rollup.js';
+import { isSearchRankerEnabled, rescoreSearchResults } from '../knowledge/ranker-rescore.js';
+import { SEARCH_RANKER_FEATURE_SET_VERSION } from '../knowledge/ranker-features.js';
+import type { SearchQualityOptions } from '../knowledge/search-quality.js';
+import type { SemanticEdgeItem } from '../db-manager.js';
+import type { DecisionRecord } from '../db-manager.js';
+import type { DatabaseInstance } from '../db-manager.js';
 import { vectorSearch, fts5Search } from '../knowledge/search.js';
 import type { DecisionInput } from '../db-manager.js';
-import { generateEmbedding } from '../embeddings.js';
+import { generateEmbedding } from '../embedding/embedder.js';
 import { appendJudgment, judgmentRecordId, ingestSource } from '../knowledge/index.js';
 import type { JudgmentCommand, JudgmentReceipt, JsonValue } from './judgment-types.js';
 import {
@@ -23,7 +40,7 @@ import { getChannelSummary, upsertChannelSummary } from './channel-summary-store
 import {
   normalizeSearchQualityOptions,
   type SearchHitDiagnostics,
-} from '../search/search-quality.js';
+} from '../knowledge/search-quality.js';
 import type {
   MemoryKind,
   MemoryAgentBootstrap,
@@ -47,8 +64,10 @@ import {
   sanitizePublicIngestConversationInput,
   sanitizePublicIngestMemoryInput,
   sanitizePublicSaveMemoryInput,
-  type TrustedMemoryWriteOptions,
+  type NormalizedMemoryProvenance,
 } from './provenance.js';
+import { JudgmentError, type JudgmentAccess } from '../knowledge/judgments.js';
+import type { ActionSessionFacts } from '../action-contracts.js';
 import { validateRecordIdentityReferences } from '../registry/record-identity.js';
 
 type SaveMemoryInput = PublicSaveMemoryInput;
@@ -131,11 +150,12 @@ function toMemoryRecord(
       typeof row.event_datetime === 'number' && Number.isFinite(row.event_datetime)
         ? row.event_datetime
         : null,
+    outcome: (row.outcome as string | null) ?? null,
   };
 }
 
 function batchLoadScopes(
-  adapter: ReturnType<typeof getAdapter>,
+  adapter: DatabaseInstance,
   memoryIds: string[]
 ): Map<string, MemoryScopeRef[]> {
   const scopeMap = new Map<string, MemoryScopeRef[]>();
@@ -162,9 +182,10 @@ function batchLoadScopes(
   return scopeMap;
 }
 
-async function loadScopedMemories(scopes: MemoryScopeRef[]): Promise<MemoryRecord[]> {
-  await initDB();
-  const adapter = getAdapter();
+async function loadScopedMemories(
+  adapter: DatabaseInstance,
+  scopes: MemoryScopeRef[]
+): Promise<MemoryRecord[]> {
   const fallbackSource: SaveMemoryInput['source'] = { package: 'mama-core', source_type: 'db' };
 
   let rows: Record<string, unknown>[];
@@ -174,7 +195,7 @@ async function loadScopedMemories(scopes: MemoryScopeRef[]): Promise<MemoryRecor
       .prepare(
         `
           SELECT id, topic, decision, reasoning, confidence, created_at, updated_at, trust_context,
-                 kind, status, summary, event_date, event_datetime
+                 kind, status, summary, event_date, event_datetime, outcome
           FROM decisions
           ORDER BY COALESCE(event_datetime, created_at) DESC, created_at DESC
         `
@@ -182,14 +203,15 @@ async function loadScopedMemories(scopes: MemoryScopeRef[]): Promise<MemoryRecor
       .all() as Record<string, unknown>[];
   } else {
     const scopeIds = await Promise.all(
-      scopes.map((scope) => ensureMemoryScopeInAdapter(adapter, scope.kind, scope.id))
+      scopes.map((scope) => ensureMemoryScope(adapter, scope.kind, scope.id))
     );
     const placeholders = scopeIds.map(() => '?').join(', ');
     rows = adapter
       .prepare(
         `
           SELECT DISTINCT d.id, d.topic, d.decision, d.reasoning, d.confidence, d.created_at,
-                 d.updated_at, d.trust_context, d.kind, d.status, d.summary, d.event_date, d.event_datetime
+                 d.updated_at, d.trust_context, d.kind, d.status, d.summary, d.event_date, d.event_datetime,
+                 d.outcome
           FROM decisions d
           JOIN memory_scope_bindings msb ON msb.memory_id = d.id
           WHERE msb.scope_id IN (${placeholders})
@@ -350,12 +372,32 @@ function buildLexicalCandidates(
       return { memory: record, score };
     })
     .filter((candidate) => candidate.score > 0)
-    .sort((left, right) => {
-      if (right.score !== left.score) {
-        return right.score - left.score;
-      }
-      return Number(right.memory.created_at) - Number(left.memory.created_at);
-    });
+    .sort(compareLexicalCandidates);
+}
+
+function lexicalEventTime(record: MemoryRecord): number {
+  if (typeof record.event_datetime === 'number' && Number.isFinite(record.event_datetime)) {
+    return record.event_datetime;
+  }
+  const numericCreated = Number(record.created_at);
+  if (Number.isFinite(numericCreated)) {
+    return numericCreated;
+  }
+  const parsedCreated = Date.parse(String(record.created_at));
+  return Number.isFinite(parsedCreated) ? parsedCreated : 0;
+}
+
+function compareLexicalCandidates(
+  left: { memory: MemoryRecord; score: number },
+  right: { memory: MemoryRecord; score: number }
+): number {
+  // Relevance wins; equally relevant history follows event time, not import or
+  // commit order. FTS rowid order is not an event-time judgment.
+  return (
+    right.score - left.score ||
+    lexicalEventTime(right.memory) - lexicalEventTime(left.memory) ||
+    left.memory.id.localeCompare(right.memory.id)
+  );
 }
 
 function lexicalScoreToConfidence(score: number): number {
@@ -425,10 +467,11 @@ function _mergeRecallCandidates(
     .map((candidate) => candidate.memory);
 }
 
-export async function loadEdgesForIds(ids: string[]): Promise<MemoryEdge[]> {
+export async function loadEdgesForIds(
+  adapter: DatabaseInstance,
+  ids: string[]
+): Promise<MemoryEdge[]> {
   if (ids.length === 0) return [];
-  await initDB();
-  const adapter = getAdapter();
   const placeholders = ids.map(() => '?').join(', ');
   const rows = adapter
     .prepare(
@@ -458,34 +501,28 @@ type SaveMemoryResult = {
 };
 
 async function saveMemoryInternal(
+  adapter: DatabaseInstance,
   input: SaveMemoryInput,
-  options?: TrustedMemoryWriteOptions,
-  legacy?: LegacyMemoryPersistence
+  provenance: NormalizedMemoryProvenance,
+  access: JudgmentAccess,
+  trustedEnvelope: boolean,
+  legacy?: LegacyMemoryPersistence,
+  commandIdOverride?: string
 ): Promise<SaveMemoryResult> {
-  await initDB();
-  const adapter = getAdapter();
-
-  const provenance = normalizeMemoryWriteProvenance(options);
   const targetStatus = input.status ?? 'active';
   const requestedScopes = input.scopes ?? [];
-  const trustedEnvelope = options?.authoritativeScopes !== undefined;
-  const access = writeAccessForProvenance(
-    provenance,
-    requestedScopes,
-    options?.authoritativeScopes
-  );
 
   const eventDateTime = typeof input.eventDateTime === 'number' ? input.eventDateTime : null;
 
   // Fail before any write: identity references and relationship targets are
   // checked against the same admitted scopes the command will carry.
-  validateRecordIdentityReferences({
+  validateRecordIdentityReferences(adapter, {
     itemId: input.itemId,
     actors: input.actors,
     scopes: input.scopes,
   });
 
-  const commandId = `save:${buildDecisionId(input.topic)}`;
+  const commandId = commandIdOverride ?? `save:${buildDecisionId(input.topic)}`;
   const recordId = judgmentRecordId(commandId);
 
   // Relationships are persisted only when the caller names their target ids
@@ -511,6 +548,14 @@ async function saveMemoryInternal(
     explicitRelationships,
     { trusted: trustedEnvelope }
   );
+  const authoredLinks = [...links, ...(input.links ?? [])];
+  const authoredReplacements = [...replaces, ...(input.replaces ?? [])];
+  const allSupersedeTargets = [
+    ...new Set([
+      ...supersedeTargets,
+      ...(input.replaces ?? []).map((replacement) => replacement.id),
+    ]),
+  ];
 
   const embeddingDecision: DecisionInput = {
     id: recordId,
@@ -541,8 +586,8 @@ async function saveMemoryInternal(
     envelopeHash: provenance.envelope_hash,
     gatewayCallId: provenance.gateway_call_id,
     scopes: [...requestedScopes],
-    links,
-    replaces,
+    links: authoredLinks,
+    replaces: authoredReplacements,
     record: {
       kind: input.kind,
       status: targetStatus,
@@ -560,7 +605,7 @@ async function saveMemoryInternal(
     },
     projections: {
       decisionEdges,
-      ...(supersedeTargets.length > 0 ? { supersedeTargets } : {}),
+      ...(allSupersedeTargets.length > 0 ? { supersedeTargets: allSupersedeTargets } : {}),
       ...(input.itemId !== undefined || input.actors !== undefined
         ? {
             recordIdentity: { itemId: input.itemId ?? null, actors: input.actors ?? [] },
@@ -590,32 +635,117 @@ async function saveMemoryInternal(
   };
 }
 
-export async function saveMemory(input: SaveMemoryInput): Promise<SaveMemoryResult> {
-  return saveMemoryInternal(sanitizePublicSaveMemoryInput(input));
+export async function saveMemory(
+  adapter: DatabaseInstance,
+  input: SaveMemoryInput
+): Promise<SaveMemoryResult> {
+  const clean = sanitizePublicSaveMemoryInput(input);
+  const provenance = normalizeMemoryWriteProvenance();
+  const access = writeAccessForProvenance(provenance, clean.scopes ?? []);
+  return saveMemoryInternal(adapter, clean, provenance, access, false);
 }
 
-export async function saveMemoryWithTrustedProvenance(
+/**
+ * The unified `memory.save` action path. Access IS the call authority — the
+ * command's scopes are checked against it inside `appendJudgment`, and the
+ * record's provenance is composed from it plus the session facts the host
+ * attests (never from caller input). `commandId` is the caller's operationId,
+ * so a retried call replays the original receipt.
+ */
+export async function saveJudgmentRecord(
+  adapter: DatabaseInstance,
   input: SaveMemoryInput,
-  options: TrustedMemoryWriteOptions
+  access: JudgmentAccess,
+  commandId: string,
+  session?: ActionSessionFacts
 ): Promise<SaveMemoryResult> {
-  return saveMemoryInternal(sanitizePublicSaveMemoryInput(input), options);
+  // An omitted scope request writes under the full admitted scopes — the same
+  // default the gateway's trusted path applied via the context packet.
+  const clean = sanitizePublicSaveMemoryInput({
+    ...input,
+    scopes: input.scopes ?? access.scopes,
+  });
+  const provenance = normalizeMemoryWriteProvenance({
+    actor: session?.actor ?? 'main_agent',
+    agent_id: access.agentId,
+    model_run_id: session?.modelRunId,
+    envelope_hash: session?.envelopeHash,
+    tool_name: session?.toolName,
+    gateway_call_id: session?.gatewayCallId,
+    context_packet_id: session?.contextPacketId,
+    source_turn_id: session?.sourceTurnId,
+    source_message_ref: session?.sourceMessageRef,
+    source_refs: session?.sourceRefs ? [...session.sourceRefs] : undefined,
+  });
+  return saveMemoryInternal(adapter, clean, provenance, access, true, undefined, commandId);
+}
+
+/**
+ * The read-side scope rule for memory actions — the same bound `appendJudgment`
+ * applies to writes. An omitted request reads under the full admitted scopes;
+ * an explicit request must be a subset of them. An empty admitted set admits an
+ * empty corpus: a caller with no scopes can see no scoped record (reads never
+ * fall back to an unbounded scan — the legacy `scopes: []` = read-all behavior
+ * is exactly what this bound removes).
+ */
+export function boundReadScopesFor(
+  access: JudgmentAccess,
+  requested?: MemoryScopeRef[]
+): MemoryScopeRef[] {
+  const readable = [...access.scopes, ...(access.readScopes ?? [])];
+  const effective = requested ?? readable;
+  const admitted = new Set(readable.map((scope) => `${scope.kind}${scope.id}`));
+  const seen = new Set<string>();
+  return effective.map((scope) => {
+    if (
+      typeof scope !== 'object' ||
+      scope === null ||
+      typeof scope.kind !== 'string' ||
+      scope.kind.trim().length === 0 ||
+      typeof scope.id !== 'string' ||
+      scope.id.trim().length === 0
+    ) {
+      throw new JudgmentError('INVALID_SCOPE', 'scope kind is invalid');
+    }
+    const key = `${scope.kind}${scope.id}`;
+    if (seen.has(key)) {
+      throw new JudgmentError('INVALID_SCOPE', 'Read scopes must be unique');
+    }
+    seen.add(key);
+    if (!admitted.has(key)) {
+      throw new JudgmentError('SCOPE_DENIED', 'Read scope is outside the admitted access');
+    }
+    return scope;
+  });
 }
 
 export async function saveLegacyMemory(
+  adapter: DatabaseInstance,
   input: SaveMemoryInput,
   legacy: LegacyMemoryPersistence,
-  options?: TrustedMemoryWriteOptions
+  access?: JudgmentAccess
 ): Promise<SaveMemoryResult> {
-  return saveMemoryInternal(sanitizePublicSaveMemoryInput(input), options, legacy);
+  const clean = sanitizePublicSaveMemoryInput(input);
+  const provenance = normalizeMemoryWriteProvenance();
+  const effectiveAccess = access ?? writeAccessForProvenance(provenance, clean.scopes ?? []);
+  return saveMemoryInternal(
+    adapter,
+    clean,
+    provenance,
+    effectiveAccess,
+    access !== undefined,
+    legacy
+  );
 }
 
-export async function promoteMemoryStatus(input: {
-  memoryId: string;
-  status: MemoryStatus;
-  nowMs?: number;
-}): Promise<void> {
-  await initDB();
-  const adapter = getAdapter();
+export async function promoteMemoryStatus(
+  adapter: DatabaseInstance,
+  input: {
+    memoryId: string;
+    status: MemoryStatus;
+    nowMs?: number;
+  }
+): Promise<void> {
   const memoryId = input.memoryId;
   const now = input.nowMs ?? Date.now();
   const targetStatus = input.status;
@@ -653,7 +783,7 @@ export async function promoteMemoryStatus(input: {
     const primaryScope = scopes[0] ?? null;
     let existingCandidates: Array<{ id: string; topic: string; summary: string; kind: string }>;
     if (primaryScope) {
-      const scopeId = ensureMemoryScopeInAdapter(adapter, primaryScope.kind, primaryScope.id);
+      const scopeId = ensureMemoryScope(adapter, primaryScope.kind, primaryScope.id);
       existingCandidates = adapter
         .prepare(
           `
@@ -824,8 +954,11 @@ export async function promoteMemoryStatus(input: {
   await appendJudgment(command, unsignedWriteAccess(scopes), { adapter });
 }
 
-export async function buildProfile(scopes: MemoryScopeRef[]): Promise<ProfileSnapshot> {
-  const records = await loadScopedMemories(scopes);
+export async function buildProfile(
+  adapter: DatabaseInstance,
+  scopes: MemoryScopeRef[]
+): Promise<ProfileSnapshot> {
+  const records = await loadScopedMemories(adapter, scopes);
   return classifyProfileEntries(records);
 }
 
@@ -837,6 +970,7 @@ const EXCLUDED_STATUSES: Set<string> = new Set([
 ]);
 
 export async function recallMemory(
+  adapter: DatabaseInstance,
   query: string,
   options: RecallMemoryOptions = {}
 ): Promise<RecallBundle> {
@@ -862,7 +996,7 @@ export async function recallMemory(
   let _lexicalRecords: MemoryRecord[] | null = null;
   const loadLexical = async () => {
     if (_lexicalRecords === null) {
-      _lexicalRecords = await loadScopedMemories(options.scopes ?? []);
+      _lexicalRecords = await loadScopedMemories(adapter, options.scopes ?? []);
     }
     return _lexicalRecords;
   };
@@ -890,10 +1024,9 @@ export async function recallMemory(
   }
 
   // Hybrid search: vector + BM25/lexical in parallel, fused with RRF
-  await initDB();
   // One adapter for the whole retrieval: generateEmbedding yields, and a reset
-  // between two getAdapter() calls would fuse candidates from two databases.
-  const searchAdapter = getAdapter();
+  // between two adapter lookups would fuse candidates from two databases.
+  const searchAdapter = adapter;
 
   // Channel 1: Vector search (semantic similarity) — run all sub-queries
   const vectorMatched: MemoryRecord[] = [];
@@ -919,7 +1052,7 @@ export async function recallMemory(
       let vectorScopeMap = new Map<string, MemoryScopeRef[]>();
       if (options.scopes && options.scopes.length > 0) {
         const vectorIds = vectorResults.map((r) => String(r.id));
-        vectorScopeMap = batchLoadScopes(getAdapter(), vectorIds);
+        vectorScopeMap = batchLoadScopes(adapter, vectorIds);
         const requestedScopes = new Set(options.scopes.map((s) => `${s.kind}:${s.id}`));
         filtered = vectorResults.filter((r) => {
           const scopes = vectorScopeMap.get(String(r.id)) ?? [];
@@ -950,6 +1083,7 @@ export async function recallMemory(
           updated_at: result.created_at ?? Date.now(),
           event_date: result.event_date ?? null,
           event_datetime: result.event_datetime ?? null,
+          outcome: (result.outcome as string | null) ?? null,
         });
         diagnostics.candidate_counts.vector += 1;
         if (typeof result.similarity === 'number' && Number.isFinite(result.similarity)) {
@@ -1049,7 +1183,7 @@ export async function recallMemory(
           const row = adapter
             .prepare(
               `SELECT id, topic, decision, reasoning, confidence, created_at, updated_at,
-                    trust_context, kind, status, summary, event_date, event_datetime
+                    trust_context, kind, status, summary, event_date, event_datetime, outcome
              FROM decisions WHERE id = ?`
             )
             .get(ftsRow.id) as Record<string, unknown> | undefined;
@@ -1099,7 +1233,7 @@ export async function recallMemory(
       for (const candidate of lexicalCandidates) {
         candidate.score += topicAffinityBoost(candidate.memory.topic, boostTokens, boostQuery);
       }
-      lexicalCandidates.sort((left, right) => right.score - left.score);
+      lexicalCandidates.sort(compareLexicalCandidates);
     }
 
     // Fallback: in-memory lexical if FTS5 returned nothing
@@ -1108,7 +1242,7 @@ export async function recallMemory(
 
       if (options.scopes && options.scopes.length > 0) {
         const lexicalIds = lexicalRecords.map((r) => r.id);
-        const scopeMap = batchLoadScopes(getAdapter(), lexicalIds);
+        const scopeMap = batchLoadScopes(adapter, lexicalIds);
         const requestedScopes = new Set(options.scopes.map((s) => `${s.kind}:${s.id}`));
         lexicalRecords = lexicalRecords.filter((r) => {
           const scopes = scopeMap.get(r.id) ?? [];
@@ -1134,7 +1268,7 @@ export async function recallMemory(
             }
           }
         }
-        lexicalCandidates.sort((a, b) => b.score - a.score);
+        lexicalCandidates.sort(compareLexicalCandidates);
       }
     }
   } // end needsLexical
@@ -1337,7 +1471,6 @@ export async function recallMemory(
   // the last survives as "active" — the earlier ones become superseded and are
   // excluded from search.  This recovers their key information so it is not lost.
   if (matched.length > 0) {
-    const adapter = getAdapter();
     const stmtChain = adapter.prepare(
       `SELECT id, summary, decision FROM decisions WHERE superseded_by = ?`
     );
@@ -1401,7 +1534,6 @@ export async function recallMemory(
       // Re-filter expanded results: apply status and scope checks
       if (!options.includeHistory) {
         expandedOnly = expandedOnly.filter((e) => {
-          const adapter = getAdapter();
           const row = adapter.prepare(`SELECT status FROM decisions WHERE id = ?`).get(e.id) as
             | { status?: string }
             | undefined;
@@ -1411,7 +1543,7 @@ export async function recallMemory(
       }
       if (options.scopes && options.scopes.length > 0) {
         const expandedIds = expandedOnly.map((e) => e.id);
-        expandedScopeMap = batchLoadScopes(getAdapter(), expandedIds);
+        expandedScopeMap = batchLoadScopes(adapter, expandedIds);
         const requestedScopes = new Set(options.scopes.map((s) => `${s.kind}:${s.id}`));
         expandedOnly = expandedOnly.filter((e) => {
           const scopes = expandedScopeMap.get(e.id) ?? [];
@@ -1479,7 +1611,7 @@ export async function recallMemory(
       // never point at nodes that never made it into the graph payload.
       const acceptedExpandedIds = bundle.graph_context.expanded.map((record) => record.id);
       const allIds = [...matched.map((m) => m.id), ...acceptedExpandedIds];
-      const allEdges = await loadEdgesForIds(allIds);
+      const allEdges = await loadEdgesForIds(adapter, allIds);
 
       // Filter out edges pointing to decisions with excluded statuses
       const activeIds = new Set(allIds);
@@ -1487,7 +1619,6 @@ export async function recallMemory(
         (e) => !activeIds.has(e.to_id) || !activeIds.has(e.from_id)
       );
       if (edgesToCheck.length > 0) {
-        const adapter = getAdapter();
         const checkIds = [
           ...new Set(
             edgesToCheck.flatMap((e) => [e.from_id, e.to_id]).filter((id) => !activeIds.has(id))
@@ -1519,26 +1650,22 @@ export async function recallMemory(
   }
 
   if (options.includeProfile) {
-    bundle.profile = await buildProfile(options.scopes ?? []);
+    bundle.profile = await buildProfile(adapter, options.scopes ?? []);
   }
 
   return bundle;
 }
 
 async function ingestMemoryInternal(
-  input: IngestMemoryInput,
-  options?: TrustedMemoryWriteOptions
+  adapter: DatabaseInstance,
+  input: IngestMemoryInput
 ): Promise<{ success: boolean; id: string }> {
   // Raw evidence goes through source.ingest: exactly one immutable observation
   // per request, no judgment row, no extraction.
   const normalized = input.content;
-  const provenance = normalizeMemoryWriteProvenance(options);
+  const provenance = normalizeMemoryWriteProvenance();
   const requestedScopes = input.scopes ?? [];
-  const access = writeAccessForProvenance(
-    provenance,
-    requestedScopes,
-    options?.authoritativeScopes
-  );
+  const access = writeAccessForProvenance(provenance, requestedScopes);
   const commandId = `source:${crypto
     .createHash('sha256')
     .update(
@@ -1580,55 +1707,56 @@ async function ingestMemoryInternal(
         reason: 'ingest memory',
       },
     },
-    access
+    access,
+    { adapter }
   );
   return { success: true, id: receipt.observationId };
 }
 
 export async function ingestMemory(
+  adapter: DatabaseInstance,
   input: IngestMemoryInput
 ): Promise<{ success: boolean; id: string }> {
-  return ingestMemoryInternal(sanitizePublicIngestMemoryInput(input));
-}
-
-export async function ingestWithTrustedProvenance(
-  input: IngestMemoryInput,
-  options: TrustedMemoryWriteOptions
-): Promise<{ success: boolean; id: string }> {
-  return ingestMemoryInternal(sanitizePublicIngestMemoryInput(input), options);
+  return ingestMemoryInternal(adapter, sanitizePublicIngestMemoryInput(input));
 }
 
 export async function evolveMemory(input: Parameters<typeof resolveMemoryEvolution>[0]) {
   return resolveMemoryEvolution(input);
 }
 
-export async function buildMemoryBootstrap(params: {
-  scopes: MemoryScopeRef[];
-  channelKey?: string;
-  currentGoal?: string;
-  mainAgentState?: MemoryAgentBootstrap['main_agent_state'];
-}): Promise<MemoryAgentBootstrap> {
-  return buildMemoryAgentBootstrap(params);
+export async function buildMemoryBootstrap(
+  adapter: DatabaseInstance,
+  params: {
+    scopes: MemoryScopeRef[];
+    channelKey?: string;
+    currentGoal?: string;
+    mainAgentState?: MemoryAgentBootstrap['main_agent_state'];
+  }
+): Promise<MemoryAgentBootstrap> {
+  return buildMemoryAgentBootstrap(adapter, params);
 }
 
 export function createAuditAck(input: MemoryAuditAck): MemoryAuditAck {
   return createMemoryAuditAck(input);
 }
 
-export async function recordMemoryAudit(input: {
-  channelKey: string;
-  turnId: string;
-  topic: string;
-  scopeRefs: MemoryScopeRef[];
-  ack: MemoryAuditAck;
-  savedMemories?: Array<{ id: string; topic: string; summary: string }>;
-}) {
-  return recordChannelAudit(input);
+export async function recordMemoryAudit(
+  adapter: DatabaseInstance,
+  input: {
+    channelKey: string;
+    turnId: string;
+    topic: string;
+    scopeRefs: MemoryScopeRef[];
+    ack: MemoryAuditAck;
+    savedMemories?: Array<{ id: string; topic: string; summary: string }>;
+  }
+) {
+  return recordChannelAudit(adapter, input);
 }
 
 async function ingestConversationInternal(
-  input: IngestConversationInput,
-  options?: TrustedMemoryWriteOptions
+  adapter: DatabaseInstance,
+  input: IngestConversationInput
 ): Promise<IngestConversationResult> {
   if (!input.messages || input.messages.length === 0) {
     throw new Error('messages array must not be empty');
@@ -1647,13 +1775,9 @@ async function ingestConversationInternal(
   const topicPrefix = input.topicPrefix || '';
   const body = topicPrefix ? `${topicPrefix}${conversationText}` : conversationText;
 
-  const provenance = normalizeMemoryWriteProvenance(options);
+  const provenance = normalizeMemoryWriteProvenance();
   const requestedScopes = input.scopes ?? [];
-  const access = writeAccessForProvenance(
-    provenance,
-    requestedScopes,
-    options?.authoritativeScopes
-  );
+  const access = writeAccessForProvenance(provenance, requestedScopes);
   // No observedAt in the command: it must hash identically on a retry so the
   // same commandId replays its stored receipt instead of conflicting.
   const commandId = `source-conv:${crypto
@@ -1693,23 +1817,1491 @@ async function ingestConversationInternal(
         reason: 'ingest conversation',
       },
     },
-    access
+    access,
+    { adapter }
   );
 
   return { rawId: receipt.observationId, extractedMemories: [] };
 }
 
 export async function ingestConversation(
+  adapter: DatabaseInstance,
   input: IngestConversationInput
 ): Promise<IngestConversationResult> {
-  return ingestConversationInternal(sanitizePublicIngestConversationInput(input));
-}
-
-export async function ingestConversationWithTrustedProvenance(
-  input: IngestConversationInput,
-  options: TrustedMemoryWriteOptions
-): Promise<IngestConversationResult> {
-  return ingestConversationInternal(sanitizePublicIngestConversationInput(input), options);
+  return ingestConversationInternal(adapter, sanitizePublicIngestConversationInput(input));
 }
 
 export { upsertChannelSummary, getChannelSummary };
+
+// ── Adapter-bound reads and writes the catalog actions call ─────────────────
+//
+// These were `mama-api.ts`'s, beside an ambient-handle facade for callers who
+// did not hold a database. The catalog holds one and calls these directly, so
+// they live with the rest of the memory API. What stays in `mama-api.ts` is the
+// facade and the formatting the CLI still uses (W22).
+
+function numberOrNull(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return null;
+  }
+  return value;
+}
+
+function resultRecord(result: SearchRollupResult): Record<string, unknown> {
+  if (
+    typeof result.record === 'object' &&
+    result.record !== null &&
+    !Array.isArray(result.record)
+  ) {
+    return result.record as Record<string, unknown>;
+  }
+  return {};
+}
+
+function stringOrNull(value: unknown): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return String(value);
+}
+
+function confidenceValue(record: Record<string, unknown>, fallback: number): number {
+  const numeric = numberOrNull(record.confidence);
+  if (numeric !== null) {
+    return numeric;
+  }
+
+  switch (record.confidence) {
+    case 'high':
+      return 0.9;
+    case 'medium':
+      return 0.6;
+    case 'low':
+      return 0.3;
+    default:
+      return fallback;
+  }
+}
+
+/**
+ * Expand search results with graph context (Phase 1 - Graph-Enhanced Retrieval)
+ *
+ * For each candidate decision:
+ * 1. Add supersedes chain (evolution history)
+ * 2. Add semantic edges (refines, contradicts)
+ * 3. Deduplicate by ID
+ * 4. Re-rank by relevance (primary candidates ranked higher)
+ *
+ * @param {Array} candidates - Initial search results from vector/keyword search
+ * @returns {Promise<Array>} Graph-enhanced results with evolution context
+ */
+export interface SearchCandidate {
+  id: string;
+  topic: string;
+  decision: string;
+  reasoning?: string | null;
+  confidence?: number;
+  similarity?: number;
+  created_at?: number | string;
+  graph_source?: string;
+  graph_rank?: number;
+  related_to?: string | null;
+  edge_reason?: string | null;
+  recency_score?: number;
+  recency_age_days?: number;
+  final_score?: number;
+  outcome?: string | null;
+  failure_reason?: string | null;
+  is_static?: number;
+}
+
+export async function expandWithGraphInAdapter(
+  adapter: DatabaseAdapter,
+  candidates: SearchCandidate[]
+): Promise<SearchCandidate[]> {
+  const graphEnhanced = new Map<string, SearchCandidate>(); // Use Map for deduplication by ID
+  const primaryIds = new Set(candidates.map((c: SearchCandidate) => c.id)); // Track primary candidates
+
+  // Process each candidate
+  for (const candidate of candidates) {
+    // Add primary candidate with higher rank
+    if (!graphEnhanced.has(candidate.id)) {
+      graphEnhanced.set(candidate.id, {
+        ...candidate,
+        graph_source: 'primary', // Mark as primary result
+        graph_rank: 1.0, // Highest rank
+      });
+    }
+
+    // 1. Add supersedes chain (evolution history)
+    try {
+      const chain = await queryDecisionGraph(adapter, candidate.topic, candidate.id);
+      for (const decision of chain) {
+        if (!graphEnhanced.has(decision.id)) {
+          graphEnhanced.set(decision.id, {
+            ...decision,
+            graph_source: 'supersedes_chain',
+            graph_rank: 0.8, // Lower rank than primary
+            similarity: (candidate.similarity ?? 0) * 0.9, // Inherit similarity, slightly reduced
+            related_to: candidate.id, // Track relationship
+          });
+        }
+      }
+    } catch (error: unknown) {
+      logWarn(
+        `Failed to get supersedes chain for ${candidate.topic}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+
+    // 2. Add semantic edges (refines, contradicts, builds_on, debates, synthesizes)
+    try {
+      const rawEdges = (await querySemanticEdges(adapter, [candidate.id])) || {};
+      const edges = {
+        refines: rawEdges.refines || [],
+        refined_by: rawEdges.refined_by || [],
+        contradicts: rawEdges.contradicts || [],
+        contradicted_by: rawEdges.contradicted_by || [],
+        builds_on: rawEdges.builds_on || [],
+        built_on_by: rawEdges.built_on_by || [],
+        debates: rawEdges.debates || [],
+        debated_by: rawEdges.debated_by || [],
+        synthesizes: rawEdges.synthesizes || [],
+        synthesized_by: rawEdges.synthesized_by || [],
+      };
+
+      // Helper to add edge to graph
+      const addEdge = (
+        edge: SemanticEdgeItem,
+        idField: 'to_id' | 'from_id',
+        source: string,
+        rank: number,
+        simFactor: number
+      ): void => {
+        const id = edge[idField];
+        if (!graphEnhanced.has(id)) {
+          graphEnhanced.set(id, {
+            id: id,
+            topic: edge.topic,
+            decision: edge.decision,
+            confidence: edge.confidence,
+            created_at: edge.created_at,
+            graph_source: source,
+            graph_rank: rank,
+            similarity: (candidate.similarity ?? 0) * simFactor,
+            related_to: candidate.id,
+            edge_reason: edge.reason,
+          });
+        }
+      };
+
+      // Add refines edges
+      for (const edge of edges.refines) {
+        addEdge(edge, 'to_id', 'refines', 0.7, 0.85);
+      }
+
+      // Add refined_by edges
+      for (const edge of edges.refined_by) {
+        addEdge(edge, 'from_id', 'refined_by', 0.7, 0.85);
+      }
+
+      // Add contradicts edges (lower rank, but still relevant)
+      for (const edge of edges.contradicts) {
+        addEdge(edge, 'to_id', 'contradicts', 0.6, 0.8);
+      }
+
+      // Story 2.1: Add builds_on edges (high relevance - extending prior work)
+      for (const edge of edges.builds_on) {
+        addEdge(edge, 'to_id', 'builds_on', 0.75, 0.9);
+      }
+
+      // Add built_on_by edges (someone built on this decision)
+      for (const edge of edges.built_on_by) {
+        addEdge(edge, 'from_id', 'built_on_by', 0.75, 0.9);
+      }
+
+      // Add debates edges (alternative view)
+      for (const edge of edges.debates) {
+        addEdge(edge, 'to_id', 'debates', 0.65, 0.85);
+      }
+
+      // Add debated_by edges
+      for (const edge of edges.debated_by) {
+        addEdge(edge, 'from_id', 'debated_by', 0.65, 0.85);
+      }
+
+      // Add synthesizes edges (unified approach)
+      for (const edge of edges.synthesizes) {
+        addEdge(edge, 'to_id', 'synthesizes', 0.7, 0.88);
+      }
+
+      // Add synthesized_by edges
+      for (const edge of edges.synthesized_by) {
+        addEdge(edge, 'from_id', 'synthesized_by', 0.7, 0.88);
+      }
+    } catch (error: unknown) {
+      logWarn(
+        `Failed to get semantic edges for ${candidate.id}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
+  // 3. Convert Map to Array
+  const allResults = Array.from(graphEnhanced.values());
+
+  // 4. Sort: Interleave expanded results after their related primary
+  // This ensures edge-connected decisions appear near their source
+  const primaryResults = allResults
+    .filter((r) => primaryIds.has(r.id))
+    .sort((a, b) => {
+      const scoreA = a.final_score || a.similarity || 0;
+      const scoreB = b.final_score || b.similarity || 0;
+      return scoreB - scoreA;
+    });
+
+  const expandedResults = allResults.filter((r) => !primaryIds.has(r.id));
+
+  // Build final results: each primary followed by its related expanded results
+  const results = [];
+  for (const primary of primaryResults) {
+    results.push(primary);
+
+    // Find expanded results related to this primary
+    const relatedExpanded = expandedResults.filter((e) => e.related_to === primary.id);
+
+    // Sort related by graph_rank (higher first)
+    relatedExpanded.sort((a, b) => (b.graph_rank || 0) - (a.graph_rank || 0));
+
+    // Add related expanded results right after their primary
+    results.push(...relatedExpanded);
+  }
+
+  // Add any orphaned expanded results (shouldn't happen, but safety net)
+  const includedIds = new Set(results.map((r) => r.id));
+  const orphaned = expandedResults.filter((e) => !includedIds.has(e.id));
+  results.push(...orphaned);
+
+  return results;
+}
+
+/**
+ * Apply Gaussian Decay recency boosting (Elasticsearch-style)
+ * Allows Claude to dynamically adjust search strategy based on results
+ *
+ * @param {Array} results - Search results with similarity scores
+ * @param {Object} options - Recency boosting options
+ * @returns {Array} Results with recency-boosted final scores
+ */
+interface RecencyBoostOptions {
+  recencyWeight?: number;
+  recencyScale?: number;
+  recencyDecay?: number;
+  disableRecency?: boolean;
+}
+
+function applyRecencyBoost(
+  results: SearchCandidate[],
+  options: RecencyBoostOptions = {}
+): SearchCandidate[] {
+  const {
+    recencyWeight = 0.3,
+    recencyScale = 7,
+    recencyDecay = 0.5,
+    disableRecency = false,
+  } = options;
+
+  if (disableRecency || recencyWeight === 0) {
+    return results;
+  }
+
+  const now = Date.now(); // Current timestamp in milliseconds
+
+  return results
+    .map((r: SearchCandidate) => {
+      // created_at is stored in milliseconds in the database
+      const createdAt =
+        typeof r.created_at === 'number' ? r.created_at : Date.parse(r.created_at || '0');
+      const ageInDays = (now - createdAt) / (86400 * 1000);
+
+      // Gaussian Decay: exp(-((age / scale)^2) / (2 * ln(1 / decay)))
+      // At scale days: score = decay (e.g., 7 days = 50%)
+      const gaussianDecay = Math.exp(
+        -Math.pow(ageInDays / recencyScale, 2) / (2 * Math.log(1 / recencyDecay))
+      );
+
+      // Combine semantic similarity with recency
+      const similarity = r.similarity ?? 0;
+      const finalScore = similarity * (1 - recencyWeight) + gaussianDecay * recencyWeight;
+
+      return {
+        ...r,
+        recency_score: gaussianDecay,
+        recency_age_days: Math.round(ageInDays * 10) / 10,
+        final_score: finalScore,
+      };
+    })
+    .sort((a: SearchCandidate, b: SearchCandidate) => (b.final_score ?? 0) - (a.final_score ?? 0));
+}
+
+/**
+ * Suggest relevant decisions based on user question
+ *
+ * DEFAULT: Returns JSON object with search results (LLM-first design)
+ * OPTIONAL: Returns Markdown string if format='markdown' (for human display)
+ *
+ * Simplified: Direct vector search without LLM intent analysis
+ * Works with short queries, long questions, Korean/English
+ *
+ * @param {string} userQuestion - User's question or intent
+ * @param {Object} options - Search options
+ * @param {string} [options.format='json'] - Output format: 'json' (default) or 'markdown'
+ * @param {number} [options.limit=5] - Max results to return
+ * @param {number} [options.threshold=0.6] - Minimum similarity (adaptive by query length)
+ * @param {boolean} [options.useReranking=false] - Use LLM re-ranking (optional, slower)
+ * @returns {Promise<Object|string|null>} Search results as JSON or Markdown, null if no results
+ *
+ * @example
+ * // LLM usage (default)
+ * const data = await mama.suggest('Why did we choose JWT?');
+ * // → { query, results: [...], meta: {...} }
+ *
+ * // Human display
+ * const markdown = await mama.suggest('mesh optimization', { format: 'markdown' });
+ * // → "💡 MAMA found 3 related topics:\n1. ..."
+ */
+export interface SuggestFunctionOptions extends SearchQualityOptions {
+  format?: 'json' | 'markdown';
+  limit?: number;
+  useReranking?: boolean;
+  /** Phase 3 Task 33: apply learned offline ranker rescoring. */
+  rerankWithLearned?: boolean;
+  recencyWeight?: number;
+  recencyScale?: number;
+  recencyDecay?: number;
+  scopes?: Array<{ kind: string; id: string }>;
+  /**
+   * The model this runtime opened, when `useReranking` asks for one. This
+   * module used to open its own (a local Ollama endpoint), which decided for
+   * every host installing the library; the host states it now (§2.1).
+   */
+  runner?: TextCompletion;
+}
+
+/** Phase 3 Task 33: learned-ranker meta attached to mama.suggest response. */
+function buildRankerMeta(
+  applied: boolean,
+  modelId: string | null,
+  skippedReason?: string
+): Record<string, unknown> {
+  const meta: Record<string, unknown> = {
+    model_id: modelId,
+    feature_set_version: SEARCH_RANKER_FEATURE_SET_VERSION,
+    applied,
+    mode: 'offline',
+  };
+  if (skippedReason) {
+    meta.skipped_reason = skippedReason;
+  }
+  return meta;
+}
+
+function mapRolledUpResult(result: SearchRollupResult) {
+  const record = resultRecord(result);
+  const retrievalDiagnostics = result.retrieval_diagnostics;
+  const topic = stringOrNull(record.topic ?? record.title) ?? result.source_id;
+  // For wiki_page leaves, prefer the markdown body (`content`) in `decision` so
+  // downstream consumers see the meaningful body rather than the short title.
+  // Decision/checkpoint records use their own fields (summary/decision).
+  const isWikiPageLeaf = result.source_type === 'wiki_page';
+  const decision = isWikiPageLeaf
+    ? (stringOrNull(record.content ?? record.summary ?? record.decision ?? record.title) ??
+      result.source_id)
+    : (stringOrNull(record.summary ?? record.decision ?? record.title ?? record.content) ??
+      result.source_id);
+  const reasoning =
+    stringOrNull(record.details ?? record.reasoning ?? record.status_reason ?? record.content) ??
+    '';
+
+  return {
+    id: result.source_id,
+    topic,
+    decision,
+    reasoning,
+    confidence: confidenceValue(record, result.score),
+    // NOT similarity. `result.score` is normalized Reciprocal Rank Fusion
+    // (RRF_K = 60, divided by the top hit), so the second result scores 61/62
+    // and the third 61/63 whatever they say -- rank, not likeness. Mirroring it
+    // into `similarity` made every save warn "High similarity (98%)" against
+    // something unrelated, which teaches the reader to ignore the check. The
+    // rollup path already says this and returns null; this one now agrees.
+    similarity: null,
+    retrieval_score: result.score,
+    created_at: record.created_at ?? null,
+    event_date: record.event_date ?? null,
+    event_datetime: record.event_datetime ?? null,
+    graph_source: retrievalDiagnostics?.graph_source ?? 'primary',
+    graph_rank: 1,
+    related_to: null,
+    edge_reason: null,
+    case_id: result.case_id,
+    source_type: result.source_type,
+    contributing_leaves: result.contributing_leaves ?? null,
+    ...(result.contributing_leaf_diagnostics
+      ? { contributing_leaf_diagnostics: result.contributing_leaf_diagnostics }
+      : {}),
+    ...(retrievalDiagnostics ? { retrieval_diagnostics: retrievalDiagnostics } : {}),
+  };
+}
+
+export async function suggestInAdapter(
+  adapter: DatabaseInstance,
+  userQuestion: string,
+  options: SuggestFunctionOptions = {}
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Promise<any> {
+  if (!userQuestion || typeof userQuestion !== 'string') {
+    throw new Error('mama.suggest() requires userQuestion (string)');
+  }
+
+  const {
+    format = 'json',
+    limit = 5,
+    threshold,
+    useReranking = false,
+    rerankWithLearned = false,
+    // Recency boosting parameters (Gaussian Decay - Elasticsearch style)
+    recencyWeight = 0.3, // 0-1: How much to weight recency (0.3 = 70% semantic, 30% recency)
+    recencyScale = 7, // Days until recency score drops to 50%
+    recencyDecay = 0.5, // Score at scale point (0.5 = 50%)
+    disableRecency = false, // Set true to disable recency boosting entirely
+    strict,
+    strictness,
+    includeRelated,
+    minLexicalSupport,
+    diagnostics: includeDiagnostics,
+  } = options;
+  const normalizedSearchOptions = normalizeSearchQualityOptions({
+    threshold,
+    strict,
+    strictness,
+    disableRecency,
+    includeRelated,
+    topicPrefix: options.topicPrefix,
+    minLexicalSupport,
+    diagnostics: includeDiagnostics,
+  });
+  const memoryV2QualityContractRequested =
+    threshold !== undefined ||
+    strict !== undefined ||
+    strictness !== undefined ||
+    includeRelated !== undefined ||
+    minLexicalSupport !== undefined ||
+    includeDiagnostics === true ||
+    options.topicPrefix !== undefined ||
+    options.scopes !== undefined;
+  const rerankPoolLimit = rerankWithLearned ? Math.max(limit * 4, limit + 5) : limit;
+
+  try {
+    // `recallMemoryInAdapter` was mama-api's alias for this file's own
+    // `recallMemory`. Inside it, the function has its name.
+    const bundle = await recallMemory(adapter, userQuestion, {
+      includeProfile: false,
+      topicPrefix: options.topicPrefix,
+      limit: rerankPoolLimit,
+      threshold,
+      strict,
+      strictness,
+      disableRecency,
+      includeRelated,
+      minLexicalSupport,
+      diagnostics: includeDiagnostics,
+      ...(options.scopes && { scopes: options.scopes }),
+    });
+    const diagnosticsByMemoryId = new Map(
+      bundle.memories
+        .filter((memory) => memory.retrieval_diagnostics)
+        .map((memory) => [memory.id, memory.retrieval_diagnostics as SearchHitDiagnostics])
+    );
+    const rawFusedHits = (bundle as { fused_hits?: SearchRollupLeafHit[] }).fused_hits ?? [];
+    const fusedHits = rawFusedHits.map((hit) => {
+      if (hit.source_type !== 'decision') {
+        return hit;
+      }
+
+      const recordDiagnostics =
+        typeof hit.record === 'object' && hit.record !== null && !Array.isArray(hit.record)
+          ? (hit.record as { retrieval_diagnostics?: SearchHitDiagnostics }).retrieval_diagnostics
+          : undefined;
+      const retrievalDiagnostics = diagnosticsByMemoryId.get(hit.source_id) ?? recordDiagnostics;
+      if (!retrievalDiagnostics) {
+        return hit;
+      }
+
+      const record =
+        typeof hit.record === 'object' && hit.record !== null && !Array.isArray(hit.record)
+          ? { ...hit.record, retrieval_diagnostics: retrievalDiagnostics }
+          : hit.record;
+      return {
+        ...hit,
+        record,
+        retrieval_diagnostics: retrievalDiagnostics,
+      };
+    });
+    const rolledUp = fusedHits.length > 0 ? rollUpSearchHits({ fusedHits, adapter }) : [];
+    const diagnosticsResponse =
+      includeDiagnostics === true ? { diagnostics: bundle.search_meta.diagnostics ?? null } : {};
+
+    // Phase 3 Task 33: compute base ranker meta once so every return path
+    // (rolledUp, memories fallback, vector-search fallback) can attach it.
+    // rerankWithLearned-driven rescoring still only applies to result arrays
+    // that match the ranker's expected shape (id + source_type + case_id).
+    const baseRankerMeta = useReranking
+      ? buildRankerMeta(false, null, 'llm_reranking_requested')
+      : rerankWithLearned
+        ? null // marker: rescoring requested, actual meta set per-path after rescore
+        : buildRankerMeta(false, null, 'feature_disabled');
+
+    const applyLearnedRanker = <
+      T extends {
+        id: string;
+        source_type?: string;
+        case_id?: string | null;
+        retrieval_score?: number | null;
+        final_score?: number | null;
+      },
+    >(
+      results: T[]
+    ): { results: T[]; meta: Record<string, unknown> } => {
+      if (baseRankerMeta !== null) {
+        return { results, meta: baseRankerMeta };
+      }
+      // Phase 3 Task 33: the caller opted in via rerankWithLearned, but the
+      // runtime `search_ranker_enabled` gate still has final say. This lets
+      // operators disable the learned ranker globally during rollback without
+      // touching any caller code.
+      let runtimeEnabled = true;
+      try {
+        runtimeEnabled = isSearchRankerEnabled(adapter as never);
+      } catch (err) {
+        logWarn(`[mama.suggest] isSearchRankerEnabled check failed: ${String(err)}`);
+      }
+      if (!runtimeEnabled) {
+        return { results, meta: buildRankerMeta(false, null, 'feature_disabled') };
+      }
+      try {
+        const rescored = rescoreSearchResults(adapter as never, {
+          query: userQuestion,
+          results,
+        });
+        return {
+          results: rescored.results as T[],
+          meta: buildRankerMeta(
+            rescored.skipped_reason === undefined,
+            rescored.model_id,
+            rescored.skipped_reason
+          ),
+        };
+      } catch (err) {
+        logWarn(`[mama.suggest] learned-ranker rescore failed: ${String(err)}`);
+        return { results, meta: buildRankerMeta(false, null, 'rescore_error') };
+      }
+    };
+
+    const summarizeGraphExpansion = <
+      T extends {
+        graph_source?: string | null;
+      },
+    >(
+      rows: T[]
+    ) => {
+      const sources = {
+        primary: 0,
+        supersedes_chain: 0,
+        refines: 0,
+        refined_by: 0,
+        contradicts: 0,
+      };
+
+      let expandedCount = 0;
+      for (const row of rows) {
+        const graphSource = row.graph_source ?? 'primary';
+        if (graphSource === 'primary') {
+          sources.primary += 1;
+          continue;
+        }
+
+        expandedCount += 1;
+        if (graphSource in sources) {
+          const key = graphSource as keyof typeof sources;
+          sources[key] += 1;
+        }
+      }
+
+      return {
+        total_results: rows.length,
+        primary_count: sources.primary,
+        expanded_count: expandedCount,
+        sources,
+      };
+    };
+
+    if (rolledUp.length > 0) {
+      const filteredResults = rolledUp.slice(0, rerankPoolLimit);
+      const { results: mappedResults, meta: rankerMeta } = applyLearnedRanker(
+        filteredResults.map(mapRolledUpResult)
+      );
+      const limitedResults = mappedResults.slice(0, limit);
+
+      if (format === 'markdown') {
+        const context = limitedResults
+          .map(
+            (result, index) =>
+              `${index + 1}. [${result.topic}] ${result.decision}\n   ${result.reasoning}`
+          )
+          .join('\n');
+        return `🔍 Search method: memory_v2\n${context}`;
+      }
+
+      return {
+        query: userQuestion,
+        results: limitedResults,
+        ...diagnosticsResponse,
+        meta: {
+          count: limitedResults.length,
+          search_method: 'memory_v2',
+          threshold: normalizedSearchOptions.threshold,
+          recency_boost: disableRecency
+            ? null
+            : {
+                weight: recencyWeight,
+                scale: recencyScale,
+                decay: recencyDecay,
+              },
+          graph_expansion: summarizeGraphExpansion(limitedResults),
+          ranker: rankerMeta,
+        },
+      };
+    }
+
+    if (bundle.memories.length > 0) {
+      // recallMemory uses RRF fusion — confidence is overwritten with the normalized
+      // retrieval score (0-1 range, where 1.0 = best match in this result set).
+      // The original stored confidence is lost after RRF normalization.
+      // We capture the retrieval score separately so `similarity` reflects search
+      // relevance while `confidence` is passed through as-is from the bundle.
+      const filteredMemories = bundle.memories.slice(0, rerankPoolLimit);
+      const baseRows = filteredMemories.map((memory) => ({
+        id: memory.id,
+        topic: memory.topic,
+        decision: memory.summary,
+        reasoning: memory.details,
+        confidence: memory.confidence,
+        // recallMemory currently normalizes fused retrieval rank into `confidence`.
+        // Keep that value visible as retrieval_score, but do not pretend it is
+        // semantic similarity; save-time warning logic keys off `similarity`.
+        similarity: null,
+        retrieval_score: memory.confidence ?? null,
+        final_score: memory.confidence ?? null,
+        created_at: memory.created_at,
+        event_date: memory.event_date ?? null,
+        event_datetime: memory.event_datetime ?? null,
+        graph_source: memory.retrieval_diagnostics?.graph_source ?? 'primary',
+        graph_rank: 1,
+        related_to: null,
+        edge_reason: null,
+        case_id: null as string | null,
+        source_type:
+          memory.kind ??
+          memory.source?.source_type ??
+          (memory as { source_type?: string; type?: string }).source_type ??
+          (memory as { type?: string }).type ??
+          'decision',
+        ...(memory.retrieval_diagnostics
+          ? { retrieval_diagnostics: memory.retrieval_diagnostics }
+          : {}),
+      }));
+      const { results: rankedRows, meta: rankerMeta } = applyLearnedRanker(baseRows);
+      const limitedRows = rankedRows.slice(0, limit);
+
+      if (format === 'markdown') {
+        const context = limitedRows
+          .map((row, index) => `${index + 1}. [${row.topic}] ${row.decision}\n   ${row.reasoning}`)
+          .join('\n');
+        return `🔍 Search method: memory_v2\n${context}`;
+      }
+
+      return {
+        query: userQuestion,
+        results: limitedRows,
+        ...diagnosticsResponse,
+        meta: {
+          count: limitedRows.length,
+          search_method: 'memory_v2',
+          threshold: normalizedSearchOptions.threshold,
+          recency_boost: disableRecency
+            ? null
+            : {
+                weight: recencyWeight,
+                scale: recencyScale,
+                decay: recencyDecay,
+              },
+          graph_expansion: summarizeGraphExpansion(limitedRows),
+          ranker: rankerMeta,
+        },
+      };
+    }
+
+    if (memoryV2QualityContractRequested) {
+      const emptyRows: Array<{ id: string; source_type?: string; graph_source?: string | null }> =
+        [];
+      const { meta: rankerMeta } = applyLearnedRanker(emptyRows);
+
+      if (format === 'markdown') {
+        return '🔍 Search method: memory_v2\n';
+      }
+
+      return {
+        query: userQuestion,
+        results: emptyRows,
+        ...diagnosticsResponse,
+        meta: {
+          count: 0,
+          search_method: 'memory_v2',
+          threshold: normalizedSearchOptions.threshold,
+          recency_boost: disableRecency
+            ? null
+            : {
+                weight: recencyWeight,
+                scale: recencyScale,
+                decay: recencyDecay,
+              },
+          graph_expansion: summarizeGraphExpansion(emptyRows),
+          ranker: rankerMeta,
+        },
+      };
+    }
+
+    // 1. Try vector search first (if sqlite-vss is available)
+    // eslint-disable-next-line no-unused-vars, @typescript-eslint/no-explicit-any
+    let results: any[] = [];
+    let searchMethod = 'vector';
+
+    try {
+      // Generate query embedding
+      const queryEmbedding = await generateEmbedding(userQuestion, 'query');
+
+      // Adaptive threshold (shorter queries need higher confidence)
+      const wordCount = userQuestion.split(/\s+/).length;
+      const adaptiveThreshold = threshold !== undefined ? threshold : wordCount < 3 ? 0.7 : 0.6;
+
+      // Vector search
+      results = await vectorSearch(adapter, queryEmbedding, rerankPoolLimit * 2, 0.5); // Get more candidates
+
+      // Filter by adaptive threshold
+      results = results.filter((r) => r.similarity >= adaptiveThreshold);
+
+      // Stage 1.4: Temporal boost — detect time-related queries and boost matching results
+      {
+        const temporalPatterns = [
+          // English
+          /\b(yesterday|today|last\s+(?:week|month|year)|(\d+)\s+(?:days?|weeks?|months?)\s+ago)\b/i,
+          /\b(before|after|since|until|during)\s+\w+/i,
+          /\b(how\s+long|when\s+did|what\s+date|what\s+day)\b/i,
+          // Korean
+          /(?:어제|오늘|그제|지난\s*(?:주|달|해)|(\d+)\s*(?:일|주|달|개월)\s*(?:전|후|뒤))/, // Korean: temporal query detection
+          /(?:언제|얼마나|며칠|몇\s*(?:일|주|달|개월))/, // Korean: temporal query detection
+        ];
+        const isTemporalQuery = temporalPatterns.some((p) => p.test(userQuestion));
+
+        if (isTemporalQuery && results.length > 0) {
+          // Boost results that contain date/time references in their content
+          const datePatterns = [
+            /\d{4}[-/]\d{1,2}[-/]\d{1,2}/,
+            /(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d/i,
+            /\d+\s*(?:일|월|년|주|시간|분)/, // Korean: date reference in content
+            /(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i,
+            /(?:월요일|화요일|수요일|목요일|금요일|토요일|일요일)/, // Korean: date reference in content
+          ];
+
+          for (const result of results) {
+            const content = `${result.decision || ''} ${result.reasoning || ''}`;
+            const hasDateRef = datePatterns.some((p) => p.test(content));
+            if (hasDateRef) {
+              result.similarity = Math.min(1.0, (result.similarity || 0) + 0.1);
+            }
+          }
+          results.sort(
+            (a: { similarity?: number }, b: { similarity?: number }) =>
+              (b.similarity || 0) - (a.similarity || 0)
+          );
+        }
+      }
+
+      // Stage 1.5: Apply recency boosting (Gaussian Decay)
+      // Allows Claude to adjust search strategy (recent vs historical)
+      if (results.length > 0 && !disableRecency) {
+        results = applyRecencyBoost(results, {
+          recencyWeight,
+          recencyScale,
+          recencyDecay,
+          disableRecency,
+        });
+        searchMethod = 'vector+recency';
+      }
+
+      // Stage 1.7: FTS5 hybrid merge (Haiku Memory Layer)
+      {
+        try {
+          const ftsResults = await fts5Search(adapter, userQuestion, rerankPoolLimit * 2);
+          if (ftsResults.length > 0) {
+            // Normalize FTS5 ranks (BM25 returns negative values, closer to 0 = better)
+            const maxRank = Math.max(...ftsResults.map((r) => Math.abs(r.rank)));
+            const ftsMap = new Map(
+              ftsResults.map((r) => [r.id, maxRank > 0 ? 1 - Math.abs(r.rank) / maxRank : 0.5])
+            );
+
+            // Tunable hybrid weights (env: MAMA_VECTOR_WEIGHT, MAMA_FTS5_WEIGHT)
+            const vectorWeight = parseFloat(process.env.MAMA_VECTOR_WEIGHT || '0.6');
+            const fts5Weight = parseFloat(process.env.MAMA_FTS5_WEIGHT || '0.4');
+
+            // Merge: boost existing results that also matched FTS5
+            for (const result of results) {
+              const ftsScore = ftsMap.get(result.id);
+              if (ftsScore !== undefined) {
+                result.similarity = vectorWeight * result.similarity + fts5Weight * ftsScore;
+                ftsMap.delete(result.id);
+              }
+            }
+
+            // Add FTS5-only results (not in embedding results)
+            for (const [id, ftsScore] of ftsMap) {
+              const ftsResult = ftsResults.find((r) => r.id === id);
+              if (ftsResult) {
+                // Need to get full decision record
+                const stmt = adapter.prepare(
+                  'SELECT * FROM decisions WHERE id = ? AND superseded_by IS NULL'
+                );
+                const decision = stmt.get(id) as DecisionRecord | undefined;
+                if (decision) {
+                  results.push({
+                    ...decision,
+                    similarity: fts5Weight * ftsScore, // Only FTS5 score component
+                    graph_source: 'fts5',
+                  });
+                }
+              }
+            }
+
+            // Re-sort by similarity
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            results.sort(
+              (a: { similarity?: number }, b: { similarity?: number }) =>
+                (b.similarity || 0) - (a.similarity || 0)
+            );
+            searchMethod = disableRecency ? 'vector+fts5' : 'vector+recency+fts5';
+          }
+        } catch {
+          // FTS5 not available, continue with embedding-only results
+        }
+      }
+
+      // Stage 2: Graph expansion (NEW - Phase 1)
+      // Expand candidates with supersedes chain and semantic edges
+      if (results.length > 0) {
+        const graphEnhanced = await expandWithGraphInAdapter(adapter, results);
+        results = graphEnhanced;
+        searchMethod = disableRecency ? 'vector+graph' : 'vector+recency+graph';
+      }
+
+      // Stage 2.5: is_static boost (after graph expansion to preserve sort order)
+      for (const result of results) {
+        if (result.is_static === 1) {
+          result.final_score = Math.min(1.0, (result.final_score ?? result.similarity ?? 0) + 0.2);
+        }
+      }
+      // Re-sort by final_score after is_static boost
+      results.sort(
+        (a, b) => (b.final_score ?? b.similarity ?? 0) - (a.final_score ?? a.similarity ?? 0)
+      );
+    } catch (vectorError: unknown) {
+      // Fallback to keyword search if vector search unavailable
+      logWarn(
+        `Vector search failed: ${vectorError instanceof Error ? vectorError.message : String(vectorError)}, falling back to keyword search`
+      );
+      searchMethod = 'keyword';
+
+      // Keyword search fallback
+      const keywords = userQuestion
+        .toLowerCase()
+        .split(/\s+/)
+        .filter((w) => w.length > 2); // Filter short words
+
+      if (keywords.length === 0) {
+        if (format === 'markdown') {
+          return `💡 Hint: Please be more specific.\nExample: "Railway Volume settings" or "mesh parameter optimization"`;
+        }
+        return null; // JSON mode returns null for empty/invalid queries
+      }
+
+      // Build LIKE query for each keyword
+      const likeConditions = keywords.map(() => '(topic LIKE ? OR decision LIKE ?)').join(' OR ');
+      const likeParams = keywords.flatMap((k) => [`%${k}%`, `%${k}%`]);
+
+      const stmt = adapter.prepare(`
+        SELECT * FROM decisions
+        WHERE ${likeConditions}
+        AND superseded_by IS NULL
+        ORDER BY created_at DESC
+        LIMIT ?
+      `);
+
+      const rows = (await stmt.all(...likeParams, rerankPoolLimit)) as DecisionRecord[];
+      results = rows.map((row: DecisionRecord) => ({
+        ...row,
+        similarity: 0.75, // Assign moderate similarity for keyword matches
+      }));
+
+      // Stage 2: Graph expansion for keyword results (Phase 1)
+      if (results.length > 0) {
+        const graphEnhanced = await expandWithGraphInAdapter(adapter, results);
+        results = graphEnhanced;
+        searchMethod = 'keyword+graph';
+      }
+    }
+
+    if (results.length === 0) {
+      if (format === 'markdown') {
+        const wordCount = userQuestion.split(/\s+/).length;
+        if (wordCount < 3) {
+          return `💡 Hint: Please be more specific.\nExample: "Why did we choose COMPLEX mesh structure?" or "What parameters are used for large layers?"`;
+        }
+      }
+      return null;
+    }
+
+    // 5. Optional: LLM re-ranking (only if requested)
+    if (useReranking) {
+      results = await rerankWithLLM(options.runner, userQuestion, results);
+    }
+
+    const rerankCandidateResults = results.slice(0, rerankPoolLimit);
+
+    const vectorRows = rerankCandidateResults.map((r) => ({
+      id: r.id,
+      topic: r.topic,
+      decision: r.decision,
+      reasoning: r.reasoning,
+      confidence: r.confidence,
+      similarity: r.similarity,
+      created_at: r.created_at,
+      event_date: r.event_date ?? null,
+      event_datetime: r.event_datetime ?? null,
+      // Recency metadata (NEW - Gaussian Decay)
+      recency_score: r.recency_score,
+      recency_age_days: r.recency_age_days,
+      final_score: r.final_score || r.similarity, // Falls back to similarity if no recency
+      retrieval_score: r.similarity ?? null,
+      // Graph metadata (NEW - Phase 1)
+      graph_source: r.graph_source || 'primary',
+      graph_rank: r.graph_rank || 1.0,
+      related_to: r.related_to || null,
+      edge_reason: r.edge_reason || null,
+      case_id: null as string | null,
+      source_type: 'decision',
+    }));
+    const { results: rankedVectorRows, meta: rankerMeta } = applyLearnedRanker(vectorRows);
+    const finalResults = rankedVectorRows.slice(0, limit);
+
+    // Markdown format (for human display)
+    if (format === 'markdown') {
+      const context = formatContext(finalResults, { maxTokens: 500 });
+
+      // Add graph expansion summary if applicable
+      let graphSummary = '';
+      if (searchMethod.includes('graph')) {
+        const primaryCount = finalResults.filter((r) => r.graph_source === 'primary').length;
+        const expandedCount = finalResults.filter((r) => r.graph_source !== 'primary').length;
+
+        graphSummary = `\n📊 Graph expansion: ${primaryCount} primary + ${expandedCount} related (supersedes/refines/contradicts)\n`;
+      }
+
+      return `🔍 Search method: ${searchMethod}${graphSummary}\n${context}`;
+    }
+
+    // Calculate graph expansion stats
+    const graphStats = {
+      total_results: finalResults.length,
+      primary_count: finalResults.filter((r) => r.graph_source === 'primary').length,
+      expanded_count: finalResults.filter((r) => r.graph_source !== 'primary').length,
+      sources: {
+        primary: finalResults.filter((r) => r.graph_source === 'primary').length,
+        supersedes_chain: finalResults.filter((r) => r.graph_source === 'supersedes_chain').length,
+        refines: finalResults.filter((r) => r.graph_source === 'refines').length,
+        refined_by: finalResults.filter((r) => r.graph_source === 'refined_by').length,
+        contradicts: finalResults.filter((r) => r.graph_source === 'contradicts').length,
+      },
+    };
+
+    return {
+      query: userQuestion,
+      results: finalResults,
+      meta: {
+        count: finalResults.length,
+        search_method: searchMethod,
+        threshold: threshold || 'adaptive',
+        // Recency boosting config (NEW - Gaussian Decay)
+        recency_boost: disableRecency
+          ? null
+          : {
+              weight: recencyWeight,
+              scale: recencyScale,
+              decay: recencyDecay,
+            },
+        // Graph expansion stats (NEW - Phase 1)
+        graph_expansion: searchMethod.includes('graph') ? graphStats : null,
+        ranker: rankerMeta,
+      },
+    };
+  } catch (error: unknown) {
+    // Graceful degradation
+    logWarn(`mama.suggest() failed: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+}
+
+/**
+ * Re-rank search results using local LLM (optional enhancement)
+ *
+ * @param {string} userQuestion - User's question
+ * @param {Array} results - Vector search results
+ * @returns {Promise<Array>} Re-ranked results
+ */
+async function rerankWithLLM(
+  runner: TextCompletion | undefined,
+  userQuestion: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  results: any[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Promise<any[]> {
+  if (!runner) {
+    // No model was stated for this runtime, so there is nothing to ask. The
+    // ranking already computed stands, which is what an unreachable model
+    // produced before — said once, here, rather than discovered as a failure.
+    logWarn('Re-ranking skipped: this runtime states no model runner; using vector ranking');
+    return results;
+  }
+  try {
+    const prompt = `User asked: "${userQuestion}"
+
+Found decisions (ranked by vector similarity):
+${results.map((r: SearchCandidate, i: number) => `${i + 1}. [${(r.similarity ?? 0).toFixed(3)}] ${r.topic}: ${r.decision.substring(0, 60)}...`).join('\n')}
+
+Re-rank these by actual relevance to the user's intent (not just keyword similarity).
+Return JSON: { "ranking": [index1, index2, ...] } (0-based indices)
+
+Example: { "ranking": [2, 0, 4, 1, 3] } means 3rd is most relevant, then 1st, then 5th...`;
+
+    const response = await runner(prompt, {
+      format: 'json',
+      temperature: 0.3,
+      maxTokens: 100,
+      timeoutMs: 3000,
+    });
+
+    const parsed = typeof response === 'string' ? JSON.parse(response) : response;
+
+    // Reorder results based on LLM ranking
+    return parsed.ranking.map((idx: number) => results[idx]).filter(Boolean);
+  } catch (error: unknown) {
+    logWarn(
+      `Re-ranking failed: ${error instanceof Error ? error.message : String(error)}, using vector ranking`
+    );
+    return results; // Fallback to vector ranking
+  }
+}
+
+/**
+ * List recent decisions (all topics, chronological)
+ *
+ * DEFAULT: Returns JSON array with recent decisions (LLM-first design)
+ * OPTIONAL: Returns Markdown string if format='markdown' (for human display)
+ *
+ * @param {Object} [options] - Options
+ * @param {number} [options.limit=10] - Max results
+ * @param {string} [options.format='json'] - Output format
+ * @returns {Promise<Array|string>} Recent decisions
+ */
+export interface ListDecisionsOptions {
+  limit?: number;
+  format?: 'json' | 'markdown';
+  scopes?: Array<{ kind: string; id: string }>;
+  /**
+   * Exact ledger read: every decision whose topic starts with this string, superseded rows
+   * included (they are the earlier rounds of the same item). `%` and `_` are literal.
+   * This is a lookup, not a search - `suggest({topicPrefix})` treats the prefix as a soft
+   * signal and was measured returning 5 of 12 rows plus one from another item.
+   */
+  topicPrefix?: string;
+}
+
+/** `LIKE ? ESCAPE '\\'` pattern that matches topics starting with `prefix`, metacharacters literal. */
+function topicPrefixLikePattern(prefix: string): string {
+  return `${prefix.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+}
+
+export async function listDecisionsInAdapter(
+  adapter: DatabaseAdapter,
+  options: ListDecisionsOptions = {}
+): Promise<DecisionRecord[] | string> {
+  const { limit = 10, format = 'json' } = options;
+
+  try {
+    let decisions;
+    const topicPrefix = typeof options.topicPrefix === 'string' ? options.topicPrefix.trim() : '';
+    // A prefix read keeps superseded rows: they are the item's earlier rounds.
+    const currency = topicPrefix ? '' : 'AND d.superseded_by IS NULL';
+    const prefixClause = topicPrefix ? "AND d.topic LIKE ? ESCAPE '\\'" : '';
+    const prefixParams = topicPrefix ? [topicPrefixLikePattern(topicPrefix)] : [];
+
+    if (options.scopes && options.scopes.length > 0) {
+      // Scope-filtered query: JOIN memory_scope_bindings + memory_scopes
+      const scopeIds = await Promise.all(
+        options.scopes.map((s) => ensureMemoryScope(adapter, s.kind, s.id))
+      );
+      const placeholders = scopeIds.map(() => '?').join(', ');
+      const stmt = adapter.prepare(`
+        SELECT DISTINCT d.* FROM decisions d
+        JOIN memory_scope_bindings msb ON msb.memory_id = d.id
+        WHERE msb.scope_id IN (${placeholders})
+          ${currency}
+          ${prefixClause}
+        ORDER BY COALESCE(d.event_datetime, d.created_at) DESC, d.created_at DESC
+        LIMIT ?
+      `);
+      decisions = await stmt.all(...scopeIds, ...prefixParams, limit);
+    } else {
+      const stmt = adapter.prepare(`
+        SELECT d.* FROM decisions d
+        WHERE 1 = 1
+          ${currency}
+          ${prefixClause}
+        ORDER BY COALESCE(d.event_datetime, d.created_at) DESC, d.created_at DESC
+        LIMIT ?
+      `);
+      decisions = await stmt.all(...prefixParams, limit);
+    }
+
+    if (format === 'markdown') {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return formatList(decisions as any[]);
+    }
+
+    return decisions as DecisionRecord[];
+  } catch (error: unknown) {
+    throw new Error(
+      `mama.listDecisions() failed: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+/**
+ * Update outcome of a decision
+ *
+ * Track whether a decision succeeded, failed, or partially worked
+ * AC: Evolutionary Decision Memory - Learn from outcomes
+ *
+ * @param {string} decisionId - Decision ID to update
+ * @param {Object} outcome - Outcome details
+ * @param {string} outcome.outcome - 'SUCCESS', 'FAILED', or 'PARTIAL'
+ * @param {string} [outcome.failure_reason] - Reason for failure (if FAILED)
+ * @param {string} [outcome.limitation] - Limitation description (if PARTIAL)
+ * @returns {Promise<void>}
+ *
+ * @example
+ * await mama.updateOutcome('decision_auth_strategy_123456_abc', {
+ *   outcome: 'FAILED',
+ *   failure_reason: 'Missing token expiration handling'
+ * });
+ */
+export interface UpdateOutcomeParams {
+  outcome: string;
+  failure_reason?: string | null;
+  limitation?: string | null;
+}
+
+export async function updateOutcomeInAdapter(
+  adapter: DatabaseInstance,
+  decisionId: string,
+  { outcome, failure_reason, limitation }: UpdateOutcomeParams
+): Promise<void> {
+  if (!decisionId || typeof decisionId !== 'string') {
+    throw new Error('mama.updateOutcome() requires decisionId (string)');
+  }
+
+  // AX Improvement: Be forgiving with case sensitivity
+  const normalizedOutcome = outcome ? outcome.toUpperCase() : null;
+
+  if (!normalizedOutcome || !['SUCCESS', 'FAILED', 'PARTIAL'].includes(normalizedOutcome)) {
+    throw new Error('mama.updateOutcome() outcome must be "SUCCESS", "FAILED", or "PARTIAL"');
+  }
+
+  try {
+    // Append-only: one judgment record carries the outcome change; the
+    // maintained decisions projection columns move in the same transaction.
+    await appendOutcomeAmendment(
+      decisionId,
+      {
+        outcome: normalizedOutcome,
+        failureReason: failure_reason || null,
+        limitation: limitation || null,
+        eventReason: `mama.updateOutcome(${decisionId})`,
+      },
+      { adapter }
+    );
+
+    return;
+  } catch (error: unknown) {
+    throw new Error(
+      `mama.updateOutcome() failed: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+/**
+ * List recent checkpoints (New Feature: Session Continuity)
+ *
+ * @param {number} limit - Max number of checkpoints to return
+ * @returns {Promise<Array>} Recent checkpoints
+ */
+/** What a stats read answers: counts over the memory a caller may see. */
+export interface MemoryStatsResult {
+  total: number;
+  thisWeek: number;
+  thisMonth: number;
+  checkpoints: number;
+  outcomes: Record<string, number>;
+  topTopics: Array<{ topic: string; count: number }>;
+}
+
+/**
+ * Counts over the admitted corpus.
+ *
+ * Every count answers the same question the scope filter answers for a listing:
+ * a decision this caller may not read is not a decision it may count. An
+ * admitted-empty caller counts zero rather than counting everything — the same
+ * fail-closed reading the listing gives.
+ */
+export async function readMemoryStatsInAdapter(
+  adapter: DatabaseAdapter,
+  scopes: readonly { kind: string; id: string }[]
+): Promise<MemoryStatsResult> {
+  const empty: MemoryStatsResult = {
+    total: 0,
+    thisWeek: 0,
+    thisMonth: 0,
+    checkpoints: 0,
+    outcomes: {},
+    topTopics: [],
+  };
+  if (scopes.length === 0) {
+    return empty;
+  }
+  const scopeIds = await Promise.all(
+    scopes.map((scope) => ensureMemoryScope(adapter, scope.kind, scope.id))
+  );
+  const placeholders = scopeIds.map(() => '?').join(', ');
+  const admitted = `
+    JOIN memory_scope_bindings msb ON msb.memory_id = d.id
+    WHERE msb.scope_id IN (${placeholders})
+  `;
+  const now = Date.now();
+  const countSince = async (since?: number): Promise<number> => {
+    const stmt = adapter.prepare(`
+      SELECT COUNT(DISTINCT d.id) as count FROM decisions d
+      ${admitted}
+      ${since === undefined ? '' : 'AND d.created_at > ?'}
+    `);
+    const row = (await stmt.get(...scopeIds, ...(since === undefined ? [] : [since]))) as
+      | { count?: number }
+      | undefined;
+    return row?.count ?? 0;
+  };
+  const day = 24 * 60 * 60 * 1000;
+  const [total, thisWeek, thisMonth] = await Promise.all([
+    countSince(),
+    countSince(now - 7 * day),
+    countSince(now - 30 * day),
+  ]);
+  const outcomeRows = (await adapter
+    .prepare(
+      `SELECT d.outcome as outcome, COUNT(DISTINCT d.id) as count FROM decisions d
+       ${admitted} AND d.outcome IS NOT NULL
+       GROUP BY d.outcome`
+    )
+    .all(...scopeIds)) as Array<{ outcome: string | null; count: number }>;
+  const outcomes: Record<string, number> = {};
+  for (const row of outcomeRows) {
+    outcomes[row.outcome?.toLowerCase() ?? 'unknown'] = row.count;
+  }
+  const topTopics = (await adapter
+    .prepare(
+      `SELECT d.topic as topic, COUNT(DISTINCT d.id) as count FROM decisions d
+       ${admitted} AND d.topic IS NOT NULL
+       GROUP BY d.topic
+       ORDER BY count DESC
+       LIMIT 5`
+    )
+    .all(...scopeIds)) as Array<{ topic: string; count: number }>;
+  // Checkpoints carry no scope binding, and `memory.checkpoint.load` reads them
+  // under the same authority: the count is of what that read can reach.
+  const checkpointRow = (await adapter
+    .prepare('SELECT COUNT(*) as count FROM checkpoints')
+    .get()) as { count?: number } | undefined;
+  return {
+    total,
+    thisWeek,
+    thisMonth,
+    checkpoints: checkpointRow?.count ?? 0,
+    outcomes,
+    topTopics,
+  };
+}
+
+/**
+ * Load latest active checkpoint (New Feature: Session Continuity)
+ *
+ * @returns {Promise<Object|null>} Latest checkpoint or null
+ */
+interface ConversationMessage {
+  role: string;
+  content: string | Array<{ type: string; text?: string; [key: string]: unknown }>;
+}
+
+/**
+ * Save current session checkpoint (New Feature: Session Continuity)
+ *
+ * @param {string} summary - Summary of current session state
+ * @param {Array<string>} openFiles - List of currently open files
+ * @param {string} nextSteps - Next steps to be taken
+ * @returns {Promise<number>} Checkpoint ID
+ */
+export async function saveCheckpointInAdapter(
+  adapter: DatabaseAdapter,
+  summary: string,
+  openFiles: string[] = [],
+  nextSteps: string = '',
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  recentConversation: any[] = []
+): Promise<number | bigint> {
+  if (!summary) {
+    throw new Error('Summary is required for checkpoint');
+  }
+
+  try {
+    const stmt = adapter.prepare(`
+      INSERT INTO checkpoints (timestamp, summary, open_files, next_steps, recent_conversation, status)
+      VALUES (?, ?, ?, ?, ?, 'active')
+    `);
+
+    const result = stmt.run(
+      Date.now(),
+      summary,
+      JSON.stringify(openFiles),
+      nextSteps,
+      JSON.stringify(recentConversation || [])
+    );
+
+    return result.lastInsertRowid;
+  } catch (error: unknown) {
+    throw new Error(
+      `Failed to save checkpoint: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+export interface CheckpointRow {
+  id?: number;
+  timestamp?: number;
+  summary?: string;
+  open_files?: string | string[];
+  next_steps?: string;
+  recent_conversation?: string | ConversationMessage[];
+  status?: string;
+}
+
+export async function loadCheckpointInAdapter(
+  adapter: DatabaseAdapter
+): Promise<CheckpointRow | null> {
+  try {
+    const stmt = adapter.prepare(`
+      SELECT * FROM checkpoints
+      WHERE status = 'active'
+      ORDER BY timestamp DESC
+      LIMIT 1
+    `);
+
+    const checkpoint = stmt.get() as CheckpointRow | undefined;
+
+    if (checkpoint) {
+      try {
+        checkpoint.open_files =
+          typeof checkpoint.open_files === 'string'
+            ? JSON.parse(checkpoint.open_files)
+            : checkpoint.open_files || [];
+      } catch {
+        checkpoint.open_files = [];
+      }
+
+      try {
+        checkpoint.recent_conversation =
+          typeof checkpoint.recent_conversation === 'string'
+            ? JSON.parse(checkpoint.recent_conversation || '[]')
+            : checkpoint.recent_conversation || [];
+      } catch {
+        checkpoint.recent_conversation = [];
+      }
+    }
+
+    return checkpoint || null;
+  } catch (error: unknown) {
+    throw new Error(
+      `Failed to load checkpoint: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+export async function listCheckpointsInAdapter(
+  adapter: DatabaseAdapter,
+  limit: number = 10
+): Promise<CheckpointRow[]> {
+  try {
+    const stmt = adapter.prepare(`
+      SELECT * FROM checkpoints
+      ORDER BY timestamp DESC
+      LIMIT ?
+    `);
+
+    const checkpoints = stmt.all(limit) as CheckpointRow[];
+
+    return checkpoints.map((c: CheckpointRow) => {
+      try {
+        c.open_files =
+          typeof c.open_files === 'string' ? JSON.parse(c.open_files) : c.open_files || [];
+      } catch {
+        c.open_files = [];
+      }
+      try {
+        c.recent_conversation =
+          typeof c.recent_conversation === 'string'
+            ? JSON.parse(c.recent_conversation)
+            : c.recent_conversation || [];
+      } catch {
+        c.recent_conversation = [];
+      }
+      return c;
+    });
+  } catch (error: unknown) {
+    throw new Error(
+      `Failed to list checkpoints: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}

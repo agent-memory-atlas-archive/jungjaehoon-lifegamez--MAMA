@@ -25,14 +25,14 @@ const ORIGINAL_FORCE_TIER_3 = process.env.MAMA_FORCE_TIER_3;
 process.env.MAMA_DB_PATH = join(tmpDir, 'test-memory.db');
 process.env.MAMA_FORCE_TIER_3 = 'true';
 
-import { initDB, closeDB } from '../../src/db-manager.js';
+import { initDB, closeDB, getAdapter } from '../../src/db-manager.js';
 import { saveMemory, recallMemory } from '../../src/memory/api.js';
 
 describe('recallMemory limit', () => {
   beforeAll(async () => {
     await initDB();
     for (let i = 0; i < 12; i++) {
-      await saveMemory({
+      await saveMemory(getAdapter(), {
         topic: `deploy-note-${i}`,
         kind: 'decision',
         summary: `Deployment rollout note ${i} about the canary pipeline`,
@@ -56,13 +56,15 @@ describe('recallMemory limit', () => {
   });
 
   it('returns at most options.limit memories', async () => {
-    const bundle = await recallMemory('deployment rollout canary pipeline', { limit: 3 });
+    const bundle = await recallMemory(getAdapter(), 'deployment rollout canary pipeline', {
+      limit: 3,
+    });
     expect(bundle.memories.length).toBeGreaterThan(0);
     expect(bundle.memories.length).toBeLessThanOrEqual(3);
   });
 
   it('defaults to at most 10 when limit is not given', async () => {
-    const bundle = await recallMemory('deployment rollout canary pipeline', {});
+    const bundle = await recallMemory(getAdapter(), 'deployment rollout canary pipeline', {});
     expect(bundle.memories.length).toBeGreaterThan(0);
     expect(bundle.memories.length).toBeLessThanOrEqual(10);
   });

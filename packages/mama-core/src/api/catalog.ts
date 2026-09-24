@@ -1,0 +1,1622 @@
+/**
+ * Action catalog — one contract bound to its implementation.
+ *
+ * §4.2: each entry carries schema, description, examples and exec together; an
+ * action that is not implemented is not listed. Legacy name translation lives
+ * here exactly once, in the alias table — a retired tool never survives as an
+ * alias that calls the old implementation.
+ */
+import type {
+  ActionContract,
+  ActionSchemaObject,
+  ActionSessionFacts,
+} from '../action-contracts.js';
+import { JudgmentError, type JudgmentAccess } from '../knowledge/judgments.js';
+import type { TextCompletion } from '../runtime/text-completion.js';
+import type { DatabaseInstance } from '../db-manager.js';
+import { boundReadScopesFor, recallMemory, saveJudgmentRecord } from '../memory/api.js';
+import { resolveMemoryProvenanceLive } from '../memory/provenance-live.js';
+import {
+  readDecisionListing,
+  readProjectDecisions,
+  readProjectRollups,
+} from '../memory/dashboard-read.js';
+import {
+  countGraphNodes,
+  readGraphEdges,
+  readGraphNodes,
+  readGraphSimilarityEdges,
+} from '../memory/graph-read.js';
+import { sanitizeRecallBundle, sanitizeRecallText } from '../memory/recall-sanitize.js';
+import { ingestSource } from '../knowledge/source-ingest.js';
+import { upsertNode, type RegistryScopeRef } from '../registry/store.js';
+import {} from '../mama-api.js';
+import {
+  listCheckpointsInAdapter,
+  listDecisionsInAdapter,
+  suggestInAdapter,
+  loadCheckpointInAdapter,
+  readMemoryStatsInAdapter,
+  saveCheckpointInAdapter,
+  updateOutcomeInAdapter,
+} from '../memory/api.js';
+import type { MemoryScopeRef } from '../memory/types.js';
+import {
+  MEMORY_KINDS,
+  MEMORY_STATUSES,
+  MEMORY_SCOPE_KINDS,
+  type PublicSaveMemoryInput,
+} from '../memory/types.js';
+import type { WorkRead } from '../knowledge/commitments.js';
+import type { Knowledge } from '../knowledge/index.js';
+import type { IdentityCorrection, JsonValue, WorkGraphQuery } from '../memory/judgment-types.js';
+import { TWIN_REF_KINDS } from '../knowledge/twin-edge-types.js';
+import {
+  readOperation,
+  readChanges,
+  CHANGES_READ_TARGET_TYPES,
+  CHANGES_READ_CAUSE_STATES,
+  type ChangesLedger,
+  type ChangesReadInput,
+  isUsableCause,
+  recordEffect,
+  recordUnattributedChange,
+  type EffectAdapter,
+} from '../runtime/operations.js';
+import { listToolTraces, readToolTrace } from '../runtime/tool-trace-store.js';
+
+/**
+ * Server-side authority for one call — from the session credential, never
+ * input. `operationId` is the id the common client issued for this call; for
+ * knowledge commands it becomes the commandId, so a command action cannot run
+ * without one. `session` carries the call-site facts only the host can
+ * truthfully state (model run, tool call id, context packet) — provenance is
+ * composed from these plus `access`, never trusted from the payload.
+ */
+export interface ActionContext {
+  access: JudgmentAccess;
+  operationId?: string;
+  session?: ActionSessionFacts;
+  /**
+   * The host-composed read window for citation reads — connector grant,
+   * project/tenant filters, and the observation-time clamp the envelope states.
+   * Like `access` and `session` it is server-stated, never caller input: the
+   * caller can only narrow within it through `input.scopes`, and an absent
+   * window fails closed (no connectors means no raw events).
+   */
+  readAllowance?: MemoryReadAllowance;
+  /**
+   * Host-bound cancellation handle for long reads/downloads. Absent over
+   * transports that cannot carry it — actions must run without it.
+   */
+  signal?: AbortSignal;
+}
+
+/**
+ * Host-composed visibility window for reads that cite raw events. Every field
+ * is derived from envelope state by the host, the same way the reader derives
+ * it — the action consumes it as-is rather than trusting payload claims.
+ */
+export interface MemoryReadAllowance {
+  /** Raw connectors this call may read. Empty means NO raw events, never all. */
+  connectors: readonly string[];
+  /** Explicit connector-wide reads stated by the principal, independent of tenant scoping. */
+  wideConnectors?: readonly string[];
+  /** Per-connector channel grant, already narrowed to the envelope's scopes. */
+  channels?: Record<string, readonly string[]>;
+  /** Project window, mirroring the reader's filter on the same column. */
+  projectIds?: readonly string[];
+  /** Tenant window for narrower reads; an explicit connector-wide owner grant is separate. */
+  tenantId?: string | null;
+  /** Observation-time clamp (envelope `as_of`), epoch ms. */
+  minObservedMs?: number | null;
+  maxObservedMs?: number | null;
+}
+
+export type ActionExec = (input: unknown, context: ActionContext) => unknown | Promise<unknown>;
+
+export interface ActionRegistration {
+  contract: ActionContract;
+  exec: ActionExec;
+}
+
+export class UnknownActionError extends Error {
+  readonly code = 'unknown_action';
+  constructor(name: string) {
+    super(`Unknown action: ${name}`);
+    this.name = 'UnknownActionError';
+  }
+}
+
+export interface ActionCatalog {
+  /** Every registered contract — the executable surface, nothing more. */
+  list(): ActionContract[];
+  /** One contract by name or alias; throws UnknownActionError. */
+  describe(name: string): ActionContract;
+  /** The exec binding by name or alias; throws UnknownActionError. */
+  entry(name: string): ActionRegistration;
+}
+
+export function createCatalog(
+  registrations: readonly ActionRegistration[],
+  aliases: Readonly<Record<string, string>> = {}
+): ActionCatalog {
+  const entries = new Map<string, ActionRegistration>();
+  for (const registration of registrations) {
+    const name = registration.contract.name;
+    if (entries.has(name)) {
+      throw new Error(`Duplicate action registration: ${name}`);
+    }
+    entries.set(name, registration);
+  }
+  const canonicalName = (name: string): string => aliases[name] ?? name;
+  const entry = (name: string): ActionRegistration => {
+    const found = entries.get(canonicalName(name));
+    if (!found) {
+      throw new UnknownActionError(name);
+    }
+    return found;
+  };
+  return {
+    list: () => [...entries.values()].map((registration) => registration.contract),
+    describe: (name) => entry(name).contract,
+    entry,
+  };
+}
+
+const refSchema: ActionSchemaObject = {
+  type: 'object',
+  required: ['kind', 'id'],
+  additionalProperties: false,
+  properties: {
+    kind: { type: 'string', enum: TWIN_REF_KINDS },
+    id: { type: 'string', minLength: 1 },
+  },
+};
+
+const msRangeSchema: ActionSchemaObject = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    start: { type: 'number' },
+    end: { type: 'number' },
+  },
+};
+
+export const scopeRefSchema: ActionSchemaObject = {
+  type: 'object',
+  required: ['kind', 'id'],
+  additionalProperties: false,
+  properties: {
+    kind: { type: 'string', enum: MEMORY_SCOPE_KINDS },
+    id: { type: 'string', minLength: 1 },
+  },
+};
+
+export const recordLinkSchema: ActionSchemaObject = {
+  type: 'object',
+  required: ['relation', 'target'],
+  additionalProperties: false,
+  properties: {
+    relation: {
+      type: 'string',
+      enum: [
+        'supersedes',
+        'refines',
+        'contradicts',
+        'mentions',
+        'derived_from',
+        'builds_on',
+        'debates',
+        'synthesizes',
+        'blocks',
+        'next_action_for',
+        'case_member',
+        'amends',
+      ],
+    },
+    target: refSchema,
+    attrs: { type: 'object' },
+  },
+};
+
+/** Fields every work command shares; required-ness lives on each action. */
+
+/** The lifecycle fields a reclassification states; callers may not repeat them. */
+
+function requiredOperationId(context: ActionContext, action: string): string {
+  if (typeof context.operationId !== 'string' || context.operationId.trim().length === 0) {
+    throw new JudgmentError(
+      'INVALID_COMMAND',
+      `${action} requires operationId: it becomes the command id, and a retry reuses it.`
+    );
+  }
+  return context.operationId;
+}
+
+/** Topic/summary a revision needs when the caller did not restate them. */
+
+const workGraphQuerySchema: ActionSchemaObject = {
+  type: 'object',
+  required: ['view'],
+  additionalProperties: false,
+  properties: {
+    view: {
+      type: 'string',
+      enum: ['overview', 'browse', 'neighbors', 'timeline', 'paths', 'detail'],
+    },
+    seeds: { type: 'array', items: refSchema },
+    search: {
+      type: 'object',
+      required: ['text'],
+      additionalProperties: false,
+      properties: {
+        text: { type: 'string', minLength: 1 },
+        kinds: { type: 'array', items: { type: 'string', enum: TWIN_REF_KINDS } },
+      },
+    },
+    section: { type: 'string', enum: ['summary', 'reasoning', 'payload'] },
+    textOffset: { type: 'integer', minimum: 0 },
+    textLimit: { type: 'integer', minimum: 1 },
+    from: refSchema,
+    to: refSchema,
+    maxDepth: { type: 'integer', minimum: 0 },
+    direction: { type: 'string', enum: ['in', 'out', 'both'] },
+    relations: { type: 'array', items: { type: 'string', minLength: 1 } },
+    history: { type: 'string', enum: ['current', 'all'] },
+    eventRange: msRangeSchema,
+    recordedRange: msRangeSchema,
+    asOf: { type: 'number' },
+    limit: { type: 'integer', minimum: 1 },
+    cursor: { type: 'string', minLength: 1 },
+  },
+};
+
+/** Read knobs every work read shares; show adds the identity filters. */
+const workReadFields: Record<string, ActionSchemaObject> = {
+  asOf: { type: 'integer', minimum: 0 },
+  history: { type: 'string', enum: ['current', 'all'] },
+  limit: { type: 'integer', minimum: 1, maximum: 100 },
+  cursor: { type: 'string', minLength: 1 },
+};
+
+const workListSchema: ActionSchemaObject = {
+  type: 'object',
+  additionalProperties: false,
+  properties: workReadFields,
+};
+
+const workShowSchema: ActionSchemaObject = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    ...workReadFields,
+    commitmentId: { type: 'string', minLength: 1 },
+    rowId: { type: 'integer', minimum: 0 },
+  },
+};
+
+const observationEvidenceSchema: ActionSchemaObject = {
+  type: 'object',
+  required: ['kind', 'id'],
+  additionalProperties: false,
+  properties: {
+    kind: { const: 'observation' },
+    id: { type: 'string', minLength: 1 },
+  },
+};
+
+/** One endpoint reassignment — by existing node id (or null to release) or by a new child's clientKey. */
+const identityAssignmentSchema: ActionSchemaObject = {
+  oneOf: [
+    {
+      type: 'object',
+      required: ['edgeId', 'endpoint', 'targetNodeId'],
+      additionalProperties: false,
+      properties: {
+        edgeId: { type: 'string', minLength: 1 },
+        endpoint: { type: 'string', enum: ['from', 'to'] },
+        targetNodeId: { oneOf: [{ type: 'string', minLength: 1 }, { type: 'null' }] },
+      },
+    },
+    {
+      type: 'object',
+      required: ['edgeId', 'endpoint', 'targetClientKey'],
+      additionalProperties: false,
+      properties: {
+        edgeId: { type: 'string', minLength: 1 },
+        endpoint: { type: 'string', enum: ['from', 'to'] },
+        targetClientKey: { type: 'string', minLength: 1 },
+      },
+    },
+  ],
+};
+
+const splitChildSchema: ActionSchemaObject = {
+  type: 'object',
+  required: ['name'],
+  additionalProperties: false,
+  properties: {
+    clientKey: { type: 'string', minLength: 1 },
+    name: { type: 'string', minLength: 1 },
+    aliases: { type: 'array', items: { type: 'string', minLength: 1 } },
+  },
+};
+
+function correctionVariant(
+  operation: 'add_alias' | 'merge' | 'split' | 'assign_refs',
+  extra: Record<string, ActionSchemaObject>,
+  extraRequired: readonly string[]
+): ActionSchemaObject {
+  return {
+    type: 'object',
+    required: ['expectedRevision', 'reason', 'operation', ...extraRequired],
+    additionalProperties: false,
+    properties: {
+      operation: { const: operation },
+      expectedRevision: { type: 'integer', minimum: 0 },
+      reason: { type: 'string', minLength: 1 },
+      // An explicitly empty scopes array is not "use the authority's" - that
+      // is what omitting the field means. The store refuses it too, one layer
+      // in; saying it here refuses it before the transaction opens, which is
+      // what the deleted tool schema did.
+      scopes: { type: 'array', minItems: 1, items: scopeRefSchema },
+      evidence: { type: 'array', items: observationEvidenceSchema },
+      ...extra,
+    },
+  };
+}
+
+const identityCorrectSchema: ActionSchemaObject = {
+  type: 'object',
+  oneOf: [
+    correctionVariant(
+      'add_alias',
+      {
+        nodeId: { type: 'string', minLength: 1 },
+        alias: { type: 'string', minLength: 1 },
+      },
+      ['nodeId', 'alias']
+    ),
+    correctionVariant(
+      'merge',
+      {
+        survivorId: { type: 'string', minLength: 1 },
+        memberIds: { type: 'array', items: { type: 'string', minLength: 1 } },
+      },
+      ['survivorId', 'memberIds']
+    ),
+    correctionVariant(
+      'split',
+      {
+        parentId: { type: 'string', minLength: 1 },
+        children: { type: 'array', items: splitChildSchema },
+        assignments: { type: 'array', items: identityAssignmentSchema },
+      },
+      ['parentId', 'children', 'assignments']
+    ),
+    correctionVariant(
+      'assign_refs',
+      {
+        parentId: { type: 'string', minLength: 1 },
+        assignments: { type: 'array', items: identityAssignmentSchema },
+      },
+      ['parentId', 'assignments']
+    ),
+  ],
+};
+
+const memorySearchSchema: ActionSchemaObject = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    query: { type: 'string', minLength: 1 },
+    limit: { type: 'integer', minimum: 1 },
+    scopes: { type: 'array', items: scopeRefSchema },
+    threshold: { type: 'number', minimum: 0, maximum: 1 },
+    strict: { type: 'boolean' },
+    strictness: { type: 'string', enum: ['recall', 'balanced', 'strict'] },
+    disableRecency: { type: 'boolean' },
+    includeRelated: { type: 'boolean' },
+    topicPrefix: { type: 'string', minLength: 1 },
+    minLexicalSupport: { type: 'boolean' },
+    diagnostics: { type: 'boolean' },
+    rerankWithLearned: { type: 'boolean' },
+    useReranking: { type: 'boolean' },
+  },
+};
+
+const memoryCheckpointLoadSchema: ActionSchemaObject = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {},
+};
+
+const operationGetSchema: ActionSchemaObject = {
+  type: 'object',
+  required: ['operationId'],
+  additionalProperties: false,
+  properties: {
+    operationId: { type: 'string', minLength: 1 },
+  },
+};
+
+const memorySourceSchema: ActionSchemaObject = {
+  type: 'object',
+  required: ['package', 'source_type'],
+  additionalProperties: false,
+  properties: {
+    // No enum. The core does not hold a list of who may use it.
+    package: { type: 'string', minLength: 1 },
+    source_type: { type: 'string', minLength: 1 },
+    user_id: { type: 'string', minLength: 1 },
+    channel_id: { type: 'string', minLength: 1 },
+    project_id: { type: 'string', minLength: 1 },
+  },
+};
+
+const memorySaveSchema: ActionSchemaObject = {
+  type: 'object',
+  required: ['topic', 'kind', 'summary', 'details', 'source'],
+  additionalProperties: false,
+  properties: {
+    topic: { type: 'string', minLength: 1 },
+    kind: { type: 'string', enum: MEMORY_KINDS },
+    summary: { type: 'string', minLength: 1 },
+    details: { type: 'string', minLength: 1 },
+    confidence: { type: 'number', minimum: 0, maximum: 1 },
+    status: { type: 'string', enum: MEMORY_STATUSES },
+    scopes: { type: 'array', items: scopeRefSchema },
+    source: memorySourceSchema,
+    eventDate: { type: 'string', minLength: 1 },
+    eventDateTime: { type: 'number' },
+    itemId: { oneOf: [{ type: 'string', minLength: 1 }, { type: 'null' }] },
+    actors: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['personId', 'role'],
+        additionalProperties: false,
+        properties: {
+          personId: { type: 'string', minLength: 1 },
+          role: { type: 'string', minLength: 1 },
+        },
+      },
+    },
+    links: { type: 'array', items: recordLinkSchema },
+    replaces: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'reason'],
+        properties: {
+          id: { type: 'string', minLength: 1 },
+          reason: { type: 'string', minLength: 1 },
+        },
+      },
+    },
+  },
+};
+
+/**
+ * The actions this build actually implements. `graph.query` reads the twin-edge
+ * graph and `graph.identity.correct` is the registry_corrections transaction —
+ * the action behind `registry_correct`; the `work.*` commands are the
+ * commitment log's public write/read surface — the actions behind `task_create`
+ * / `task_update` / `task_reclassify` / `task_list`; `operation.get` is how a
+ * caller settles a call whose reply was lost.
+ */
+export function coreActionRegistrations(
+  knowledge: Knowledge,
+  adapter: DatabaseInstance,
+  deps?: {
+    /**
+     * The host's effect-ledger read port for `work.changes`. The
+     * `evidence_effects` store is host-opened, so the catalog takes the port —
+     * absent means the action is absent (the catalog never lists an action it
+     * cannot execute).
+     */
+    effects?: ChangesLedger;
+    /**
+     * The host's effect-ledger WRITE handle. A recallable write leaves a
+     * receipt naming what caused it, so a crash between the write and the
+     * batch ACK does not re-run the batch and save the same thing twice. The
+     * store is host-opened like the read port above; absent means the write
+     * still happens and leaves no receipt, which the coverage count shows.
+     */
+    effectLedger?: () => EffectAdapter | undefined;
+    /**
+     * The model the runtime opened, read at call time.
+     *
+     * A lookup rather than a value because the runtime opens after the catalog
+     * is built — the same late binding every other host-opened dependency
+     * uses. Absent means this host states no model, and the one action that
+     * would ask for one (`memory.search` with `useReranking`) says so instead
+     * of opening its own (§2.1).
+     */
+    runner?: () => TextCompletion | undefined;
+  }
+): ActionRegistration[] {
+  const effects = deps?.effects;
+  const effectLedger = deps?.effectLedger;
+  const runner = deps?.runner;
+
+  /** One receipt for a write recall can return. */
+  const recordWriteReceipt = (context: ActionContext, action: string, ref: string | null): void => {
+    const ledger = effectLedger?.();
+    if (ledger === undefined || ref === null) {
+      return;
+    }
+    const session = context.session;
+    const change = {
+      runId: session?.modelRunId ?? null,
+      channelId: session?.channelId ?? null,
+      kind: 'memory_write' as const,
+      targetType: 'memory' as const,
+      targetId: `${action}:${ref}`,
+      payload: { action, ref },
+      atMs: Date.now(),
+    };
+    const causes = (session?.causeEventIds ?? []).filter(isUsableCause);
+    if (causes.length > 0) {
+      recordEffect(ledger, { ...change, sourceEventIds: [...causes] });
+    } else {
+      // A run with no batch honestly records an unattributed change rather
+      // than inventing a cause for it.
+      recordUnattributedChange(ledger, change, 'owner_message');
+    }
+  };
+  return [
+    {
+      contract: {
+        name: 'graph.query',
+        summary:
+          'Read the work graph: overview roots, neighbors, paths, timelines, and hydrated details under the caller authority. search resolves a name spelling to its registered node or alias — an empty page with coverage.search_no_match means nothing is registered under that spelling, the signal to graph.node.put it.',
+        inputSchema: workGraphQuerySchema,
+        examples: [
+          {
+            title: 'Current neighbors of an item',
+            input: { view: 'neighbors', seeds: [{ kind: 'registry', id: 'item_1' }] },
+          },
+          {
+            title: 'Everything ever known about a memory, including what replaced it',
+            input: {
+              view: 'timeline',
+              seeds: [{ kind: 'memory', id: 'judgment_…' }],
+              history: 'all',
+            },
+          },
+        ],
+      },
+      exec: (input, context) => knowledge.queryGraph(input as WorkGraphQuery, context.access),
+    },
+    {
+      contract: {
+        name: 'graph.node.put',
+        summary:
+          'Upsert one registry node: resolve by (kind, name, scopes) or create, then attach aliases and scope bindings. Alias resolution makes a retried put land on the same node — a store write bound to the caller authority, not a judgment command.',
+        inputSchema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            kind: { type: 'string' },
+            name: { type: 'string' },
+            // A blank alias is not a spelling, and neither is whitespace. The
+            // deleted host tool trimmed and refused it ('invalid_alias'); the
+            // contract says it now, so a caller reaching the action directly
+            // meets the same rule instead of finding out from the store.
+            aliases: { type: 'array', items: { type: 'string', pattern: '\\S' } },
+            note: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+            parent_of: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  name: { type: 'string' },
+                  aliases: { type: 'array', items: { type: 'string', pattern: '\\S' } },
+                },
+                required: ['name'],
+              },
+            },
+          },
+          required: ['kind', 'name'],
+        },
+        examples: [
+          {
+            title: 'Register an item the agent named',
+            input: { kind: 'item', name: 'ops channel', aliases: ['ops'] },
+          },
+        ],
+      },
+      exec: (input, context) => {
+        const body = input as {
+          kind?: string;
+          name?: string;
+          aliases?: string[];
+          note?: string | null;
+          parent_of?: Array<{ name: string; aliases?: string[] }>;
+        };
+        const kind = typeof body.kind === 'string' ? body.kind.trim() : '';
+        const name = typeof body.name === 'string' ? body.name.trim() : '';
+        if (!kind || !name) {
+          throw new JudgmentError('INVALID_INPUT', 'graph.node.put requires kind and name');
+        }
+        // Scope bindings come from the caller authority alone — the payload
+        // carries no scopes, so a put can never self-grant visibility. Which
+        // makes an authority stating NO scope the one case a put must refuse:
+        // the node would be bound to nothing, and whether that reads as
+        // invisible or as unfiltered is the reader's accident, not a decision
+        // anyone made. graph.identity.correct already refuses it
+        // (registry/corrections.ts, 'At least one signed scope is required');
+        // this said the same thing one layer out, in the host tool case that
+        // called this action, where a caller reaching the action directly
+        // never met it.
+        if (context.access.scopes.length === 0) {
+          throw new JudgmentError(
+            'INVALID_SCOPE',
+            'graph.node.put requires at least one scope on the caller authority'
+          );
+        }
+        return upsertNode(adapter, {
+          kind,
+          name,
+          aliases: body.aliases ?? [],
+          note: body.note ?? null,
+          scopes: context.access.scopes as RegistryScopeRef[],
+          children: body.parent_of,
+        });
+      },
+    },
+    {
+      contract: {
+        name: 'graph.identity.correct',
+        summary:
+          'Append one identity correction — alias, merge, split, or edge-endpoint reassignment — inside the registry_corrections transaction. operationId is the command id; the caller authority scopes the result, input never grants it.',
+        inputSchema: identityCorrectSchema,
+        examples: [
+          {
+            title: 'Attach the name the owner actually uses',
+            input: {
+              expectedRevision: 3,
+              reason: 'owner calls it the ops channel',
+              operation: 'add_alias',
+              nodeId: 'item_1',
+              alias: 'ops channel',
+            },
+          },
+          {
+            title: 'Fold a duplicate into its survivor',
+            input: {
+              expectedRevision: 4,
+              reason: 'two rows name the same vendor',
+              operation: 'merge',
+              survivorId: 'item_1',
+              memberIds: ['item_2'],
+            },
+          },
+        ],
+      },
+      exec: (input, context) =>
+        knowledge.correctIdentity(
+          {
+            ...(input as Omit<IdentityCorrection, 'commandId'>),
+            commandId: requiredOperationId(context, 'graph.identity.correct'),
+          } as IdentityCorrection,
+          context.access
+        ),
+    },
+    {
+      contract: {
+        name: 'memory.save',
+        // What this writes, recall can return.
+        recallableWrite: true,
+        summary:
+          'Append one judgment record. Explicit links attach visible evidence; replaces supersedes named visible records while preserving history. Matching topic alone never replaces. Access is the only authority — scopes in input are checked against it, and provenance comes from call authority and host-stated session facts. operationId is the command id; a retry replays the original receipt.',
+        inputSchema: memorySaveSchema,
+        examples: [
+          {
+            title: 'Record a decision the owner made',
+            input: {
+              topic: 'deploy_window',
+              kind: 'decision',
+              summary: 'Deploys happen Tuesday 10:00 KST',
+              details: 'Owner confirmed the fixed window after the June freeze.',
+              source: { package: 'my-app', source_type: 'mama_save' },
+            },
+          },
+          {
+            title: 'Correct an earlier memory after reading preserved evidence',
+            input: {
+              topic: 'source_access',
+              kind: 'fact',
+              summary: 'The preserved source is readable',
+              details: 'A source.read call returned the original observation.',
+              source: { package: 'my-app', source_type: 'mama_save' },
+              links: [{ relation: 'derived_from', target: { kind: 'observation', id: 'obs_123' } }],
+              replaces: [{ id: 'judgment_old', reason: 'the original was read successfully' }],
+            },
+          },
+        ],
+      },
+      exec: async (input, context) => {
+        const saved = await saveJudgmentRecord(
+          adapter,
+          input as PublicSaveMemoryInput,
+          context.access,
+          requiredOperationId(context, 'memory.save'),
+          context.session
+        );
+        recordWriteReceipt(context, 'memory.save', saved.id ?? null);
+        return saved;
+      },
+    },
+    {
+      contract: {
+        name: 'memory.update',
+        // What this writes, recall can return.
+        recallableWrite: true,
+        summary:
+          'Append one outcome amendment to a memory record — the append-only judgment row and the maintained decisions projection move in one transaction. Outcome is SUCCESS, FAILED, or PARTIAL (case-insensitive).',
+        inputSchema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            id: { type: 'string' },
+            outcome: { type: 'string' },
+            failure_reason: { type: 'string' },
+            limitation: { type: 'string' },
+          },
+          required: ['id', 'outcome'],
+        },
+        examples: [
+          {
+            title: 'Mark a decision as having failed in the field',
+            input: {
+              id: 'decision_deploy_window_1',
+              outcome: 'failed',
+              failure_reason: 'the Tuesday window collided with the provider maintenance',
+            },
+          },
+        ],
+      },
+      exec: async (input, context) => {
+        const body = input as {
+          id?: string;
+          outcome?: string;
+          failure_reason?: string;
+          limitation?: string;
+        };
+        const id = typeof body.id === 'string' ? body.id.trim() : '';
+        const outcome = typeof body.outcome === 'string' ? body.outcome.trim().toUpperCase() : '';
+        if (!id) {
+          throw new JudgmentError('INVALID_INPUT', 'memory.update requires id');
+        }
+        if (!['SUCCESS', 'FAILED', 'PARTIAL'].includes(outcome)) {
+          throw new JudgmentError(
+            'INVALID_INPUT',
+            'memory.update outcome must be SUCCESS, FAILED, or PARTIAL'
+          );
+        }
+        await updateOutcomeInAdapter(adapter, id, {
+          outcome,
+          failure_reason: body.failure_reason ?? null,
+          limitation: body.limitation ?? null,
+        });
+        recordWriteReceipt(context, 'memory.update', id);
+        return { id, outcome };
+      },
+    },
+    {
+      contract: {
+        name: 'memory.checkpoint.save',
+        summary:
+          'Write one session checkpoint — the durable hand-off record a later turn restores work from. Not a judgment and not scope-bound; the row is what it says.',
+        inputSchema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            summary: { type: 'string' },
+            open_files: { type: 'array', items: { type: 'string' } },
+            next_steps: { type: 'string' },
+          },
+          required: ['summary'],
+        },
+        examples: [
+          {
+            title: 'Save the session state before stopping',
+            input: {
+              summary: 'Goal: migrate the socket owner. Evidence: runtime.ts mounted.',
+              next_steps: 'convert the last direct caller to the client path',
+            },
+          },
+        ],
+      },
+      exec: async (input, context) => {
+        const body = input as {
+          summary?: string;
+          open_files?: string[];
+          next_steps?: string;
+        };
+        const summary = typeof body.summary === 'string' ? body.summary.trim() : '';
+        if (!summary) {
+          throw new JudgmentError('INVALID_INPUT', 'memory.checkpoint.save requires summary');
+        }
+        const id = await saveCheckpointInAdapter(
+          adapter,
+          summary,
+          body.open_files ?? [],
+          body.next_steps ?? '',
+          // The transcript is the host's to state; a caller that has none saves a
+          // checkpoint without one rather than inventing it.
+          [...(context.session?.recentConversation ?? [])]
+        );
+        return { id: String(id) };
+      },
+    },
+    {
+      contract: {
+        name: 'memory.search',
+        summary:
+          'Search or list memory records under the caller authority. Omitted scopes read the admitted corpus; explicit scopes must be a subset of it. With a query this is the semantic recall path (vector + lexical fusion, learned ranker when enabled); without one it is the exact topic-prefix ledger read.',
+        inputSchema: memorySearchSchema,
+        examples: [
+          {
+            title: 'Recall what was decided about deploys',
+            input: { query: 'deploy window decision', limit: 5 },
+          },
+          {
+            title: 'Every record filed under one item key',
+            input: { topicPrefix: 'item_0001', limit: 30 },
+          },
+        ],
+      },
+      exec: async (input, context) => {
+        const query = input as {
+          query?: string;
+          limit?: number;
+          scopes?: MemoryScopeRef[];
+          threshold?: number;
+          strict?: boolean;
+          strictness?: 'recall' | 'balanced' | 'strict';
+          disableRecency?: boolean;
+          includeRelated?: boolean;
+          topicPrefix?: string;
+          minLexicalSupport?: boolean;
+          diagnostics?: boolean;
+          rerankWithLearned?: boolean;
+          useReranking?: boolean;
+        };
+        const scopes = boundReadScopesFor(context.access, query.scopes);
+        if (scopes.length === 0) {
+          // No admitted scopes means no visible corpus — an honest empty page,
+          // not the legacy unbounded scan.
+          return { success: true, results: [], count: 0 };
+        }
+        if (typeof query.query !== 'string' || query.query.trim().length === 0) {
+          const rows = await listDecisionsInAdapter(adapter, {
+            limit: query.limit,
+            topicPrefix: query.topicPrefix,
+            scopes,
+          });
+          const items = Array.isArray(rows) ? rows : [];
+          return { success: true, results: items, count: items.length };
+        }
+        const result = (await suggestInAdapter(adapter, query.query, {
+          limit: query.limit,
+          threshold: query.threshold,
+          strict: query.strict,
+          strictness: query.strictness,
+          disableRecency: query.disableRecency,
+          includeRelated: query.includeRelated,
+          topicPrefix: query.topicPrefix,
+          minLexicalSupport: query.minLexicalSupport,
+          diagnostics: query.diagnostics,
+          rerankWithLearned: query.rerankWithLearned,
+          useReranking: query.useReranking,
+          ...(runner?.() ? { runner: runner() } : {}),
+          scopes,
+        })) as Record<string, unknown> | null;
+        if (!result || typeof result !== 'object') {
+          return {
+            success: false,
+            code: 'suggest_returned_null',
+            error: 'Search failed: suggest() returned no result for query',
+            results: [],
+            count: 0,
+          };
+        }
+        return result;
+      },
+    },
+    {
+      contract: {
+        name: 'memory.checkpoint.load',
+        summary:
+          'Load the latest active session checkpoint — the durable hand-off record a later turn restores work from. Returns null when none exists.',
+        inputSchema: memoryCheckpointLoadSchema,
+        examples: [{ title: 'Restore the last checkpoint', input: {} }],
+      },
+      exec: (_input, _context) => loadCheckpointInAdapter(adapter),
+    },
+    {
+      contract: {
+        name: 'memory.checkpoint.list',
+        summary:
+          'List recent session checkpoints, newest first — the hand-off records this workspace kept, including superseded ones. `limit` defaults to 20 and is capped at 50.',
+        inputSchema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            limit: { type: 'number' },
+          },
+        },
+        examples: [{ title: 'What was handed off recently', input: { limit: 10 } }],
+      },
+      exec: async (input) => {
+        const raw = Number((input as { limit?: unknown }).limit);
+        const limit = Number.isFinite(raw) ? Math.min(Math.max(Math.floor(raw), 1), 50) : 20;
+        const checkpoints = await listCheckpointsInAdapter(adapter, limit);
+        return { checkpoints, count: checkpoints.length };
+      },
+    },
+    {
+      contract: {
+        name: 'memory.read:listing',
+        summary:
+          'Decisions under the admitted scopes as a list: `order: recent` is what changed last, `order: stale` is what has gone longest untouched, and `status` narrows to one lifecycle state. The default compact view keeps the complete decision and a short reasoning preview; use memory.search(topicPrefix) for one topic or `detail: full` for complete batch reasoning. `limit` defaults to 50 and is capped at 200.',
+        inputSchema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            status: { type: 'string' },
+            order: { type: 'string', enum: ['recent', 'stale'] },
+            limit: { type: 'number' },
+            detail: { type: 'string', enum: ['compact', 'full'] },
+            scopes: { type: 'array', items: scopeRefSchema },
+          },
+        },
+        examples: [
+          { title: 'Active decisions going stale', input: { status: 'active', order: 'stale' } },
+          { title: 'What changed lately', input: { order: 'recent', limit: 20 } },
+          { title: 'Read complete reasoning for the scoped list', input: { detail: 'full' } },
+        ],
+      },
+      exec: async (input, context) => {
+        const query = input as {
+          status?: unknown;
+          order?: unknown;
+          limit?: unknown;
+          detail?: unknown;
+          scopes?: MemoryScopeRef[];
+        };
+        const scopes = boundReadScopesFor(context.access, query.scopes);
+        const decisions = await readDecisionListing(adapter, scopes, {
+          ...(typeof query.status === 'string' ? { status: query.status } : {}),
+          ...(query.order === 'stale' ? { order: 'stale' as const } : { order: 'recent' as const }),
+          ...(Number.isFinite(Number(query.limit)) ? { limit: Number(query.limit) } : {}),
+        });
+        if (query.detail === 'full') return { decisions, count: decisions.length };
+        const compact = decisions.map(({ reasoning, ...row }) => {
+          const points = Array.from(reasoning ?? '');
+          return {
+            ...row,
+            reasoningPreview: points.slice(0, 160).join(''),
+            reasoningTruncated: points.length > 160,
+          };
+        });
+        return { decisions: compact, count: compact.length };
+      },
+    },
+    {
+      contract: {
+        name: 'memory.read:projects',
+        summary:
+          'Project rollups over the admitted scopes: how many active decisions each project holds and when it last moved. Name a `project` to get that project\u2019s decisions instead, still bounded by what the caller admits.',
+        inputSchema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            project: { type: 'string' },
+            limit: { type: 'number' },
+            scopes: { type: 'array', items: scopeRefSchema },
+          },
+        },
+        examples: [
+          { title: 'Which projects are busy', input: {} },
+          { title: 'What one project holds', input: { project: 'mama', limit: 20 } },
+        ],
+      },
+      exec: async (input, context) => {
+        const query = input as { project?: unknown; limit?: unknown; scopes?: MemoryScopeRef[] };
+        const scopes = boundReadScopesFor(context.access, query.scopes);
+        const project = typeof query.project === 'string' ? query.project.trim() : '';
+        if (project) {
+          const decisions = await readProjectDecisions(
+            adapter,
+            scopes,
+            project,
+            Number.isFinite(Number(query.limit)) ? Number(query.limit) : 50
+          );
+          return { project, decisions, count: decisions.length };
+        }
+        const projects = await readProjectRollups(adapter, scopes);
+        return { projects, count: projects.length };
+      },
+    },
+    {
+      contract: {
+        name: 'memory.read:graph',
+        summary:
+          'The decision graph this caller may see: `view: graph` returns a bounded page of nodes with the edges joining admitted nodes and the admitted total; `nodes` returns the named ids; `detail` returns one record in full; `similarity` returns what the vector index says is near, over the admitted window. Every view is bounded by the admitted scopes.',
+        inputSchema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            view: { type: 'string', enum: ['graph', 'nodes', 'detail', 'similarity'] },
+            id: { type: 'string' },
+            ids: { type: 'array', items: { type: 'string' } },
+            limit: { type: 'number' },
+            scopes: { type: 'array', items: scopeRefSchema },
+          },
+        },
+        examples: [
+          { title: 'The graph a viewer draws', input: { view: 'graph', limit: 100 } },
+          { title: 'One decision in full', input: { view: 'detail', id: 'judgment_…' } },
+        ],
+      },
+      exec: async (input, context) => {
+        const query = input as {
+          view?: unknown;
+          id?: unknown;
+          ids?: unknown;
+          limit?: unknown;
+          scopes?: MemoryScopeRef[];
+        };
+        const scopes = boundReadScopesFor(context.access, query.scopes);
+        const view = typeof query.view === 'string' ? query.view : 'graph';
+        const rawLimit = Number(query.limit);
+        const limit = Number.isFinite(rawLimit)
+          ? Math.min(Math.max(Math.floor(rawLimit), 1), 1000)
+          : null;
+        if (view === 'detail') {
+          const id = typeof query.id === 'string' ? query.id.trim() : '';
+          if (!id) {
+            throw new JudgmentError('INVALID_INPUT', 'memory.read:graph detail requires an id');
+          }
+          const [node] = await readGraphNodes(adapter, scopes, { ids: [id], limit: 1 });
+          return { node: node ?? null };
+        }
+        if (view === 'nodes') {
+          const ids = Array.isArray(query.ids)
+            ? query.ids.filter((id): id is string => typeof id === 'string' && id.trim() !== '')
+            : [];
+          if (ids.length === 0) {
+            return { nodes: [] };
+          }
+          return { nodes: await readGraphNodes(adapter, scopes, { ids, limit: null }) };
+        }
+        if (view === 'similarity') {
+          return { edges: await readGraphSimilarityEdges(adapter, scopes) };
+        }
+        const [nodes, edges, total] = await Promise.all([
+          readGraphNodes(adapter, scopes, { limit }),
+          readGraphEdges(adapter, scopes),
+          countGraphNodes(adapter, scopes),
+        ]);
+        return { nodes, edges, total };
+      },
+    },
+    {
+      contract: {
+        name: 'memory.read:stats',
+        summary:
+          'Counts over the memory this caller may see: decisions in total and over the last week and month, the outcome breakdown, the five busiest topics, and how many checkpoints exist. Bounded by the admitted scopes — a principal that admits nothing counts nothing.',
+        inputSchema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            scopes: { type: 'array', items: scopeRefSchema },
+          },
+        },
+        examples: [{ title: 'What this workspace holds', input: {} }],
+      },
+      exec: async (input, context) => {
+        const query = input as { scopes?: MemoryScopeRef[] };
+        const scopes = boundReadScopesFor(context.access, query.scopes);
+        return readMemoryStatsInAdapter(adapter, scopes);
+      },
+    },
+    {
+      contract: {
+        name: 'memory.read:topic',
+        summary:
+          'Read the topic recall bundle — the profile, ranked memories, and graph context a question rests on. Omitted scopes read the admitted corpus; explicit scopes must be a subset of it. An admitted-empty caller gets an empty bundle, never an unbounded scan.',
+        inputSchema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            query: { type: 'string' },
+            scopes: { type: 'array', items: scopeRefSchema },
+          },
+          required: ['query'],
+        },
+        examples: [
+          {
+            title: 'Recall everything relevant to a topic',
+            input: { query: 'deploy freeze decision' },
+          },
+        ],
+      },
+      exec: async (input, context) => {
+        const query = input as { query?: string; scopes?: MemoryScopeRef[] };
+        const scopes = boundReadScopesFor(context.access, query.scopes);
+        if (typeof query.query !== 'string' || query.query.trim().length === 0) {
+          throw new JudgmentError('INVALID_INPUT', 'memory.read:topic requires a non-empty query');
+        }
+        // Scrubbed and narrowed to the fields a read may answer with. This
+        // lived in a host tool case that wrapped the action, so a caller naming
+        // memory.read:topic got unredacted full records while
+        // memory.read:provenance below scrubbed its excerpts.
+        return sanitizeRecallBundle(
+          await recallMemory(adapter, query.query, { scopes, includeProfile: true })
+        );
+      },
+    },
+    {
+      contract: {
+        name: 'memory.read:provenance',
+        summary:
+          "Resolve a stored memory's recorded cause and derived_from observation links. Every supporting observation is checked against the current caller's source-read authority; a memory id grants no access. Omit scopes to use the admitted read scope. Excerpts are scrubbed with the recall redaction.",
+        inputSchema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            // Nonblank at the contract, not only in exec: the deleted host tool
+            // trimmed and refused a blank handle before dispatching, and a
+            // whitespace id is not a handle.
+            memory_id: { type: 'string', pattern: '\\S' },
+            scopes: { type: 'array', items: scopeRefSchema },
+          },
+          required: ['memory_id'],
+        },
+        examples: [
+          {
+            title: 'What does this decision rest on',
+            input: { memory_id: 'mem_7f3a' },
+          },
+        ],
+      },
+      exec: async (input, context) => {
+        const body = input as { memory_id?: string; scopes?: MemoryScopeRef[] };
+        const scopes = boundReadScopesFor(context.access, body.scopes);
+        if (typeof body.memory_id !== 'string' || body.memory_id.trim().length === 0) {
+          throw new JudgmentError(
+            'INVALID_INPUT',
+            'memory.read:provenance requires a non-empty memory_id'
+          );
+        }
+        const allowance = context.readAllowance;
+        return resolveMemoryProvenanceLive(adapter, body.memory_id, {
+          scopes,
+          connectors: allowance?.connectors ?? [],
+          wideConnectors: allowance?.wideConnectors ?? [],
+          ...(allowance?.channels ? { channels: allowance.channels } : {}),
+          ...(allowance?.projectIds === undefined ? {} : { projectIds: allowance.projectIds }),
+          tenantId: allowance?.tenantId ?? null,
+          minObservedMs: allowance?.minObservedMs ?? null,
+          maxObservedMs: allowance?.maxObservedMs ?? null,
+          principalId: context.access.principalId,
+          redact: (text: string) => sanitizeRecallText(text) ?? '',
+        });
+      },
+    },
+    {
+      contract: {
+        name: 'memory.read:experience',
+        summary:
+          'Read execution evidence — the tool-trace ledger. One trace by trace_id, or a bounded page filtered by run_id/tool_name/cursor. The caller authority scopes the read: principalId becomes owner_scope, the single admitted project scope becomes project_id, and a non-owner caller must carry a channel scope that becomes channel_id. A trace id is never a capability — input cannot widen the scope.',
+        inputSchema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            trace_id: { type: 'string', minLength: 1 },
+            run_id: { type: 'string', minLength: 1 },
+            tool_name: { type: 'string', minLength: 1 },
+            cursor: { type: 'string', minLength: 1 },
+            limit: { type: 'number' },
+            evidence_only: { type: 'boolean' },
+            offset: { type: 'number' },
+            chars: { type: 'number' },
+          },
+        },
+        examples: [
+          { title: 'Read one execution trace', input: { trace_id: 'trace_abc' } },
+          { title: 'List recent tool evidence for a run', input: { run_id: 'run_1', limit: 10 } },
+        ],
+      },
+      exec: async (input, context) => {
+        const body = input as {
+          trace_id?: string;
+          run_id?: string;
+          tool_name?: string;
+          cursor?: string;
+          limit?: number;
+          evidence_only?: boolean;
+          offset?: number;
+          chars?: number;
+        };
+        // Execution evidence answers to the RUN, not to the caller's memory
+        // scopes: exactly one project, the owner lane or the principal, and a
+        // channel for a member. The host states that as a session fact, which
+        // is why this reads it rather than re-deriving it from `access` --
+        // a host used to rewrite the principal's scopes for this one tool name,
+        // and an access object with two authorities on it is what that cost.
+        const evidence = context.session?.runEvidenceScope;
+        if (!evidence) {
+          throw new JudgmentError(
+            'SCOPE_DENIED',
+            'memory.read:experience requires the run evidence authority'
+          );
+        }
+        const isOwnerRuntime = evidence.ownerScope === 'owner:runtime';
+        if (!isOwnerRuntime && !evidence.channelId) {
+          throw new JudgmentError(
+            'SCOPE_DENIED',
+            'memory.read:experience member reads require an admitted channel scope'
+          );
+        }
+        const scope = {
+          owner_scope: evidence.ownerScope,
+          project_id: evidence.projectId,
+          ...(isOwnerRuntime ? {} : { channel_id: evidence.channelId! }),
+        };
+        if (body.trace_id !== undefined) {
+          if (
+            body.run_id !== undefined ||
+            body.tool_name !== undefined ||
+            body.cursor !== undefined ||
+            body.limit !== undefined ||
+            body.evidence_only !== undefined
+          ) {
+            throw new JudgmentError(
+              'INVALID_INPUT',
+              'memory.read:experience trace reads accept only offset and chars beside trace_id'
+            );
+          }
+          const offset = body.offset ?? 0;
+          const chars = body.chars ?? 4000;
+          if (
+            !Number.isSafeInteger(offset) ||
+            offset < 0 ||
+            !Number.isSafeInteger(chars) ||
+            chars < 1 ||
+            chars > 8000
+          ) {
+            throw new JudgmentError('INVALID_INPUT', 'memory.read:experience offset/chars invalid');
+          }
+          const trace = await readToolTrace(adapter, body.trace_id, scope);
+          if (!trace) {
+            throw new JudgmentError(
+              'NOT_FOUND',
+              `Execution evidence unavailable: ${body.trace_id}`
+            );
+          }
+          const text = Array.from(trace.evidence_json ?? '');
+          if (offset > text.length) {
+            throw new JudgmentError('INVALID_INPUT', 'memory.read:experience offset out of range');
+          }
+          const end = Math.min(offset + chars, text.length);
+          return {
+            trace: { ...trace, evidence_json: null },
+            content: text.slice(offset, end).join(''),
+            offset,
+            total_chars: text.length,
+            next_offset: end < text.length ? end : null,
+          };
+        }
+        return listToolTraces(adapter, {
+          ...scope,
+          ...(body.run_id !== undefined ? { model_run_id: body.run_id } : {}),
+          ...(body.tool_name !== undefined ? { tool_name: body.tool_name } : {}),
+          ...(body.cursor !== undefined ? { cursor: body.cursor } : {}),
+          ...(body.limit !== undefined ? { limit: body.limit } : {}),
+          ...(body.evidence_only !== undefined ? { evidence_only: body.evidence_only } : {}),
+        });
+      },
+    },
+    {
+      contract: {
+        name: 'source.ingest',
+        summary:
+          'Store one explicitly provided raw observation — a content body or one whole conversation — under the caller authority. One call is one observation: no extraction, no judgment rows, no per-message split. The operationId is the command id, so retransmitting the same call replays the stored receipt instead of writing a second observation.',
+        inputSchema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            content: { type: 'string' },
+            messages: {
+              type: 'array',
+              items: {
+                type: 'object',
+                required: ['role', 'content'],
+                additionalProperties: false,
+                properties: {
+                  role: { type: 'string' },
+                  content: { type: 'string' },
+                },
+              },
+            },
+            source: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                connector: { type: 'string' },
+                id: { type: 'string' },
+                package: { type: 'string' },
+                source_type: { type: 'string' },
+              },
+            },
+            session_date: { type: 'string' },
+            scopes: { type: 'array', items: scopeRefSchema },
+            metadata: { type: 'object' },
+          },
+        },
+        examples: [
+          {
+            title: 'Import a conversation as one raw observation',
+            input: {
+              messages: [
+                { role: 'user', content: 'ship on Friday?' },
+                { role: 'assistant', content: 'yes, after the freeze lifts' },
+              ],
+              source: { connector: 'conversation:mcp_ingest_conversation' },
+            },
+          },
+        ],
+      },
+      exec: async (input, context) => {
+        const body = input as {
+          content?: string;
+          messages?: Array<{ role?: string; content?: string }>;
+          source?: { connector?: string; id?: string; package?: string; source_type?: string };
+          session_date?: string;
+          scopes?: MemoryScopeRef[];
+          metadata?: Record<string, JsonValue>;
+        };
+        const hasContent = typeof body.content === 'string' && body.content.trim().length > 0;
+        const messages = Array.isArray(body.messages)
+          ? body.messages.filter(
+              (m) => typeof m?.role === 'string' && typeof m?.content === 'string'
+            )
+          : [];
+        const hasMessages = messages.length > 0;
+        if (hasContent === hasMessages) {
+          throw new JudgmentError(
+            'INVALID_INPUT',
+            'source.ingest requires exactly one of content or a non-empty messages array'
+          );
+        }
+        const commandId = requiredOperationId(context, 'source.ingest');
+        const sessionMs = body.session_date === undefined ? null : Date.parse(body.session_date);
+        if (body.session_date !== undefined && !Number.isFinite(sessionMs)) {
+          throw new JudgmentError(
+            'INVALID_INPUT',
+            `source.ingest session_date is not a parseable date: ${body.session_date}`
+          );
+        }
+        const connector =
+          body.source?.connector ??
+          (body.source?.source_type ? `conversation:${body.source.source_type}` : 'explicit');
+        const receipt = await ingestSource(
+          {
+            commandId,
+            source: { connector, id: body.source?.id ?? commandId },
+            body: hasContent
+              ? (body.content as string)
+              : messages.map((m) => `${m.role}: ${m.content}`).join('\n'),
+            sourceAt: sessionMs,
+            metadata: {
+              ...(body.metadata ?? {}),
+              ...(body.source ? { source: body.source as unknown as JsonValue } : {}),
+              ...(hasMessages
+                ? {
+                    message_count: messages.length,
+                    roles: messages.map((m) => m.role as string),
+                    session_date: body.session_date ?? null,
+                  }
+                : {}),
+            },
+            ...(body.scopes ? { scopes: body.scopes } : {}),
+            event: { reason: 'source ingest command' },
+          },
+          context.access,
+          { adapter }
+        );
+        // The observation id is the ref later reads (source.read) name.
+        return { ...receipt, observationRef: receipt.observationId };
+      },
+    },
+    {
+      contract: {
+        name: 'work.list',
+        summary:
+          'Page the owner-work commitment log under the caller authority — coverage reasons name rows outside the caller scopes rather than shortening the page silently.',
+        inputSchema: workListSchema,
+        examples: [
+          { title: 'The current board, one page', input: { limit: 25 } },
+          {
+            title: 'What the board looked like then',
+            input: { asOf: 1760000000000, history: 'all' },
+          },
+        ],
+      },
+      exec: (input, context) => knowledge.readWork(input as WorkRead, context.access),
+    },
+    {
+      contract: {
+        name: 'work.show',
+        summary:
+          'One commitment by commitmentId (or rowId): current head, or every revision with history: all.',
+        inputSchema: workShowSchema,
+        examples: [
+          { title: 'One task as it stands', input: { commitmentId: 'commitment_…' } },
+          {
+            title: 'Every revision it ever took',
+            input: { commitmentId: 'commitment_…', history: 'all' },
+          },
+        ],
+      },
+      exec: (input, context) => {
+        const body = input as WorkRead;
+        if (body.commitmentId === undefined && body.rowId === undefined) {
+          throw new JudgmentError(
+            'INVALID_COMMAND',
+            'work.show requires commitmentId or rowId: name the commitment'
+          );
+        }
+        return knowledge.readWork(body, context.access);
+      },
+    },
+    ...(effects !== undefined
+      ? [
+          {
+            contract: {
+              name: 'work.changes',
+              summary:
+                'What this system durably changed in a window, with coverage. Use view=turn_inputs and an effect_id to page the accepted inputs in its native model turn; that relation is turn context, not an assertion that every input directly caused the effect.',
+              inputSchema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  view: { type: 'string', enum: ['changes', 'turn_inputs'] },
+                  effect_id: { type: 'integer', minimum: 1 },
+                  cursor: { type: 'integer', minimum: 0 },
+                  since: { type: 'string' },
+                  target_type: { type: 'string', enum: [...CHANGES_READ_TARGET_TYPES] },
+                  cause_state: { type: 'string', enum: [...CHANGES_READ_CAUSE_STATES] },
+                  limit: {
+                    oneOf: [
+                      { type: 'integer', minimum: 1 },
+                      { type: 'string', minLength: 1 },
+                    ],
+                  },
+                },
+              } satisfies ActionSchemaObject,
+              examples: [
+                { title: 'What changed today', input: {} },
+                {
+                  title: 'Unexplained task changes this week',
+                  input: { since: '7d', target_type: 'task', cause_state: 'unattributed' },
+                },
+                {
+                  title: 'Inputs in one effect’s native turn',
+                  input: { view: 'turn_inputs', effect_id: 1, limit: 25 },
+                },
+              ],
+            },
+            exec: (input: unknown, context) => {
+              const body = input as Record<string, unknown>;
+              if (body.view === 'turn_inputs') {
+                if (
+                  body.since !== undefined ||
+                  body.target_type !== undefined ||
+                  body.cause_state !== undefined
+                ) {
+                  throw new JudgmentError(
+                    'INVALID_INPUT',
+                    'turn_inputs reads one effect; window filters do not apply'
+                  );
+                }
+                const effectId = body.effect_id;
+                const limit = body.limit === undefined ? 25 : Number(body.limit);
+                const afterId = body.cursor === undefined ? 0 : body.cursor;
+                if (
+                  typeof effectId !== 'number' ||
+                  !Number.isSafeInteger(effectId) ||
+                  effectId < 1 ||
+                  !Number.isSafeInteger(limit) ||
+                  limit < 1 ||
+                  limit > 100 ||
+                  typeof afterId !== 'number' ||
+                  !Number.isSafeInteger(afterId) ||
+                  afterId < 0
+                ) {
+                  throw new JudgmentError(
+                    'INVALID_INPUT',
+                    'turn_inputs requires a valid effect_id, limit and cursor'
+                  );
+                }
+                if (!effects.listTurnInputs) {
+                  throw new JudgmentError(
+                    'TOOL_ERROR',
+                    'Native turn input reader is not configured'
+                  );
+                }
+                const change = effects.listChanges({ id: effectId, limit: 1 })[0];
+                if (!change?.runId) {
+                  throw new JudgmentError('NOT_FOUND', 'Native turn context is not visible');
+                }
+                let page: ReturnType<NonNullable<typeof effects.listTurnInputs>>;
+                try {
+                  page = effects.listTurnInputs(change.runId, context.access.principalId, {
+                    afterId,
+                    limit,
+                  });
+                } catch (error) {
+                  const message = error instanceof Error ? error.message : String(error);
+                  if (
+                    /Model run not found|matching principal-bound|no accepted native turn receipt/.test(
+                      message
+                    )
+                  ) {
+                    throw new JudgmentError('NOT_FOUND', 'Native turn context is not visible');
+                  }
+                  throw error;
+                }
+                return {
+                  success: true,
+                  view: 'turn_inputs',
+                  effect_id: effectId,
+                  run_id: change.runId,
+                  relation: 'shared_native_turn_context',
+                  direct_cause_event_ids: change.sourceEventIds,
+                  run_status: page.runStatus,
+                  returned: page.items.length,
+                  next_cursor: page.nextCursor,
+                  items: page.items,
+                };
+              }
+              if (body.effect_id !== undefined || body.cursor !== undefined) {
+                throw new JudgmentError(
+                  'INVALID_INPUT',
+                  'effect_id and cursor require view=turn_inputs'
+                );
+              }
+              const result = readChanges(effects, input as ChangesReadInput, Date.now());
+              if (!result.success) {
+                throw new JudgmentError(result.code, result.error);
+              }
+              return result;
+            },
+          } satisfies ActionRegistration,
+        ]
+      : []),
+    {
+      contract: {
+        name: 'operation.get',
+        summary:
+          'Settle a call whose reply was lost: which command the operationId bound to, under whose authority, and the receipt it committed. An operationId that is absent — or belongs to another principal — answers unavailable, never existence.',
+        inputSchema: operationGetSchema,
+        examples: [
+          {
+            title: 'A reply lost after commit',
+            input: { operationId: 'op_…' },
+          },
+        ],
+      },
+      exec: (input, context) =>
+        readOperation(adapter, (input as { operationId: string }).operationId, context.access),
+    },
+  ];
+}

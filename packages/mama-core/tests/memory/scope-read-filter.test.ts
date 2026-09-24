@@ -6,8 +6,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { closeDB, getAdapter, initDB } from '../../src/db-manager.js';
-import { saveMemoryWithTrustedProvenance } from '../../src/memory/api.js';
-import { createTrustedProvenanceCapability } from '../../src/memory/provenance.js';
+import { saveJudgmentRecord } from '../../src/memory/api.js';
 import {
   getMemoryProvenance,
   listMemoriesByGatewayCallId,
@@ -29,7 +28,8 @@ function cleanupDb(): void {
 }
 
 async function saveScoped(topic: string, scope: MemoryScopeRef) {
-  return saveMemoryWithTrustedProvenance(
+  return saveJudgmentRecord(
+    getAdapter(),
     {
       topic,
       kind: 'decision',
@@ -38,13 +38,12 @@ async function saveScoped(topic: string, scope: MemoryScopeRef) {
       scopes: [scope],
       source: { package: 'mama-core', source_type: 'test', project_id: scope.id },
     },
+    { principalId: 'test-principal', agentId: 'main_agent', scopes: [scope] },
+    `test-cmd-${topic}`,
     {
-      capability: createTrustedProvenanceCapability(),
-      provenance: {
-        actor: 'main_agent',
-        gateway_call_id: 'gw_scope_filter',
-        source_refs: [`message:${topic}`],
-      },
+      actor: 'main_agent',
+      gatewayCallId: 'gw_scope_filter',
+      sourceRefs: [`message:${topic}`],
     }
   );
 }
@@ -76,6 +75,7 @@ describe('Story M2.3: Scope-aware provenance read filters', () => {
     cleanupDb();
     process.env.MAMA_DB_PATH = TEST_DB;
     process.env.MAMA_FORCE_TIER_3 = 'true';
+    await initDB();
   });
 
   afterEach(async () => {
@@ -95,13 +95,15 @@ describe('Story M2.3: Scope-aware provenance read filters', () => {
         const projectA = await saveScoped('project-a-memory', PROJECT_A);
         const projectB = await saveScoped('project-b-memory', PROJECT_B);
 
-        const scoped = await listMemoriesByGatewayCallId('gw_scope_filter', {
+        const scoped = await listMemoriesByGatewayCallId(getAdapter(), 'gw_scope_filter', {
           scopes: [PROJECT_A],
         });
 
         expect(scoped.map((memory) => memory.memory_id)).toContain(projectA.id);
         expect(scoped.map((memory) => memory.memory_id)).not.toContain(projectB.id);
-        await expect(getMemoryProvenance(projectB.id, { scopes: [PROJECT_A] })).resolves.toBeNull();
+        await expect(
+          getMemoryProvenance(getAdapter(), projectB.id, { scopes: [PROJECT_A] })
+        ).resolves.toBeNull();
       });
     });
 
@@ -111,20 +113,20 @@ describe('Story M2.3: Scope-aware provenance read filters', () => {
         insertLegacyUnscoped('mem-legacy-unscoped');
 
         await expect(
-          getMemoryProvenance('mem-legacy-unscoped', { scopes: [PROJECT_A] })
+          getMemoryProvenance(getAdapter(), 'mem-legacy-unscoped', { scopes: [PROJECT_A] })
         ).resolves.toBeNull();
         await expect(
-          listMemoriesByGatewayCallId('gw_scope_filter', { scopes: [PROJECT_A] })
+          listMemoriesByGatewayCallId(getAdapter(), 'gw_scope_filter', { scopes: [PROJECT_A] })
         ).resolves.toEqual([]);
 
         await expect(
-          getMemoryProvenance('mem-legacy-unscoped', {
+          getMemoryProvenance(getAdapter(), 'mem-legacy-unscoped', {
             scopes: [PROJECT_A],
             includeLegacyUnscoped: true,
           })
         ).resolves.toMatchObject({ memory_id: 'mem-legacy-unscoped' });
         await expect(
-          listMemoriesByGatewayCallId('gw_scope_filter', {
+          listMemoriesByGatewayCallId(getAdapter(), 'gw_scope_filter', {
             scopes: [PROJECT_A],
             includeLegacyUnscoped: true,
           })

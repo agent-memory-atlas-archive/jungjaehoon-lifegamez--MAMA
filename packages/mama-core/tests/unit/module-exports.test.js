@@ -16,19 +16,15 @@ describe('Story M1.1: Core Module Exports', () => {
       const mama = await import('../../src/mama-api.js');
       const namedFunctionExports = [
         'save',
-        'saveWithTrustedProvenance',
         'suggest',
         'saveMemory',
-        'saveMemoryWithTrustedProvenance',
         'recallMemory',
         'list',
         'listCheckpoints',
         'updateOutcome',
         'buildProfile',
         'ingestMemory',
-        'ingestWithTrustedProvenance',
         'ingestConversation',
-        'ingestConversationWithTrustedProvenance',
         'evolveMemory',
         'buildMemoryBootstrap',
         'createAuditAck',
@@ -43,13 +39,13 @@ describe('Story M1.1: Core Module Exports', () => {
         'listMemoryEventsForMemory',
         'listRecentMemoryEvents',
         'beginModelRun',
-        'beginModelRunInAdapter',
+        'beginModelRun',
         'commitModelRun',
-        'commitModelRunInAdapter',
+        'commitModelRun',
         'failModelRun',
-        'failModelRunInAdapter',
+        'failModelRun',
         'getModelRun',
-        'getModelRunInAdapter',
+        'getModelRun',
         'appendToolTrace',
         'listToolTracesForRun',
         'saveCheckpoint',
@@ -77,13 +73,13 @@ describe('Story M1.1: Core Module Exports', () => {
       const core = await import('../../src/index.js');
 
       expect(typeof core.beginModelRun).toBe('function');
-      expect(typeof core.beginModelRunInAdapter).toBe('function');
+      expect(typeof core.beginModelRun).toBe('function');
       expect(typeof core.commitModelRun).toBe('function');
-      expect(typeof core.commitModelRunInAdapter).toBe('function');
+      expect(typeof core.commitModelRun).toBe('function');
       expect(typeof core.failModelRun).toBe('function');
-      expect(typeof core.failModelRunInAdapter).toBe('function');
+      expect(typeof core.failModelRun).toBe('function');
       expect(typeof core.getModelRun).toBe('function');
-      expect(typeof core.getModelRunInAdapter).toBe('function');
+      expect(typeof core.getModelRun).toBe('function');
       expect(typeof core.appendToolTrace).toBe('function');
       expect(typeof core.listToolTracesForRun).toBe('function');
     });
@@ -96,45 +92,36 @@ describe('Story M1.1: Core Module Exports', () => {
     });
   });
 
-  describe('package root context-compile exports', () => {
-    it('should export context compile ref and visibility helpers', async () => {
+  describe('package root scope exports', () => {
+    // The context-compile subsystem is gone. What the root still owes from it is scope
+    // identity, which moved to memory/types with the type it canonicalizes.
+    it('should export scope canonicalization', async () => {
       const core = await import('../../src/index.js');
 
-      expect(typeof core.normalizeContextRef).toBe('function');
-      expect(typeof core.serializeContextRefForProvenance).toBe('function');
-      expect(typeof core.toTwinRef).toBe('function');
       expect(typeof core.canonicalizeContextScopes).toBe('function');
-      expect(typeof core.derivePrimaryContextScope).toBe('function');
-      expect(typeof core.assertContextBoundaryAllowsInput).toBe('function');
-      expect(typeof core.sanitizeContextPacketForVisibility).toBe('function');
     });
 
-    it('should expose the context-compile subpath in the package export map', () => {
+    it('should no longer expose the context-compile subpath', () => {
       const packageJson = JSON.parse(
         readFileSync(new URL('../../package.json', import.meta.url), 'utf8')
       );
 
-      expect(packageJson.exports['./context-compile']).toBe('./dist/context-compile/index.js');
+      expect(packageJson.exports['./context-compile']).toBeUndefined();
     });
   });
 
   describe('embeddings.js exports', () => {
     it('should export generateEmbedding function', async () => {
-      const embeddings = await import('../../src/embeddings.js');
+      const embeddings = await import('../../src/embedding/embedder.js');
 
       expect(embeddings.generateEmbedding).toBeDefined();
       expect(typeof embeddings.generateEmbedding).toBe('function');
     });
   });
 
-  describe('decision-tracker.js exports', () => {
-    it('should export learnDecision function', async () => {
-      const tracker = await import('../../src/decision-tracker.js');
-
-      expect(tracker.learnDecision).toBeDefined();
-      expect(typeof tracker.learnDecision).toBe('function');
-    });
-  });
+  // decision-tracker.js stood here, and time-formatter.js below. W22 deleted
+  // both: nothing outside the barrel imported them, and a module test that
+  // imports a file only this test imports is checking that the file compiles.
 
   describe('decision-formatter.js exports', () => {
     it('should export formatting functions', async () => {
@@ -181,15 +168,6 @@ describe('Story M1.1: Core Module Exports', () => {
       ]) {
         expect(typeof queries[name]).toBe('function');
       }
-    });
-  });
-
-  describe('time-formatter.js exports', () => {
-    it('should export formatTimeAgo function', async () => {
-      const timeFormatter = await import('../../src/time-formatter.js');
-
-      expect(timeFormatter.formatTimeAgo).toBeDefined();
-      expect(typeof timeFormatter.formatTimeAgo).toBe('function');
     });
   });
 

@@ -8,9 +8,14 @@
 
 ## OVERVIEW
 
-Stdio-based MCP server exposing 4 core tools (save/search/update/load_checkpoint). All business logic delegated to `@jungjaehoon/mama-core`. This package is a thin protocol adapter—no embeddings, no database logic, just MCP tool definitions and stdio transport.
+Stdio-based MCP server. This package is a thin protocol adapter — it owns **no database
+handle and no embedding model**. Every tool call is an action request on the shared
+runtime socket, through the same common client the CLI uses.
 
-**Architecture:** Server class wraps mama-core API → MCP SDK → stdio transport
+**Architecture:** MCP SDK → `call(action, input)` → runtime socket → action catalog/dispatch → Knowledge
+
+Per the unified-core design, this package never imports core internals for business
+operations — no `mama-api`, no `db-manager`, no adapter functions.
 
 ---
 
@@ -19,38 +24,40 @@ Stdio-based MCP server exposing 4 core tools (save/search/update/load_checkpoint
 ```
 src/
 ├── server.js                    # Entry point (MAMAServer class, stdio transport)
-├── tools/                       # MCP tool handlers (10 files)
-│   ├── checkpoint-tools.js      # load_checkpoint handler
-│   ├── save-decision.js         # save (decision) handler
-│   ├── search-narrative.js      # search handler
-│   ├── update-outcome.js        # update handler
-│   ├── suggest-decision.js      # suggest (semantic search)
-│   ├── recall-decision.js       # recall (by topic)
-│   ├── list-decisions.js        # list (recent)
-│   ├── link-tools.js            # link management
-│   └── quality-metrics-tools.js # quality scoring
-├── mama/                        # Support modules (6 files)
-│   ├── hook-metrics.js          # Hook execution timing
-│   ├── search-engine.js         # Search orchestration
-│   ├── transparency-banner.js   # User-facing output formatting
-│   ├── response-formatter.js    # MCP response formatting
-│   ├── link-expander.js         # Decision graph link expansion
-│   └── restart-metrics.js       # Session restart tracking
+├── runtime-client.js            # openRuntimeClient() / callAction() — socket client binding
+├── tools/                       # MCP tool handlers — each takes { call }
+│   ├── index.js                 # createMemoryTools({ call }) registry
+│   ├── checkpoint-tools.js      # save/load checkpoint (memory.checkpoint.*, graph.query)
+│   ├── save-decision.js         # save (decision) handler (memory.save)
+│   ├── search-narrative.js      # search handler (memory.search)
+│   ├── update-outcome.js        # update handler (memory.update)
+│   ├── suggest-decision.js      # suggest (memory.search with query)
+│   ├── recall-decision.js       # recall by topic (memory.read:topic)
+│   ├── list-decisions.js        # list recent (memory.search, no query)
+│   ├── search-decisions-and-contracts.js  # decision + contract lookup (memory.search)
+│   ├── case-timeline-range.js   # bounded case timeline (graph.query view:'timeline')
+│   └── ingest-conversation.js   # conversation ingest (source.ingest)
+└── mama/
+    └── response-formatter.js    # MCP response formatting
 └── db/migrations/               # SQLite schema migrations (inherited from mama-core)
 ```
 
 ---
 
-## MCP TOOLS (4 CORE)
+## MCP TOOLS
 
-| Tool              | Handler              | Description                              |
-| ----------------- | -------------------- | ---------------------------------------- |
-| `save`            | `handleSave()`       | Unified save (decision or checkpoint)    |
-| `search`          | `handleSearch()`     | Semantic search or list recent           |
-| `update`          | `handleUpdate()`     | Update decision outcome (success/failed) |
-| `load_checkpoint` | `loadCheckpointTool` | Resume previous session                  |
+| Tool                             | Action(s)                                                            | Description                                         |
+| -------------------------------- | -------------------------------------------------------------------- | --------------------------------------------------- |
+| `save`                           | `memory.save` / `memory.checkpoint.save`                             | Unified save (decision or checkpoint)               |
+| `search`                         | `memory.search` / `memory.checkpoint.load`                           | Semantic search, list recent, or resume             |
+| `update`                         | `memory.update`                                                      | Update decision outcome (success/failed)            |
+| `search_decisions_and_contracts` | `memory.search` (×2)                                                 | Decisions + `contract_`-prefixed topics             |
+| `case_timeline_range`            | `graph.query` view `'timeline'`                                      | Bounded case history window                         |
+| `load_checkpoint`                | `memory.checkpoint.load` + `memory.search` + `graph.query` neighbors | Resume previous session (unadvertised compat alias) |
 
-**Additional tools (legacy):** suggest-decision, recall-decision, list-decisions, link-tools, quality-metrics-tools (all delegate to mama-core)
+**Tool contract:** factories take `{ call }` — `call(action, input)` resolves to the
+action's data payload. Action failures throw (code/status/operationId preserved);
+never collapse a failed dispatch into an empty success.
 
 ---
 
@@ -59,18 +66,18 @@ src/
 **Transport:** stdio (standard MCP pattern)  
 **Format:** JSON-RPC 2.0  
 **Handlers:** `ListToolsRequestSchema`, `CallToolRequestSchema`  
-**No HTTP:** MCP uses stdin/stdout only. Embeddings run in process through mama-core.
+**No HTTP:** MCP uses stdin/stdout only. There is no MCP-owned HTTP listener and no
+embedding startup path — embeddings are the runtime's concern.
 
 ---
 
 ## DEPENDENCIES
 
-**Critical:** All functionality imported from `@jungjaehoon/mama-core`:
-
-- `mama-api.js` — High-level API (save/search/update/checkpoint)
-- `db-manager.js` — Database initialization
-- `embeddings.js` — Embedding generation
-- `embeddings.js` — in-process embedding generation
+**Runtime boundary:** `runtime-client.js` resolves `MAMA_HOME` for
+`runtime.sock`, `runtime/client-journal.jsonl`, and `session-credential`, then binds
+`createClient` from `@jungjaehoon/mama-core`. The runtime owns the store and the
+embedding model; a missing credential means calls are denied — that is the honest
+answer when no session exists.
 
 **MCP SDK:** `@modelcontextprotocol/sdk` v1.0.1
 
@@ -78,8 +85,9 @@ src/
 
 ## NOTES
 
-- **No business logic here:** All save/search/update logic in mama-core
-- **Hook metrics:** `mama/hook-metrics.js` tracks PreToolUse/PostToolUse timing (Claude Code plugin only)
-- **Runtime:** Stdio only; there is no MCP-owned HTTP listener
-- **Database:** `~/.claude/mama-memory.db` (configurable via `MAMA_DB_PATH`)
+- **No business logic here:** all save/search/update logic lives in mama-core
+  behind the action catalog.
+- **No provenance forwarding:** tools never accept or forward caller-supplied
+  provenance; the server composes it from the session's own access.
+- **Runtime:** stdio only.
 - **Node.js:** >= 22.13.0 required

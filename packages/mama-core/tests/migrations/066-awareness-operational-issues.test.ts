@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { applyMigrationsThrough } from '../../src/test-utils.js';
+import { applyMigrationsThrough } from '../helpers/test-utils.js';
 
 let db: Database.Database;
 

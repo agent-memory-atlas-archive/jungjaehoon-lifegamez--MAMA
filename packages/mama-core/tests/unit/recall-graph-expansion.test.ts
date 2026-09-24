@@ -4,7 +4,7 @@ const generateEmbeddingMock = vi.fn();
 const vectorSearchMock = vi.fn();
 const expandWithGraphMock = vi.fn();
 
-vi.mock('../../src/embeddings.js', () => ({
+vi.mock('../../src/embedding/embedder.js', () => ({
   generateEmbedding: generateEmbeddingMock,
   generateEnhancedEmbedding: generateEmbeddingMock,
   isForceTier3Enabled: () => false,
@@ -34,7 +34,7 @@ vi.mock('../../src/db-manager.js', () => ({
     },
   })),
   insertDecisionWithEmbedding: vi.fn(),
-  ensureMemoryScopeInAdapter: vi.fn(() => 1),
+  ensureMemoryScope: vi.fn(() => 1),
 }));
 
 vi.mock('../../src/knowledge/search.js', () => ({
@@ -74,6 +74,8 @@ const RELATED_RESULT = {
   status: 'active',
 };
 
+const { getAdapter } = await import('../../src/db-manager.js');
+
 describe('recallMemory graph expansion', () => {
   beforeEach(() => {
     vi.resetModules();
@@ -86,7 +88,7 @@ describe('recallMemory graph expansion', () => {
   it('should populate graph_context.expanded when edges exist', async () => {
     const { recallMemory } = await import('../../src/memory/api.js');
 
-    const bundle = await recallMemory('What architecture do we use?');
+    const bundle = await recallMemory(getAdapter(), 'What architecture do we use?');
 
     // Primary matched memory should be present
     expect(bundle.memories.length).toBeGreaterThan(0);
@@ -100,7 +102,7 @@ describe('recallMemory graph expansion', () => {
   it('should return empty expanded when skipGraphExpansion is true', async () => {
     const { recallMemory } = await import('../../src/memory/api.js');
 
-    const bundle = await recallMemory('What architecture do we use?', {
+    const bundle = await recallMemory(getAdapter(), 'What architecture do we use?', {
       skipGraphExpansion: true,
     });
 

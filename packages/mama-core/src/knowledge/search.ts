@@ -7,7 +7,7 @@
  * @module knowledge/search
  */
 
-import type { DatabaseAdapter, DecisionRecord } from '../db-manager.js';
+import type { DatabaseInstance, DecisionRecord } from '../db-manager.js';
 
 /**
  * Brute-force cosine similarity search over stored embeddings.
@@ -23,7 +23,7 @@ import type { DatabaseAdapter, DecisionRecord } from '../db-manager.js';
  * @param excludeStatuses - Optional decision statuses to pre-filter out
  */
 export async function vectorSearch(
-  adapter: DatabaseAdapter,
+  adapter: DatabaseInstance,
   queryEmbedding: Float32Array | number[],
   limit = 5,
   threshold = 0.7,
@@ -79,7 +79,7 @@ export async function vectorSearch(
  * @returns Matching decision IDs with BM25 rank scores
  */
 export async function fts5Search(
-  adapter: DatabaseAdapter,
+  adapter: DatabaseInstance,
   query: string,
   limit = 10
 ): Promise<{ id: string; rank: number }[]> {

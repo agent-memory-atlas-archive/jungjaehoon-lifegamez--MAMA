@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { getAdapter } from '../../src/db-manager.js';
-import { cleanupTestDB, initTestDB } from '../../src/test-utils.js';
+import { cleanupTestDB, initTestDB } from '../helpers/test-utils.js';
 import { recordChannelAudit } from '../../src/memory/channel-summary-state-store.js';
 
 describe('recordChannelAudit atomicity', () => {
@@ -32,7 +32,7 @@ describe('recordChannelAudit atomicity', () => {
     // cause is buried.
     try {
       await expect(
-        recordChannelAudit({
+        recordChannelAudit(db, {
           channelKey: 'probe-channel',
           turnId: 'turn-1',
           topic: 'probe topic',
@@ -56,7 +56,7 @@ describe('recordChannelAudit atomicity', () => {
 
   it('writes the event, finding, state and summary together on success', async () => {
     const db = getAdapter();
-    await recordChannelAudit({
+    await recordChannelAudit(db, {
       channelKey: 'probe-channel',
       turnId: 'turn-2',
       topic: 'probe topic',

@@ -4,7 +4,8 @@
   "description": "MAMA MCP Server - Memory-Augmented MCP Assistant for Claude Code & Desktop",
   "main": "src/server.js",
   "bin": {
-    "mama-server": "src/server.js"
+    "mama-server": "src/server.js",
+    "mama-action-mcp": "src/action-server.js"
   },
   "scripts": {
     "start": "node src/server.js",
@@ -48,6 +49,7 @@
   },
   "files": [
     "src/**/*.js",
+    "src/**/*.d.ts",
     "src/**/*.css",
     "src/**/*.html",
     "src/db/migrations/*.sql",

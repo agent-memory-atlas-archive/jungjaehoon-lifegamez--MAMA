@@ -63,9 +63,11 @@ describe('M5: embedding scheme guard', () => {
     seed
       .prepare('INSERT INTO decisions (id, topic, decision, created_at) VALUES (?, ?, ?, ?)')
       .run('d1', 't', 'x', Date.now());
-    const rowid = (seed.prepare('SELECT rowid FROM decisions WHERE id=?').get('d1') as {
-      rowid: number;
-    }).rowid;
+    const rowid = (
+      seed.prepare('SELECT rowid FROM decisions WHERE id=?').get('d1') as {
+        rowid: number;
+      }
+    ).rowid;
     seed
       .prepare('INSERT OR REPLACE INTO embeddings (rowid, embedding) VALUES (?, ?)')
       .run(rowid, buf);

@@ -9,12 +9,13 @@
  * @module suggest-decision
  */
 
-const mama = require('@jungjaehoon/mama-core/mama-api');
-
 /**
- * Suggest decision tool definition
+ * Create the suggest_decision tool bound to the shared action caller
+ * @param {Object} deps - Injected dependencies
+ * @param {(action: string, input?: Object) => Promise<any>} deps.call -
+ *   Shared action-catalog caller
  */
-const suggestDecisionTool = {
+const createSuggestDecisionTool = ({ call }) => ({
   name: 'suggest_decision',
   description:
     "Auto-suggest relevant past decisions based on user's question. Uses semantic search to find decisions related to the current context. Returns null if no relevant decisions found. Supports multilingual queries (English, Korean, etc.). Use 'scopes' to filter by project/channel.",
@@ -65,8 +66,7 @@ const suggestDecisionTool = {
   },
 
   async handler(params, _context) {
-    const { userQuestion, recencyWeight, recencyScale, recencyDecay, disableRecency, scopes } =
-      params || {};
+    const { userQuestion, disableRecency, scopes } = params || {};
 
     try {
       // Validation
@@ -77,22 +77,30 @@ const suggestDecisionTool = {
         };
       }
 
-      const suggestions = await mama.suggest(userQuestion, {
-        format: 'markdown',
-        recencyWeight,
-        recencyScale,
-        recencyDecay,
-        disableRecency,
+      // The action owns ranking; recencyWeight/recencyScale/recencyDecay are
+      // legacy knobs that do not exist on the unified search contract.
+      const result = await call('memory.search', {
+        query: userQuestion,
+        ...(disableRecency !== undefined && { disableRecency }),
         ...(scopes && { scopes }),
       });
+      const items = Array.isArray(result?.results) ? result.results : [];
 
-      if (!suggestions) {
+      if (items.length === 0) {
         // No relevant decisions found (graceful)
         return {
           success: true,
           message: '💡 No relevant past decisions found for this question.',
         };
       }
+
+      const suggestions = items
+        .map((d) => {
+          const title = d.topic || d.id;
+          const body = d.decision || d.summary || '';
+          return `• **${title}** — ${body}`;
+        })
+        .join('\n');
 
       return {
         success: true,
@@ -107,6 +115,5 @@ const suggestDecisionTool = {
       };
     }
   },
-};
-
-module.exports = { suggestDecisionTool };
+});
+module.exports = { createSuggestDecisionTool };

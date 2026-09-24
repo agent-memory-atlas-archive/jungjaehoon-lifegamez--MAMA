@@ -9,8 +9,13 @@ import { describe, it, expect, beforeAll } from 'vitest';
 
 describe('Story M1.5: Update Outcome Tool', () => {
   describe('Tool exports', () => {
-    it('should export updateOutcomeTool', async () => {
-      const { updateOutcomeTool } = await import('../../src/tools/update-outcome.js');
+    it('should export createUpdateOutcomeTool', async () => {
+      const { createUpdateOutcomeTool } = await import('../../src/tools/update-outcome.js');
+      const updateOutcomeTool = createUpdateOutcomeTool({
+        call: async () => {
+          throw new Error('not found');
+        },
+      });
 
       expect(updateOutcomeTool).toBeDefined();
       expect(updateOutcomeTool.name).toBe('update_outcome');
@@ -19,7 +24,7 @@ describe('Story M1.5: Update Outcome Tool', () => {
 
     it('should be included in createMemoryTools', async () => {
       const { createMemoryTools } = await import('../../src/tools/index.js');
-      const tools = createMemoryTools();
+      const tools = createMemoryTools({ call: async () => ({}) });
 
       expect(tools.update_outcome).toBeDefined();
       expect(tools.update_outcome.name).toBe('update_outcome');
@@ -28,7 +33,12 @@ describe('Story M1.5: Update Outcome Tool', () => {
 
   describe('Tool schema validation', () => {
     it('should have correct input schema', async () => {
-      const { updateOutcomeTool } = await import('../../src/tools/update-outcome.js');
+      const { createUpdateOutcomeTool } = await import('../../src/tools/update-outcome.js');
+      const updateOutcomeTool = createUpdateOutcomeTool({
+        call: async () => {
+          throw new Error('not found');
+        },
+      });
 
       expect(updateOutcomeTool.inputSchema).toBeDefined();
       expect(updateOutcomeTool.inputSchema.type).toBe('object');
@@ -49,7 +59,11 @@ describe('Story M1.5: Update Outcome Tool', () => {
 
     beforeAll(async () => {
       const module = await import('../../src/tools/update-outcome.js');
-      updateOutcomeTool = module.updateOutcomeTool;
+      updateOutcomeTool = module.createUpdateOutcomeTool({
+        call: async () => {
+          throw new Error('not found');
+        },
+      });
     });
 
     it('should reject missing decisionId', async () => {
@@ -191,7 +205,12 @@ describe('Story M1.5: Update Outcome Tool', () => {
 
   describe('Tool description and guidance', () => {
     it('should provide clear outcome type descriptions', async () => {
-      const { updateOutcomeTool } = await import('../../src/tools/update-outcome.js');
+      const { createUpdateOutcomeTool } = await import('../../src/tools/update-outcome.js');
+      const updateOutcomeTool = createUpdateOutcomeTool({
+        call: async () => {
+          throw new Error('not found');
+        },
+      });
 
       expect(updateOutcomeTool.description).toContain('SUCCESS');
       expect(updateOutcomeTool.description).toContain('FAILED');
@@ -200,7 +219,12 @@ describe('Story M1.5: Update Outcome Tool', () => {
     });
 
     it('should explain when to use and evidence types', async () => {
-      const { updateOutcomeTool } = await import('../../src/tools/update-outcome.js');
+      const { createUpdateOutcomeTool } = await import('../../src/tools/update-outcome.js');
+      const updateOutcomeTool = createUpdateOutcomeTool({
+        call: async () => {
+          throw new Error('not found');
+        },
+      });
 
       // Story 3.2: Updated description with WHEN TO USE and EVIDENCE TYPES
       expect(updateOutcomeTool.description).toContain('WHEN TO USE');

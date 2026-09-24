@@ -1,0 +1,167 @@
+import type { Buffer } from 'node:buffer';
+
+export const TWIN_REF_KINDS = [
+  'memory',
+  'case',
+  'report',
+  'edge',
+  'raw',
+  'registry',
+  'observation',
+] as const;
+export type TwinRefKind = (typeof TWIN_REF_KINDS)[number];
+
+export const TWIN_EDGE_SOURCES = ['agent', 'human', 'code'] as const;
+export type TwinEdgeSource = (typeof TWIN_EDGE_SOURCES)[number];
+
+export const TWIN_EDGE_TYPES = [
+  'supersedes',
+  'refines',
+  'contradicts',
+  'builds_on',
+  'debates',
+  'synthesizes',
+  'mentions',
+  'derived_from',
+  'case_member',
+  'alias_of',
+  'next_action_for',
+  'blocks',
+  'amends',
+] as const;
+export type TwinEdgeType = (typeof TWIN_EDGE_TYPES)[number];
+
+export type TwinRef = {
+  [Kind in TwinRefKind]: {
+    kind: Kind;
+    id: string;
+  };
+}[TwinRefKind];
+
+export type TwinEdgeSubjectRef = Exclude<TwinRef, { kind: 'raw' }>;
+
+export interface TwinScopeRef {
+  /**
+   * The consumer's word for what kind of scope this is. The core matches it; it
+   * does not read it. Closed lists of kinds used to live here, in three copies.
+   */
+  kind: string;
+  id: string;
+}
+
+export interface TwinProjectRef {
+  kind: string;
+  id: string;
+}
+
+export interface TwinVisibility {
+  principalId?: string;
+  agentId?: string;
+  scopes?: TwinScopeRef[];
+  connectors?: string[];
+  /** Host-stated connector-wide stored read, such as the configured owner has on source.read. */
+  connectorWideRead?: string[];
+  projectRefs?: TwinProjectRef[];
+  tenantId?: string | null;
+  startMs?: number | null;
+  asOfMs?: number | null;
+  /**
+   * Which channels of each connector may be read. When present it DECIDES raw visibility
+   * here exactly as it does in the reader, so a ref reached through an edge or named as a
+   * seed satisfies the same rule as a row the reader would have returned. Without it a
+   * caller could reach past the read path by citing what it could not have read.
+   */
+  channels?: Record<string, readonly string[]>;
+  /**
+   * Read replaced records as history: lifts the superseded/superseded_by
+   * retirement check while every other rule — scope, connector, channel,
+   * tenant, time window — still applies. Quarantined, contradicted and stale
+   * records stay excluded in every mode; they are holds, not history.
+   */
+  includeReplaced?: boolean;
+}
+
+export interface InsertTwinEdgeInput {
+  edge_id?: string;
+  edge_type: TwinEdgeType;
+  subject_ref: TwinEdgeSubjectRef;
+  object_ref: TwinRef;
+  relation_attrs?: unknown;
+  confidence?: number;
+  source: TwinEdgeSource;
+  agent_id?: string;
+  model_run_id?: string;
+  envelope_hash?: string;
+  request_idempotency_key?: string;
+  edge_idempotency_key?: string;
+  human_actor_id?: string;
+  human_actor_role?: 'commander' | 'configurator_elevated';
+  authority_scope_json?: unknown;
+  reason_classification?:
+    | 'factual_correction'
+    | 'agent_inference_wrong'
+    | 'privacy_redaction'
+    | 'duplicate_merge'
+    | 'state_override'
+    | 'other';
+  reason_text?: string;
+  evidence_refs?: unknown;
+}
+
+/**
+ * One fully resolved twin_edges row to write. Callers own edge_id, content_hash,
+ * and created_at because each write path derives them differently (deterministic
+ * command hashes vs fresh UUIDs); the writer owns the INSERT itself.
+ */
+export interface TwinEdgeInsert extends InsertTwinEdgeInput {
+  edge_id: string;
+  content_hash: Buffer;
+  created_at: number;
+}
+
+export interface TwinEdgeRecord {
+  edge_id: string;
+  edge_type: TwinEdgeType;
+  subject_ref: TwinRef;
+  object_ref: TwinRef;
+  relation_attrs_json: string | null;
+  relation_attrs: unknown | null;
+  confidence: number;
+  source: TwinEdgeSource;
+  agent_id: string | null;
+  model_run_id: string | null;
+  envelope_hash: string | null;
+  human_actor_id: string | null;
+  human_actor_role: string | null;
+  authority_scope_json: string | null;
+  authority_scope: unknown | null;
+  reason_classification: string | null;
+  reason_text: string | null;
+  evidence_refs_json: string | null;
+  evidence_refs: unknown | null;
+  request_idempotency_key: string | null;
+  edge_idempotency_key: string | null;
+  content_hash: Buffer;
+  created_at: number;
+}
+
+export interface ListVisibleTwinEdgesOptions {
+  scopes?: TwinScopeRef[];
+  connectors?: string[];
+  projectRefs?: TwinProjectRef[];
+  tenantId?: string | null;
+  edgeTypes?: TwinEdgeType[];
+  startMs?: number | null;
+  asOfMs?: number | null;
+  limit?: number;
+  /** Forwarded to the raw visibility rule. Declared so an injected implementation
+   * cannot silently drop the grant - it crossed this seam as an undeclared property. */
+  channels?: Record<string, readonly string[]>;
+}
+
+type AssertFalse<T extends false> = T;
+type IsAssignable<T, U> = T extends U ? true : false;
+type RawSubjectRef = { kind: 'raw'; id: string };
+type _RawSubjectRefIsNotAssignable = AssertFalse<
+  IsAssignable<RawSubjectRef, InsertTwinEdgeInput['subject_ref']>
+>;

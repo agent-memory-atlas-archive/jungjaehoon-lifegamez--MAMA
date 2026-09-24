@@ -6,9 +6,13 @@
  * @module ingest-conversation
  */
 
-const { ingestConversation } = require('@jungjaehoon/mama-core');
-
-const createIngestConversationTool = (mamaApi) => ({
+/**
+ * Create the ingest_conversation tool bound to the shared action caller
+ * @param {Object} deps - Injected dependencies
+ * @param {(action: string, input?: Object) => Promise<any>} deps.call -
+ *   Shared action-catalog caller
+ */
+const createIngestConversationTool = ({ call }) => ({
   name: 'ingest_conversation',
   description:
     "Ingest a conversation into MAMA's memory. Stores the raw conversation as one source observation without creating decisions. Use this to import past conversations or chat logs into memory.",
@@ -70,22 +74,25 @@ const createIngestConversationTool = (mamaApi) => ({
         };
       }
 
-      const ingestFn = mamaApi.ingestConversation || ingestConversation;
-      const result = await ingestFn({
+      // One call is one observation: the whole conversation is stored as a
+      // single raw evidence record, bound to the operationId the client issued.
+      const receipt = await call('source.ingest', {
         messages,
-        scopes: scopes || [],
+        ...(scopes && scopes.length > 0 ? { scopes } : {}),
         source: {
+          connector: 'conversation:mcp_ingest_conversation',
           package: 'mcp-server',
           source_type: 'mcp_ingest_conversation',
         },
-        ...(session_date && { sessionDate: session_date }),
+        ...(session_date && { session_date }),
       });
+      const rawId = receipt?.observationRef ?? receipt?.observationId;
 
       return {
         success: true,
-        raw_id: result.rawId,
-        extracted_memories: result.extractedMemories || [],
-        message: `✅ Conversation ingested (ID: ${result.rawId})`,
+        raw_id: rawId,
+        extracted_memories: [],
+        message: `✅ Conversation ingested (ID: ${rawId})`,
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
@@ -97,6 +104,4 @@ const createIngestConversationTool = (mamaApi) => ({
   },
 });
 
-const ingestConversationTool = createIngestConversationTool({});
-
-module.exports = { ingestConversationTool, createIngestConversationTool };
+module.exports = { createIngestConversationTool };

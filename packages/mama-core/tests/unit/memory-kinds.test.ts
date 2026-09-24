@@ -3,23 +3,17 @@ import { MEMORY_KINDS } from '../../src/memory/types.js';
 import type { MemoryKind } from '../../src/memory/types.js';
 
 describe('MEMORY_KINDS', () => {
-  it('includes task and schedule kinds for v0.17 connector extraction', () => {
-    expect(MEMORY_KINDS).toContain('task');
-    expect(MEMORY_KINDS).toContain('schedule');
+  it('holds what a memory is, and nothing about one product', () => {
+    // It used to carry `task`, `schedule` and `compiled`, added for a connector
+    // extraction that never wrote them. Nothing in either package stores those kinds
+    // and no row in the live database has one; they named an owner board, a cron and
+    // a context packet, which are things one product has rather than things a memory
+    // can be.
+    expect([...MEMORY_KINDS]).toEqual(['decision', 'preference', 'constraint', 'lesson', 'fact']);
   });
 
-  it('task and schedule are valid MemoryKind values', () => {
-    const task: MemoryKind = 'task';
-    const schedule: MemoryKind = 'schedule';
-    expect(task).toBe('task');
-    expect(schedule).toBe('schedule');
-  });
-
-  it('preserves all existing kinds', () => {
-    expect(MEMORY_KINDS).toContain('decision');
-    expect(MEMORY_KINDS).toContain('preference');
-    expect(MEMORY_KINDS).toContain('constraint');
-    expect(MEMORY_KINDS).toContain('lesson');
-    expect(MEMORY_KINDS).toContain('fact');
+  it('each one is a MemoryKind', () => {
+    const kinds: MemoryKind[] = ['decision', 'preference', 'constraint', 'lesson', 'fact'];
+    expect(kinds).toHaveLength(MEMORY_KINDS.length);
   });
 });

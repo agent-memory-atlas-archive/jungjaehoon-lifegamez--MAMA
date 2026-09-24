@@ -31,15 +31,6 @@ describe('Story M1.1: Core Module Exports', () => {
     });
   });
 
-  describe('decision-tracker.js exports', () => {
-    it('should export learnDecision function', async () => {
-      const tracker = await import('@jungjaehoon/mama-core/decision-tracker');
-
-      expect(tracker.learnDecision).toBeDefined();
-      expect(typeof tracker.learnDecision).toBe('function');
-    });
-  });
-
   describe('decision-formatter.js exports', () => {
     it('should export formatting functions', async () => {
       const formatter = await import('@jungjaehoon/mama-core/decision-formatter');
@@ -85,15 +76,6 @@ describe('Story M1.1: Core Module Exports', () => {
       ]) {
         expect(typeof queries[name]).toBe('function');
       }
-    });
-  });
-
-  describe('time-formatter.js exports', () => {
-    it('should export formatTimeAgo function', async () => {
-      const timeFormatter = await import('@jungjaehoon/mama-core/time-formatter');
-
-      expect(timeFormatter.formatTimeAgo).toBeDefined();
-      expect(typeof timeFormatter.formatTimeAgo).toBe('function');
     });
   });
 

@@ -20,77 +20,72 @@
 
 // Internal modules
 import {
+  expandWithGraphInAdapter,
+  listCheckpointsInAdapter,
+  listDecisionsInAdapter,
+  suggestInAdapter,
+  loadCheckpointInAdapter,
+  saveCheckpointInAdapter,
+  updateOutcomeInAdapter,
+  type CheckpointRow,
+  type ListDecisionsOptions,
+  type SearchCandidate,
+  type SuggestFunctionOptions,
+  type UpdateOutcomeParams,
+} from './memory/api.js';
+import {
   DecisionRecord,
-  SemanticEdgeItem,
-  ensureMemoryScopeInAdapter,
   initDB,
   getAdapter,
+  type DatabaseAdapter,
+  type DatabaseInstance,
 } from './db-manager.js';
-import { fts5Search, vectorSearch } from './knowledge/search.js';
 import { queryDecisionGraph, querySemanticEdges } from './knowledge/graph-query.js';
-import { appendOutcomeAmendment } from './memory/write-adapters.js';
-import { formatRecall, formatList, formatContext, SemanticEdges } from './decision-formatter.js';
+import { formatRecall, SemanticEdges } from './decision-formatter.js';
 import { logProgress, logComplete, logSearching } from './progress-indicator.js';
-import { generateEmbedding } from './embeddings.js';
-import { generate } from './ollama-client.js';
-import { warn as logWarn, error as logError } from './debug-logger.js';
+import { error as logError } from './debug-logger.js';
 import {
-  saveMemory,
-  saveMemoryWithTrustedProvenance,
-  saveLegacyMemory,
-  recallMemory,
-  buildProfile,
-  ingestMemory,
-  ingestWithTrustedProvenance,
-  ingestConversation,
-  ingestConversationWithTrustedProvenance,
+  saveMemory as saveMemoryInAdapter,
+  saveLegacyMemory as saveLegacyMemoryInAdapter,
+  recallMemory as recallMemoryInAdapter,
+  buildProfile as buildProfileInAdapter,
+  ingestMemory as ingestMemoryInAdapter,
+  ingestConversation as ingestConversationInAdapter,
   evolveMemory,
-  buildMemoryBootstrap,
+  buildMemoryBootstrap as buildMemoryBootstrapInAdapter,
   createAuditAck,
-  recordMemoryAudit,
-  upsertChannelSummary,
-  getChannelSummary,
+  recordMemoryAudit as recordMemoryAuditInAdapter,
+  upsertChannelSummary as upsertChannelSummaryInAdapter,
+  getChannelSummary as getChannelSummaryInAdapter,
 } from './memory/api.js';
 import {
   createAuditFinding as createAuditFindingInAdapter,
-  listOpenAuditFindings,
+  listOpenAuditFindings as listOpenAuditFindingsInAdapter,
 } from './memory/finding-store.js';
-import { listMemoryEventsForMemory, listRecentMemoryEvents } from './memory/event-store.js';
-import type { TrustedMemoryWriteOptions } from './memory/provenance.js';
 import {
-  getMemoryProvenance,
-  listMemoriesByEnvelopeHash,
-  listMemoriesByGatewayCallId,
-  listMemoriesByModelRunId,
+  listMemoryEventsForMemory as listMemoryEventsForMemoryInAdapter,
+  listRecentMemoryEvents as listRecentMemoryEventsInAdapter,
+} from './memory/event-store.js';
+import {
+  getMemoryProvenance as getMemoryProvenanceInAdapter,
+  listMemoriesByEnvelopeHash as listMemoriesByEnvelopeHashInAdapter,
+  listMemoriesByGatewayCallId as listMemoriesByGatewayCallIdInAdapter,
+  listMemoriesByModelRunId as listMemoriesByModelRunIdInAdapter,
 } from './memory/provenance-query.js';
 import {
-  beginModelRun,
-  beginModelRunInAdapter,
-  commitModelRun,
-  commitModelRunInAdapter,
-  failModelRun,
-  failModelRunInAdapter,
-  getModelRun,
-  getModelRunInAdapter,
-} from './model-runs/store.js';
+  beginModelRun as beginModelRunInAdapter,
+  commitModelRun as commitModelRunInAdapter,
+  failModelRun as failModelRunInAdapter,
+  getModelRun as getModelRunInAdapter,
+  listModelRunNativeInputs as listModelRunNativeInputsInAdapter,
+} from './runtime/model-run-store.js';
 import {
-  appendToolTrace,
-  listToolTracesForRun,
-  listToolTraces,
-  readToolTrace,
-} from './model-runs/tool-trace-store.js';
-import {
-  rollUpSearchHits,
-  type SearchRollupLeafHit,
-  type SearchRollupResult,
-} from './cases/search-rollup.js';
-import { isSearchRankerEnabled, rescoreSearchResults } from './search/ranker-rescore.js';
-import { SEARCH_RANKER_FEATURE_SET_VERSION } from './search/ranker-features.js';
-import {
-  normalizeSearchQualityOptions,
-  type SearchHitDiagnostics,
-  type SearchQualityOptions,
-} from './search/search-quality.js';
+  appendToolTrace as appendToolTraceInAdapter,
+  listToolTracesForRun as listToolTracesForRunInAdapter,
+  listToolTraces as listToolTracesInAdapter,
+  readToolTrace as readToolTraceInAdapter,
+} from './runtime/tool-trace-store.js';
+import { type SearchHitDiagnostics } from './knowledge/search-quality.js';
 
 // ════════════════════════════════════════════════════════════════════════════
 // Type Definitions
@@ -110,7 +105,7 @@ interface SaveParams {
   limitation?: string | null;
   trust_context?: Record<string, unknown> | null;
   is_static?: number; // 1 = long-term preference, 0 = project-specific (default)
-  scopes?: Array<{ kind: 'global' | 'user' | 'channel' | 'project'; id: string }>;
+  scopes?: Array<{ kind: string; id: string }>;
   item?: string | null;
   actors?: Array<{ person: string; role: string }>;
   /** ISO 8601 date string for when the event actually occurred (e.g. "2023-01-15") */
@@ -193,7 +188,6 @@ interface SaveResult {
   id: string;
   saved_decision_id?: string;
   similar_decisions?: SimilarDecision[];
-  warning?: string;
   collaboration_hint?: string;
   reasoning_graph?: ReasoningGraphInfo;
   error?: string;
@@ -307,10 +301,7 @@ export interface DBLinkStatsResult {
   relationship_breakdown: string;
 }
 
-// Session-level warning cooldown cache (Story 1.1, 1.2)
 // Prevents spam by tracking warned topics per session
-const warnedTopicsCache = new Map<string, number>();
-const WARNING_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
  * Save a decision or insight to MAMA's memory
@@ -340,6 +331,7 @@ const WARNING_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
  * });
  */
 async function saveInternal(
+  adapter: DatabaseInstance,
   {
     topic,
     decision,
@@ -355,8 +347,7 @@ async function saveInternal(
     item,
     actors,
     event_date,
-  }: SaveParams,
-  options?: TrustedMemoryWriteOptions
+  }: SaveParams
 ): Promise<SaveResult> {
   // Validate required fields
   if (!topic || typeof topic !== 'string') {
@@ -431,7 +422,8 @@ async function saveInternal(
   // when the caller names explicit targets (saveLegacyMemory's legacy field or
   // twin-edge links). Parsing IDs out of prose fabricated edges, so it is gone.
   logProgress(`Saving decision: ${topic.substring(0, 30)}...`);
-  const { id: decisionId } = await saveLegacyMemory(
+  const { id: decisionId } = await saveLegacyMemoryInAdapter(
+    adapter,
     {
       topic,
       kind: is_static === 1 ? 'preference' : 'decision',
@@ -453,8 +445,7 @@ async function saveInternal(
       failureReason: failure_reason ?? null,
       limitation: limitation ?? null,
       isStatic: is_static,
-    },
-    options
+    }
   );
   logComplete(`Decision saved: ${decisionId.substring(0, 20)}...`);
 
@@ -463,7 +454,6 @@ async function saveInternal(
   // Story 1.2: Response Enhancement
   // ════════════════════════════════════════════════════════════════════════════
   let similar_decisions: SimilarDecision[] = [];
-  let warning: string | null = null;
   let collaboration_hint: string | null = null;
   let reasoning_graph: ReasoningGraphInfo | null = null;
 
@@ -476,7 +466,7 @@ async function saveInternal(
         // NOTE: suggest() searches globally and does not yet support scoped similarity search.
         // Cross-scope suggestions are possible here. Track as a follow-up.
         logSearching('Searching for related decisions...');
-        const searchResults = await suggest(topic, {
+        const searchResults = await suggestInAdapter(adapter, topic, {
           limit: 3,
           threshold: 0.7,
           disableRecency: true, // Pure semantic similarity for comparison
@@ -503,14 +493,12 @@ async function saveInternal(
             logComplete(`Found ${similar_decisions.length} related decision(s)`);
           }
 
-          // Story 1.2: Warning logic (similarity >= 0.85)
-          const highSimilarity = similar_decisions.find(
-            (d: SimilarDecision) => (d.similarity ?? 0) >= 0.85
-          );
-          if (highSimilarity && !_isTopicInCooldown(topic)) {
-            warning = `High similarity (${((highSimilarity.similarity ?? 0) * 100).toFixed(0)}%) with existing decision "${highSimilarity.decision.substring(0, 50)}..."`;
-            _markTopicWarned(topic);
-          }
+          // There was a "High similarity (N%)" warning here, keyed on a number
+          // that measured rank rather than likeness -- it fired on every save
+          // that had a second result at all, whatever that result said. Nothing
+          // in either retrieval path now produces a similarity for this query
+          // shape, so the warning has no measure to stand on and is gone. The
+          // hint below states what IS true: how many related rows came back.
 
           // Story 1.2: Collaboration hint
           if (similar_decisions.length > 0) {
@@ -525,7 +513,7 @@ async function saveInternal(
 
       // Story 1.2: Reasoning graph info
       try {
-        reasoning_graph = await _getReasoningGraphInfo(topic, decisionId);
+        reasoning_graph = await _getReasoningGraphInfo(adapter, topic, decisionId);
       } catch (error: unknown) {
         const errMsg = error instanceof Error ? error.message : String(error);
         logError('Reasoning graph query failed:', errMsg);
@@ -539,7 +527,6 @@ async function saveInternal(
     id: decisionId,
     saved_decision_id: decisionId,
     ...(similar_decisions.length > 0 && { similar_decisions }),
-    ...(warning && { warning }),
     ...(collaboration_hint && { collaboration_hint }),
     ...(reasoning_graph && { reasoning_graph }),
   };
@@ -548,27 +535,6 @@ async function saveInternal(
 // ════════════════════════════════════════════════════════════════════════════
 // Story 1.2: Helper functions for Response Enhancement
 // ════════════════════════════════════════════════════════════════════════════
-
-/**
- * Check if a topic is in warning cooldown
- * @param {string} topic - Topic to check
- * @returns {boolean} True if topic was warned recently
- */
-function _isTopicInCooldown(topic: string): boolean {
-  const lastWarned = warnedTopicsCache.get(topic);
-  if (!lastWarned) {
-    return false;
-  }
-  return Date.now() - lastWarned < WARNING_COOLDOWN_MS;
-}
-
-/**
- * Mark a topic as warned (start cooldown)
- * @param {string} topic - Topic to mark
- */
-function _markTopicWarned(topic: string): void {
-  warnedTopicsCache.set(topic, Date.now());
-}
 
 /**
  * Generate collaboration hint message
@@ -595,11 +561,12 @@ function _generateCollaborationHint(similarDecisions: SimilarDecision[]): string
  * @returns {Object} Reasoning graph info
  */
 async function _getReasoningGraphInfo(
+  adapter: DatabaseAdapter,
   topic: string,
   currentId: string
 ): Promise<ReasoningGraphInfo> {
   try {
-    const chain = await queryDecisionGraph(getAdapter(), topic);
+    const chain = await queryDecisionGraph(adapter, topic);
 
     if (!chain || chain.length === 0) {
       return {
@@ -689,7 +656,8 @@ interface RecallGraphResult {
   };
 }
 
-async function recall(
+async function recallInAdapter(
+  adapter: DatabaseAdapter,
   topic: string,
   options: RecallOptions = {}
 ): Promise<string | RecallGraphResult> {
@@ -700,7 +668,7 @@ async function recall(
   const { format = 'json' } = options;
 
   try {
-    const decisions = await queryDecisionGraph(getAdapter(), topic);
+    const decisions = await queryDecisionGraph(adapter, topic);
 
     if (!decisions || decisions.length === 0) {
       if (format === 'markdown') {
@@ -721,7 +689,7 @@ async function recall(
 
     // Query semantic edges for all decisions
     const decisionIds = decisions.map((d: DecisionRecord) => d.id);
-    const rawEdges = await querySemanticEdges(getAdapter(), decisionIds);
+    const rawEdges = await querySemanticEdges(adapter, decisionIds);
     const semanticEdges = {
       refines: rawEdges.refines || [],
       refined_by: rawEdges.refined_by || [],
@@ -825,1220 +793,48 @@ async function recall(
   }
 }
 
-/**
- * Update outcome of a decision
- *
- * Track whether a decision succeeded, failed, or partially worked
- * AC: Evolutionary Decision Memory - Learn from outcomes
- *
- * @param {string} decisionId - Decision ID to update
- * @param {Object} outcome - Outcome details
- * @param {string} outcome.outcome - 'SUCCESS', 'FAILED', or 'PARTIAL'
- * @param {string} [outcome.failure_reason] - Reason for failure (if FAILED)
- * @param {string} [outcome.limitation] - Limitation description (if PARTIAL)
- * @returns {Promise<void>}
- *
- * @example
- * await mama.updateOutcome('decision_auth_strategy_123456_abc', {
- *   outcome: 'FAILED',
- *   failure_reason: 'Missing token expiration handling'
- * });
- */
-interface UpdateOutcomeParams {
-  outcome: string;
-  failure_reason?: string | null;
-  limitation?: string | null;
+async function save(params: SaveParams): Promise<SaveResult> {
+  await initDB();
+  return saveInternal(getAdapter(), params);
 }
 
-async function updateOutcome(
-  decisionId: string,
-  { outcome, failure_reason, limitation }: UpdateOutcomeParams
-): Promise<void> {
-  if (!decisionId || typeof decisionId !== 'string') {
-    throw new Error('mama.updateOutcome() requires decisionId (string)');
-  }
-
-  // AX Improvement: Be forgiving with case sensitivity
-  const normalizedOutcome = outcome ? outcome.toUpperCase() : null;
-
-  if (!normalizedOutcome || !['SUCCESS', 'FAILED', 'PARTIAL'].includes(normalizedOutcome)) {
-    throw new Error('mama.updateOutcome() outcome must be "SUCCESS", "FAILED", or "PARTIAL"');
-  }
-
-  try {
-    // Append-only: one judgment record carries the outcome change; the
-    // maintained decisions projection columns move in the same transaction.
-    await appendOutcomeAmendment(decisionId, {
-      outcome: normalizedOutcome,
-      failureReason: failure_reason || null,
-      limitation: limitation || null,
-      eventReason: `mama.updateOutcome(${decisionId})`,
-    });
-
-    return;
-  } catch (error: unknown) {
-    throw new Error(
-      `mama.updateOutcome() failed: ${error instanceof Error ? error.message : String(error)}`
-    );
-  }
+// Facade boundary: the ambient handle is resolved only here so the public
+// (input)-only signatures stay intact. Instance-owning callers use
+// createMamaApi(adapter) instead.
+async function suggest(
+  userQuestion: string,
+  options: SuggestFunctionOptions = {}
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Promise<any> {
+  await initDB();
+  return suggestInAdapter(getAdapter(), userQuestion, options);
 }
 
-/**
- * Expand search results with graph context (Phase 1 - Graph-Enhanced Retrieval)
- *
- * For each candidate decision:
- * 1. Add supersedes chain (evolution history)
- * 2. Add semantic edges (refines, contradicts)
- * 3. Deduplicate by ID
- * 4. Re-rank by relevance (primary candidates ranked higher)
- *
- * @param {Array} candidates - Initial search results from vector/keyword search
- * @returns {Promise<Array>} Graph-enhanced results with evolution context
- */
-interface SearchCandidate {
-  id: string;
-  topic: string;
-  decision: string;
-  reasoning?: string | null;
-  confidence?: number;
-  similarity?: number;
-  created_at?: number | string;
-  graph_source?: string;
-  graph_rank?: number;
-  related_to?: string | null;
-  edge_reason?: string | null;
-  recency_score?: number;
-  recency_age_days?: number;
-  final_score?: number;
-  outcome?: string | null;
-  failure_reason?: string | null;
-  is_static?: number;
+async function recall(
+  topic: string,
+  options: RecallOptions = {}
+): Promise<string | RecallGraphResult> {
+  await initDB();
+  return recallInAdapter(getAdapter(), topic, options);
 }
 
 async function expandWithGraph(candidates: SearchCandidate[]): Promise<SearchCandidate[]> {
-  const graphEnhanced = new Map<string, SearchCandidate>(); // Use Map for deduplication by ID
-  const primaryIds = new Set(candidates.map((c: SearchCandidate) => c.id)); // Track primary candidates
-
-  // Process each candidate
-  for (const candidate of candidates) {
-    // Add primary candidate with higher rank
-    if (!graphEnhanced.has(candidate.id)) {
-      graphEnhanced.set(candidate.id, {
-        ...candidate,
-        graph_source: 'primary', // Mark as primary result
-        graph_rank: 1.0, // Highest rank
-      });
-    }
-
-    // 1. Add supersedes chain (evolution history)
-    try {
-      const chain = await queryDecisionGraph(getAdapter(), candidate.topic, candidate.id);
-      for (const decision of chain) {
-        if (!graphEnhanced.has(decision.id)) {
-          graphEnhanced.set(decision.id, {
-            ...decision,
-            graph_source: 'supersedes_chain',
-            graph_rank: 0.8, // Lower rank than primary
-            similarity: (candidate.similarity ?? 0) * 0.9, // Inherit similarity, slightly reduced
-            related_to: candidate.id, // Track relationship
-          });
-        }
-      }
-    } catch (error: unknown) {
-      logWarn(
-        `Failed to get supersedes chain for ${candidate.topic}: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-
-    // 2. Add semantic edges (refines, contradicts, builds_on, debates, synthesizes)
-    try {
-      const rawEdges = (await querySemanticEdges(getAdapter(), [candidate.id])) || {};
-      const edges = {
-        refines: rawEdges.refines || [],
-        refined_by: rawEdges.refined_by || [],
-        contradicts: rawEdges.contradicts || [],
-        contradicted_by: rawEdges.contradicted_by || [],
-        builds_on: rawEdges.builds_on || [],
-        built_on_by: rawEdges.built_on_by || [],
-        debates: rawEdges.debates || [],
-        debated_by: rawEdges.debated_by || [],
-        synthesizes: rawEdges.synthesizes || [],
-        synthesized_by: rawEdges.synthesized_by || [],
-      };
-
-      // Helper to add edge to graph
-      const addEdge = (
-        edge: SemanticEdgeItem,
-        idField: 'to_id' | 'from_id',
-        source: string,
-        rank: number,
-        simFactor: number
-      ): void => {
-        const id = edge[idField];
-        if (!graphEnhanced.has(id)) {
-          graphEnhanced.set(id, {
-            id: id,
-            topic: edge.topic,
-            decision: edge.decision,
-            confidence: edge.confidence,
-            created_at: edge.created_at,
-            graph_source: source,
-            graph_rank: rank,
-            similarity: (candidate.similarity ?? 0) * simFactor,
-            related_to: candidate.id,
-            edge_reason: edge.reason,
-          });
-        }
-      };
-
-      // Add refines edges
-      for (const edge of edges.refines) {
-        addEdge(edge, 'to_id', 'refines', 0.7, 0.85);
-      }
-
-      // Add refined_by edges
-      for (const edge of edges.refined_by) {
-        addEdge(edge, 'from_id', 'refined_by', 0.7, 0.85);
-      }
-
-      // Add contradicts edges (lower rank, but still relevant)
-      for (const edge of edges.contradicts) {
-        addEdge(edge, 'to_id', 'contradicts', 0.6, 0.8);
-      }
-
-      // Story 2.1: Add builds_on edges (high relevance - extending prior work)
-      for (const edge of edges.builds_on) {
-        addEdge(edge, 'to_id', 'builds_on', 0.75, 0.9);
-      }
-
-      // Add built_on_by edges (someone built on this decision)
-      for (const edge of edges.built_on_by) {
-        addEdge(edge, 'from_id', 'built_on_by', 0.75, 0.9);
-      }
-
-      // Add debates edges (alternative view)
-      for (const edge of edges.debates) {
-        addEdge(edge, 'to_id', 'debates', 0.65, 0.85);
-      }
-
-      // Add debated_by edges
-      for (const edge of edges.debated_by) {
-        addEdge(edge, 'from_id', 'debated_by', 0.65, 0.85);
-      }
-
-      // Add synthesizes edges (unified approach)
-      for (const edge of edges.synthesizes) {
-        addEdge(edge, 'to_id', 'synthesizes', 0.7, 0.88);
-      }
-
-      // Add synthesized_by edges
-      for (const edge of edges.synthesized_by) {
-        addEdge(edge, 'from_id', 'synthesized_by', 0.7, 0.88);
-      }
-    } catch (error: unknown) {
-      logWarn(
-        `Failed to get semantic edges for ${candidate.id}: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-  }
-
-  // 3. Convert Map to Array
-  const allResults = Array.from(graphEnhanced.values());
-
-  // 4. Sort: Interleave expanded results after their related primary
-  // This ensures edge-connected decisions appear near their source
-  const primaryResults = allResults
-    .filter((r) => primaryIds.has(r.id))
-    .sort((a, b) => {
-      const scoreA = a.final_score || a.similarity || 0;
-      const scoreB = b.final_score || b.similarity || 0;
-      return scoreB - scoreA;
-    });
-
-  const expandedResults = allResults.filter((r) => !primaryIds.has(r.id));
-
-  // Build final results: each primary followed by its related expanded results
-  const results = [];
-  for (const primary of primaryResults) {
-    results.push(primary);
-
-    // Find expanded results related to this primary
-    const relatedExpanded = expandedResults.filter((e) => e.related_to === primary.id);
-
-    // Sort related by graph_rank (higher first)
-    relatedExpanded.sort((a, b) => (b.graph_rank || 0) - (a.graph_rank || 0));
-
-    // Add related expanded results right after their primary
-    results.push(...relatedExpanded);
-  }
-
-  // Add any orphaned expanded results (shouldn't happen, but safety net)
-  const includedIds = new Set(results.map((r) => r.id));
-  const orphaned = expandedResults.filter((e) => !includedIds.has(e.id));
-  results.push(...orphaned);
-
-  return results;
+  await initDB();
+  return expandWithGraphInAdapter(getAdapter(), candidates);
 }
 
-/**
- * Apply Gaussian Decay recency boosting (Elasticsearch-style)
- * Allows Claude to dynamically adjust search strategy based on results
- *
- * @param {Array} results - Search results with similarity scores
- * @param {Object} options - Recency boosting options
- * @returns {Array} Results with recency-boosted final scores
- */
-interface RecencyBoostOptions {
-  recencyWeight?: number;
-  recencyScale?: number;
-  recencyDecay?: number;
-  disableRecency?: boolean;
-}
-
-function applyRecencyBoost(
-  results: SearchCandidate[],
-  options: RecencyBoostOptions = {}
-): SearchCandidate[] {
-  const {
-    recencyWeight = 0.3,
-    recencyScale = 7,
-    recencyDecay = 0.5,
-    disableRecency = false,
-  } = options;
-
-  if (disableRecency || recencyWeight === 0) {
-    return results;
-  }
-
-  const now = Date.now(); // Current timestamp in milliseconds
-
-  return results
-    .map((r: SearchCandidate) => {
-      // created_at is stored in milliseconds in the database
-      const createdAt =
-        typeof r.created_at === 'number' ? r.created_at : Date.parse(r.created_at || '0');
-      const ageInDays = (now - createdAt) / (86400 * 1000);
-
-      // Gaussian Decay: exp(-((age / scale)^2) / (2 * ln(1 / decay)))
-      // At scale days: score = decay (e.g., 7 days = 50%)
-      const gaussianDecay = Math.exp(
-        -Math.pow(ageInDays / recencyScale, 2) / (2 * Math.log(1 / recencyDecay))
-      );
-
-      // Combine semantic similarity with recency
-      const similarity = r.similarity ?? 0;
-      const finalScore = similarity * (1 - recencyWeight) + gaussianDecay * recencyWeight;
-
-      return {
-        ...r,
-        recency_score: gaussianDecay,
-        recency_age_days: Math.round(ageInDays * 10) / 10,
-        final_score: finalScore,
-      };
-    })
-    .sort((a: SearchCandidate, b: SearchCandidate) => (b.final_score ?? 0) - (a.final_score ?? 0));
-}
-
-/**
- * Suggest relevant decisions based on user question
- *
- * DEFAULT: Returns JSON object with search results (LLM-first design)
- * OPTIONAL: Returns Markdown string if format='markdown' (for human display)
- *
- * Simplified: Direct vector search without LLM intent analysis
- * Works with short queries, long questions, Korean/English
- *
- * @param {string} userQuestion - User's question or intent
- * @param {Object} options - Search options
- * @param {string} [options.format='json'] - Output format: 'json' (default) or 'markdown'
- * @param {number} [options.limit=5] - Max results to return
- * @param {number} [options.threshold=0.6] - Minimum similarity (adaptive by query length)
- * @param {boolean} [options.useReranking=false] - Use LLM re-ranking (optional, slower)
- * @returns {Promise<Object|string|null>} Search results as JSON or Markdown, null if no results
- *
- * @example
- * // LLM usage (default)
- * const data = await mama.suggest('Why did we choose JWT?');
- * // → { query, results: [...], meta: {...} }
- *
- * // Human display
- * const markdown = await mama.suggest('mesh optimization', { format: 'markdown' });
- * // → "💡 MAMA found 3 related topics:\n1. ..."
- */
-interface SuggestFunctionOptions extends SearchQualityOptions {
-  format?: 'json' | 'markdown';
-  limit?: number;
-  useReranking?: boolean;
-  /** Phase 3 Task 33: apply learned offline ranker rescoring. */
-  rerankWithLearned?: boolean;
-  recencyWeight?: number;
-  recencyScale?: number;
-  recencyDecay?: number;
-  scopes?: Array<{ kind: 'global' | 'user' | 'channel' | 'project'; id: string }>;
-}
-
-/** Phase 3 Task 33: learned-ranker meta attached to mama.suggest response. */
-function buildRankerMeta(
-  applied: boolean,
-  modelId: string | null,
-  skippedReason?: string
-): Record<string, unknown> {
-  const meta: Record<string, unknown> = {
-    model_id: modelId,
-    feature_set_version: SEARCH_RANKER_FEATURE_SET_VERSION,
-    applied,
-    mode: 'offline',
-  };
-  if (skippedReason) {
-    meta.skipped_reason = skippedReason;
-  }
-  return meta;
-}
-
-function resultRecord(result: SearchRollupResult): Record<string, unknown> {
-  if (
-    typeof result.record === 'object' &&
-    result.record !== null &&
-    !Array.isArray(result.record)
-  ) {
-    return result.record as Record<string, unknown>;
-  }
-  return {};
-}
-
-function stringOrNull(value: unknown): string | null {
-  if (value === null || value === undefined) {
-    return null;
-  }
-  return String(value);
-}
-
-function numberOrNull(value: unknown): number | null {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return null;
-  }
-  return value;
-}
-
-function confidenceValue(record: Record<string, unknown>, fallback: number): number {
-  const numeric = numberOrNull(record.confidence);
-  if (numeric !== null) {
-    return numeric;
-  }
-
-  switch (record.confidence) {
-    case 'high':
-      return 0.9;
-    case 'medium':
-      return 0.6;
-    case 'low':
-      return 0.3;
-    default:
-      return fallback;
-  }
-}
-
-function mapRolledUpResult(result: SearchRollupResult) {
-  const record = resultRecord(result);
-  const retrievalDiagnostics = result.retrieval_diagnostics;
-  const topic = stringOrNull(record.topic ?? record.title) ?? result.source_id;
-  // For wiki_page leaves, prefer the markdown body (`content`) in `decision` so
-  // downstream consumers see the meaningful body rather than the short title.
-  // Decision/checkpoint records use their own fields (summary/decision).
-  const isWikiPageLeaf = result.source_type === 'wiki_page';
-  const decision = isWikiPageLeaf
-    ? (stringOrNull(record.content ?? record.summary ?? record.decision ?? record.title) ??
-      result.source_id)
-    : (stringOrNull(record.summary ?? record.decision ?? record.title ?? record.content) ??
-      result.source_id);
-  const reasoning =
-    stringOrNull(record.details ?? record.reasoning ?? record.status_reason ?? record.content) ??
-    '';
-
-  return {
-    id: result.source_id,
-    topic,
-    decision,
-    reasoning,
-    confidence: confidenceValue(record, result.score),
-    // Back-compat with pre-rollup consumers (swarm-mama-adapter tests,
-    // older callers): similarity mirrors the retrieval score when we don't
-    // have a separate similarity measure. retrieval_score remains the
-    // authoritative field for Phase 3 code paths.
-    similarity: result.score,
-    retrieval_score: result.score,
-    created_at: record.created_at ?? null,
-    event_date: record.event_date ?? null,
-    event_datetime: record.event_datetime ?? null,
-    graph_source: retrievalDiagnostics?.graph_source ?? 'primary',
-    graph_rank: 1,
-    related_to: null,
-    edge_reason: null,
-    case_id: result.case_id,
-    source_type: result.source_type,
-    contributing_leaves: result.contributing_leaves ?? null,
-    ...(result.contributing_leaf_diagnostics
-      ? { contributing_leaf_diagnostics: result.contributing_leaf_diagnostics }
-      : {}),
-    ...(retrievalDiagnostics ? { retrieval_diagnostics: retrievalDiagnostics } : {}),
-  };
-}
-
-async function save(params: SaveParams): Promise<SaveResult> {
-  return saveInternal(params);
-}
-
-async function saveWithTrustedProvenance(
-  params: SaveParams,
-  options: TrustedMemoryWriteOptions
-): Promise<SaveResult> {
-  return saveInternal(params, options);
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function suggest(userQuestion: string, options: SuggestFunctionOptions = {}): Promise<any> {
-  if (!userQuestion || typeof userQuestion !== 'string') {
-    throw new Error('mama.suggest() requires userQuestion (string)');
-  }
-
-  const {
-    format = 'json',
-    limit = 5,
-    threshold,
-    useReranking = false,
-    rerankWithLearned = false,
-    // Recency boosting parameters (Gaussian Decay - Elasticsearch style)
-    recencyWeight = 0.3, // 0-1: How much to weight recency (0.3 = 70% semantic, 30% recency)
-    recencyScale = 7, // Days until recency score drops to 50%
-    recencyDecay = 0.5, // Score at scale point (0.5 = 50%)
-    disableRecency = false, // Set true to disable recency boosting entirely
-    strict,
-    strictness,
-    includeRelated,
-    minLexicalSupport,
-    diagnostics: includeDiagnostics,
-  } = options;
-  const normalizedSearchOptions = normalizeSearchQualityOptions({
-    threshold,
-    strict,
-    strictness,
-    disableRecency,
-    includeRelated,
-    topicPrefix: options.topicPrefix,
-    minLexicalSupport,
-    diagnostics: includeDiagnostics,
-  });
-  const memoryV2QualityContractRequested =
-    threshold !== undefined ||
-    strict !== undefined ||
-    strictness !== undefined ||
-    includeRelated !== undefined ||
-    minLexicalSupport !== undefined ||
-    includeDiagnostics === true ||
-    options.topicPrefix !== undefined ||
-    options.scopes !== undefined;
-  const rerankPoolLimit = rerankWithLearned ? Math.max(limit * 4, limit + 5) : limit;
-
-  try {
-    const bundle = await recallMemory(userQuestion, {
-      includeProfile: false,
-      topicPrefix: options.topicPrefix,
-      limit: rerankPoolLimit,
-      threshold,
-      strict,
-      strictness,
-      disableRecency,
-      includeRelated,
-      minLexicalSupport,
-      diagnostics: includeDiagnostics,
-      ...(options.scopes && { scopes: options.scopes }),
-    });
-    const diagnosticsByMemoryId = new Map(
-      bundle.memories
-        .filter((memory) => memory.retrieval_diagnostics)
-        .map((memory) => [memory.id, memory.retrieval_diagnostics as SearchHitDiagnostics])
-    );
-    const rawFusedHits = (bundle as { fused_hits?: SearchRollupLeafHit[] }).fused_hits ?? [];
-    const fusedHits = rawFusedHits.map((hit) => {
-      if (hit.source_type !== 'decision') {
-        return hit;
-      }
-
-      const recordDiagnostics =
-        typeof hit.record === 'object' && hit.record !== null && !Array.isArray(hit.record)
-          ? (hit.record as { retrieval_diagnostics?: SearchHitDiagnostics }).retrieval_diagnostics
-          : undefined;
-      const retrievalDiagnostics = diagnosticsByMemoryId.get(hit.source_id) ?? recordDiagnostics;
-      if (!retrievalDiagnostics) {
-        return hit;
-      }
-
-      const record =
-        typeof hit.record === 'object' && hit.record !== null && !Array.isArray(hit.record)
-          ? { ...hit.record, retrieval_diagnostics: retrievalDiagnostics }
-          : hit.record;
-      return {
-        ...hit,
-        record,
-        retrieval_diagnostics: retrievalDiagnostics,
-      };
-    });
-    const rolledUp =
-      fusedHits.length > 0 ? rollUpSearchHits({ fusedHits, adapter: getAdapter() }) : [];
-    const diagnosticsResponse =
-      includeDiagnostics === true ? { diagnostics: bundle.search_meta.diagnostics ?? null } : {};
-
-    // Phase 3 Task 33: compute base ranker meta once so every return path
-    // (rolledUp, memories fallback, vector-search fallback) can attach it.
-    // rerankWithLearned-driven rescoring still only applies to result arrays
-    // that match the ranker's expected shape (id + source_type + case_id).
-    const baseRankerMeta = useReranking
-      ? buildRankerMeta(false, null, 'llm_reranking_requested')
-      : rerankWithLearned
-        ? null // marker: rescoring requested, actual meta set per-path after rescore
-        : buildRankerMeta(false, null, 'feature_disabled');
-
-    const applyLearnedRanker = <
-      T extends {
-        id: string;
-        source_type?: string;
-        case_id?: string | null;
-        retrieval_score?: number | null;
-        final_score?: number | null;
-      },
-    >(
-      results: T[]
-    ): { results: T[]; meta: Record<string, unknown> } => {
-      if (baseRankerMeta !== null) {
-        return { results, meta: baseRankerMeta };
-      }
-      // Phase 3 Task 33: the caller opted in via rerankWithLearned, but the
-      // runtime `search_ranker_enabled` gate still has final say. This lets
-      // operators disable the learned ranker globally during rollback without
-      // touching any caller code.
-      let runtimeEnabled = true;
-      try {
-        runtimeEnabled = isSearchRankerEnabled(getAdapter() as never);
-      } catch (err) {
-        logWarn(`[mama.suggest] isSearchRankerEnabled check failed: ${String(err)}`);
-      }
-      if (!runtimeEnabled) {
-        return { results, meta: buildRankerMeta(false, null, 'feature_disabled') };
-      }
-      try {
-        const rescored = rescoreSearchResults(getAdapter() as never, {
-          query: userQuestion,
-          results,
-        });
-        return {
-          results: rescored.results as T[],
-          meta: buildRankerMeta(
-            rescored.skipped_reason === undefined,
-            rescored.model_id,
-            rescored.skipped_reason
-          ),
-        };
-      } catch (err) {
-        logWarn(`[mama.suggest] learned-ranker rescore failed: ${String(err)}`);
-        return { results, meta: buildRankerMeta(false, null, 'rescore_error') };
-      }
-    };
-
-    const summarizeGraphExpansion = <
-      T extends {
-        graph_source?: string | null;
-      },
-    >(
-      rows: T[]
-    ) => {
-      const sources = {
-        primary: 0,
-        supersedes_chain: 0,
-        refines: 0,
-        refined_by: 0,
-        contradicts: 0,
-      };
-
-      let expandedCount = 0;
-      for (const row of rows) {
-        const graphSource = row.graph_source ?? 'primary';
-        if (graphSource === 'primary') {
-          sources.primary += 1;
-          continue;
-        }
-
-        expandedCount += 1;
-        if (graphSource in sources) {
-          const key = graphSource as keyof typeof sources;
-          sources[key] += 1;
-        }
-      }
-
-      return {
-        total_results: rows.length,
-        primary_count: sources.primary,
-        expanded_count: expandedCount,
-        sources,
-      };
-    };
-
-    if (rolledUp.length > 0) {
-      const filteredResults = rolledUp.slice(0, rerankPoolLimit);
-      const { results: mappedResults, meta: rankerMeta } = applyLearnedRanker(
-        filteredResults.map(mapRolledUpResult)
-      );
-      const limitedResults = mappedResults.slice(0, limit);
-
-      if (format === 'markdown') {
-        const context = limitedResults
-          .map(
-            (result, index) =>
-              `${index + 1}. [${result.topic}] ${result.decision}\n   ${result.reasoning}`
-          )
-          .join('\n');
-        return `🔍 Search method: memory_v2\n${context}`;
-      }
-
-      return {
-        query: userQuestion,
-        results: limitedResults,
-        ...diagnosticsResponse,
-        meta: {
-          count: limitedResults.length,
-          search_method: 'memory_v2',
-          threshold: normalizedSearchOptions.threshold,
-          recency_boost: disableRecency
-            ? null
-            : {
-                weight: recencyWeight,
-                scale: recencyScale,
-                decay: recencyDecay,
-              },
-          graph_expansion: summarizeGraphExpansion(limitedResults),
-          ranker: rankerMeta,
-        },
-      };
-    }
-
-    if (bundle.memories.length > 0) {
-      // recallMemory uses RRF fusion — confidence is overwritten with the normalized
-      // retrieval score (0-1 range, where 1.0 = best match in this result set).
-      // The original stored confidence is lost after RRF normalization.
-      // We capture the retrieval score separately so `similarity` reflects search
-      // relevance while `confidence` is passed through as-is from the bundle.
-      const filteredMemories = bundle.memories.slice(0, rerankPoolLimit);
-      const baseRows = filteredMemories.map((memory) => ({
-        id: memory.id,
-        topic: memory.topic,
-        decision: memory.summary,
-        reasoning: memory.details,
-        confidence: memory.confidence,
-        // recallMemory currently normalizes fused retrieval rank into `confidence`.
-        // Keep that value visible as retrieval_score, but do not pretend it is
-        // semantic similarity; save-time warning logic keys off `similarity`.
-        similarity: null,
-        retrieval_score: memory.confidence ?? null,
-        final_score: memory.confidence ?? null,
-        created_at: memory.created_at,
-        event_date: memory.event_date ?? null,
-        event_datetime: memory.event_datetime ?? null,
-        graph_source: memory.retrieval_diagnostics?.graph_source ?? 'primary',
-        graph_rank: 1,
-        related_to: null,
-        edge_reason: null,
-        case_id: null as string | null,
-        source_type:
-          memory.kind ??
-          memory.source?.source_type ??
-          (memory as { source_type?: string; type?: string }).source_type ??
-          (memory as { type?: string }).type ??
-          'decision',
-        ...(memory.retrieval_diagnostics
-          ? { retrieval_diagnostics: memory.retrieval_diagnostics }
-          : {}),
-      }));
-      const { results: rankedRows, meta: rankerMeta } = applyLearnedRanker(baseRows);
-      const limitedRows = rankedRows.slice(0, limit);
-
-      if (format === 'markdown') {
-        const context = limitedRows
-          .map((row, index) => `${index + 1}. [${row.topic}] ${row.decision}\n   ${row.reasoning}`)
-          .join('\n');
-        return `🔍 Search method: memory_v2\n${context}`;
-      }
-
-      return {
-        query: userQuestion,
-        results: limitedRows,
-        ...diagnosticsResponse,
-        meta: {
-          count: limitedRows.length,
-          search_method: 'memory_v2',
-          threshold: normalizedSearchOptions.threshold,
-          recency_boost: disableRecency
-            ? null
-            : {
-                weight: recencyWeight,
-                scale: recencyScale,
-                decay: recencyDecay,
-              },
-          graph_expansion: summarizeGraphExpansion(limitedRows),
-          ranker: rankerMeta,
-        },
-      };
-    }
-
-    if (memoryV2QualityContractRequested) {
-      const emptyRows: Array<{ id: string; source_type?: string; graph_source?: string | null }> =
-        [];
-      const { meta: rankerMeta } = applyLearnedRanker(emptyRows);
-
-      if (format === 'markdown') {
-        return '🔍 Search method: memory_v2\n';
-      }
-
-      return {
-        query: userQuestion,
-        results: emptyRows,
-        ...diagnosticsResponse,
-        meta: {
-          count: 0,
-          search_method: 'memory_v2',
-          threshold: normalizedSearchOptions.threshold,
-          recency_boost: disableRecency
-            ? null
-            : {
-                weight: recencyWeight,
-                scale: recencyScale,
-                decay: recencyDecay,
-              },
-          graph_expansion: summarizeGraphExpansion(emptyRows),
-          ranker: rankerMeta,
-        },
-      };
-    }
-
-    // 1. Try vector search first (if sqlite-vss is available)
-    // eslint-disable-next-line no-unused-vars, @typescript-eslint/no-explicit-any
-    let results: any[] = [];
-    let searchMethod = 'vector';
-
-    try {
-      // Generate query embedding
-      const queryEmbedding = await generateEmbedding(userQuestion, 'query');
-
-      // Adaptive threshold (shorter queries need higher confidence)
-      const wordCount = userQuestion.split(/\s+/).length;
-      const adaptiveThreshold = threshold !== undefined ? threshold : wordCount < 3 ? 0.7 : 0.6;
-
-      // Vector search
-      results = await vectorSearch(getAdapter(), queryEmbedding, rerankPoolLimit * 2, 0.5); // Get more candidates
-
-      // Filter by adaptive threshold
-      results = results.filter((r) => r.similarity >= adaptiveThreshold);
-
-      // Stage 1.4: Temporal boost — detect time-related queries and boost matching results
-      {
-        const temporalPatterns = [
-          // English
-          /\b(yesterday|today|last\s+(?:week|month|year)|(\d+)\s+(?:days?|weeks?|months?)\s+ago)\b/i,
-          /\b(before|after|since|until|during)\s+\w+/i,
-          /\b(how\s+long|when\s+did|what\s+date|what\s+day)\b/i,
-          // Korean
-          /(?:어제|오늘|그제|지난\s*(?:주|달|해)|(\d+)\s*(?:일|주|달|개월)\s*(?:전|후|뒤))/,
-          /(?:언제|얼마나|며칠|몇\s*(?:일|주|달|개월))/,
-        ];
-        const isTemporalQuery = temporalPatterns.some((p) => p.test(userQuestion));
-
-        if (isTemporalQuery && results.length > 0) {
-          // Boost results that contain date/time references in their content
-          const datePatterns = [
-            /\d{4}[-/]\d{1,2}[-/]\d{1,2}/,
-            /(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d/i,
-            /\d+\s*(?:일|월|년|주|시간|분)/,
-            /(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i,
-            /(?:월요일|화요일|수요일|목요일|금요일|토요일|일요일)/,
-          ];
-
-          for (const result of results) {
-            const content = `${result.decision || ''} ${result.reasoning || ''}`;
-            const hasDateRef = datePatterns.some((p) => p.test(content));
-            if (hasDateRef) {
-              result.similarity = Math.min(1.0, (result.similarity || 0) + 0.1);
-            }
-          }
-          results.sort(
-            (a: { similarity?: number }, b: { similarity?: number }) =>
-              (b.similarity || 0) - (a.similarity || 0)
-          );
-        }
-      }
-
-      // Stage 1.5: Apply recency boosting (Gaussian Decay)
-      // Allows Claude to adjust search strategy (recent vs historical)
-      if (results.length > 0 && !disableRecency) {
-        results = applyRecencyBoost(results, {
-          recencyWeight,
-          recencyScale,
-          recencyDecay,
-          disableRecency,
-        });
-        searchMethod = 'vector+recency';
-      }
-
-      // Stage 1.7: FTS5 hybrid merge (Haiku Memory Layer)
-      {
-        try {
-          const ftsResults = await fts5Search(getAdapter(), userQuestion, rerankPoolLimit * 2);
-          if (ftsResults.length > 0) {
-            // Normalize FTS5 ranks (BM25 returns negative values, closer to 0 = better)
-            const maxRank = Math.max(...ftsResults.map((r) => Math.abs(r.rank)));
-            const ftsMap = new Map(
-              ftsResults.map((r) => [r.id, maxRank > 0 ? 1 - Math.abs(r.rank) / maxRank : 0.5])
-            );
-
-            // Tunable hybrid weights (env: MAMA_VECTOR_WEIGHT, MAMA_FTS5_WEIGHT)
-            const vectorWeight = parseFloat(process.env.MAMA_VECTOR_WEIGHT || '0.6');
-            const fts5Weight = parseFloat(process.env.MAMA_FTS5_WEIGHT || '0.4');
-
-            // Merge: boost existing results that also matched FTS5
-            for (const result of results) {
-              const ftsScore = ftsMap.get(result.id);
-              if (ftsScore !== undefined) {
-                result.similarity = vectorWeight * result.similarity + fts5Weight * ftsScore;
-                ftsMap.delete(result.id);
-              }
-            }
-
-            // Add FTS5-only results (not in embedding results)
-            for (const [id, ftsScore] of ftsMap) {
-              const ftsResult = ftsResults.find((r) => r.id === id);
-              if (ftsResult) {
-                // Need to get full decision record
-                const adapter = getAdapter();
-                const stmt = adapter.prepare(
-                  'SELECT * FROM decisions WHERE id = ? AND superseded_by IS NULL'
-                );
-                const decision = stmt.get(id) as DecisionRecord | undefined;
-                if (decision) {
-                  results.push({
-                    ...decision,
-                    similarity: fts5Weight * ftsScore, // Only FTS5 score component
-                    graph_source: 'fts5',
-                  });
-                }
-              }
-            }
-
-            // Re-sort by similarity
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            results.sort(
-              (a: { similarity?: number }, b: { similarity?: number }) =>
-                (b.similarity || 0) - (a.similarity || 0)
-            );
-            searchMethod = disableRecency ? 'vector+fts5' : 'vector+recency+fts5';
-          }
-        } catch {
-          // FTS5 not available, continue with embedding-only results
-        }
-      }
-
-      // Stage 2: Graph expansion (NEW - Phase 1)
-      // Expand candidates with supersedes chain and semantic edges
-      if (results.length > 0) {
-        const graphEnhanced = await expandWithGraph(results);
-        results = graphEnhanced;
-        searchMethod = disableRecency ? 'vector+graph' : 'vector+recency+graph';
-      }
-
-      // Stage 2.5: is_static boost (after graph expansion to preserve sort order)
-      for (const result of results) {
-        if (result.is_static === 1) {
-          result.final_score = Math.min(1.0, (result.final_score ?? result.similarity ?? 0) + 0.2);
-        }
-      }
-      // Re-sort by final_score after is_static boost
-      results.sort(
-        (a, b) => (b.final_score ?? b.similarity ?? 0) - (a.final_score ?? a.similarity ?? 0)
-      );
-    } catch (vectorError: unknown) {
-      // Fallback to keyword search if vector search unavailable
-      logWarn(
-        `Vector search failed: ${vectorError instanceof Error ? vectorError.message : String(vectorError)}, falling back to keyword search`
-      );
-      searchMethod = 'keyword';
-
-      // Keyword search fallback
-      const adapter = getAdapter();
-      const keywords = userQuestion
-        .toLowerCase()
-        .split(/\s+/)
-        .filter((w) => w.length > 2); // Filter short words
-
-      if (keywords.length === 0) {
-        if (format === 'markdown') {
-          return `💡 Hint: Please be more specific.\nExample: "Railway Volume settings" or "mesh parameter optimization"`;
-        }
-        return null; // JSON mode returns null for empty/invalid queries
-      }
-
-      // Build LIKE query for each keyword
-      const likeConditions = keywords.map(() => '(topic LIKE ? OR decision LIKE ?)').join(' OR ');
-      const likeParams = keywords.flatMap((k) => [`%${k}%`, `%${k}%`]);
-
-      const stmt = adapter.prepare(`
-        SELECT * FROM decisions
-        WHERE ${likeConditions}
-        AND superseded_by IS NULL
-        ORDER BY created_at DESC
-        LIMIT ?
-      `);
-
-      const rows = (await stmt.all(...likeParams, rerankPoolLimit)) as DecisionRecord[];
-      results = rows.map((row: DecisionRecord) => ({
-        ...row,
-        similarity: 0.75, // Assign moderate similarity for keyword matches
-      }));
-
-      // Stage 2: Graph expansion for keyword results (Phase 1)
-      if (results.length > 0) {
-        const graphEnhanced = await expandWithGraph(results);
-        results = graphEnhanced;
-        searchMethod = 'keyword+graph';
-      }
-    }
-
-    if (results.length === 0) {
-      if (format === 'markdown') {
-        const wordCount = userQuestion.split(/\s+/).length;
-        if (wordCount < 3) {
-          return `💡 Hint: Please be more specific.\nExample: "Why did we choose COMPLEX mesh structure?" or "What parameters are used for large layers?"`;
-        }
-      }
-      return null;
-    }
-
-    // 5. Optional: LLM re-ranking (only if requested)
-    if (useReranking) {
-      results = await rerankWithLLM(userQuestion, results);
-    }
-
-    const rerankCandidateResults = results.slice(0, rerankPoolLimit);
-
-    const vectorRows = rerankCandidateResults.map((r) => ({
-      id: r.id,
-      topic: r.topic,
-      decision: r.decision,
-      reasoning: r.reasoning,
-      confidence: r.confidence,
-      similarity: r.similarity,
-      created_at: r.created_at,
-      event_date: r.event_date ?? null,
-      event_datetime: r.event_datetime ?? null,
-      // Recency metadata (NEW - Gaussian Decay)
-      recency_score: r.recency_score,
-      recency_age_days: r.recency_age_days,
-      final_score: r.final_score || r.similarity, // Falls back to similarity if no recency
-      retrieval_score: r.similarity ?? null,
-      // Graph metadata (NEW - Phase 1)
-      graph_source: r.graph_source || 'primary',
-      graph_rank: r.graph_rank || 1.0,
-      related_to: r.related_to || null,
-      edge_reason: r.edge_reason || null,
-      case_id: null as string | null,
-      source_type: 'decision',
-    }));
-    const { results: rankedVectorRows, meta: rankerMeta } = applyLearnedRanker(vectorRows);
-    const finalResults = rankedVectorRows.slice(0, limit);
-
-    // Markdown format (for human display)
-    if (format === 'markdown') {
-      const context = formatContext(finalResults, { maxTokens: 500 });
-
-      // Add graph expansion summary if applicable
-      let graphSummary = '';
-      if (searchMethod.includes('graph')) {
-        const primaryCount = finalResults.filter((r) => r.graph_source === 'primary').length;
-        const expandedCount = finalResults.filter((r) => r.graph_source !== 'primary').length;
-
-        graphSummary = `\n📊 Graph expansion: ${primaryCount} primary + ${expandedCount} related (supersedes/refines/contradicts)\n`;
-      }
-
-      return `🔍 Search method: ${searchMethod}${graphSummary}\n${context}`;
-    }
-
-    // Calculate graph expansion stats
-    const graphStats = {
-      total_results: finalResults.length,
-      primary_count: finalResults.filter((r) => r.graph_source === 'primary').length,
-      expanded_count: finalResults.filter((r) => r.graph_source !== 'primary').length,
-      sources: {
-        primary: finalResults.filter((r) => r.graph_source === 'primary').length,
-        supersedes_chain: finalResults.filter((r) => r.graph_source === 'supersedes_chain').length,
-        refines: finalResults.filter((r) => r.graph_source === 'refines').length,
-        refined_by: finalResults.filter((r) => r.graph_source === 'refined_by').length,
-        contradicts: finalResults.filter((r) => r.graph_source === 'contradicts').length,
-      },
-    };
-
-    return {
-      query: userQuestion,
-      results: finalResults,
-      meta: {
-        count: finalResults.length,
-        search_method: searchMethod,
-        threshold: threshold || 'adaptive',
-        // Recency boosting config (NEW - Gaussian Decay)
-        recency_boost: disableRecency
-          ? null
-          : {
-              weight: recencyWeight,
-              scale: recencyScale,
-              decay: recencyDecay,
-            },
-        // Graph expansion stats (NEW - Phase 1)
-        graph_expansion: searchMethod.includes('graph') ? graphStats : null,
-        ranker: rankerMeta,
-      },
-    };
-  } catch (error: unknown) {
-    // Graceful degradation
-    logWarn(`mama.suggest() failed: ${error instanceof Error ? error.message : String(error)}`);
-    return null;
-  }
-}
-
-/**
- * Re-rank search results using local LLM (optional enhancement)
- *
- * @param {string} userQuestion - User's question
- * @param {Array} results - Vector search results
- * @returns {Promise<Array>} Re-ranked results
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function rerankWithLLM(userQuestion: string, results: any[]): Promise<any[]> {
-  try {
-    const prompt = `User asked: "${userQuestion}"
-
-Found decisions (ranked by vector similarity):
-${results.map((r: SearchCandidate, i: number) => `${i + 1}. [${(r.similarity ?? 0).toFixed(3)}] ${r.topic}: ${r.decision.substring(0, 60)}...`).join('\n')}
-
-Re-rank these by actual relevance to the user's intent (not just keyword similarity).
-Return JSON: { "ranking": [index1, index2, ...] } (0-based indices)
-
-Example: { "ranking": [2, 0, 4, 1, 3] } means 3rd is most relevant, then 1st, then 5th...`;
-
-    const response = await generate(prompt, {
-      format: 'json',
-      temperature: 0.3,
-      max_tokens: 100,
-      timeout: 3000,
-    });
-
-    const parsed = typeof response === 'string' ? JSON.parse(response) : response;
-
-    // Reorder results based on LLM ranking
-    return parsed.ranking.map((idx: number) => results[idx]).filter(Boolean);
-  } catch (error: unknown) {
-    logWarn(
-      `Re-ranking failed: ${error instanceof Error ? error.message : String(error)}, using vector ranking`
-    );
-    return results; // Fallback to vector ranking
-  }
-}
-
-/**
- * List recent decisions (all topics, chronological)
- *
- * DEFAULT: Returns JSON array with recent decisions (LLM-first design)
- * OPTIONAL: Returns Markdown string if format='markdown' (for human display)
- *
- * @param {Object} [options] - Options
- * @param {number} [options.limit=10] - Max results
- * @param {string} [options.format='json'] - Output format
- * @returns {Promise<Array|string>} Recent decisions
- */
-interface ListDecisionsOptions {
-  limit?: number;
-  format?: 'json' | 'markdown';
-  scopes?: Array<{ kind: 'global' | 'user' | 'channel' | 'project'; id: string }>;
-  /**
-   * Exact ledger read: every decision whose topic starts with this string, superseded rows
-   * included (they are the earlier rounds of the same item). `%` and `_` are literal.
-   * This is a lookup, not a search - `suggest({topicPrefix})` treats the prefix as a soft
-   * signal and was measured returning 5 of 12 rows plus one from another item.
-   */
-  topicPrefix?: string;
-}
-
-/** `LIKE ? ESCAPE '\\'` pattern that matches topics starting with `prefix`, metacharacters literal. */
-function topicPrefixLikePattern(prefix: string): string {
-  return `${prefix.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+async function updateOutcome(decisionId: string, outcome: UpdateOutcomeParams): Promise<void> {
+  await initDB();
+  return updateOutcomeInAdapter(getAdapter(), decisionId, outcome);
 }
 
 async function listDecisions(
   options: ListDecisionsOptions = {}
 ): Promise<DecisionRecord[] | string> {
-  const { limit = 10, format = 'json' } = options;
-
-  try {
-    const adapter = getAdapter();
-    let decisions;
-    const topicPrefix = typeof options.topicPrefix === 'string' ? options.topicPrefix.trim() : '';
-    // A prefix read keeps superseded rows: they are the item's earlier rounds.
-    const currency = topicPrefix ? '' : 'AND d.superseded_by IS NULL';
-    const prefixClause = topicPrefix ? "AND d.topic LIKE ? ESCAPE '\\'" : '';
-    const prefixParams = topicPrefix ? [topicPrefixLikePattern(topicPrefix)] : [];
-
-    if (options.scopes && options.scopes.length > 0) {
-      // Scope-filtered query: JOIN memory_scope_bindings + memory_scopes
-      const scopeIds = await Promise.all(
-        options.scopes.map((s) => ensureMemoryScopeInAdapter(adapter, s.kind, s.id))
-      );
-      const placeholders = scopeIds.map(() => '?').join(', ');
-      const stmt = adapter.prepare(`
-        SELECT DISTINCT d.* FROM decisions d
-        JOIN memory_scope_bindings msb ON msb.memory_id = d.id
-        WHERE msb.scope_id IN (${placeholders})
-          ${currency}
-          ${prefixClause}
-        ORDER BY COALESCE(d.event_datetime, d.created_at) DESC, d.created_at DESC
-        LIMIT ?
-      `);
-      decisions = await stmt.all(...scopeIds, ...prefixParams, limit);
-    } else {
-      const stmt = adapter.prepare(`
-        SELECT d.* FROM decisions d
-        WHERE 1 = 1
-          ${currency}
-          ${prefixClause}
-        ORDER BY COALESCE(d.event_datetime, d.created_at) DESC, d.created_at DESC
-        LIMIT ?
-      `);
-      decisions = await stmt.all(...prefixParams, limit);
-    }
-
-    if (format === 'markdown') {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return formatList(decisions as any[]);
-    }
-
-    return decisions as DecisionRecord[];
-  } catch (error: unknown) {
-    throw new Error(
-      `mama.listDecisions() failed: ${error instanceof Error ? error.message : String(error)}`
-    );
-  }
+  await initDB();
+  return listDecisionsInAdapter(getAdapter(), options);
 }
 
-/**
- * Save current session checkpoint (New Feature: Session Continuity)
- *
- * @param {string} summary - Summary of current session state
- * @param {Array<string>} openFiles - List of currently open files
- * @param {string} nextSteps - Next steps to be taken
- * @returns {Promise<number>} Checkpoint ID
- */
 async function saveCheckpoint(
   summary: string,
   openFiles: string[] = [],
@@ -2046,132 +842,18 @@ async function saveCheckpoint(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   recentConversation: any[] = []
 ): Promise<number | bigint> {
-  if (!summary) {
-    throw new Error('Summary is required for checkpoint');
-  }
-
-  try {
-    const adapter = getAdapter();
-    const stmt = adapter.prepare(`
-      INSERT INTO checkpoints (timestamp, summary, open_files, next_steps, recent_conversation, status)
-      VALUES (?, ?, ?, ?, ?, 'active')
-    `);
-
-    const result = stmt.run(
-      Date.now(),
-      summary,
-      JSON.stringify(openFiles),
-      nextSteps,
-      JSON.stringify(recentConversation || [])
-    );
-
-    return result.lastInsertRowid;
-  } catch (error: unknown) {
-    throw new Error(
-      `Failed to save checkpoint: ${error instanceof Error ? error.message : String(error)}`
-    );
-  }
-}
-
-/**
- * Load latest active checkpoint (New Feature: Session Continuity)
- *
- * @returns {Promise<Object|null>} Latest checkpoint or null
- */
-interface ConversationMessage {
-  role: string;
-  content: string | Array<{ type: string; text?: string; [key: string]: unknown }>;
-}
-
-interface CheckpointRow {
-  id?: number;
-  timestamp?: number;
-  summary?: string;
-  open_files?: string | string[];
-  next_steps?: string;
-  recent_conversation?: string | ConversationMessage[];
-  status?: string;
+  await initDB();
+  return saveCheckpointInAdapter(getAdapter(), summary, openFiles, nextSteps, recentConversation);
 }
 
 async function loadCheckpoint(): Promise<CheckpointRow | null> {
-  try {
-    const adapter = getAdapter();
-    const stmt = adapter.prepare(`
-      SELECT * FROM checkpoints
-      WHERE status = 'active'
-      ORDER BY timestamp DESC
-      LIMIT 1
-    `);
-
-    const checkpoint = stmt.get() as CheckpointRow | undefined;
-
-    if (checkpoint) {
-      try {
-        checkpoint.open_files =
-          typeof checkpoint.open_files === 'string'
-            ? JSON.parse(checkpoint.open_files)
-            : checkpoint.open_files || [];
-      } catch {
-        checkpoint.open_files = [];
-      }
-
-      try {
-        checkpoint.recent_conversation =
-          typeof checkpoint.recent_conversation === 'string'
-            ? JSON.parse(checkpoint.recent_conversation || '[]')
-            : checkpoint.recent_conversation || [];
-      } catch {
-        checkpoint.recent_conversation = [];
-      }
-    }
-
-    return checkpoint || null;
-  } catch (error: unknown) {
-    throw new Error(
-      `Failed to load checkpoint: ${error instanceof Error ? error.message : String(error)}`
-    );
-  }
+  await initDB();
+  return loadCheckpointInAdapter(getAdapter());
 }
 
-/**
- * List recent checkpoints (New Feature: Session Continuity)
- *
- * @param {number} limit - Max number of checkpoints to return
- * @returns {Promise<Array>} Recent checkpoints
- */
 async function listCheckpoints(limit: number = 10): Promise<CheckpointRow[]> {
-  try {
-    const adapter = getAdapter();
-    const stmt = adapter.prepare(`
-      SELECT * FROM checkpoints
-      ORDER BY timestamp DESC
-      LIMIT ?
-    `);
-
-    const checkpoints = stmt.all(limit) as CheckpointRow[];
-
-    return checkpoints.map((c: CheckpointRow) => {
-      try {
-        c.open_files =
-          typeof c.open_files === 'string' ? JSON.parse(c.open_files) : c.open_files || [];
-      } catch {
-        c.open_files = [];
-      }
-      try {
-        c.recent_conversation =
-          typeof c.recent_conversation === 'string'
-            ? JSON.parse(c.recent_conversation)
-            : c.recent_conversation || [];
-      } catch {
-        c.recent_conversation = [];
-      }
-      return c;
-    });
-  } catch (error: unknown) {
-    throw new Error(
-      `Failed to list checkpoints: ${error instanceof Error ? error.message : String(error)}`
-    );
-  }
+  await initDB();
+  return listCheckpointsInAdapter(getAdapter(), limit);
 }
 
 /**
@@ -2184,6 +866,189 @@ async function createAuditFinding(
 ): Promise<string> {
   await initDB();
   return createAuditFindingInAdapter(getAdapter(), input);
+}
+
+// Facade wrappers: the stores below take an explicit adapter as their first
+// argument; the `mama` surface keeps its published (input) signatures and
+// resolves the ambient adapter at this boundary instead.
+async function upsertChannelSummary(
+  input: Parameters<typeof upsertChannelSummaryInAdapter>[1]
+): Promise<void> {
+  await initDB();
+  return upsertChannelSummaryInAdapter(getAdapter(), input);
+}
+
+async function getChannelSummary(
+  channelKey: string
+): Promise<Awaited<ReturnType<typeof getChannelSummaryInAdapter>>> {
+  await initDB();
+  return getChannelSummaryInAdapter(getAdapter(), channelKey);
+}
+
+async function listOpenAuditFindings(): Promise<
+  Awaited<ReturnType<typeof listOpenAuditFindingsInAdapter>>
+> {
+  await initDB();
+  return listOpenAuditFindingsInAdapter(getAdapter());
+}
+
+async function listMemoryEventsForMemory(
+  memoryId: string
+): Promise<Awaited<ReturnType<typeof listMemoryEventsForMemoryInAdapter>>> {
+  await initDB();
+  return listMemoryEventsForMemoryInAdapter(getAdapter(), memoryId);
+}
+
+async function listRecentMemoryEvents(
+  limit?: number
+): Promise<Awaited<ReturnType<typeof listRecentMemoryEventsInAdapter>>> {
+  await initDB();
+  return listRecentMemoryEventsInAdapter(getAdapter(), limit);
+}
+
+async function getMemoryProvenance(
+  memoryId: string,
+  options?: Parameters<typeof getMemoryProvenanceInAdapter>[2]
+): Promise<Awaited<ReturnType<typeof getMemoryProvenanceInAdapter>>> {
+  await initDB();
+  return getMemoryProvenanceInAdapter(getAdapter(), memoryId, options);
+}
+
+async function listMemoriesByEnvelopeHash(
+  envelopeHash: string,
+  options?: Parameters<typeof listMemoriesByEnvelopeHashInAdapter>[2]
+): Promise<Awaited<ReturnType<typeof listMemoriesByEnvelopeHashInAdapter>>> {
+  await initDB();
+  return listMemoriesByEnvelopeHashInAdapter(getAdapter(), envelopeHash, options);
+}
+
+async function listMemoriesByGatewayCallId(
+  gatewayCallId: string,
+  options?: Parameters<typeof listMemoriesByGatewayCallIdInAdapter>[2]
+): Promise<Awaited<ReturnType<typeof listMemoriesByGatewayCallIdInAdapter>>> {
+  await initDB();
+  return listMemoriesByGatewayCallIdInAdapter(getAdapter(), gatewayCallId, options);
+}
+
+async function listMemoriesByModelRunId(
+  modelRunId: string,
+  options?: Parameters<typeof listMemoriesByModelRunIdInAdapter>[2]
+): Promise<Awaited<ReturnType<typeof listMemoriesByModelRunIdInAdapter>>> {
+  await initDB();
+  return listMemoriesByModelRunIdInAdapter(getAdapter(), modelRunId, options);
+}
+
+// memory/api.ts is adapter-first; the `mama` surface keeps its published
+// (input) signatures and resolves the ambient adapter at this boundary.
+async function saveMemory(
+  input: Parameters<typeof saveMemoryInAdapter>[1]
+): Promise<Awaited<ReturnType<typeof saveMemoryInAdapter>>> {
+  await initDB();
+  return saveMemoryInAdapter(getAdapter(), input);
+}
+
+async function recallMemory(
+  query: string,
+  options?: Parameters<typeof recallMemoryInAdapter>[2]
+): Promise<Awaited<ReturnType<typeof recallMemoryInAdapter>>> {
+  await initDB();
+  return recallMemoryInAdapter(getAdapter(), query, options);
+}
+
+async function buildProfile(
+  scopes: Parameters<typeof buildProfileInAdapter>[1]
+): Promise<Awaited<ReturnType<typeof buildProfileInAdapter>>> {
+  await initDB();
+  return buildProfileInAdapter(getAdapter(), scopes);
+}
+
+async function ingestMemory(
+  input: Parameters<typeof ingestMemoryInAdapter>[1]
+): Promise<Awaited<ReturnType<typeof ingestMemoryInAdapter>>> {
+  await initDB();
+  return ingestMemoryInAdapter(getAdapter(), input);
+}
+
+async function ingestConversation(
+  input: Parameters<typeof ingestConversationInAdapter>[1]
+): Promise<Awaited<ReturnType<typeof ingestConversationInAdapter>>> {
+  await initDB();
+  return ingestConversationInAdapter(getAdapter(), input);
+}
+
+async function buildMemoryBootstrap(
+  params: Parameters<typeof buildMemoryBootstrapInAdapter>[1]
+): Promise<Awaited<ReturnType<typeof buildMemoryBootstrapInAdapter>>> {
+  await initDB();
+  return buildMemoryBootstrapInAdapter(getAdapter(), params);
+}
+
+async function recordMemoryAudit(
+  input: Parameters<typeof recordMemoryAuditInAdapter>[1]
+): Promise<Awaited<ReturnType<typeof recordMemoryAuditInAdapter>>> {
+  await initDB();
+  return recordMemoryAuditInAdapter(getAdapter(), input);
+}
+
+async function beginModelRun(
+  input: Parameters<typeof beginModelRunInAdapter>[1]
+): Promise<Awaited<ReturnType<typeof beginModelRunInAdapter>>> {
+  await initDB();
+  return beginModelRunInAdapter(getAdapter(), input);
+}
+
+async function commitModelRun(
+  modelRunId: string,
+  summary?: string,
+  tokenCount?: number
+): Promise<Awaited<ReturnType<typeof commitModelRunInAdapter>>> {
+  await initDB();
+  return commitModelRunInAdapter(getAdapter(), modelRunId, summary, tokenCount);
+}
+
+async function failModelRun(
+  modelRunId: string,
+  errorSummary: string,
+  tokenCount?: number
+): Promise<Awaited<ReturnType<typeof failModelRunInAdapter>>> {
+  await initDB();
+  return failModelRunInAdapter(getAdapter(), modelRunId, errorSummary, tokenCount);
+}
+
+async function getModelRun(
+  modelRunId: string
+): Promise<Awaited<ReturnType<typeof getModelRunInAdapter>>> {
+  await initDB();
+  return getModelRunInAdapter(getAdapter(), modelRunId);
+}
+
+async function appendToolTrace(
+  input: Parameters<typeof appendToolTraceInAdapter>[1]
+): Promise<Awaited<ReturnType<typeof appendToolTraceInAdapter>>> {
+  await initDB();
+  return appendToolTraceInAdapter(getAdapter(), input);
+}
+
+async function listToolTracesForRun(
+  modelRunId: string
+): Promise<Awaited<ReturnType<typeof listToolTracesForRunInAdapter>>> {
+  await initDB();
+  return listToolTracesForRunInAdapter(getAdapter(), modelRunId);
+}
+
+async function listToolTraces(
+  input: Parameters<typeof listToolTracesInAdapter>[1]
+): Promise<Awaited<ReturnType<typeof listToolTracesInAdapter>>> {
+  await initDB();
+  return listToolTracesInAdapter(getAdapter(), input);
+}
+
+async function readToolTrace(
+  traceId: string,
+  scope: Parameters<typeof readToolTraceInAdapter>[2]
+): Promise<Awaited<ReturnType<typeof readToolTraceInAdapter>>> {
+  await initDB();
+  return readToolTraceInAdapter(getAdapter(), traceId, scope);
 }
 
 /**
@@ -2207,22 +1072,129 @@ async function createAuditFinding(
 // Retained internal functions for future use, but MCP exposes only:
 //   save, search, update, load_checkpoint
 // ════════════════════════════════════════════════════════════════════════════
+/**
+ * Instance-bound MAMA API factory.
+ *
+ * Same member surface as the ambient `mama` object, but every call reads and
+ * writes through the adapter the owner hands in — no module-global handle is
+ * consulted. Products that own their database lifetime (openDatabase) bind
+ * once at boot and pass this object down; the ambient `mama` export remains
+ * the compatibility boundary for callers without an instance.
+ */
+export function createMamaApi(adapter: DatabaseInstance) {
+  return {
+    save: (params: SaveParams) => saveInternal(adapter, params),
+    suggest: (userQuestion: string, options?: SuggestFunctionOptions) =>
+      suggestInAdapter(adapter, userQuestion, options),
+    saveMemory: (input: Parameters<typeof saveMemoryInAdapter>[1]) =>
+      saveMemoryInAdapter(adapter, input),
+    recallMemory: (
+      query: Parameters<typeof recallMemoryInAdapter>[1],
+      options?: Parameters<typeof recallMemoryInAdapter>[2]
+    ) => recallMemoryInAdapter(adapter, query, options),
+    list: (options?: ListDecisionsOptions) => listDecisionsInAdapter(adapter, options),
+    listDecisions: (options?: ListDecisionsOptions) => listDecisionsInAdapter(adapter, options),
+    listCheckpoints: (limit?: number) => listCheckpointsInAdapter(adapter, limit),
+    updateOutcome: (decisionId: string, outcome: UpdateOutcomeParams) =>
+      updateOutcomeInAdapter(adapter, decisionId, outcome),
+    buildProfile: (scopes: Parameters<typeof buildProfileInAdapter>[1]) =>
+      buildProfileInAdapter(adapter, scopes),
+    ingestMemory: (input: Parameters<typeof ingestMemoryInAdapter>[1]) =>
+      ingestMemoryInAdapter(adapter, input),
+    ingestConversation: (input: Parameters<typeof ingestConversationInAdapter>[1]) =>
+      ingestConversationInAdapter(adapter, input),
+    evolveMemory: (input: Parameters<typeof evolveMemory>[0]) => evolveMemory(input),
+    buildMemoryBootstrap: (params: Parameters<typeof buildMemoryBootstrapInAdapter>[1]) =>
+      buildMemoryBootstrapInAdapter(adapter, params),
+    createAuditAck: (input: Parameters<typeof createAuditAck>[0]) => createAuditAck(input),
+    recordMemoryAudit: (input: Parameters<typeof recordMemoryAuditInAdapter>[1]) =>
+      recordMemoryAuditInAdapter(adapter, input),
+    upsertChannelSummary: (input: Parameters<typeof upsertChannelSummaryInAdapter>[1]) =>
+      upsertChannelSummaryInAdapter(adapter, input),
+    getChannelSummary: (channelKey: Parameters<typeof getChannelSummaryInAdapter>[1]) =>
+      getChannelSummaryInAdapter(adapter, channelKey),
+    listAuditFindings: () => listOpenAuditFindingsInAdapter(adapter),
+    listOpenAuditFindings: () => listOpenAuditFindingsInAdapter(adapter),
+    createAuditFinding: (input: Parameters<typeof createAuditFindingInAdapter>[1]) =>
+      createAuditFindingInAdapter(adapter, input),
+    getMemoryProvenance: (
+      memoryId: Parameters<typeof getMemoryProvenanceInAdapter>[1],
+      options?: Parameters<typeof getMemoryProvenanceInAdapter>[2]
+    ) => getMemoryProvenanceInAdapter(adapter, memoryId, options),
+    listMemoriesByEnvelopeHash: (
+      envelopeHash: Parameters<typeof listMemoriesByEnvelopeHashInAdapter>[1],
+      options?: Parameters<typeof listMemoriesByEnvelopeHashInAdapter>[2]
+    ) => listMemoriesByEnvelopeHashInAdapter(adapter, envelopeHash, options),
+    listMemoriesByGatewayCallId: (
+      gatewayCallId: Parameters<typeof listMemoriesByGatewayCallIdInAdapter>[1],
+      options?: Parameters<typeof listMemoriesByGatewayCallIdInAdapter>[2]
+    ) => listMemoriesByGatewayCallIdInAdapter(adapter, gatewayCallId, options),
+    listMemoriesByModelRunId: (
+      modelRunId: Parameters<typeof listMemoriesByModelRunIdInAdapter>[1],
+      options?: Parameters<typeof listMemoriesByModelRunIdInAdapter>[2]
+    ) => listMemoriesByModelRunIdInAdapter(adapter, modelRunId, options),
+    listMemoryEventsForMemory: (
+      memoryId: Parameters<typeof listMemoryEventsForMemoryInAdapter>[1]
+    ) => listMemoryEventsForMemoryInAdapter(adapter, memoryId),
+    listRecentMemoryEvents: (limit?: Parameters<typeof listRecentMemoryEventsInAdapter>[1]) =>
+      listRecentMemoryEventsInAdapter(adapter, limit),
+    beginModelRun: (input: Parameters<typeof beginModelRunInAdapter>[1]) =>
+      beginModelRunInAdapter(adapter, input),
+    commitModelRun: (
+      modelRunId: Parameters<typeof commitModelRunInAdapter>[1],
+      summary?: Parameters<typeof commitModelRunInAdapter>[2],
+      tokenCount?: Parameters<typeof commitModelRunInAdapter>[3]
+    ) => commitModelRunInAdapter(adapter, modelRunId, summary, tokenCount),
+    failModelRun: (
+      modelRunId: Parameters<typeof failModelRunInAdapter>[1],
+      errorSummary: Parameters<typeof failModelRunInAdapter>[2],
+      tokenCount?: Parameters<typeof failModelRunInAdapter>[3]
+    ) => failModelRunInAdapter(adapter, modelRunId, errorSummary, tokenCount),
+    getModelRun: (modelRunId: Parameters<typeof getModelRunInAdapter>[1]) =>
+      getModelRunInAdapter(adapter, modelRunId),
+    listModelRunNativeInputs: async (
+      modelRunId: Parameters<typeof listModelRunNativeInputsInAdapter>[1],
+      principalId: Parameters<typeof listModelRunNativeInputsInAdapter>[2],
+      options?: Parameters<typeof listModelRunNativeInputsInAdapter>[3]
+    ) => listModelRunNativeInputsInAdapter(adapter, modelRunId, principalId, options),
+    appendToolTrace: (input: Parameters<typeof appendToolTraceInAdapter>[1]) =>
+      appendToolTraceInAdapter(adapter, input),
+    listToolTracesForRun: (modelRunId: Parameters<typeof listToolTracesForRunInAdapter>[1]) =>
+      listToolTracesForRunInAdapter(adapter, modelRunId),
+    listToolTraces: (input: Parameters<typeof listToolTracesInAdapter>[1]) =>
+      listToolTracesInAdapter(adapter, input),
+    readToolTrace: (
+      traceId: Parameters<typeof readToolTraceInAdapter>[1],
+      scope: Parameters<typeof readToolTraceInAdapter>[2]
+    ) => readToolTraceInAdapter(adapter, traceId, scope),
+    saveCheckpoint: (
+      summary: string,
+      openFiles?: string[],
+      nextSteps?: string,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      recentConversation?: any[]
+    ) => saveCheckpointInAdapter(adapter, summary, openFiles, nextSteps, recentConversation),
+    loadCheckpoint: () => loadCheckpointInAdapter(adapter),
+    recall: (topic: string, options?: RecallOptions) => recallInAdapter(adapter, topic, options),
+    expandWithGraph: (candidates: SearchCandidate[]) =>
+      expandWithGraphInAdapter(adapter, candidates),
+  };
+}
+
+export type MamaApi = ReturnType<typeof createMamaApi>;
+
 const mama = {
   // Core functions (used by 4 MCP tools)
   save,
-  saveWithTrustedProvenance,
   suggest,
   saveMemory,
-  saveMemoryWithTrustedProvenance,
   recallMemory,
   list: listDecisions,
   listCheckpoints,
   updateOutcome,
   buildProfile,
   ingestMemory,
-  ingestWithTrustedProvenance,
   ingestConversation,
-  ingestConversationWithTrustedProvenance,
   evolveMemory,
   buildMemoryBootstrap,
   createAuditAck,
@@ -2239,13 +1211,9 @@ const mama = {
   listMemoryEventsForMemory,
   listRecentMemoryEvents,
   beginModelRun,
-  beginModelRunInAdapter,
   commitModelRun,
-  commitModelRunInAdapter,
   failModelRun,
-  failModelRunInAdapter,
   getModelRun,
-  getModelRunInAdapter,
   appendToolTrace,
   listToolTracesForRun,
   listToolTraces,
@@ -2260,19 +1228,15 @@ const mama = {
 // Named exports for ESM consumers
 export {
   save,
-  saveWithTrustedProvenance,
   suggest,
   saveMemory,
-  saveMemoryWithTrustedProvenance,
   recallMemory,
   listDecisions as list,
   listCheckpoints,
   updateOutcome,
   buildProfile,
   ingestMemory,
-  ingestWithTrustedProvenance,
   ingestConversation,
-  ingestConversationWithTrustedProvenance,
   evolveMemory,
   buildMemoryBootstrap,
   createAuditAck,
@@ -2288,13 +1252,9 @@ export {
   listMemoryEventsForMemory,
   listRecentMemoryEvents,
   beginModelRun,
-  beginModelRunInAdapter,
   commitModelRun,
-  commitModelRunInAdapter,
   failModelRun,
-  failModelRunInAdapter,
   getModelRun,
-  getModelRunInAdapter,
   appendToolTrace,
   listToolTracesForRun,
   listToolTraces,
@@ -2308,8 +1268,21 @@ export {
 // Default export for backward compatibility
 export default mama;
 
-// CommonJS compatibility - allows require('@jungjaehoon/mama-core/mama-api').save()
+// CommonJS compatibility - require('@jungjaehoon/mama-core/mama-api') exposes the
+// ambient `mama` facade methods at top level. Merge instead of replacing
+// module.exports: the compiled `exports.X = X` named exports (suggestInAdapter,
+// saveCheckpointInAdapter, ...) are how api/catalog.ts reaches them from dist.
+// Getter-only named exports (evolveMemory, createAuditAck) keep their getter —
+// it already returns the same function the facade carries.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = mama;
-  module.exports.default = mama;
+  const target = module.exports as Record<string, unknown>;
+  for (const [key, value] of Object.entries(mama)) {
+    const descriptor = Object.getOwnPropertyDescriptor(target, key);
+    if (!descriptor || descriptor.writable) {
+      target[key] = value;
+    }
+  }
+  target.default = mama;
+  target.mama = mama;
+  target.createMamaApi = createMamaApi;
 }

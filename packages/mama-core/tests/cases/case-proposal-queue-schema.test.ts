@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { cleanupTestDB, initTestDB } from '../../src/test-utils.js';
+import { cleanupTestDB, initTestDB } from '../helpers/test-utils.js';
 import { getAdapter } from '../../src/db-manager.js';
 
 function sha256(s: string): Buffer {
@@ -196,5 +196,4 @@ describe('case-first substrate — case_proposal_queue schema', () => {
       })
     ).toThrow(/UNIQUE constraint/i);
   });
-
 });

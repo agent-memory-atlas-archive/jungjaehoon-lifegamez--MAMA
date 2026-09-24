@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getAdapter } from '../../src/db-manager.js';
-import { cleanupTestDB, initTestDB } from '../../src/test-utils.js';
+import { cleanupTestDB, initTestDB } from '../helpers/test-utils.js';
 import {
   appendIdentityCorrection,
   readIdentityAssignments,
@@ -11,8 +11,7 @@ import {
   rebuildRegistryProjections,
   resolveAliasCandidates,
 } from '../../src/registry/store.js';
-import { upsertConnectorEventIndex } from '../../src/connectors/event-index.js';
-import { appendObservationVersion } from '../../src/connectors/observation-versions.js';
+import { appendObservationVersion } from '../../src/knowledge/observations.js';
 
 describe('atomic identity corrections', () => {
   let dbPath: string;
@@ -32,7 +31,6 @@ describe('atomic identity corrections', () => {
   });
   beforeEach(() => {
     const db = getAdapter();
-    db.prepare('DELETE FROM connector_event_index').run();
     if (
       db
         .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='observation_versions'")
@@ -50,8 +48,8 @@ describe('atomic identity corrections', () => {
   });
 
   function edge(id = 'edge:t4'): { from: string; to: string } {
-    const from = createNode({ kind: 'item', name: `${id} from`, scopes: [scope] });
-    const to = createNode({ kind: 'item', name: `${id} to`, scopes: [scope] });
+    const from = createNode(getAdapter(), { kind: 'item', name: `${id} from`, scopes: [scope] });
+    const to = createNode(getAdapter(), { kind: 'item', name: `${id} to`, scopes: [scope] });
     getAdapter()
       .prepare(
         `INSERT INTO twin_edges
@@ -63,10 +61,10 @@ describe('atomic identity corrections', () => {
   }
 
   it('replays an authorized receipt before stale CAS and rejects changed payload without writes', () => {
-    const node = createNode({ kind: 'item', name: 'alpha', scopes: [scope] });
+    const node = createNode(getAdapter(), { kind: 'item', name: 'alpha', scopes: [scope] });
     const command = {
       commandId: 'cmd:add',
-      expectedRevision: currentIdentityRevision(),
+      expectedRevision: currentIdentityRevision(getAdapter()),
       reason: 'known alias',
       operation: 'add_alias' as const,
       nodeId: node,
@@ -84,10 +82,14 @@ describe('atomic identity corrections', () => {
   });
 
   it('denies same-principal receipt replay after its trusted scopes are revoked', () => {
-    const node = createNode({ kind: 'item', name: 'revoked replay', scopes: [scope] });
+    const node = createNode(getAdapter(), {
+      kind: 'item',
+      name: 'revoked replay',
+      scopes: [scope],
+    });
     const command = {
       commandId: 'cmd:revoked',
-      expectedRevision: currentIdentityRevision(),
+      expectedRevision: currentIdentityRevision(getAdapter()),
       reason: 'first allowed',
       operation: 'add_alias' as const,
       nodeId: node,
@@ -110,17 +112,17 @@ describe('atomic identity corrections', () => {
 
   it('rejects a merge unless current authority covers every binding', () => {
     const otherScope = { kind: 'project' as const, id: 'project:other' };
-    const survivor = createNode({
+    const survivor = createNode(getAdapter(), {
       kind: 'person',
       name: 'merge survivor',
       scopes: [scope],
     });
-    const member = createNode({
+    const member = createNode(getAdapter(), {
       kind: 'person',
       name: 'merge member',
       scopes: [scope, otherScope],
     });
-    const revision = currentIdentityRevision();
+    const revision = currentIdentityRevision(getAdapter());
     expect(() =>
       appendIdentityCorrection(
         getAdapter(),
@@ -136,7 +138,7 @@ describe('atomic identity corrections', () => {
         { principalId: 'owner:t4', agentId: 'agent:t4', scopes: [scope, otherScope] }
       )
     ).toThrowError(/Registry target is unavailable/);
-    expect(currentIdentityRevision()).toBe(revision);
+    expect(currentIdentityRevision(getAdapter())).toBe(revision);
     expect(
       appendIdentityCorrection(
         getAdapter(),
@@ -153,15 +155,18 @@ describe('atomic identity corrections', () => {
       ).commandId
     ).toBe('cmd:merge-full');
     expect(
-      resolveAliasCandidates('merge member', { kind: 'person', scopes: [otherScope] })
+      resolveAliasCandidates(getAdapter(), 'merge member', { kind: 'person', scopes: [otherScope] })
     ).toMatchObject([{ id: survivor, name: 'merge member' }]);
     expect(
-      resolveAliasCandidates('merge survivor', { kind: 'person', scopes: [otherScope] })
+      resolveAliasCandidates(getAdapter(), 'merge survivor', {
+        kind: 'person',
+        scopes: [otherScope],
+      })
     ).toEqual([]);
     const projection = getAdapter()
       .prepare('SELECT node_id,kind,alias,scope_kind,scope_id FROM registry_aliases ORDER BY alias')
       .all();
-    rebuildRegistryProjections();
+    rebuildRegistryProjections(getAdapter());
     expect(
       getAdapter()
         .prepare(
@@ -173,8 +178,16 @@ describe('atomic identity corrections', () => {
 
   it('rejects a hidden edge assignment without advancing revision or blocking a visible one', () => {
     const hiddenScope = { kind: 'project' as const, id: 'project:hidden' };
-    const hiddenFrom = createNode({ kind: 'item', name: 'hidden from', scopes: [hiddenScope] });
-    const hiddenTo = createNode({ kind: 'item', name: 'hidden to', scopes: [hiddenScope] });
+    const hiddenFrom = createNode(getAdapter(), {
+      kind: 'item',
+      name: 'hidden from',
+      scopes: [hiddenScope],
+    });
+    const hiddenTo = createNode(getAdapter(), {
+      kind: 'item',
+      name: 'hidden to',
+      scopes: [hiddenScope],
+    });
     getAdapter()
       .prepare(
         `INSERT INTO twin_edges
@@ -193,9 +206,17 @@ describe('atomic identity corrections', () => {
         Buffer.alloc(32),
         1
       );
-    const parent = createNode({ kind: 'item', name: 'visible assignment parent', scopes: [scope] });
-    const target = createNode({ kind: 'item', name: 'visible assignment target', scopes: [scope] });
-    const revision = currentIdentityRevision();
+    const parent = createNode(getAdapter(), {
+      kind: 'item',
+      name: 'visible assignment parent',
+      scopes: [scope],
+    });
+    const target = createNode(getAdapter(), {
+      kind: 'item',
+      name: 'visible assignment target',
+      scopes: [scope],
+    });
+    const revision = currentIdentityRevision(getAdapter());
     expect(() =>
       appendIdentityCorrection(
         getAdapter(),
@@ -211,13 +232,13 @@ describe('atomic identity corrections', () => {
         trusted
       )
     ).toThrowError(/Registry target is unavailable/);
-    expect(currentIdentityRevision()).toBe(revision);
+    expect(currentIdentityRevision(getAdapter())).toBe(revision);
     const visible = edge('edge:visible');
     appendIdentityCorrection(
       getAdapter(),
       {
         commandId: 'cmd:visible-edge',
-        expectedRevision: currentIdentityRevision(),
+        expectedRevision: currentIdentityRevision(getAdapter()),
         reason: 'allowed edge',
         operation: 'assign_refs',
         parentId: parent,
@@ -226,14 +247,24 @@ describe('atomic identity corrections', () => {
       },
       trusted
     );
-    expect(readIdentityAssignments('edge:visible')[0].originalRef.id).toBe(visible.from);
+    expect(readIdentityAssignments(getAdapter(), 'edge:visible')[0].originalRef.id).toBe(
+      visible.from
+    );
   });
 
   it('rejects duplicate edge endpoint assignments before revision or history changes', () => {
     edge('edge:duplicate-slot');
-    const parent = createNode({ kind: 'item', name: 'duplicate parent', scopes: [scope] });
-    const target = createNode({ kind: 'item', name: 'duplicate target', scopes: [scope] });
-    const revision = currentIdentityRevision();
+    const parent = createNode(getAdapter(), {
+      kind: 'item',
+      name: 'duplicate parent',
+      scopes: [scope],
+    });
+    const target = createNode(getAdapter(), {
+      kind: 'item',
+      name: 'duplicate target',
+      scopes: [scope],
+    });
+    const revision = currentIdentityRevision(getAdapter());
     expect(() =>
       appendIdentityCorrection(
         getAdapter(),
@@ -252,7 +283,7 @@ describe('atomic identity corrections', () => {
         trusted
       )
     ).toThrowError(/same edge endpoint/i);
-    expect(currentIdentityRevision()).toBe(revision);
+    expect(currentIdentityRevision(getAdapter())).toBe(revision);
     expect(
       getAdapter()
         .prepare('SELECT COUNT(*) AS count FROM registry_corrections WHERE command_id = ?')
@@ -262,14 +293,18 @@ describe('atomic identity corrections', () => {
 
   it('returns the same target error for hidden and unknown nodes without leaking identifiers', () => {
     const hiddenScope = { kind: 'project' as const, id: 'project:hidden-node' };
-    const hidden = createNode({ kind: 'item', name: 'hidden label', scopes: [hiddenScope] });
+    const hidden = createNode(getAdapter(), {
+      kind: 'item',
+      name: 'hidden label',
+      scopes: [hiddenScope],
+    });
     const errors = [hidden, 'reg_unknown_synthetic'].map((nodeId, index) => {
       try {
         appendIdentityCorrection(
           getAdapter(),
           {
             commandId: `cmd:opaque:${index}`,
-            expectedRevision: currentIdentityRevision(),
+            expectedRevision: currentIdentityRevision(getAdapter()),
             reason: 'opaque target check',
             operation: 'add_alias',
             nodeId,
@@ -292,10 +327,14 @@ describe('atomic identity corrections', () => {
   });
 
   it('requires principal, agent, and a nonempty signed scope set', () => {
-    const node = createNode({ kind: 'item', name: 'trusted context', scopes: [scope] });
+    const node = createNode(getAdapter(), {
+      kind: 'item',
+      name: 'trusted context',
+      scopes: [scope],
+    });
     const command = {
       commandId: 'cmd:missing-authority',
-      expectedRevision: currentIdentityRevision(),
+      expectedRevision: currentIdentityRevision(getAdapter()),
       reason: 'authority must be complete',
       operation: 'add_alias' as const,
       nodeId: node,
@@ -315,11 +354,19 @@ describe('atomic identity corrections', () => {
 
   it('revalidates a non-null assignment target before replaying its receipt', () => {
     edge('edge:replay-target');
-    const parent = createNode({ kind: 'item', name: 'replay parent', scopes: [scope] });
-    const target = createNode({ kind: 'item', name: 'replay target', scopes: [scope] });
+    const parent = createNode(getAdapter(), {
+      kind: 'item',
+      name: 'replay parent',
+      scopes: [scope],
+    });
+    const target = createNode(getAdapter(), {
+      kind: 'item',
+      name: 'replay target',
+      scopes: [scope],
+    });
     const command = {
       commandId: 'cmd:target-replay',
-      expectedRevision: currentIdentityRevision(),
+      expectedRevision: currentIdentityRevision(getAdapter()),
       reason: 'target known',
       operation: 'assign_refs' as const,
       parentId: parent,
@@ -339,15 +386,15 @@ describe('atomic identity corrections', () => {
   it('keeps original edge endpoints while assigning A then B then unresolved at one clock tick', () => {
     vi.spyOn(Date, 'now').mockReturnValue(77);
     const original = edge();
-    const parent = createNode({ kind: 'item', name: 'parent', scopes: [scope] });
-    const first = createNode({ kind: 'item', name: 'first', scopes: [scope] });
-    const second = createNode({ kind: 'item', name: 'second', scopes: [scope] });
+    const parent = createNode(getAdapter(), { kind: 'item', name: 'parent', scopes: [scope] });
+    const first = createNode(getAdapter(), { kind: 'item', name: 'first', scopes: [scope] });
+    const second = createNode(getAdapter(), { kind: 'item', name: 'second', scopes: [scope] });
     for (const [index, target] of [first, second, null].entries()) {
       appendIdentityCorrection(
         getAdapter(),
         {
           commandId: `cmd:${index}`,
-          expectedRevision: currentIdentityRevision(),
+          expectedRevision: currentIdentityRevision(getAdapter()),
           reason: `assignment ${index}`,
           operation: 'assign_refs',
           parentId: parent,
@@ -357,7 +404,7 @@ describe('atomic identity corrections', () => {
         trusted
       );
     }
-    expect(readIdentityAssignments('edge:t4')).toMatchObject([
+    expect(readIdentityAssignments(getAdapter(), 'edge:t4')).toMatchObject([
       {
         originalRef: { kind: 'registry', id: original.from },
         resolvedRef: null,
@@ -374,8 +421,8 @@ describe('atomic identity corrections', () => {
 
   it('rejects zero and one-child splits without mutation', () => {
     edge();
-    const parent = createNode({ kind: 'item', name: 'umbrella', scopes: [scope] });
-    const revision = currentIdentityRevision();
+    const parent = createNode(getAdapter(), { kind: 'item', name: 'umbrella', scopes: [scope] });
+    const revision = currentIdentityRevision(getAdapter());
     const nodeCount = getAdapter().prepare('SELECT COUNT(*) AS count FROM registry_nodes').get();
     for (const [index, children] of [[], [{ clientKey: 'only', name: 'only child' }]].entries()) {
       expect(() =>
@@ -395,7 +442,7 @@ describe('atomic identity corrections', () => {
         )
       ).toThrowError(/split/i);
     }
-    expect(currentIdentityRevision()).toBe(revision);
+    expect(currentIdentityRevision(getAdapter())).toBe(revision);
     expect(getAdapter().prepare('SELECT COUNT(*) AS count FROM registry_nodes').get()).toEqual(
       nodeCount
     );
@@ -406,12 +453,16 @@ describe('atomic identity corrections', () => {
 
   it('assigns split endpoints to newly created client keys in the same transaction', () => {
     const original = edge('edge:split-client');
-    const parent = createNode({ kind: 'item', name: 'split parent', scopes: [scope] });
+    const parent = createNode(getAdapter(), {
+      kind: 'item',
+      name: 'split parent',
+      scopes: [scope],
+    });
     const receipt = appendIdentityCorrection(
       getAdapter(),
       {
         commandId: 'cmd:split-client',
-        expectedRevision: currentIdentityRevision(),
+        expectedRevision: currentIdentityRevision(getAdapter()),
         reason: 'explicit partition',
         operation: 'split',
         parentId: parent,
@@ -430,7 +481,7 @@ describe('atomic identity corrections', () => {
     const children = Object.fromEntries(
       receipt.children.map((child) => [child.clientKey, child.ref.id])
     );
-    expect(readIdentityAssignments('edge:split-client')).toMatchObject([
+    expect(readIdentityAssignments(getAdapter(), 'edge:split-client')).toMatchObject([
       { endpoint: 'from', originalRef: { id: original.from }, resolvedRef: { id: children.alpha } },
       { endpoint: 'to', originalRef: { id: original.to }, resolvedRef: { id: children.beta } },
     ]);
@@ -438,8 +489,12 @@ describe('atomic identity corrections', () => {
 
   it('rolls back duplicate or unknown split client keys', () => {
     edge('edge:split-invalid');
-    const parent = createNode({ kind: 'item', name: 'split invalid parent', scopes: [scope] });
-    const revision = currentIdentityRevision();
+    const parent = createNode(getAdapter(), {
+      kind: 'item',
+      name: 'split invalid parent',
+      scopes: [scope],
+    });
+    const revision = currentIdentityRevision(getAdapter());
     const before = getAdapter().prepare('SELECT COUNT(*) AS count FROM registry_nodes').get();
     for (const [index, input] of [
       {
@@ -475,7 +530,7 @@ describe('atomic identity corrections', () => {
         )
       ).toThrowError(/client key/i);
     }
-    expect(currentIdentityRevision()).toBe(revision);
+    expect(currentIdentityRevision(getAdapter())).toBe(revision);
     expect(getAdapter().prepare('SELECT COUNT(*) AS count FROM registry_nodes').get()).toEqual(
       before
     );
@@ -485,30 +540,36 @@ describe('atomic identity corrections', () => {
   });
 
   it('hides foreign observation evidence and still accepts a later visible action', () => {
-    const node = createNode({ kind: 'item', name: 'scoped evidence node', scopes: [scope] });
-    const foreign = upsertConnectorEventIndex(getAdapter(), {
-      source_connector: 'slack',
-      source_type: 'message',
-      source_id: 'message:foreign',
-      content: 'foreign',
-      source_timestamp_ms: 1,
-      project_id: 'project:foreign',
-      memory_scope_kind: 'project',
-      memory_scope_id: 'project:foreign',
-      observation: { observed_at: 1 },
+    const node = createNode(getAdapter(), {
+      kind: 'item',
+      name: 'scoped evidence node',
+      scopes: [scope],
+    });
+    const foreign = appendObservationVersion(getAdapter(), {
+      source: 'slack',
+      sourceType: 'message',
+      sourceId: 'message:foreign',
+      body: 'foreign',
+      sourceAt: 1,
+      observedAt: 1,
+      contentHash: `hash-${'message:foreign'}-1`,
+      producerVersionId: `v-1`,
+      projectId: 'project:foreign',
+      memoryScopeKind: 'project',
+      memoryScopeId: 'project:foreign',
     });
     expect(() =>
       appendIdentityCorrection(
         getAdapter(),
         {
           commandId: 'cmd:foreign',
-          expectedRevision: currentIdentityRevision(),
+          expectedRevision: currentIdentityRevision(getAdapter()),
           reason: 'wrong scope',
           operation: 'add_alias',
           nodeId: node,
           alias: 'blocked',
           scopes: [scope],
-          evidence: [{ kind: 'observation', id: foreign.current_observation_id! }],
+          evidence: [{ kind: 'observation', id: foreign.observationId }],
         },
         trusted
       )
@@ -518,7 +579,7 @@ describe('atomic identity corrections', () => {
         getAdapter(),
         {
           commandId: 'cmd:valid',
-          expectedRevision: currentIdentityRevision(),
+          expectedRevision: currentIdentityRevision(getAdapter()),
           reason: 'independent',
           operation: 'add_alias',
           nodeId: node,
@@ -531,40 +592,48 @@ describe('atomic identity corrections', () => {
   });
 
   it('accepts current T3 observation evidence in the trusted project scope', () => {
-    const node = createNode({ kind: 'item', name: 'evidence-backed node', scopes: [scope] });
-    const captured = upsertConnectorEventIndex(getAdapter(), {
-      source_connector: 'slack',
-      source_type: 'message',
-      source_id: 'message:visible',
-      content: 'visible',
-      source_timestamp_ms: 2,
-      project_id: scope.id,
-      memory_scope_kind: scope.kind,
-      memory_scope_id: scope.id,
-      observation: { observed_at: 2 },
+    const node = createNode(getAdapter(), {
+      kind: 'item',
+      name: 'evidence-backed node',
+      scopes: [scope],
     });
-    upsertConnectorEventIndex(getAdapter(), {
-      source_connector: 'slack',
-      source_type: 'message',
-      source_id: 'message:visible',
-      content: 'visible replacement',
-      source_timestamp_ms: 3,
-      project_id: scope.id,
-      memory_scope_kind: scope.kind,
-      memory_scope_id: scope.id,
-      observation: { observed_at: 3 },
+    const captured = appendObservationVersion(getAdapter(), {
+      source: 'slack',
+      sourceType: 'message',
+      sourceId: 'message:visible',
+      body: 'visible',
+      sourceAt: 2,
+      observedAt: 2,
+      contentHash: `hash-${'message:visible'}-2`,
+      producerVersionId: `v-2`,
+      projectId: scope.id,
+      memoryScopeKind: scope.kind,
+      memoryScopeId: scope.id,
+    });
+    appendObservationVersion(getAdapter(), {
+      source: 'slack',
+      sourceType: 'message',
+      sourceId: 'message:visible',
+      body: 'visible replacement',
+      sourceAt: 3,
+      observedAt: 3,
+      contentHash: `hash-${'message:visible'}-3`,
+      producerVersionId: `v-3`,
+      projectId: scope.id,
+      memoryScopeKind: scope.kind,
+      memoryScopeId: scope.id,
     });
     const receipt = appendIdentityCorrection(
       getAdapter(),
       {
         commandId: 'cmd:visible-evidence',
-        expectedRevision: currentIdentityRevision(),
+        expectedRevision: currentIdentityRevision(getAdapter()),
         reason: 'source confirms alias',
         operation: 'add_alias',
         nodeId: node,
         alias: 'evidence alias',
         scopes: [scope],
-        evidence: [{ kind: 'observation', id: captured.current_observation_id! }],
+        evidence: [{ kind: 'observation', id: captured.observationId }],
       },
       trusted
     );
@@ -572,31 +641,37 @@ describe('atomic identity corrections', () => {
   });
 
   it('denies correction evidence from another channel in the same project', () => {
-    const node = createNode({ kind: 'item', name: 'channel evidence node', scopes: [scope] });
-    const captured = upsertConnectorEventIndex(getAdapter(), {
-      source_connector: 'slack',
-      source_type: 'message',
-      source_id: 'message:other-channel',
+    const node = createNode(getAdapter(), {
+      kind: 'item',
+      name: 'channel evidence node',
+      scopes: [scope],
+    });
+    const captured = appendObservationVersion(getAdapter(), {
+      source: 'slack',
+      sourceType: 'message',
+      sourceId: 'message:other-channel',
       channel: 'channel-b',
-      content: 'same project, denied channel',
-      source_timestamp_ms: 4,
-      project_id: scope.id,
-      memory_scope_kind: scope.kind,
-      memory_scope_id: scope.id,
-      observation: { observed_at: 4 },
+      body: 'same project, denied channel',
+      sourceAt: 4,
+      observedAt: 4,
+      contentHash: `hash-${'message:other-channel'}-4`,
+      producerVersionId: `v-4`,
+      projectId: scope.id,
+      memoryScopeKind: scope.kind,
+      memoryScopeId: scope.id,
     });
     expect(() =>
       appendIdentityCorrection(
         getAdapter(),
         {
           commandId: 'cmd:channel-evidence-denied',
-          expectedRevision: currentIdentityRevision(),
+          expectedRevision: currentIdentityRevision(getAdapter()),
           reason: 'must stay in channel authority',
           operation: 'add_alias',
           nodeId: node,
           alias: 'must not bind',
           scopes: [scope],
-          evidence: [{ kind: 'observation', id: captured.current_observation_id! }],
+          evidence: [{ kind: 'observation', id: captured.observationId }],
         },
         { ...trusted, channels: { slack: ['channel-a'] } }
       )
@@ -604,9 +679,13 @@ describe('atomic identity corrections', () => {
   });
 
   it('accepts owner-inline evidence only for its trusted principal and agent', () => {
-    const node = createNode({ kind: 'item', name: 'owner evidence node', scopes: [scope] });
+    const node = createNode(getAdapter(), {
+      kind: 'item',
+      name: 'owner evidence node',
+      scopes: [scope],
+    });
     const ownerObservation = appendObservationVersion(getAdapter(), {
-      sourceConnector: 'owner-message:telegram',
+      source: 'owner-message:telegram',
       sourceId: 'owner-message:1',
       body: 'owner correction',
       observedAt: 3,
@@ -623,7 +702,7 @@ describe('atomic identity corrections', () => {
         getAdapter(),
         {
           commandId: 'cmd:wrong-owner',
-          expectedRevision: currentIdentityRevision(),
+          expectedRevision: currentIdentityRevision(getAdapter()),
           reason: 'not mine',
           operation: 'add_alias',
           nodeId: node,
@@ -639,7 +718,7 @@ describe('atomic identity corrections', () => {
         getAdapter(),
         {
           commandId: 'cmd:owner',
-          expectedRevision: currentIdentityRevision(),
+          expectedRevision: currentIdentityRevision(getAdapter()),
           reason: 'owner supplied',
           operation: 'add_alias',
           nodeId: node,
@@ -653,14 +732,14 @@ describe('atomic identity corrections', () => {
   });
 
   it('fails supplied evidence when the required observation schema is absent', () => {
-    const node = createNode({ kind: 'item', name: 'alpha', scopes: [scope] });
+    const node = createNode(getAdapter(), { kind: 'item', name: 'alpha', scopes: [scope] });
     getAdapter().prepare('DROP TABLE observation_versions').run();
     expect(() =>
       appendIdentityCorrection(
         getAdapter(),
         {
           commandId: 'cmd:evidence',
-          expectedRevision: currentIdentityRevision(),
+          expectedRevision: currentIdentityRevision(getAdapter()),
           reason: 'observed',
           operation: 'add_alias',
           nodeId: node,
@@ -671,9 +750,11 @@ describe('atomic identity corrections', () => {
         trusted
       )
     ).toThrowError(/observation_versions is required/);
-    expect(createNode({ kind: 'person', name: 'independent', scopes: [scope] })).toMatch(/^reg_/);
+    expect(
+      createNode(getAdapter(), { kind: 'person', name: 'independent', scopes: [scope] })
+    ).toMatch(/^reg_/);
     getAdapter().exec(`CREATE TABLE observation_versions (
-      observation_id TEXT PRIMARY KEY, source_connector TEXT NOT NULL, source_id TEXT NOT NULL,
+      observation_id TEXT PRIMARY KEY, source TEXT NOT NULL, source_id TEXT NOT NULL,
       producer_version_id TEXT, body TEXT, body_location_json TEXT, author TEXT, source_at INTEGER,
       observed_at INTEGER NOT NULL, content_hash TEXT NOT NULL, metadata_json TEXT NOT NULL,
       scope_json TEXT NOT NULL,
@@ -683,9 +764,17 @@ describe('atomic identity corrections', () => {
   });
 
   it('preserves a missing edge schema failure and rolls back only that correction', () => {
-    const parent = createNode({ kind: 'item', name: 'schema failure parent', scopes: [scope] });
-    const target = createNode({ kind: 'item', name: 'schema failure target', scopes: [scope] });
-    const revision = currentIdentityRevision();
+    const parent = createNode(getAdapter(), {
+      kind: 'item',
+      name: 'schema failure parent',
+      scopes: [scope],
+    });
+    const target = createNode(getAdapter(), {
+      kind: 'item',
+      name: 'schema failure target',
+      scopes: [scope],
+    });
+    const revision = currentIdentityRevision(getAdapter());
     getAdapter().prepare('DROP TABLE twin_edges').run();
     let failure: unknown;
     try {
@@ -708,7 +797,7 @@ describe('atomic identity corrections', () => {
     expect(failure).toBeInstanceOf(Error);
     expect((failure as { code?: string }).code).not.toBe('unknown_edge');
     expect(String(failure)).toMatch(/no such table: twin_edges/i);
-    expect(currentIdentityRevision()).toBe(revision);
+    expect(currentIdentityRevision(getAdapter())).toBe(revision);
     expect(
       getAdapter()
         .prepare('SELECT COUNT(*) AS count FROM registry_corrections WHERE command_id=?')

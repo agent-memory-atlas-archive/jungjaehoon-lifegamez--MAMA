@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { getAdapter } from '../../src/db-manager.js';
 import { ingestSource } from '../../src/knowledge/index.js';
-import { cleanupTestDB, initTestDB } from '../../src/test-utils.js';
+import { cleanupTestDB, initTestDB } from '../helpers/test-utils.js';
 
 describe('PR4B source.ingest: one immutable observation per command', () => {
   let dbPath = '';
@@ -35,7 +35,8 @@ describe('PR4B source.ingest: one immutable observation per command', () => {
         body: 'raw conversation text',
         scopes: access.scopes,
       },
-      access
+      access,
+      { adapter: getAdapter() }
     );
     expect(receipt.status).toBe('committed');
     expect(receipt.observationId).toMatch(/^obs_/);
@@ -66,8 +67,8 @@ describe('PR4B source.ingest: one immutable observation per command', () => {
       observedAt: 1700000000000,
       scopes: access.scopes,
     };
-    const first = await ingestSource(command, access);
-    const second = await ingestSource(command, access);
+    const first = await ingestSource(command, access, { adapter: getAdapter() });
+    const second = await ingestSource(command, access, { adapter: getAdapter() });
     expect(second).toEqual(first);
     expect(getAdapter().prepare('SELECT COUNT(*) AS n FROM observation_versions').get()).toEqual({
       n: 1,
@@ -82,9 +83,9 @@ describe('PR4B source.ingest: one immutable observation per command', () => {
       body: 'first body',
       scopes: access.scopes,
     };
-    await ingestSource(command, access);
+    await ingestSource(command, access, { adapter: getAdapter() });
     await expect(
-      ingestSource({ ...command, body: 'different body' }, access)
+      ingestSource({ ...command, body: 'different body' }, access, { adapter: getAdapter() })
     ).rejects.toMatchObject({ code: 'COMMAND_CONFLICT' });
     expect(getAdapter().prepare('SELECT COUNT(*) AS n FROM observation_versions').get()).toEqual({
       n: 1,
@@ -100,7 +101,8 @@ describe('PR4B source.ingest: one immutable observation per command', () => {
           body: 'scope escape attempt',
           scopes: [{ kind: 'project', id: 'not-admitted' }],
         },
-        access
+        access,
+        { adapter: getAdapter() }
       )
     ).rejects.toMatchObject({ code: 'SCOPE_DENIED' });
     expect(getAdapter().prepare('SELECT COUNT(*) AS n FROM observation_versions').get()).toEqual({
@@ -120,7 +122,8 @@ describe('PR4B source.ingest: one immutable observation per command', () => {
           body: '   ',
           scopes: access.scopes,
         },
-        access
+        access,
+        { adapter: getAdapter() }
       )
     ).rejects.toMatchObject({ code: 'INVALID_COMMAND' });
     expect(getAdapter().prepare('SELECT COUNT(*) AS n FROM observation_versions').get()).toEqual({
