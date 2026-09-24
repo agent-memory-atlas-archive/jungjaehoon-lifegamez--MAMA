@@ -11,13 +11,13 @@ describe('canonical channel keys', () => {
     ).toBe('channel-key');
   });
 
-  it('preserves a Kagemusha origin namespace', () => {
+  it('maps a Kagemusha source channel id to its configuration key', () => {
     expect(
       canonicalChannelKey(
-        { source: 'kagemusha', channel: 'kagemusha:chatwork:room-key' },
-        { kagemusha: { 'kagemusha:chatwork:room-key': { role: 'hub' } } }
+        { source: 'kagemusha', channel: 'room-key' },
+        { kagemusha: { 'room-key': { role: 'hub' } } }
       )
-    ).toBe('kagemusha:chatwork:room-key');
+    ).toBe('room-key');
   });
 
   it('returns null for an unconfigured channel', () => {

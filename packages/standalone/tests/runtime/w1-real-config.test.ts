@@ -151,6 +151,7 @@ describe('W1 real owner configuration shape', () => {
         backend: 'codex',
         model: 'placeholder-model',
         effort: 'high',
+        max_turns: 10,
         timeout: 1000,
         run_token_budget: 100,
         tools: { mcp_config: join(root, 'state/mcp-config.json') },
@@ -171,6 +172,7 @@ describe('W1 real owner configuration shape', () => {
     expect(warningText).toContain('roles');
     expect(warningText).toContain('gmail');
     expect(warningText).toContain('historicalBackfill');
+    expect(warningText).not.toContain('agent.max_turns');
     expect(warningText).not.toContain('placeholder-telegram-token');
   });
 });

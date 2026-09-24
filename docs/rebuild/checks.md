@@ -71,3 +71,11 @@ sqlite3 ~/.mama/mama-memory.db "SELECT tool_name, execution_status, failure_code
 sqlite3 ~/.mama/mama-memory.db "SELECT commitment_id, current_revision, head_record_id, updated_at FROM commitments ORDER BY task_id;"
 jq -c '.entries[] | {key, state, updatedAt, nextChunkIndex, deliveryUncertain}' ~/.mama/runtime/telegram-message-ledger.json
 ```
+
+## W1 live-run defect corrections — 2026-09-25
+
+- Result: fixed input-sensitive native loop detection, owner `max_turns`/timeout propagation, Kagemusha channel-id mapping, mailbox ACK timing, and hashed source-delta identities.
+- Evidence: core loop, mailbox-boundary, standalone config, Kagemusha epoch-ms, source-id, and native-session regressions pass; core/standalone builds and typechecks pass.
+- Live cause: Kagemusha timestamps were epoch-ms and the 102-row window was present; bare configured channel ids did not match the namespaced connector key, so all rows were filtered.
+- Live cause: native receipt acceptance updated `mailbox_inputs` to `acked` before final delivery; failed native turns now remain claimed/uncertain until reconciliation, while pre-dispatch failures use mailbox retry.
+- Still open: full suites are socket-blocked in this sandbox only (`listen EPERM`); no socket workaround or daemon/live rerun was performed.

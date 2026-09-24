@@ -11,6 +11,7 @@ function validConfig(): W1Config {
       backend: 'codex',
       model: 'model-under-test',
       effort: 'high',
+      max_turns: 30,
       timeout: 30_000,
       run_token_budget: 100,
       codex_home: '/tmp/codex-home',
@@ -39,14 +40,14 @@ describe('W1 runtime configuration', () => {
     expect(parsed).not.toHaveProperty('multi_agent');
   });
 
-  it('ignores retired fields but still rejects invalid W1 fields', () => {
+  it('reads the owner turn limit and still rejects invalid W1 fields', () => {
     expect(parseConfig({ ...validConfig(), multi_agent: {} })).toMatchObject(validConfig());
     expect(
       parseConfig({
         ...validConfig(),
         agent: { ...validConfig().agent, max_turns: 2 },
       })
-    ).toMatchObject(validConfig());
+    ).toMatchObject({ agent: { max_turns: 2 } });
     expect(() =>
       parseConfig({
         ...validConfig(),
@@ -61,11 +62,17 @@ describe('W1 runtime configuration', () => {
       const path = join(root, 'config.yaml');
       writeFileSync(
         path,
-        `version: 1\nagent:\n  backend: codex\n  model: test\n  timeout: 1000\ndatabase:\n  path: ${join(root, 'db.sqlite')}\nlogging:\n  level: info\n  file: ${join(root, 'mama.log')}\n`
+        `version: 1\nagent:\n  backend: codex\n  model: test\n  max_turns: 20\n  timeout: 1000\ndatabase:\n  path: ${join(root, 'db.sqlite')}\nlogging:\n  level: info\n  file: ${join(root, 'mama.log')}\n`
       );
       expect(loadConfig({ path })).toMatchObject({
         version: 1,
-        agent: { backend: 'codex', model: 'test', effort: 'medium', run_token_budget: 0 },
+        agent: {
+          backend: 'codex',
+          model: 'test',
+          effort: 'medium',
+          max_turns: 20,
+          run_token_budget: 0,
+        },
       });
 
       writeFileSync(
@@ -84,7 +91,7 @@ describe('W1 runtime configuration', () => {
       const path = join(root, 'config.yaml');
       writeFileSync(
         path,
-        'version: 1\nagent:\n  backend: codex\n  model: test\n  timeout: 1000\ndatabase:\n  path: ~/.data/memory.db\nlogging:\n  level: info\n  file: ~/.data/mama.log\n'
+        'version: 1\nagent:\n  backend: codex\n  model: test\n  max_turns: 20\n  timeout: 1000\ndatabase:\n  path: ~/.data/memory.db\nlogging:\n  level: info\n  file: ~/.data/mama.log\n'
       );
       expect(loadConfig({ path, home: root })).toMatchObject({
         database: { path: join(root, '.data/memory.db') },

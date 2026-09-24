@@ -50,6 +50,7 @@ import {
   type NativePromptRequest,
 } from './native-prompt.js';
 import { DebugLogger } from '../debug-logger.js';
+import { canonicalizeJSON } from '../canonicalize.js';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -614,7 +615,7 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
           };
         }
 
-        const toolSignature = call.name;
+        const toolSignature = canonicalizeJSON({ name: call.name, input: call.input });
         const nextConsecutiveCount =
           toolSignature === lastToolSignature ? consecutiveToolCalls + 1 : 1;
         if (nextConsecutiveCount >= params.maxConsecutiveSameTool) {

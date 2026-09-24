@@ -373,9 +373,6 @@ export class NativeInputJournal {
           "UPDATE native_input_deliveries SET state='accepted',receipt_json=?,error=NULL,updated_at=? WHERE input_id=?"
         )
         .run(canonicalizeJSON(value), this.now(), inputId);
-      this.db
-        .prepare("UPDATE mailbox_inputs SET status='acked',acked_at=? WHERE id=?")
-        .run(this.now(), inputId);
     });
   }
 

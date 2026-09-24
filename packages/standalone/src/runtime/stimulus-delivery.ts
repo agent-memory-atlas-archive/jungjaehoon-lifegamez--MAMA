@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+
+import { canonicalizeJSON } from '@jungjaehoon/mama-core/canonicalize';
 import type { JsonValue } from '@jungjaehoon/mama-core/knowledge';
 import type { ContentBlock } from '@jungjaehoon/mama-core/runtime/drivers/types';
 import type { MailboxRow, Stimulus } from '@jungjaehoon/mama-core/runtime/mailbox';
@@ -60,11 +63,11 @@ function sourceRefId(delta: SourceDelta, sourceId: string): string {
 export function sourceDeltaStimulusId(delta: SourceDelta): string {
   if (delta.refs.length === 0)
     throw new Error('A source delta requires at least one observation ref');
-  return [
-    delta.collector,
-    delta.channel,
-    ...delta.refs.map((ref) => sourceRefId(delta, ref.sourceId)),
-  ].join(':');
+  const refs = delta.refs.map((ref) => `${ref.connector}:${ref.sourceId}`).sort();
+  const digest = createHash('sha256')
+    .update(canonicalizeJSON({ coalesceKey: delta.coalesceKey, refs }))
+    .digest('hex');
+  return `source_delta:${digest}`;
 }
 
 function sourcePayload(delta: SourceDelta): JsonValue {

@@ -25,6 +25,7 @@ function config(root: string, backend: 'codex' | 'claude' = 'codex'): W1Config {
       backend,
       model: 'fixture-model',
       effort: 'medium',
+      max_turns: 20,
       timeout: 1_000,
       run_token_budget: 100,
       ...(backend === 'claude' ? { tools: { mcp_config: join(root, 'runtime', 'mcp.json') } } : {}),

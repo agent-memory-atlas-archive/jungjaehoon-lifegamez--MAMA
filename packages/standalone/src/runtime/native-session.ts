@@ -64,7 +64,8 @@ export interface NativeSessionOptions {
   actionSurface: ActionSurface;
   ownerSystemPrompt?: string;
   effort?: RuntimeEffort;
-  timeout?: number;
+  timeout: number;
+  maxTurns: number;
   runTokenBudget?: number;
   codexHome?: string;
   pluginDir?: string;
@@ -140,7 +141,7 @@ function driverOptions(
     cwd: options.workspaceDir,
     runtimeRoot: options.runtimeRoot,
     sandbox: 'workspace-write',
-    requestTimeout: options.timeout ?? 120_000,
+    requestTimeout: options.timeout,
     effort: options.effort ?? 'medium',
     ...(options.codexHome === undefined ? {} : { codexHome: options.codexHome }),
     ...(options.pluginDir === undefined ? {} : { pluginDir: options.pluginDir }),
@@ -234,7 +235,7 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
     agent,
     backend: options.backend as BackendType,
     model: options.model,
-    maxTurns: 20,
+    maxTurns: options.maxTurns,
     isGatewayMode: options.backend === 'codex',
     runTokenBudget: options.runTokenBudget ?? 0,
     sessionPool,

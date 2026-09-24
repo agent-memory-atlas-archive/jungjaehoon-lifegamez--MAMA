@@ -104,8 +104,14 @@ const defaultLogger: DaemonLogger = {
   error: (line) => console.error(line),
 };
 
+/**
+ * A failed stage names what failed. Messages from this codebase never carry
+ * secrets (tokens are read from the environment and never formatted into errors).
+ */
 function errorName(error: unknown): string {
-  return error instanceof Error && error.name.trim() !== '' ? error.name : 'Error';
+  if (!(error instanceof Error)) return String(error);
+  const name = error.name.trim() !== '' ? error.name : 'Error';
+  return `${name}: ${error.message}`;
 }
 
 function stage(logger: DaemonLogger, name: string): void {
@@ -151,7 +157,8 @@ function pathsFor(configPath: string, config: W1Config): DaemonPaths {
     connectorsConfigPath: join(mamaRoot, 'connectors.json'),
     connectorsRoot,
     trelloStatePath: join(connectorsRoot, 'trello-state.json'),
-    kagemushaDbPath: join(connectorsRoot, 'kagemusha.db'),
+    // Kagemusha's own database, read-only (archive connector: ~/.kagemusha/kagemusha.db).
+    kagemushaDbPath: join(dirname(mamaRoot), '.kagemusha', 'kagemusha.db'),
     telegramLedgerPath: join(runtimeRoot, 'telegram-message-ledger.json'),
   };
 }
@@ -304,6 +311,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
       connectors: OWNER_CONNECTORS,
       rawPath: paths.connectorsRoot,
       effort: config.agent.effort,
+      maxTurns: config.agent.max_turns,
       timeout: config.agent.timeout,
       runTokenBudget: config.agent.run_token_budget,
       ...(config.agent.codex_home === undefined ? {} : { codexHome: config.agent.codex_home }),

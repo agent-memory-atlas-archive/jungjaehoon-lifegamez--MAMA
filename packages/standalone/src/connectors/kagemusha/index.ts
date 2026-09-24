@@ -86,8 +86,8 @@ export class KagemushaConnector implements IConnector {
     return this.db !== null;
   }
 
-  private channelKey(origin: string, channel: string): string {
-    return `kagemusha:${origin}:${channel}`;
+  private channelKey(channel: string): string {
+    return channel;
   }
 
   private accepts(channel: string): boolean {
@@ -98,7 +98,7 @@ export class KagemushaConnector implements IConnector {
   }
 
   private messageItem(row: ChannelMessage): NormalizedItem | null {
-    const channel = this.channelKey(row.channel, row.channel_id);
+    const channel = this.channelKey(row.channel_id);
     if (!this.accepts(channel)) return null;
     return {
       source: 'kagemusha',
@@ -120,7 +120,7 @@ export class KagemushaConnector implements IConnector {
 
   private taskItem(row: KagemushaTask): NormalizedItem | null {
     const sourceRoom = row.source_room ?? 'system';
-    const channel = this.channelKey('kagemusha-tasks', sourceRoom);
+    const channel = this.channelKey(sourceRoom);
     if (!this.accepts(channel)) return null;
     const deadline =
       row.deadline === null ? 'none' : new Date(row.deadline).toISOString().slice(0, 10);

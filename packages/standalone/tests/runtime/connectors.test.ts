@@ -58,7 +58,7 @@ describe('connector runtime', () => {
         kagemusha: {
           enabled: true,
           pollIntervalMinutes: 15,
-          channels: { 'kagemusha:chatwork:room-key': { role: 'hub' } },
+          channels: { 'room-key': { role: 'hub' } },
           auth: { type: 'none' },
         },
         unsupported: {
@@ -91,12 +91,7 @@ describe('connector runtime', () => {
         const item: NormalizedItem = {
           source: name,
           sourceId: `${name}-source`,
-          channel:
-            name === 'slack'
-              ? 'channel-key'
-              : name === 'trello'
-                ? 'board-key'
-                : 'kagemusha:chatwork:room-key',
+          channel: name === 'slack' ? 'channel-key' : name === 'trello' ? 'board-key' : 'room-key',
           author: 'actor-key',
           content: `${name}-content`,
           timestamp: new Date(now - 1_000),

@@ -64,6 +64,44 @@ async function boot(
 }
 
 describe('v7 R2: native acceptance is durable and separate from adapter completion', () => {
+  it('keeps a native-accepted input claimed until delivery settles', () => {
+    const dir = fs.mkdtempSync(join(os.tmpdir(), 'native-accepted-claim-'));
+    cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const db = new NodeSQLiteAdapter({
+      dbPath: join(dir, 'core.db'),
+    }) as unknown as DatabaseAdapter;
+    db.connect();
+    try {
+      db.runMigrations(join(__dirname, '../../db/migrations'));
+      const mailbox = new Mailbox(db);
+      const id = mailbox.enqueue({
+        id: 'input-accepted',
+        kind: 'owner_message',
+        principalId: 'owner',
+        channelKey: 'channel',
+        occurredAt: Date.now(),
+      })!;
+      expect(mailbox.claimNext()?.id).toBe(id);
+      const prepared = mailbox.nativeInputs.prepare(id);
+      mailbox.nativeInputs.dispatch(id, {
+        backend: 'codex',
+        sessionId: 'thread',
+        inputId: prepared.invocationId!,
+      });
+      mailbox.nativeInputs.accept(id, {
+        backend: 'codex',
+        sessionId: 'thread',
+        turnId: 'turn',
+      });
+
+      expect(mailbox.readInput('input-accepted', 'owner')?.status).toBe('claimed');
+      mailbox.nativeInputs.settle(id);
+      expect(mailbox.readInput('input-accepted', 'owner')?.status).toBe('acked');
+    } finally {
+      db.disconnect();
+    }
+  });
+
   it('does not demote an acknowledged settled input to uncertain after a late error', () => {
     const dir = fs.mkdtempSync(join(os.tmpdir(), 'native-settled-monotonic-'));
     cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -787,7 +825,7 @@ describe('v7 R2: native acceptance is durable and separate from adapter completi
             [{ type: 'text', text: 'request' }],
             {
               nativeInputId: 'caller-cannot-replace-it',
-              streamCallbacks: { onAccepted: () => expect(h.read()?.status).toBe('acked') },
+              streamCallbacks: { onAccepted: () => expect(h.read()?.status).toBe('claimed') },
             }
           );
           expect(response.response).toBe('native answer');
@@ -872,7 +910,7 @@ describe('v7 R2: native acceptance is durable and separate from adapter completi
     expect(h.read()?.nativeDelivery?.state).toBe('settled');
   });
 
-  it('ACKs a native receipt before the result or reply is ready', async () => {
+  it('keeps a native receipt claimed before the result or reply is ready', async () => {
     let finish!: () => void;
     const held = new Promise<void>((resolve) => {
       finish = resolve;
@@ -899,7 +937,7 @@ describe('v7 R2: native acceptance is durable and separate from adapter completi
     try {
       await vi.waitFor(() => expect(started).toBe(true));
       expect(h.read()).toMatchObject({
-        status: 'acked',
+        status: 'claimed',
         nativeDelivery: { state: 'accepted', receipt: { backend: 'claude', sessionId: 'session' } },
       });
     } finally {
@@ -945,7 +983,7 @@ describe('v7 R2: native acceptance is durable and separate from adapter completi
       first.dir
     );
     await second.runtime.drainOnce();
-    expect(before).toMatchObject({ status: 'acked', nativeDelivery: { state: 'uncertain' } });
+    expect(before).toMatchObject({ status: 'claimed', nativeDelivery: { state: 'uncertain' } });
     expect(dispatched).toBe(0);
     expect(reconciled).toBe(1);
     expect(second.read()).toMatchObject({ nativeDelivery: { state: 'settled' } });

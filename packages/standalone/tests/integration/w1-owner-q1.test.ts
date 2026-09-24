@@ -29,6 +29,7 @@ function config(root: string): W1Config {
       backend: 'codex',
       model: 'fixture-model',
       effort: 'medium',
+      max_turns: 20,
       timeout: 1_000,
       run_token_budget: 100,
     },

@@ -14,6 +14,7 @@ import { openCoreDatabase } from '../../src/runtime/core-db.js';
 import {
   createStimulusDelivery,
   createStimulusIntake,
+  sourceDeltaStimulusId,
 } from '../../src/runtime/stimulus-delivery.js';
 
 const homes: string[] = [];
@@ -54,6 +55,41 @@ async function boot(model: NativeSessionHandle['runTurn']) {
 }
 
 describe('one stimulus intake and delivery', () => {
+  it('hashes a source delta identity from its coalesce key and ref set', () => {
+    const base = {
+      kind: 'source_delta' as const,
+      collector: 'collector',
+      channel: 'channel',
+      coalesceKey: 'source:collector:channel',
+      refs: [
+        {
+          connector: 'collector',
+          sourceId: 'source-1',
+          sourceEntityId: 'entity-1',
+          sourceAt: '2026-01-01T00:00:00.000Z',
+          observedAt: '2026-01-01T00:00:01.000Z',
+          contentHash: null,
+        },
+        {
+          connector: 'collector',
+          sourceId: 'source-2',
+          sourceEntityId: 'entity-2',
+          sourceAt: '2026-01-01T00:01:00.000Z',
+          observedAt: '2026-01-01T00:01:01.000Z',
+          contentHash: null,
+        },
+      ],
+      preview: ['bounded preview'],
+    };
+    const sameRefsDifferentOrder = { ...base, refs: [...base.refs].reverse() };
+
+    expect(sourceDeltaStimulusId(base)).toMatch(/^source_delta:[0-9a-f]{64}$/);
+    expect(sourceDeltaStimulusId(sameRefsDifferentOrder)).toBe(sourceDeltaStimulusId(base));
+    expect(sourceDeltaStimulusId({ ...base, coalesceKey: 'source:collector:other' })).not.toBe(
+      sourceDeltaStimulusId(base)
+    );
+  });
+
   it('serializes a source delta and owner message on owner:runtime', async () => {
     const order: string[] = [];
     const runTurn = vi.fn(async (content, request) => {
@@ -133,5 +169,34 @@ describe('one stimulus intake and delivery', () => {
     );
     expect(runTurn).not.toHaveBeenCalled();
     expect(runtime.mailbox?.readInput('tick-1', 'owner')?.nativeDelivery?.state).toBe('settled');
+  });
+
+  it('does not ack a native turn that throws after native acceptance', async () => {
+    const runTurn = vi.fn(async (_content, request) => {
+      request?.streamCallbacks?.onInputDispatch?.({
+        backend: 'codex',
+        sessionId: 'owner-thread',
+        inputId: request.nativeInputId!,
+      });
+      request?.streamCallbacks?.onAccepted?.({
+        backend: 'codex',
+        sessionId: 'owner-thread',
+        turnId: 'failed-turn',
+      });
+      throw new Error('native turn failed');
+    });
+    const { runtime, intake } = await boot(runTurn);
+    intake.acceptOwnerMessage({
+      id: 'input-1',
+      channelKey: 'channel',
+      occurredAt: 1,
+      text: 'request',
+    });
+
+    await vi.waitFor(() => expect(runTurn).toHaveBeenCalledOnce());
+    expect(runtime.mailbox?.readInput('input-1', 'owner')).toMatchObject({
+      status: 'claimed',
+      nativeDelivery: { state: 'uncertain', error: 'native turn failed' },
+    });
   });
 });

@@ -30,6 +30,8 @@ describe('owner runtime assembly', () => {
       scopes: [{ kind: 'project', id: 'scope' }],
       embedder: { embed },
       nativeSession,
+      maxTurns: 20,
+      timeout: 1_000,
     });
     try {
       const result = await owner.surface.hostToolCall(

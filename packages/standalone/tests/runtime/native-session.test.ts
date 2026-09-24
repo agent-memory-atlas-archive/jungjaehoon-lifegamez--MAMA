@@ -62,6 +62,8 @@ describe('one owner native session', () => {
         actionSurface: surface(),
         agent: model,
         ownerSystemPrompt: 'standing policy',
+        maxTurns: 20,
+        timeout: 1_000,
       });
 
       expect(
@@ -92,6 +94,8 @@ describe('one owner native session', () => {
       workspaceDir: '/tmp/mama-native-workspace',
       runtimeRoot: '/tmp/mama-native-runtime',
       actionSurface: surface(),
+      maxTurns: 41,
+      timeout: 300_000,
       createAgent: (options) => {
         received = options;
         return model;
@@ -101,10 +105,47 @@ describe('one owner native session', () => {
     expect(received).toMatchObject({
       cwd: '/tmp/mama-native-workspace',
       sandbox: 'workspace-write',
+      requestTimeout: 300_000,
     });
     expect(received?.createSubagentBridge).toEqual(expect.any(Function));
     expect(model.supportsNativeSubagents).toBe(true);
     void session.stop();
+  });
+
+  it('uses the configured max-turn limit for the emergency host-call ceiling', async () => {
+    const model = runner('codex');
+    (model.prompt as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_content, _callbacks, options) => {
+        for (let index = 0; index < 51; index += 1) {
+          const result = await options?.hostToolBridge?.execute({
+            callId: `call-${index}`,
+            name: 'source.read',
+            input: { offset: index, limit: 1 },
+          });
+          expect(result?.abort).not.toBe(true);
+        }
+        return {
+          response: 'answer',
+          session_id: 'native-session',
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      }
+    );
+    const session = createNativeSession({
+      backend: 'codex',
+      model: 'test-model',
+      workspaceDir: '/tmp/mama-native-workspace',
+      runtimeRoot: '/tmp/mama-native-runtime',
+      actionSurface: surface(),
+      agent: model,
+      maxTurns: 41,
+      timeout: 1_000,
+    });
+
+    await expect(
+      session.runTurn([{ type: 'text', text: 'bounded calls' }], { sessionKey: 'owner:runtime' })
+    ).resolves.toMatchObject({ response: 'answer' });
+    await session.stop();
   });
 
   it('projects Claude builtin tools from the turn role', async () => {
@@ -117,6 +158,8 @@ describe('one owner native session', () => {
       actionSurface: surface(),
       agent: model,
       ownerSystemPrompt: 'standing policy',
+      maxTurns: 20,
+      timeout: 1_000,
     });
 
     await session.runTurn([{ type: 'text', text: 'stimulus' }], {
@@ -141,6 +184,8 @@ describe('one owner native session', () => {
         runtimeRoot: root,
         actionSurface: surface(),
         agent: model,
+        maxTurns: 20,
+        timeout: 1_000,
         mcpConfigPath: configPath,
         mcpServerPath: join(root, 'action-server.js'),
       });

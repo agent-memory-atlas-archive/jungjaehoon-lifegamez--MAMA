@@ -63,7 +63,7 @@ describe('KagemushaConnector', () => {
     }
   });
 
-  it('keeps the collector namespace and canonicalizes the origin in the channel', async () => {
+  it('uses the configured Kagemusha channel key', async () => {
     const root = mkdtempSync(join(tmpdir(), 'kagemusha-connector-'));
     roots.push(root);
     const db = createDb(join(root, 'source.db'));
@@ -72,14 +72,14 @@ describe('KagemushaConnector', () => {
     ).run('chatwork', 'room-key', 'actor-key', 'user', 'source-content', 1_704_067_201_000);
     db.close();
     const connector = new KagemushaConnector(
-      config({ 'kagemusha:chatwork:room-key': { role: 'hub' } }),
+      config({ 'room-key': { role: 'hub' } }),
       join(root, 'source.db')
     );
     await connector.init();
     const [item] = await connector.poll(new Date(0));
     expect(item).toMatchObject({
       source: 'kagemusha',
-      channel: 'kagemusha:chatwork:room-key',
+      channel: 'room-key',
       type: 'message',
     });
     expect(item?.metadata).toMatchObject({
@@ -98,11 +98,35 @@ describe('KagemushaConnector', () => {
     ).run('slack', 'other-room', 'actor-key', 'user', 'source-content', 1_704_067_201_000);
     db.close();
     const connector = new KagemushaConnector(
-      config({ 'kagemusha:chatwork:room-key': { role: 'hub' } }),
+      config({ 'room-key': { role: 'hub' } }),
       join(root, 'source.db')
     );
     await connector.init();
     expect(await connector.poll(new Date(0))).toEqual([]);
     await connector.dispose();
+  });
+
+  it('polls configured channel ids using epoch-millisecond source timestamps', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'kagemusha-epoch-ms-'));
+    roots.push(root);
+    const dbPath = join(root, 'source.db');
+    const db = createDb(dbPath);
+    db.prepare(
+      'INSERT INTO channel_messages (channel, channel_id, user_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run('slack', 'channel-key', 'actor-key', 'user', 'source-content', 1_704_067_201_000);
+    db.close();
+
+    const connector = new KagemushaConnector(config({ 'channel-key': { role: 'hub' } }), dbPath);
+    await connector.init();
+    try {
+      const items = await connector.poll(new Date(1_704_067_200_000));
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({
+        channel: 'channel-key',
+        timestamp: new Date(1_704_067_201_000),
+      });
+    } finally {
+      await connector.dispose();
+    }
   });
 });

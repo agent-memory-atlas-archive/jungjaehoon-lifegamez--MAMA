@@ -11,6 +11,7 @@ export interface W1AgentConfig {
   backend: RuntimeBackend;
   model: string;
   effort: RuntimeEffort;
+  max_turns: number;
   timeout: number;
   run_token_budget: number;
   codex_home?: string;
@@ -61,6 +62,7 @@ const AGENT_KEYS = [
   'backend',
   'model',
   'effort',
+  'max_turns',
   'timeout',
   'run_token_budget',
   'codex_home',
@@ -159,6 +161,7 @@ function parseAgent(value: unknown, home: string, state: ParseState): W1AgentCon
     backend: backend as RuntimeBackend,
     model: text(raw.model, 'agent.model'),
     effort: effort as RuntimeEffort,
+    max_turns: integer(raw.max_turns, 'agent.max_turns', 1),
     timeout: integer(raw.timeout, 'agent.timeout', 1),
     run_token_budget: integer(raw.run_token_budget ?? 0, 'agent.run_token_budget'),
     ...(codexHome === undefined ? {} : { codex_home: configPath(codexHome, home) }),

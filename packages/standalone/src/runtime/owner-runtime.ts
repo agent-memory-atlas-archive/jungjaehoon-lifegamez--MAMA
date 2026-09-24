@@ -44,7 +44,7 @@ export interface OwnerRuntimeOptions {
   nativeSession?: NativeSessionHandle;
   modelRun?: NativeModelRunPort;
   effort?: RuntimeEffort;
-  timeout?: number;
+  timeout: number;
   runTokenBudget?: number;
   codexHome?: string;
   codexSandbox?: RuntimeSandbox;
@@ -57,6 +57,7 @@ export interface OwnerRuntimeOptions {
   onNativeEventResult?: StimulusDeliveryOptions['onNativeEventResult'];
   onStimulusDelivered?: StimulusDeliveryOptions['onDelivered'];
   onStimulusFailed?: StimulusDeliveryOptions['onFailed'];
+  maxTurns: number;
 }
 
 export interface OwnerRuntime {
@@ -152,7 +153,8 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
         actionSurface: surface,
         ownerSystemPrompt: '',
         ...(options.effort === undefined ? {} : { effort: options.effort }),
-        ...(options.timeout === undefined ? {} : { timeout: options.timeout }),
+        timeout: options.timeout,
+        maxTurns: options.maxTurns,
         ...(options.runTokenBudget === undefined ? {} : { runTokenBudget: options.runTokenBudget }),
         ...(options.codexHome === undefined ? {} : { codexHome: options.codexHome }),
         ...(options.codexSandbox === undefined ? {} : { codexSandbox: options.codexSandbox }),
