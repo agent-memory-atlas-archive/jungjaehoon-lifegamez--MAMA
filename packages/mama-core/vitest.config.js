@@ -30,6 +30,7 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['tests/**/*.test.{js,ts}'],
+    setupFiles: ['tests/setup/model-cache.ts'],
     testTimeout: 30000,
     pool: 'forks',
     poolOptions: {

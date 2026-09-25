@@ -19,6 +19,7 @@ import {
   type ConnectorRuntimeOptions,
 } from '../../runtime/connectors.js';
 import { defaultConfigPath, loadConfig, type W1Config } from '../../runtime/config.js';
+import { declareModelCache } from '../../runtime/model-cache.js';
 import { ensureMamaMcpConfig, resolveActionServerPath } from '../runtime/action-mcp-config.js';
 import type { SourceDelta } from '../../connectors/framework/polling-scheduler.js';
 import { createOwnerPolicyProvider } from '../../runtime/owner-policy.js';
@@ -246,6 +247,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
     currentStage = 'config';
     stage(logger, 'config');
     config = options.config ?? loadConfig({ path: configPath, home: options.home });
+    declareModelCache();
     paths = pathsFor(configPath, config);
     currentStage = 'isolation';
     const ensureIsolation = dependencies.ensureIsolation ?? ensureDaemonIsolation;
