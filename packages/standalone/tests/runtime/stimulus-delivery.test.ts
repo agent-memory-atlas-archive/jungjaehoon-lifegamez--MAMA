@@ -177,7 +177,11 @@ describe('one stimulus intake and delivery', () => {
     expect(prompts.some((text) => text.includes('source-1'))).toBe(true);
     expect(prompts.some((text) => text.includes('bounded message text'))).toBe(true);
     expect(prompts.some((text) => text.includes('update the board, wiki, and lessons'))).toBe(true);
-    expect(prompts.some((text) => text.includes('only for the refs whose full text'))).toBe(true);
+    expect(
+      prompts.some((text) =>
+        text.includes('batched per connector with source set to the connector of those refs')
+      )
+    ).toBe(true);
     expect(prompts.some((text) => text.includes('observationRefs'))).toBe(true);
     expect(runTurn.mock.calls.every((call) => call[1]?.sessionKey === 'owner:runtime')).toBe(true);
   });

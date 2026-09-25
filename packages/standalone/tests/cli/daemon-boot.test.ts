@@ -196,8 +196,15 @@ describe('daemon bootstrap', () => {
       info: (line) => logs.push(`info:${line}`),
       error: (line) => logs.push(`error:${line}`),
     };
+    // The read-only viewer serves the owner while the replay fills the records.
+    const viewer = {
+      port: 0,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+    };
     const replay = vi.fn(async (context: { owner: unknown }) => {
       expect(context.owner).toBe(owner);
+      expect(viewer.start).toHaveBeenCalledOnce();
     });
     const daemon = await bootDaemon({
       mode: 'replay',
@@ -208,9 +215,7 @@ describe('daemon bootstrap', () => {
       replay,
       dependencies: {
         createOwnerRuntime: vi.fn(async () => owner as never),
-        createViewerServer: vi.fn(() => {
-          throw new Error('viewer must not start in replay mode');
-        }),
+        createViewerServer: vi.fn(() => viewer as never),
         startConnectorRuntime: vi.fn(async () => {
           throw new Error('live connectors must not start in replay mode');
         }),
@@ -224,8 +229,9 @@ describe('daemon bootstrap', () => {
     expect(logs.filter((line) => line === 'info:replay collectors: disabled')).toHaveLength(1);
     expect(daemon.connectors).toBeNull();
     expect(daemon.gateway).toBeNull();
-    expect(daemon.viewer).toBeNull();
+    expect(daemon.viewer).toBe(viewer);
     await daemon.stop();
+    expect(viewer.stop).toHaveBeenCalledOnce();
   });
 
   it('does not remove preserved W5 sources while creating Claude isolation files', async () => {

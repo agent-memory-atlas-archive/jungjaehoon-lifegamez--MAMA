@@ -212,7 +212,7 @@ function boundedStimulus(row: MailboxRow): string {
       row.refs.length === 0
         ? 'source_read: this replay window has no source messages.'
         : payloadCarriesMessageText(row.payload)
-          ? 'source_read: each ref carries its message text as contentPreview (cut at 280 characters, marked …); call source.read with observationRefs, batched, only for the refs whose full text or attachment you need.'
+          ? 'source_read: each ref carries its message text as contentPreview (cut at 280 characters, marked …); call source.read with observationRefs only for the refs whose full text or attachment you need, batched per connector with source set to the connector of those refs.'
           : 'source_read: read these delta refs in one batched source.read call with observationRefs; content remains bounded per ref.'
     );
     const payload = row.payload;

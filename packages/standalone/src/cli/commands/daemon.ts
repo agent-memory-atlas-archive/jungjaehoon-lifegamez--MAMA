@@ -308,23 +308,6 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
     });
     stage(logger, 'owner_runtime');
 
-    if (options.mode === 'replay') {
-      logger.info('replay collectors: disabled');
-      currentStage = 'replay';
-      if (!options.replay) throw new Error('Replay mode requires a replay feeder');
-      await options.replay({ config, paths, owner, logger });
-      stage(logger, 'replay');
-      return {
-        config,
-        paths,
-        owner,
-        viewer: null,
-        connectors: null,
-        gateway: null,
-        stop: stopResources,
-      };
-    }
-
     currentStage = 'viewer';
     const viewerFactory = dependencies.createViewerServer ?? createDefaultViewerServer;
     viewer = viewerFactory({
@@ -366,6 +349,23 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
     await viewer.start();
     logger.info(`viewer server listening on port=${String(viewer.port)}`);
     stage(logger, 'viewer');
+
+    if (options.mode === 'replay') {
+      logger.info('replay collectors: disabled');
+      currentStage = 'replay';
+      if (!options.replay) throw new Error('Replay mode requires a replay feeder');
+      await options.replay({ config, paths, owner, logger });
+      stage(logger, 'replay');
+      return {
+        config,
+        paths,
+        owner,
+        viewer,
+        connectors: null,
+        gateway: null,
+        stop: stopResources,
+      };
+    }
 
     currentStage = 'connectors';
     const acceptSourceDelta = async (delta: SourceDelta): Promise<void> => {
