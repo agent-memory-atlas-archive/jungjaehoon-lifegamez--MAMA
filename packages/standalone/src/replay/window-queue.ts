@@ -85,7 +85,6 @@ export interface QueueDuplicatePair {
   readonly left: QueueWorkItem;
   readonly right: QueueWorkItem;
   readonly confidence: number;
-  readonly observationRefs: readonly string[];
 }
 
 export interface WindowQueue {
@@ -618,7 +617,6 @@ async function duplicatePairs(
         left: input.workItems[pair.left]!,
         right: input.workItems[pair.right]!,
         confidence: score(answers, `d${id}`, observationRefs),
-        observationRefs,
       });
     });
   });
@@ -723,7 +721,12 @@ export async function buildWindowQueue(input: WindowQueueInput): Promise<WindowQ
       a: Object.freeze([...a.values()]),
       b: Object.freeze(b),
       c: Object.freeze(c),
-      suspectedDuplicates: duplicates,
+      // Suspected means Jev put the pair in the middle band or higher, the same cut as A/B;
+      // a pair it judged different is not material for the agent (111 pairs × every window
+      // ref reached 1.3M characters on 9/8 and exceeded the model input).
+      suspectedDuplicates: Object.freeze(
+        duplicates.filter((pair) => pair.confidence >= MEDIUM_CONFIDENCE)
+      ),
       unresolved: Object.freeze(unresolved),
     },
   });

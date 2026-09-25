@@ -294,7 +294,7 @@ export function renderWindowQueue(queue: WindowQueue): string {
   lines.push('## Suspected duplicates');
   for (const [index, pair] of queue.sections.suspectedDuplicates.entries()) {
     lines.push(
-      `${index + 1}. ${pair.left.commitmentId} ⇔ ${pair.right.commitmentId} · ${pair.confidence.toFixed(2)} · refs ${pair.observationRefs.join(', ')}`
+      `${index + 1}. ${pair.left.commitmentId} "${pair.left.title ?? ''}" ⇔ ${pair.right.commitmentId} "${pair.right.title ?? ''}" · ${pair.confidence.toFixed(2)}`
     );
   }
   lines.push('## Unresolved');

@@ -238,4 +238,33 @@ describe('day-window queue', () => {
       }),
     ]);
   });
+
+  it('lists only the duplicate pairs Jev scores as suspected, without window refs', async () => {
+    const jev: QueueJev = {
+      ask: vi.fn(async (request) => {
+        const answers: Record<string, Record<string, unknown>> = {};
+        for (const key of Object.keys(request.questions)) {
+          answers[key] = { noul: /^d\d+$/.test(key) ? (key === 'd0' ? 0.9 : 0.1) : 0.9 };
+        }
+        return answers;
+      }),
+    };
+    const queue = await buildWindowQueue({
+      startMs,
+      endMs: startMs + 24 * 60 * 60 * 1_000,
+      events: [event(0, { metadata: undefined })],
+      workItems: ['a', 'b', 'c', 'd'].map((id) => ({
+        commitmentId: `work-${id}`,
+        title: `item ${id}`,
+        stage: null,
+        status: 'pending',
+      })),
+      trelloCards: [],
+      vocabulary,
+      jev,
+      embedder,
+    });
+    expect(queue.sections.suspectedDuplicates).toHaveLength(1);
+    expect(queue.sections.suspectedDuplicates[0]).not.toHaveProperty('observationRefs');
+  });
 });
