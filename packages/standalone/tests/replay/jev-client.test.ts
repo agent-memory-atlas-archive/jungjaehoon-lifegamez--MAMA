@@ -38,6 +38,12 @@ describe('Jev client', () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
+  it('names the provider error type and request id when retries run out', async () => {
+    const body = JSON.stringify({ detail: { error_type: 'internal_error', request_id: 'req_1' } });
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response(body, { status: 500 }));
+    await expect(client(fetchImpl).ask(request)).rejects.toThrow(/internal_error, req_1/);
+  });
+
   it('retries a transient 500 before accepting a later success', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()

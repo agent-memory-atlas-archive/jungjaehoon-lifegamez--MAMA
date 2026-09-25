@@ -58,6 +58,19 @@ function readJson(path: string): unknown {
   return JSON.parse(readFileSync(path, 'utf8')) as unknown;
 }
 
+/** The API's error type and request id, so a failure can be traced with the provider. */
+function errorDetail(text: string): string {
+  try {
+    const detail = (JSON.parse(text) as { detail?: { error_type?: unknown; request_id?: unknown } })
+      .detail;
+    const type = typeof detail?.error_type === 'string' ? detail.error_type : null;
+    const id = typeof detail?.request_id === 'string' ? detail.request_id : null;
+    return type || id ? ` (${[type, id].filter(Boolean).join(', ')})` : '';
+  } catch {
+    return '';
+  }
+}
+
 export function createJevClient(options: JevClientOptions): JevClient {
   const requestFetch = options.fetch ?? globalThis.fetch;
   if (typeof requestFetch !== 'function') throw new Error('Jev fetch is unavailable');
@@ -89,6 +102,7 @@ export function createJevClient(options: JevClientOptions): JevClient {
       questions: request.questions,
     };
     let lastRetryStatus = 529;
+    let lastDetail = '';
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
       const response = await requestFetch(options.endpoint ?? DEFAULT_ENDPOINT, {
         method: 'POST',
@@ -112,12 +126,13 @@ export function createJevClient(options: JevClientOptions): JevClient {
       // 429/529 are the archive's retried statuses; 500/502/503 are transient server errors of
       // an idempotent judgment (live 2026-09-25: one 500 stopped the 9/11 window).
       if (![429, 500, 502, 503, 529].includes(response.status)) {
-        throw new Error(`Jev HTTP ${response.status}`);
+        throw new Error(`Jev HTTP ${response.status}${errorDetail(text)}`);
       }
       lastRetryStatus = response.status;
+      lastDetail = errorDetail(text);
       if (attempt + 1 < MAX_ATTEMPTS) await sleep(1_500 * (attempt + 1));
     }
-    throw new Error(`Jev HTTP ${lastRetryStatus} x${MAX_ATTEMPTS}`);
+    throw new Error(`Jev HTTP ${lastRetryStatus} x${MAX_ATTEMPTS}${lastDetail}`);
   };
 
   return {
