@@ -24,6 +24,7 @@ import { createOwnerPolicyProvider, type OwnerPolicyProvider } from './owner-pol
 import {
   createStimulusDelivery,
   createStimulusIntake,
+  type ReplayClockDelivery,
   type StimulusDeliveryOptions,
   type StimulusIntake,
 } from './stimulus-delivery.js';
@@ -69,6 +70,8 @@ export interface OwnerRuntime {
   readonly surface: ActionSurface;
   readonly intake: StimulusIntake;
   readonly acceptSourceDelta: StimulusIntake['acceptSourceDelta'];
+  /** Set the ceiling for the next serialized replay turn; delivery clears it when done. */
+  readonly setReplaySourceEndMs: (value: number | undefined) => void;
   stop(): Promise<void>;
 }
 
@@ -121,6 +124,7 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
   const database = await openCoreDatabase({ path: options.databasePath });
   let rawStore: RawStore | undefined;
   let nativeSession: NativeSessionHandle | undefined = options.nativeSession;
+  let delivery: ReplayClockDelivery | undefined;
   try {
     const knowledge = createKnowledge({
       adapter: database.adapter,
@@ -169,29 +173,35 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
         ...(options.mcpServerPath === undefined ? {} : { mcpServerPath: options.mcpServerPath }),
         ...(options.pluginDir === undefined ? {} : { pluginDir: options.pluginDir }),
         modelRun: options.modelRun ?? runtimeModelRun(options, database.adapter),
+        replaySourceEndMs: () => delivery?.getReplaySourceEndMs(),
       });
     }
+    delivery = createStimulusDelivery({
+      ...(options.onOwnerResult === undefined ? {} : { onOwnerResult: options.onOwnerResult }),
+      ...(options.onSourceResult === undefined ? {} : { onSourceResult: options.onSourceResult }),
+      ...(options.onScheduledNoop === undefined
+        ? {}
+        : { onScheduledNoop: options.onScheduledNoop }),
+      ...(options.onNativeEventResult === undefined
+        ? {}
+        : { onNativeEventResult: options.onNativeEventResult }),
+      ...(options.onStimulusDelivered === undefined
+        ? {}
+        : { onDelivered: options.onStimulusDelivered }),
+      ...(options.onStimulusFailed === undefined ? {} : { onFailed: options.onStimulusFailed }),
+    });
     const intakeRuntime = await startRuntime({
       paths: { socketPath: options.socketPath },
       catalog: surface.catalog,
       dispatch: surface.dispatch,
       principals: [{ access, credentialPath: options.credentialPath }],
+      sessionFacts: () => {
+        const ceiling = delivery?.getReplaySourceEndMs();
+        return ceiling === undefined ? undefined : { replaySourceEndMs: ceiling };
+      },
       mailbox: { adapter: database.adapter },
       nativeSession,
-      delivery: createStimulusDelivery({
-        ...(options.onOwnerResult === undefined ? {} : { onOwnerResult: options.onOwnerResult }),
-        ...(options.onSourceResult === undefined ? {} : { onSourceResult: options.onSourceResult }),
-        ...(options.onScheduledNoop === undefined
-          ? {}
-          : { onScheduledNoop: options.onScheduledNoop }),
-        ...(options.onNativeEventResult === undefined
-          ? {}
-          : { onNativeEventResult: options.onNativeEventResult }),
-        ...(options.onStimulusDelivered === undefined
-          ? {}
-          : { onDelivered: options.onStimulusDelivered }),
-        ...(options.onStimulusFailed === undefined ? {} : { onFailed: options.onStimulusFailed }),
-      }),
+      delivery,
       reclaimStaleSocket: true,
     });
     const intake = createStimulusIntake(intakeRuntime, options.ownerPrincipalId);
@@ -203,6 +213,9 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       surface,
       intake,
       acceptSourceDelta: intake.acceptSourceDelta,
+      setReplaySourceEndMs: (value) => {
+        delivery!.setReplaySourceEndMs(value);
+      },
       stop: async () => {
         if (stopped) return;
         stopped = true;

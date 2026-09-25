@@ -16,12 +16,14 @@ interface RawCursor {
   rank: number;
   timestampMs: number;
   rawId: string;
+  maxSourceMs: number | null;
 }
 
 interface RawListCursor {
   sourceTimeMs: number;
   rawId: string;
   observedUpperMs: number;
+  maxSourceMs: number | null;
 }
 
 interface RawSearchRow extends Record<string, unknown> {
@@ -35,6 +37,7 @@ interface RawWindowInput {
   scopes?: RawSearchScopeFilter[];
   before?: number;
   after?: number;
+  maxSourceMs?: number | null;
 }
 
 const DEFAULT_RAW_LIMIT = 25;
@@ -78,6 +81,14 @@ function normalizeWindowSize(value: number | undefined): number {
   return Math.min(MAX_WINDOW_SIZE, Math.max(0, Math.floor(value)));
 }
 
+function normalizeMaxSourceMs(value: number | null | undefined): number | null {
+  if (value === undefined || value === null) return null;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error('maxSourceMs must be a nonnegative epoch-millisecond integer');
+  }
+  return value;
+}
+
 function escapeFtsQuery(query: string): string {
   return `"${query.replace(/"/g, '""')}"`;
 }
@@ -86,12 +97,14 @@ function encodeCursor(row: {
   rank: number;
   capture_timestamp_ms: number;
   event_index_id: string;
+  maxSourceMs: number | null;
 }): string {
   return Buffer.from(
     JSON.stringify({
       rank: row.rank,
       timestampMs: row.capture_timestamp_ms,
       rawId: row.event_index_id,
+      maxSourceMs: row.maxSourceMs,
     }),
     'utf8'
   ).toString('base64url');
@@ -119,6 +132,7 @@ function decodeCursor(cursor: string | undefined): RawCursor | null {
       rank: parsed.rank,
       timestampMs: parsed.timestampMs,
       rawId: parsed.rawId,
+      maxSourceMs: normalizeMaxSourceMs(parsed.maxSourceMs),
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -183,6 +197,20 @@ function appendFilters(
   if (input.toMs !== undefined) {
     clauses.push(`${timestampSql} <= ?`);
     params.push(input.toMs);
+  }
+  const maxSourceMs = normalizeMaxSourceMs(input.maxSourceMs);
+  if (maxSourceMs !== null) {
+    clauses.push(`COALESCE(${alias}.event_datetime, ${alias}.source_timestamp_ms) <= ?`);
+    params.push(maxSourceMs);
+  }
+}
+
+function assertCursorCeiling(
+  cursor: { maxSourceMs: number | null },
+  input: Pick<RawSearchInput, 'maxSourceMs'>
+): void {
+  if (cursor.maxSourceMs !== normalizeMaxSourceMs(input.maxSourceMs)) {
+    throw new Error('Raw cursor source-time ceiling changed');
   }
 }
 
@@ -304,6 +332,7 @@ function runSearch(adapter: RawQueryAdapter, input: RawSearchInput): RawSearchRe
   const captureTime = captureTimestampSql('e');
   appendFilters(clauses, params, input, 'e', captureTime);
   const cursor = decodeCursor(input.cursor);
+  if (cursor) assertCursorCeiling(cursor, input);
 
   const outerClauses: string[] = [];
   const outerParams: unknown[] = [];
@@ -345,6 +374,7 @@ function runSearch(adapter: RawQueryAdapter, input: RawSearchInput): RawSearchRe
           rank: Number(nextRow.rank),
           capture_timestamp_ms: Number(nextRow.capture_timestamp_ms),
           event_index_id: String(nextRow.event_index_id),
+          maxSourceMs: normalizeMaxSourceMs(input.maxSourceMs),
         })
       : null,
   };
@@ -383,7 +413,9 @@ export function listRaw(adapter: RawQueryAdapter, input: RawSearchInput): RawSea
     ) {
       throw new Error('Invalid stored source cursor');
     }
+    cursor.maxSourceMs = normalizeMaxSourceMs(cursor.maxSourceMs);
   }
+  if (cursor) assertCursorCeiling(cursor, input);
   const observedUpperMs = cursor?.observedUpperMs ?? Date.now();
   const clauses = [`${observationObservedAtSql('e')} <= ?`];
   const params: unknown[] = [observedUpperMs];
@@ -415,6 +447,7 @@ export function listRaw(adapter: RawQueryAdapter, input: RawSearchInput): RawSea
             sourceTimeMs: Number(last.source_timestamp_ms),
             rawId: String(last.event_index_id),
             observedUpperMs,
+            maxSourceMs: normalizeMaxSourceMs(input.maxSourceMs),
           })
         ).toString('base64url')
       : null,
@@ -428,7 +461,7 @@ export function searchAllRaw(adapter: RawQueryAdapter, input: RawSearchInput): R
 export function getRawById(
   adapter: RawQueryAdapter,
   rawId: string,
-  visibility: Pick<RawSearchInput, 'connectors' | 'scopes'>
+  visibility: Pick<RawSearchInput, 'connectors' | 'scopes' | 'maxSourceMs'>
 ): RawDocument | null {
   const params: unknown[] = [rawId];
   const clauses = ['e.current_observation_id = ?'];
@@ -462,6 +495,7 @@ export function getRawWindow(
     query: '*',
     connectors: input.connectors,
     scopes: input.scopes,
+    maxSourceMs: input.maxSourceMs,
   });
   const targetRow = adapter
     .prepare(
@@ -519,6 +553,7 @@ function beforeWindowRows(
     query: '*',
     connectors: input.connectors,
     scopes: input.scopes,
+    maxSourceMs: input.maxSourceMs,
   });
   return adapter
     .prepare(
@@ -561,6 +596,7 @@ function afterWindowRows(
     query: '*',
     connectors: input.connectors,
     scopes: input.scopes,
+    maxSourceMs: input.maxSourceMs,
   });
   return adapter
     .prepare(
@@ -578,6 +614,7 @@ function afterWindowRows(
 interface RawHistoryCursor {
   timestampMs: number;
   rawId: string;
+  maxSourceMs: number | null;
 }
 
 export interface RawHistoryInput {
@@ -595,6 +632,7 @@ export interface RawHistoryInput {
   toMs?: number;
   limit?: number;
   cursor?: string;
+  maxSourceMs?: number | null;
 }
 
 interface EntityAnchor {
@@ -607,7 +645,7 @@ interface EntityAnchor {
 function resolveEntityAnchor(
   adapter: RawQueryAdapter,
   rawId: string,
-  visibility: Pick<RawSearchInput, 'connectors' | 'scopes'>
+  visibility: Pick<RawSearchInput, 'connectors' | 'scopes' | 'maxSourceMs'>
 ): EntityAnchor | null {
   const clauses = ['e.current_observation_id = ?'];
   const params: unknown[] = [rawId];
@@ -636,9 +674,14 @@ function singleConnector(connectors: string[] | undefined): string | null {
 function encodeHistoryCursor(row: {
   capture_timestamp_ms: number;
   event_index_id: string;
+  maxSourceMs: number | null;
 }): string {
   return Buffer.from(
-    JSON.stringify({ timestampMs: row.capture_timestamp_ms, rawId: row.event_index_id }),
+    JSON.stringify({
+      timestampMs: row.capture_timestamp_ms,
+      rawId: row.event_index_id,
+      maxSourceMs: row.maxSourceMs,
+    }),
     'utf8'
   ).toString('base64url');
 }
@@ -659,7 +702,11 @@ function decodeHistoryCursor(cursor: string | undefined): RawHistoryCursor | nul
     ) {
       throw new Error('invalid shape');
     }
-    return { timestampMs: parsed.timestampMs, rawId: parsed.rawId };
+    return {
+      timestampMs: parsed.timestampMs,
+      rawId: parsed.rawId,
+      maxSourceMs: normalizeMaxSourceMs(parsed.maxSourceMs),
+    };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(`Invalid raw history cursor: ${message}`);
@@ -686,6 +733,7 @@ export function getRawHistory(adapter: RawQueryAdapter, input: RawHistoryInput):
         ? resolveEntityAnchor(adapter, input.rawId.trim(), {
             connectors: input.connectors,
             scopes: input.scopes,
+            maxSourceMs: input.maxSourceMs,
           })
         : null;
   if (!anchor) {
@@ -708,6 +756,7 @@ export function getRawHistory(adapter: RawQueryAdapter, input: RawHistoryInput):
       scopes: input.scopes,
       fromMs: input.fromMs,
       toMs: input.toMs,
+      maxSourceMs: input.maxSourceMs,
     },
     'e',
     captureTime
@@ -715,6 +764,9 @@ export function getRawHistory(adapter: RawQueryAdapter, input: RawHistoryInput):
 
   const cursor = decodeHistoryCursor(input.cursor);
   if (cursor) {
+    if (cursor.maxSourceMs !== normalizeMaxSourceMs(input.maxSourceMs)) {
+      throw new Error('Raw history cursor source-time ceiling changed');
+    }
     clauses.push(`(${captureTime} > ? OR (${captureTime} = ? AND e.event_index_id > ?))`);
     params.push(cursor.timestampMs, cursor.timestampMs, cursor.rawId);
   }
@@ -741,6 +793,7 @@ export function getRawHistory(adapter: RawQueryAdapter, input: RawHistoryInput):
       ? encodeHistoryCursor({
           capture_timestamp_ms: Number(nextRow.capture_timestamp_ms),
           event_index_id: String(nextRow.event_index_id),
+          maxSourceMs: normalizeMaxSourceMs(input.maxSourceMs),
         })
       : null,
   };

@@ -47,6 +47,11 @@ export function canonicalChannelKey(
   if (!sourceConfigs) return null;
   const direct = sourceConfigs[item.channel];
   if (direct) return direct.role === 'ignore' ? null : item.channel;
+  if (item.source === 'kagemusha' && item.channel.startsWith('kagemusha:')) {
+    const configuredKey = item.channel.slice('kagemusha:'.length);
+    const configured = sourceConfigs[configuredKey];
+    if (configured) return configured.role === 'ignore' ? null : item.channel;
+  }
   const matched = Object.entries(sourceConfigs).find(([, config]) => config.name === item.channel);
   if (!matched || matched[1].role === 'ignore') return null;
   return matched[0];

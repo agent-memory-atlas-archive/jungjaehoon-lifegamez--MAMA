@@ -551,6 +551,7 @@ function graphVisibility(input: {
   history?: 'current' | 'all';
   principal_id?: string;
   agent_id?: string;
+  max_source_ms?: number | null;
 }): TwinVisibility {
   return {
     scopes: input.scopes,
@@ -560,6 +561,7 @@ function graphVisibility(input: {
     tenantId: input.tenant_id,
     principalId: input.principal_id,
     agentId: input.agent_id,
+    maxSourceMs: input.max_source_ms,
     includeReplaced: input.history === 'all',
     ...(input.channels ? { channels: input.channels } : {}),
   };
@@ -1128,6 +1130,7 @@ function graphAccessInput(access: JudgmentAccess): {
   channels?: Record<string, readonly string[]>;
   principal_id: string;
   agent_id: string;
+  max_source_ms?: number | null;
 } {
   return {
     scopes: access.scopes.map((scope) => ({ kind: scope.kind, id: scope.id })),
@@ -1138,6 +1141,7 @@ function graphAccessInput(access: JudgmentAccess): {
     channels: access.channels ? { ...access.channels } : undefined,
     principal_id: access.principalId,
     agent_id: access.agentId,
+    max_source_ms: access.maxSourceMs,
   };
 }
 

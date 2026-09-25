@@ -253,6 +253,14 @@ function isCaseVisible(
 
 /** Current rows use immutable observation capture time; valid legacy rows use source time. */
 function isRawWithinTime(row: Record<string, unknown>, visibility: TwinVisibility): boolean {
+  const maxSourceMs = visibility.maxSourceMs ?? null;
+  if (maxSourceMs !== null) {
+    if (!Number.isSafeInteger(maxSourceMs) || maxSourceMs < 0) {
+      throw new Error('Raw source ceiling must be a nonnegative epoch-millisecond integer');
+    }
+    const sourceAt = parseTimestamp(row.source_at);
+    if (sourceAt === null || sourceAt > maxSourceMs) return false;
+  }
   const rawTs = row.observation_observed_at ?? row.event_datetime ?? row.source_timestamp_ms;
   if (rawTs === null || rawTs === undefined || (typeof rawTs === 'string' && rawTs.trim() === '')) {
     return false;
@@ -277,7 +285,7 @@ function isRawVisible(
 ): boolean {
   const row = adapter
     .prepare(
-      `SELECT source, channel, project_id, tenant_id, memory_scope_kind, memory_scope_id,
+      `SELECT source, channel, project_id, tenant_id, memory_scope_kind, memory_scope_id, source_at,
               observed_at AS observation_observed_at
          FROM observation_versions
         WHERE observation_id = ?
@@ -364,7 +372,8 @@ export function visibleTwinRefKeys(
     const rows = adapter
       .prepare(
         `SELECT observation_id, source, channel, project_id, tenant_id,
-                memory_scope_kind, memory_scope_id, observed_at AS observation_observed_at
+                memory_scope_kind, memory_scope_id, source_at,
+                observed_at AS observation_observed_at
            FROM observation_versions
           WHERE observation_id IN (${placeholders(rawIds.length)})`
       )
@@ -380,7 +389,7 @@ export function visibleTwinRefKeys(
   if (observationIds.length > 0) {
     const rows = adapter
       .prepare(
-        `SELECT observation_id, source, scope_json, observed_at
+        `SELECT observation_id, source, scope_json, observed_at, source_at
            FROM observation_versions
           WHERE observation_id IN (${placeholders(observationIds.length)})`
       )
@@ -389,6 +398,7 @@ export function visibleTwinRefKeys(
       source: unknown;
       scope_json: unknown;
       observed_at: number;
+      source_at: number | null;
     }>;
     for (const row of rows) {
       if (
@@ -400,6 +410,7 @@ export function visibleTwinRefKeys(
           connectors: visibility.connectors,
           connectorWideRead: visibility.connectorWideRead,
           channels: visibility.channels,
+          maxSourceMs: visibility.maxSourceMs,
         })
       ) {
         visible.add(refVisibilityKey({ kind: 'observation', id: row.observation_id }));
@@ -658,8 +669,12 @@ function isTwinRefVisible(
   }
   if (ref.kind === 'observation') {
     const row = adapter
-      .prepare('SELECT scope_json, observed_at FROM observation_versions WHERE observation_id = ?')
-      .get(ref.id) as { scope_json: string; observed_at: number } | undefined;
+      .prepare(
+        'SELECT scope_json, observed_at, source_at FROM observation_versions WHERE observation_id = ?'
+      )
+      .get(ref.id) as
+      | { scope_json: string; observed_at: number; source_at: number | null }
+      | undefined;
     if (!row || !isWithinVisibilityTime(row.observed_at, visibility)) {
       return false;
     }
@@ -670,6 +685,7 @@ function isTwinRefVisible(
       connectors: visibility.connectors,
       connectorWideRead: visibility.connectorWideRead,
       channels: visibility.channels,
+      maxSourceMs: visibility.maxSourceMs,
     });
   }
   if (ref.kind !== 'edge') {

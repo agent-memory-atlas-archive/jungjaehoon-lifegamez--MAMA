@@ -20,6 +20,15 @@ describe('canonical channel keys', () => {
     ).toBe('room-key');
   });
 
+  it('keeps a namespaced Kagemusha channel key while validating its configured source key', () => {
+    expect(
+      canonicalChannelKey(
+        { source: 'kagemusha', channel: 'kagemusha:kakao:room-key' },
+        { kagemusha: { 'kakao:room-key': { role: 'hub' } } }
+      )
+    ).toBe('kagemusha:kakao:room-key');
+  });
+
   it('returns null for an unconfigured channel', () => {
     expect(
       canonicalChannelKey(

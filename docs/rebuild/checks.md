@@ -128,3 +128,17 @@ jq -c '.entries[] | {key, state, updatedAt, nextChunkIndex, deliveryUncertain}' 
 - Result: source event time now reaches decision and assignment projections, history exposes it, readWork filters by it, and replay writes reject missing/future event times with named errors.
 - Evidence: commitment read/write focused suites pass 27/27; root full suite passes 113 core files / 833 tests and the standalone replay gate passes before any knowledge write.
 - Still open: the active replay ceiling is only exposed as a session fact here; Task 4 must populate it through the replay runtime, and C1/C2 live verification remains open.
+
+## Replay Task 3 — 2026-09-25
+
+- Result: collect-only Kagemusha/Trello import modules, bounded manifest/fence, read-only source DB, pending projection drain, and R2 direct-channel continuity are implemented; no mailbox, model, commitment, or source-delta path is called.
+- Evidence: standalone full suite is 44 files / 105 tests; replay tests cover equal-time keyset pages over 5,000 rows, numeric Chatwork mappings, unmapped-row counts, Trello 1,000-plus paging, stable action IDs, read-only opening, and idempotent reruns.
+- Read-only real-data dry-run at the recorded fence mapped kakao 3,737/3,737, line 183/183, telegram 59/59, airbnb 0/0, slack 188/188, chatwork 149/149; every origin had zero unmapped rows.
+- Still open: the approved import has not been run against MAMA state, and Trello API actions were not fetched; this turn wrote no `~/.mama`, `~/.claude`, or `~/.kagemusha` data.
+
+## Replay Task 4 — 2026-09-25
+
+- Result: the inclusive replay source ceiling now flows from active delivery through native and dynamic IPC/MCP session facts into dispatcher allowances, source readers, raw queries/cursors, graph visibility, provenance, and Task 2 work-write validation.
+- Evidence: core full suite is 116 files / 837 tests; standalone full suite is 44 files / 105 tests; regressions cover source/list/read/history, cursor-ceiling mismatch, graph/observation and provenance visibility, native action calls, and dynamic socket facts.
+- The standalone Vitest harness uses a single fork because concurrent native SQLite teardown otherwise exits 139 after passing replay tests; the serialized full run exits 0.
+- Still open: ordered model replay, real owner/provider turns, receipts/delivery, and C1/C2 remain intentionally outside Tasks 3–4.

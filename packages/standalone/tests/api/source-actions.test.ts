@@ -86,6 +86,20 @@ describe('minimal source actions', () => {
       access
     );
 
+    await dispatch(
+      {
+        action: 'source.search',
+        input: { source: 'connector-test', query: 'replay-term' },
+      },
+      { access, session: { replaySourceEndMs: 1_500 } }
+    );
+    expect(stored.search).toHaveBeenLastCalledWith(
+      'connector-test',
+      { source: 'connector-test', query: 'replay-term' },
+      access,
+      { maxSourceMs: 1_500 }
+    );
+
     const read = await dispatch(
       {
         action: 'source.read',
@@ -108,6 +122,6 @@ describe('minimal source actions', () => {
       status: 'failed',
       error: { kind: 'denied', code: 'connector_out_of_scope' },
     });
-    expect(stored.search).toHaveBeenCalledTimes(1);
+    expect(stored.search).toHaveBeenCalledTimes(2);
   });
 });

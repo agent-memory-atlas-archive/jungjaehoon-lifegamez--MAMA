@@ -201,4 +201,40 @@ describe('one stimulus intake and delivery', () => {
       nativeDelivery: { state: 'uncertain', error: 'native turn failed' },
     });
   });
+
+  it('passes a replay ceiling to one turn and clears it after delivery', async () => {
+    const delivery = createStimulusDelivery({});
+    delivery.setReplaySourceEndMs(1_500);
+    const context = {
+      nativeInputId: 'input',
+      resultForReceipt: () => null,
+      run: vi.fn(async (_content: unknown, request?: { replaySourceEndMs?: number }) => {
+        expect(request?.replaySourceEndMs).toBe(1_500);
+        return {} as never;
+      }),
+      steer: vi.fn(),
+      wasDispatched: () => false,
+      onInputDispatch: vi.fn(),
+      onAccepted: vi.fn(),
+    };
+    await delivery.deliver(
+      {
+        id: 'replay-input',
+        stimulusId: 'replay-input',
+        principalId: 'owner',
+        kind: 'source_delta',
+        channelKey: 'channel',
+        occurredAt: 1,
+        refs: [],
+        preview: [],
+        status: 'claimed',
+        attempts: 1,
+        createdAt: 1,
+        payload: undefined,
+        coalesceKey: null,
+      },
+      context as never
+    );
+    expect(delivery.getReplaySourceEndMs()).toBeUndefined();
+  });
 });

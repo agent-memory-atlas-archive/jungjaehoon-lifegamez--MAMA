@@ -1,4 +1,5 @@
 import type { ActionContext } from '@jungjaehoon/mama-core';
+import type { MemoryReadAllowance } from '@jungjaehoon/mama-core/api/catalog';
 import type { DatabaseAdapter } from '@jungjaehoon/mama-core/db-manager';
 import { readObservationVersion } from '@jungjaehoon/mama-core/knowledge';
 import type { RawStore } from '../storage/source-archive.js';
@@ -20,9 +21,23 @@ export interface StoredSourceReaderOptions {
 export interface StoredSourceReader {
   isOwner(principalId: string): boolean;
   has(source: string): boolean;
-  overview(source: string, access: Access): Record<string, unknown>;
-  search(source: string, input: Record<string, unknown>, access: Access): Record<string, unknown>;
-  read(source: string, input: Record<string, unknown>, access: Access): Record<string, unknown>;
+  overview(
+    source: string,
+    access: Access,
+    allowance?: Pick<MemoryReadAllowance, 'maxSourceMs'>
+  ): Record<string, unknown>;
+  search(
+    source: string,
+    input: Record<string, unknown>,
+    access: Access,
+    allowance?: Pick<MemoryReadAllowance, 'maxSourceMs'>
+  ): Record<string, unknown>;
+  read(
+    source: string,
+    input: Record<string, unknown>,
+    access: Access,
+    allowance?: Pick<MemoryReadAllowance, 'maxSourceMs'>
+  ): Record<string, unknown>;
 }
 
 function denied(): Error {
@@ -79,9 +94,9 @@ export function createStoredSourceReader(options: StoredSourceReaderOptions): St
   return {
     isOwner: (principalId) => principalId === options.ownerPrincipalId(),
     has: (source) => hasStoredConnector(adapter, source),
-    overview(source, access) {
+    overview(source, access, allowance) {
       const channels = allowedChannels(source, access, options.ownerPrincipalId());
-      const row = storedConnectorOverview(adapter, source, channels);
+      const row = storedConnectorOverview(adapter, source, channels, allowance?.maxSourceMs);
       return {
         source,
         mode: 'stored',
@@ -96,7 +111,7 @@ export function createStoredSourceReader(options: StoredSourceReaderOptions): St
         },
       };
     },
-    search(source, input, access) {
+    search(source, input, access, allowance) {
       const granted = allowedChannels(source, access, options.ownerPrincipalId());
       const query = input.query === undefined ? '' : input.query;
       if (typeof query !== 'string') throw new Error('query must be text');
@@ -127,6 +142,7 @@ export function createStoredSourceReader(options: StoredSourceReaderOptions): St
         ...(toMs === undefined ? {} : { toMs }),
         ...(input.limit === undefined ? {} : { limit: Number(input.limit) }),
         ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+        ...(allowance?.maxSourceMs === undefined ? {} : { maxSourceMs: allowance.maxSourceMs }),
       };
       const result = query.trim() ? searchRaw(adapter, queryInput) : listRaw(adapter, queryInput);
       return {
@@ -164,13 +180,13 @@ export function createStoredSourceReader(options: StoredSourceReaderOptions): St
         },
       };
     },
-    read(source, input, access) {
+    read(source, input, access, allowance) {
       const granted = allowedChannels(source, access, options.ownerPrincipalId());
       const ref = input.observationRef;
       if (typeof ref !== 'string' || ref.trim() === '') {
         throw new Error('source.read stored view requires observationRef');
       }
-      const channel = storedObservationChannel(adapter, ref, source);
+      const channel = storedObservationChannel(adapter, ref, source, allowance?.maxSourceMs);
       if (channel === undefined) {
         if (access.principalId === options.ownerPrincipalId()) throw missing();
         throw denied();
@@ -204,7 +220,8 @@ export function createStoredSourceReader(options: StoredSourceReaderOptions): St
                 return { status: 'version_unavailable' as const, reason: found.reason };
               },
             }
-          : undefined
+          : undefined,
+        allowance?.maxSourceMs === undefined ? undefined : { maxSourceMs: allowance.maxSourceMs }
       );
       if (result.status !== 'available') {
         throw new Error(result.status === 'not_found' ? 'observation_not_found' : result.reason);

@@ -175,7 +175,7 @@ export function createDispatcher(
     try {
       const data = await registration.exec(call.input, {
         ...context,
-        readAllowance: context.readAllowance ?? allowanceFromAccess(context.access),
+        readAllowance: readAllowanceFor(context),
         operationId: call.operationId,
       });
       const result: ActionResult = { status: 'completed', data };
@@ -291,6 +291,29 @@ function allowanceFromAccess(access: ActionContext['access']): MemoryReadAllowan
     tenantId: access.tenantId ?? null,
     maxObservedMs: access.maxObservedMs ?? null,
   };
+}
+
+function readAllowanceFor(context: ActionContext): MemoryReadAllowance {
+  const allowance = context.readAllowance ?? allowanceFromAccess(context.access);
+  const ceiling = context.session?.replaySourceEndMs;
+  if (ceiling === undefined) return allowance;
+  if (!Number.isSafeInteger(ceiling) || ceiling < 0) {
+    throw new JudgmentError(
+      'REPLAY_SOURCE_CEILING_INVALID',
+      'Replay source ceiling must be a nonnegative epoch millisecond integer'
+    );
+  }
+  const stated = allowance.maxSourceMs;
+  if (stated === undefined || stated === null) {
+    return { ...allowance, maxSourceMs: ceiling };
+  }
+  if (!Number.isSafeInteger(stated) || stated < 0) {
+    throw new JudgmentError(
+      'REPLAY_SOURCE_CEILING_INVALID',
+      'Read allowance source ceiling must be a nonnegative epoch millisecond integer'
+    );
+  }
+  return { ...allowance, maxSourceMs: Math.min(stated, ceiling) };
 }
 
 function fail(

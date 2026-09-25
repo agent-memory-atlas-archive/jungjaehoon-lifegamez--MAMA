@@ -55,6 +55,8 @@ export interface NativeSessionRequest extends NativeTurnRequest {
   sourceMessageRef?: string;
   access?: unknown;
   parentModelRunId?: string | null;
+  /** Host-stated inclusive source-time ceiling for the current replay turn. */
+  replaySourceEndMs?: number;
 }
 
 export interface NativeSessionOptions {
@@ -78,6 +80,7 @@ export interface NativeSessionOptions {
   createAgent?: (options: NativeDriverOptions) => IModelRunner;
   sessionPool?: SessionPool;
   modelRun?: NativeModelRunPort;
+  replaySourceEndMs?: () => number | undefined;
 }
 
 export interface NativeSession {
@@ -108,6 +111,7 @@ function toolContext(value: HostExecutionContext | null): {
   gatewayCallId?: string;
   sourceMessageRef?: string;
   channelId?: string;
+  replaySourceEndMs?: number;
 } {
   if (!value) return {};
   const context = value as Record<string, unknown>;
@@ -118,6 +122,9 @@ function toolContext(value: HostExecutionContext | null): {
       ? { sourceMessageRef: context.sourceMessageRef }
       : {}),
     ...(typeof context.channelId === 'string' ? { channelId: context.channelId } : {}),
+    ...(typeof context.replaySourceEndMs === 'number'
+      ? { replaySourceEndMs: context.replaySourceEndMs }
+      : {}),
   };
 }
 
@@ -288,6 +295,7 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
     },
     executionContext: (request) => {
       const current = request as NativeSessionRequest | undefined;
+      const replaySourceEndMs = current?.replaySourceEndMs ?? options.replaySourceEndMs?.();
       return {
         ...(typeof current?.modelRunId === 'string' ? { modelRunId: current.modelRunId } : {}),
         ...(typeof current?.sourceMessageRef === 'string'
@@ -295,6 +303,7 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
           : {}),
         channelId: current?.channelId ?? current?.sessionKey ?? OWNER_RUNTIME_SESSION_KEY,
         agentId: options.actionSurface.ownerAccess.agentId,
+        ...(replaySourceEndMs === undefined ? {} : { replaySourceEndMs }),
       };
     },
     hostToolDefinitions: () => tools,
@@ -313,6 +322,9 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
               ? {}
               : { sourceMessageRef: facts.sourceMessageRef }),
             ...(facts.channelId === undefined ? {} : { channelId: facts.channelId }),
+            ...(facts.replaySourceEndMs === undefined
+              ? {}
+              : { replaySourceEndMs: facts.replaySourceEndMs }),
           },
         })
       );

@@ -65,6 +65,8 @@ export interface JudgmentAccess {
    * out-read reading in time.
    */
   maxObservedMs?: number | null;
+  /** Inclusive source/event-time ceiling for replay raw and observation reads. */
+  maxSourceMs?: number | null;
   /**
    * Actions this principal may call. Dispatch compares `call.action` against
    * this list before exec, so an ungranted action is `denied` and the action

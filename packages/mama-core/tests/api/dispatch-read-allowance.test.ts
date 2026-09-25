@@ -77,6 +77,18 @@ describe('dispatch composes a read window from the principal grant', () => {
     expect(read()?.readAllowance?.maxObservedMs).toBe(1_700_000_000_000);
   });
 
+  it('derives the replay source ceiling from host session facts', async () => {
+    const { dispatch, read } = catalogSeeingItsContext();
+    await dispatch(
+      { action: 'test.context', input: {} },
+      {
+        access: { ...baseAccess, connectors: ['trello'], tenantId: 'default' },
+        session: { replaySourceEndMs: 1_700_000_000_000 },
+      }
+    );
+    expect(read()?.readAllowance?.maxSourceMs).toBe(1_700_000_000_000);
+  });
+
   it('a grant naming connectors without a tenant reads nothing, not everything', async () => {
     const { dispatch, read } = catalogSeeingItsContext();
     await dispatch(

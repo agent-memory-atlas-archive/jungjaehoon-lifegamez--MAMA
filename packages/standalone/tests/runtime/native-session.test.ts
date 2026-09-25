@@ -173,6 +173,50 @@ describe('one owner native session', () => {
     await session.stop();
   });
 
+  it('carries the active replay source ceiling into a native action call', async () => {
+    const model = runner('codex');
+    const actionSurface = surface();
+    const hostToolCall = vi
+      .spyOn(actionSurface, 'hostToolCall')
+      .mockResolvedValue({ status: 'completed', data: { ok: true } });
+    (model.prompt as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_content, _callbacks, options) => {
+        await options?.hostToolBridge?.execute({
+          callId: 'call-replay-ceiling',
+          name: 'source.search',
+          input: { source: 'kagemusha', query: 'source' },
+        });
+        return {
+          response: 'answer',
+          session_id: 'native-session',
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      }
+    );
+    const session = createNativeSession({
+      backend: 'codex',
+      model: 'test-model',
+      workspaceDir: '/tmp/mama-native-workspace',
+      runtimeRoot: '/tmp/mama-native-runtime',
+      actionSurface,
+      agent: model,
+      maxTurns: 20,
+      timeout: 1_000,
+    });
+
+    await session.runTurn([{ type: 'text', text: 'replay' }], {
+      sessionKey: 'owner:runtime',
+      replaySourceEndMs: 1_500,
+    });
+    expect(hostToolCall).toHaveBeenCalledWith(
+      'source.search',
+      { source: 'kagemusha', query: 'source' },
+      'call-replay-ceiling',
+      expect.objectContaining({ session: expect.objectContaining({ replaySourceEndMs: 1_500 }) })
+    );
+    await session.stop();
+  });
+
   it('sends the standing text as the system prompt, not inside the turn content', async () => {
     const model = runner('claude');
     const session = createNativeSession({

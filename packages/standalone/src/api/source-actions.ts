@@ -1,8 +1,16 @@
 import type { ActionRegistration, ActionSchemaObject } from '@jungjaehoon/mama-core';
+import type { MemoryReadAllowance } from '@jungjaehoon/mama-core/api/catalog';
 import type { StoredSourceReader } from './stored-source-reader.js';
 
 export interface SourcePorts {
   stored?: StoredSourceReader | null;
+}
+
+function replayReadAllowance(
+  allowance: MemoryReadAllowance | undefined
+): { maxSourceMs: number } | undefined {
+  if (allowance?.maxSourceMs === undefined || allowance.maxSourceMs === null) return undefined;
+  return { maxSourceMs: allowance.maxSourceMs };
 }
 
 function sourceName(input: unknown, action: string): string {
@@ -113,7 +121,15 @@ export function sourceActionRegistrations(ports: SourcePorts): ActionRegistratio
       },
       exec: (input, context) => {
         const source = sourceName(input, 'source.search');
-        return storedReader(ports).search(source, input as Record<string, unknown>, context.access);
+        const allowance = replayReadAllowance(context.readAllowance);
+        return allowance === undefined
+          ? storedReader(ports).search(source, input as Record<string, unknown>, context.access)
+          : storedReader(ports).search(
+              source,
+              input as Record<string, unknown>,
+              context.access,
+              allowance
+            );
       },
     },
     {
@@ -132,7 +148,15 @@ export function sourceActionRegistrations(ports: SourcePorts): ActionRegistratio
       },
       exec: (input, context) => {
         const source = sourceName(input, 'source.read');
-        return storedReader(ports).read(source, input as Record<string, unknown>, context.access);
+        const allowance = replayReadAllowance(context.readAllowance);
+        return allowance === undefined
+          ? storedReader(ports).read(source, input as Record<string, unknown>, context.access)
+          : storedReader(ports).read(
+              source,
+              input as Record<string, unknown>,
+              context.access,
+              allowance
+            );
       },
     },
   ];

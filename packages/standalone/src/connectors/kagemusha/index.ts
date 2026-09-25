@@ -86,20 +86,21 @@ export class KagemushaConnector implements IConnector {
     return this.db !== null;
   }
 
-  private channelKey(channel: string): string {
-    return channel;
+  private channelKey(origin: string, channel: string): string {
+    const prefix = `${origin}:`;
+    const suffix = channel.startsWith(prefix) ? channel.slice(prefix.length) : channel;
+    return `kagemusha:${origin}:${suffix}`;
   }
 
-  private accepts(channel: string): boolean {
-    return (
-      this.config.channels[channel]?.role !== undefined &&
-      this.config.channels[channel]?.role !== 'ignore'
-    );
+  private accepts(origin: string, channelId: string): boolean {
+    const canonical = this.channelKey(origin, channelId);
+    const configured = this.config.channels[canonical] ?? this.config.channels[channelId];
+    return configured?.role !== undefined && configured.role !== 'ignore';
   }
 
   private messageItem(row: ChannelMessage): NormalizedItem | null {
-    const channel = this.channelKey(row.channel_id);
-    if (!this.accepts(channel)) return null;
+    const channel = this.channelKey(row.channel, row.channel_id);
+    if (!this.accepts(row.channel, row.channel_id)) return null;
     return {
       source: 'kagemusha',
       sourceId: `kagemusha:${row.channel}:${row.channel_id}:${row.id}`,
@@ -120,8 +121,8 @@ export class KagemushaConnector implements IConnector {
 
   private taskItem(row: KagemushaTask): NormalizedItem | null {
     const sourceRoom = row.source_room ?? 'system';
-    const channel = this.channelKey(sourceRoom);
-    if (!this.accepts(channel)) return null;
+    const channel = this.channelKey('kagemusha-tasks', sourceRoom);
+    if (!this.accepts('kagemusha-tasks', sourceRoom)) return null;
     const deadline =
       row.deadline === null ? 'none' : new Date(row.deadline).toISOString().slice(0, 10);
     return {

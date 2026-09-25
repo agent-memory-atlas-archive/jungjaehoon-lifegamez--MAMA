@@ -137,6 +137,8 @@ export interface IndexedEvent {
   sourceId: string;
   channel: string | null;
   observedAt: string | null;
+  /** Source/event occurrence time, separate from host capture time. */
+  sourceAt?: string | null;
   content: string;
   /**
    * The scope recorded on the event, or null when it was indexed before scoped

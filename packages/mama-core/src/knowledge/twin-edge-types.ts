@@ -65,6 +65,8 @@ export interface TwinVisibility {
   tenantId?: string | null;
   startMs?: number | null;
   asOfMs?: number | null;
+  /** Inclusive source/event-time ceiling for replay raw reads. */
+  maxSourceMs?: number | null;
   /**
    * Which channels of each connector may be read. When present it DECIDES raw visibility
    * here exactly as it does in the reader, so a ref reached through an edge or named as a

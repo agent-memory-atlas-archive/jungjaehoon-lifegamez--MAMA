@@ -108,6 +108,8 @@ export interface RawSearchInput {
   toMs?: number;
   cursor?: string;
   limit?: number;
+  /** Inclusive source/event-time ceiling for replay reads. */
+  maxSourceMs?: number | null;
 }
 
 export interface RawSearchHit {

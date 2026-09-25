@@ -91,6 +91,8 @@ export interface LiveProvenanceOptions {
    */
   minObservedMs?: number | null;
   maxObservedMs?: number | null;
+  /** Inclusive source/event-time ceiling for replay visibility. */
+  maxSourceMs?: number | null;
   excerptChars?: number;
   /** Redaction to apply to excerpts, so this surface scrubs what recall scrubs. */
   redact?: (text: string) => string;
@@ -145,6 +147,19 @@ function isWithinObservedWindow(
   return (min === null || observedMs >= min) && (max === null || observedMs <= max);
 }
 
+function isWithinSourceWindow(
+  event: IndexedEvent,
+  maxSourceMs: number | null | undefined
+): boolean {
+  if (maxSourceMs === undefined || maxSourceMs === null) return true;
+  if (!Number.isSafeInteger(maxSourceMs) || maxSourceMs < 0) {
+    throw new Error('Provenance source ceiling must be a nonnegative epoch-millisecond integer');
+  }
+  if (event.sourceAt === null || event.sourceAt === undefined) return false;
+  const sourceMs = Date.parse(event.sourceAt);
+  return Number.isFinite(sourceMs) && sourceMs <= maxSourceMs;
+}
+
 /**
  * Whether an event may be shown under the authority active now.
  *
@@ -171,15 +186,19 @@ export function isEventVisibleNow(
     tenantId?: string | null;
     minObservedMs?: number | null;
     maxObservedMs?: number | null;
+    maxSourceMs?: number | null;
   }
 ): boolean {
   const { scopes, connectors } = options;
   if (options.wideConnectors?.includes(event.connector) && connectors.includes(event.connector)) {
-    return isWithinObservedWindow(event, options);
+    return (
+      isWithinSourceWindow(event, options.maxSourceMs) && isWithinObservedWindow(event, options)
+    );
   }
   if (options.channels) {
     return (
       isChannelGranted(event.connector, event.channel, options.channels) &&
+      isWithinSourceWindow(event, options.maxSourceMs) &&
       isWithinObservedWindow(event, options)
     );
   }
@@ -222,7 +241,10 @@ export function isEventVisibleNow(
     }
   }
 
-  if (!isWithinObservedWindow(event, options)) {
+  if (
+    !isWithinSourceWindow(event, options.maxSourceMs) ||
+    !isWithinObservedWindow(event, options)
+  ) {
     return false;
   }
 
@@ -302,6 +324,10 @@ export function toIndexedEvent(row: EventRow): IndexedEvent {
     // The capture instant first, the event's own time second -- the same order the
     // raw reader's COALESCE uses, and pinned against it by a differential test.
     observedAt: coalesceObservedAt(row.observed_at, row.source_at),
+    sourceAt: (() => {
+      const sourceMs = toEpochMs(row.source_at);
+      return sourceMs === null ? null : new Date(sourceMs).toISOString();
+    })(),
     content: typeof row.content === 'string' ? row.content : '',
     memoryScope: unscoped ? null : { kind: scopeKind ?? '', id: scopeId ?? '' },
     projectId: typeof row.project_id === 'string' ? row.project_id : null,
@@ -529,6 +555,7 @@ export async function resolveMemoryProvenanceLive(
         tenantId: options.tenantId ?? null,
         minObservedMs: options.minObservedMs ?? null,
         maxObservedMs: options.maxObservedMs ?? null,
+        maxSourceMs: options.maxSourceMs ?? null,
       }),
     ...(options.excerptChars === undefined ? {} : { excerptChars: options.excerptChars }),
   });

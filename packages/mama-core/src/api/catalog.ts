@@ -111,6 +111,8 @@ export interface MemoryReadAllowance {
   /** Observation-time clamp (envelope `as_of`), epoch ms. */
   minObservedMs?: number | null;
   maxObservedMs?: number | null;
+  /** Inclusive source/event-time ceiling stated by an active replay turn. */
+  maxSourceMs?: number | null;
 }
 
 export type ActionExec = (input: unknown, context: ActionContext) => unknown | Promise<unknown>;
@@ -807,7 +809,12 @@ export function coreActionRegistrations(
           },
         ],
       },
-      exec: (input, context) => knowledge.queryGraph(input as WorkGraphQuery, context.access),
+      exec: (input, context) => {
+        const maxSourceMs = context.readAllowance?.maxSourceMs;
+        const access =
+          maxSourceMs === undefined ? context.access : { ...context.access, maxSourceMs };
+        return knowledge.queryGraph(input as WorkGraphQuery, access);
+      },
     },
     {
       contract: {
@@ -1487,6 +1494,7 @@ export function coreActionRegistrations(
           tenantId: allowance?.tenantId ?? null,
           minObservedMs: allowance?.minObservedMs ?? null,
           maxObservedMs: allowance?.maxObservedMs ?? null,
+          maxSourceMs: allowance?.maxSourceMs ?? null,
           principalId: context.access.principalId,
           redact: (text: string) => sanitizeRecallText(text) ?? '',
         });

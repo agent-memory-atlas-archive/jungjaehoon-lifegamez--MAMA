@@ -63,7 +63,7 @@ describe('KagemushaConnector', () => {
     }
   });
 
-  it('uses the configured Kagemusha channel key', async () => {
+  it('uses the canonical Kagemusha channel key', async () => {
     const root = mkdtempSync(join(tmpdir(), 'kagemusha-connector-'));
     roots.push(root);
     const db = createDb(join(root, 'source.db'));
@@ -79,7 +79,7 @@ describe('KagemushaConnector', () => {
     const [item] = await connector.poll(new Date(0));
     expect(item).toMatchObject({
       source: 'kagemusha',
-      channel: 'room-key',
+      channel: 'kagemusha:chatwork:room-key',
       type: 'message',
     });
     expect(item?.metadata).toMatchObject({
@@ -122,7 +122,7 @@ describe('KagemushaConnector', () => {
       const items = await connector.poll(new Date(1_704_067_200_000));
       expect(items).toHaveLength(1);
       expect(items[0]).toMatchObject({
-        channel: 'channel-key',
+        channel: 'kagemusha:slack:channel-key',
         timestamp: new Date(1_704_067_201_000),
       });
     } finally {

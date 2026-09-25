@@ -55,6 +55,11 @@ export interface StimulusDeliveryOptions {
   onFailed?: (row: MailboxRow, error: unknown) => void | Promise<void>;
 }
 
+export interface ReplayClockDelivery extends StimulusDelivery {
+  setReplaySourceEndMs(value: number | undefined): void;
+  getReplaySourceEndMs(): number | undefined;
+}
+
 function sourceObservationHandle(ref: SourceDelta['refs'][number]): string {
   if (typeof ref.observationRef !== 'string' || ref.observationRef.trim() === '') {
     throw new Error(`Source delta ref ${ref.connector}:${ref.sourceId} has no observationRef`);
@@ -174,8 +179,9 @@ function assembledContent(row: MailboxRow): ContentBlock[] {
 }
 
 /** Deliver every model-bearing kind through one serialized owner session. */
-export function createStimulusDelivery(options: StimulusDeliveryOptions): StimulusDelivery {
+export function createStimulusDelivery(options: StimulusDeliveryOptions): ReplayClockDelivery {
   let serialTail = Promise.resolve();
+  let activeReplaySourceEndMs: number | undefined;
 
   const deliver: StimulusDelivery['deliver'] = async (row, context) => {
     let release!: () => void;
@@ -184,6 +190,7 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Stimul
       release = resolve;
     });
     await previous;
+    const replaySourceEndMs = activeReplaySourceEndMs;
     try {
       if (row.kind === 'scheduled') {
         await options.onScheduledNoop?.(row);
@@ -200,6 +207,7 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Stimul
           source: row.kind,
           channelId: row.channelKey,
           sourceMessageRef: row.stimulusId,
+          ...(replaySourceEndMs === undefined ? {} : { replaySourceEndMs }),
         });
         if (row.kind === 'owner_message') await options.onOwnerResult?.(row, result);
         if (row.kind === 'source_delta') await options.onSourceResult?.(row, result);
@@ -210,9 +218,20 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Stimul
       await options.onFailed?.(row, error);
       throw error;
     } finally {
+      if (activeReplaySourceEndMs === replaySourceEndMs) activeReplaySourceEndMs = undefined;
       release();
     }
   };
 
-  return { deliver, prefer: ['owner_message'] };
+  return {
+    deliver,
+    prefer: ['owner_message'],
+    setReplaySourceEndMs: (value) => {
+      if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
+        throw new Error('Replay source ceiling must be a nonnegative epoch millisecond integer');
+      }
+      activeReplaySourceEndMs = value;
+    },
+    getReplaySourceEndMs: () => activeReplaySourceEndMs,
+  };
 }

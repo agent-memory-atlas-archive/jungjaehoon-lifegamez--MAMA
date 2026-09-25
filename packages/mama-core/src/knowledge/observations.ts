@@ -505,11 +505,21 @@ export function searchOwnerObservationVersions(
 export function readObservationVersion(
   adapter: ObservationAdapter,
   observationId: string,
-  reader?: ObservationBodyReader
+  reader?: ObservationBodyReader,
+  options?: { maxSourceMs?: number | null }
 ): ObservationReadResult {
   const observation = getObservationVersion(adapter, observationId);
   if (!observation) {
     return { status: 'not_found' };
+  }
+  const maxSourceMs = options?.maxSourceMs ?? null;
+  if (maxSourceMs !== null) {
+    if (!Number.isSafeInteger(maxSourceMs) || maxSourceMs < 0) {
+      throw new Error('Observation source ceiling must be a nonnegative epoch millisecond integer');
+    }
+    if (observation.sourceAt === null || observation.sourceAt > maxSourceMs) {
+      return { status: 'not_found' };
+    }
   }
   if (observation.body !== null) {
     return { status: 'available', observation, body: observation.body };
@@ -536,11 +546,13 @@ export interface ObservationVisibilityAuthority {
   connectors?: readonly string[];
   connectorWideRead?: readonly string[];
   channels?: Readonly<Record<string, readonly string[]>>;
+  maxSourceMs?: number | null;
 }
 
 export interface ObservationVisibilityRow {
   source: unknown;
   scope_json: unknown;
+  source_at?: unknown;
 }
 
 function parseScopeJson(value: unknown): Record<string, unknown> {
@@ -583,7 +595,7 @@ export function isObservationVersionVisible(
 ): boolean {
   const row = adapter
     .prepare(
-      `SELECT scope_json, source
+      `SELECT scope_json, source, source_at
        FROM observation_versions WHERE observation_id = ?`
     )
     .get(observationId) as ObservationVisibilityRow | undefined;
@@ -601,6 +613,14 @@ export function isObservationVisibilityRowVisible(
   const agentId = authority.agentId?.trim();
   if (!principalId || !agentId) {
     return false;
+  }
+  const maxSourceMs = authority.maxSourceMs ?? null;
+  if (maxSourceMs !== null) {
+    if (!Number.isSafeInteger(maxSourceMs) || maxSourceMs < 0) {
+      throw new Error('Observation source ceiling must be a nonnegative epoch millisecond integer');
+    }
+    const sourceAt = typeof row.source_at === 'number' ? row.source_at : null;
+    if (sourceAt === null || sourceAt > maxSourceMs) return false;
   }
   if (typeof row.source !== 'string' || !row.source.trim()) {
     throw new Error('observation_versions.source must be nonblank text');

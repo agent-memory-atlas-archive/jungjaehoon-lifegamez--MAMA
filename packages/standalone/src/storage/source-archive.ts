@@ -4,7 +4,7 @@
  * Uses the project's existing Database wrapper (sqlite.ts).
  */
 
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync } from 'fs';
 import { createHash } from 'node:crypto';
 import { join } from 'path';
 
@@ -801,6 +801,31 @@ export class RawStore {
 
   hasConnector(connectorName: string): boolean {
     return this.dbs.has(connectorName) || existsSync(this.getDbPath(connectorName));
+  }
+
+  /** Existing raw connector directories, without creating new stores. */
+  listConnectorNames(): string[] {
+    if (!existsSync(this.basePath)) return [];
+    return readdirSync(this.basePath, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
+  }
+
+  count(connectorName: string): number {
+    if (!this.hasConnector(connectorName)) return 0;
+    const row = this.getDb(connectorName)
+      .prepare('SELECT COUNT(*) AS count FROM raw_items')
+      .get() as { count: number };
+    return Number(row.count);
+  }
+
+  pendingProjectionCount(connectorName: string): number {
+    if (!this.hasConnector(connectorName)) return 0;
+    const row = this.getDb(connectorName)
+      .prepare('SELECT COUNT(*) AS count FROM pending_core_projections')
+      .get() as { count: number };
+    return Number(row.count);
   }
 
   getRecent(connectorName: string, count: number): NormalizedItem[] {

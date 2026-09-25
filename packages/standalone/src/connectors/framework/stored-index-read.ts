@@ -22,9 +22,14 @@ export function hasStoredConnector(adapter: Reader, source: string): boolean {
 export function storedConnectorOverview(
   adapter: Reader,
   source: string,
-  channels: readonly string[] | null
+  channels: readonly string[] | null,
+  maxSourceMs?: number | null
 ): Record<string, unknown> {
   const clause = channels ? ` AND e.channel IN (${channels.map(() => '?').join(', ')})` : '';
+  const sourceClause =
+    maxSourceMs === undefined || maxSourceMs === null
+      ? ''
+      : ' AND COALESCE(e.event_datetime, e.source_timestamp_ms) <= ?';
   return adapter
     .prepare(
       `SELECT COUNT(*) AS count, COUNT(DISTINCT e.channel) AS channel_count,
@@ -33,21 +38,31 @@ export function storedConnectorOverview(
               MAX(o.observed_at) AS last_observed_at
        FROM connector_event_index e
        LEFT JOIN observation_versions o ON o.observation_id = e.current_observation_id
-       WHERE e.source_connector = ?${clause}`
+       WHERE e.source_connector = ?${clause}${sourceClause}`
     )
-    .get(source, ...(channels ?? [])) as Record<string, unknown>;
+    .get(source, ...(channels ?? []), ...(sourceClause === '' ? [] : [maxSourceMs])) as Record<
+    string,
+    unknown
+  >;
 }
 
 export function storedObservationChannel(
   adapter: Reader,
   observationRef: string,
-  source: string
+  source: string,
+  maxSourceMs?: number | null
 ): string | null | undefined {
+  const sourceClause =
+    maxSourceMs === undefined || maxSourceMs === null
+      ? ''
+      : ' AND source_at IS NOT NULL AND source_at <= ?';
   const row = adapter
     .prepare(
       `SELECT o.channel FROM observation_versions o
-       WHERE o.observation_id = ? AND o.source = ? LIMIT 1`
+       WHERE o.observation_id = ? AND o.source = ?${sourceClause} LIMIT 1`
     )
-    .get(observationRef, source) as { channel: string | null } | undefined;
+    .get(observationRef, source, ...(sourceClause === '' ? [] : [maxSourceMs])) as
+    | { channel: string | null }
+    | undefined;
   return row?.channel;
 }
