@@ -253,3 +253,6 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Result: the host bridge no longer counts calls or applies the emergency cap; the identical-call signature guard and configured turn timeout remain.
 - Evidence: full root suite passed — core 116 files/838 tests, standalone 47/119, MCP 13 files with 121 passed/14 skipped, plugin 11 files/165 tests; typecheck, lint, and format check passed.
 - Still open: the stopped replay and live owner/provider turn were not rerun here; no `~/.mama`, `~/.claude`, or `~/.kagemusha` state was written.
+- Run 3 stopped at delta 32: 50 refs read one call each, aborted by the core 50-call emergency cap before
+  any write (model run: source.read 50, no writes). Fixed with batched source.read and the cap removed;
+  row 32 returned to pending for re-delivery (testbed, supervisor).
