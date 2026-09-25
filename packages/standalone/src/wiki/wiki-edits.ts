@@ -17,6 +17,25 @@ function headingLevel(line: string): number {
   return match ? match[1]!.length : 0;
 }
 
+/** The body under a heading, up to the next heading of the same or higher level; null if absent. */
+export function readWikiSection(content: string, section: string): string | null {
+  const lines = content.replace(/\r\n/g, '\n').split('\n');
+  const heading = section.trim();
+  const level = headingLevel(heading);
+  const start = lines.findIndex((line) => line.trim() === heading);
+  if (level === 0 || start === -1) return null;
+  let end = start + 1;
+  while (end < lines.length) {
+    const next = headingLevel(lines[end]!);
+    if (next > 0 && next <= level) break;
+    end += 1;
+  }
+  return lines
+    .slice(start + 1, end)
+    .join('\n')
+    .trim();
+}
+
 export function applyWikiEdits(content: string, edits: readonly WikiSectionEdit[]): string {
   let lines = content.replace(/\r\n/g, '\n').split('\n');
   for (const edit of edits) {

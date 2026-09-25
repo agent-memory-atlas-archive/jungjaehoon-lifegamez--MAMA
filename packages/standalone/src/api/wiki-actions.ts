@@ -9,7 +9,7 @@ import {
   WIKI_READ_MAX_PAGE_CHARS,
 } from '../wiki/wiki-read.js';
 import { WIKI_PAGE_TYPES } from '../wiki/types.js';
-import { applyWikiEdits, type WikiSectionEdit } from '../wiki/wiki-edits.js';
+import { applyWikiEdits, readWikiSection, type WikiSectionEdit } from '../wiki/wiki-edits.js';
 import { WIKI_HUMAN_MARKER } from '../wiki/wiki-read.js';
 import {
   createWikiPublishAdapter,
@@ -177,13 +177,17 @@ export function wikiActionRegistrations(ports: WikiPorts): ActionRegistration[] 
             `Wiki page not found: ${path}; create it with manage.wiki.publish`
           );
         }
+        const page = parseWrittenPage(current.content);
         if (current.version !== body.expectedContentVersion) {
+          // Carry what a retry needs, so a concurrent writer's change does not cost a whole-page read.
+          const sections = Object.fromEntries(
+            body.edits.map((edit) => [edit.section, readWikiSection(page.body, edit.section)])
+          );
           throw namedError(
             'TOOL_ERROR',
-            `Wiki page changed since it was read: ${path}; read it again`
+            `Wiki page changed since it was read: ${path}; contentVersion is now ${current.version}; current text of the sections you edit: ${JSON.stringify(sections)}`
           );
         }
-        const page = parseWrittenPage(current.content);
         const adapter =
           ports.publishAdapter ?? createWikiPublishAdapter({ publisher: ports.publisher });
         try {
@@ -206,7 +210,10 @@ export function wikiActionRegistrations(ports: WikiPorts): ActionRegistration[] 
             error instanceof Error ? error.message : 'Wiki update failed'
           );
         }
-        return { success: true, message: `Wiki updated: ${path}` };
+        const written = readWikiPageContent(vault.path, path);
+        if (written === null)
+          throw namedError('TOOL_ERROR', `Wiki page vanished after update: ${path}`);
+        return { success: true, message: `Wiki updated: ${path}`, contentVersion: written.version };
       },
     },
     {

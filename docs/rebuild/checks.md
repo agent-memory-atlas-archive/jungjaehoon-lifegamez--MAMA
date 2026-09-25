@@ -426,3 +426,12 @@ The implementation writes raw/index data during import only. Replay is the owner
   per lane before dispatch, each child adds its items' entries under its heading (manage.wiki.update,
   re-read on a version conflict), the main writes only the judgment section and fills entries missing
   from the read-back; and it does not list the whole ledger when current_work already carries it.
+- 2026-09-26 03:44 KST: window 9/17 took 24 min (9/16: 22). Children writing their journal entries works
+  (9/17: 23/23 items, 16/16 ledger times, no loss from concurrent edits) but lengthened the children
+  (6.5–9 min vs 3.5–5.5); dropping the full ledger listing saved 1 min before dispatch. The main's
+  post-children phase stayed at 13 min: it re-read pages it had just written (19k–41k characters, three
+  times), listed changedSince four times and published the board twice. Code gap: manage.wiki.update
+  returned no content version, so any second edit of a page was refused as stale and forced a whole-page
+  read (seen on the journal and a project page). It now returns contentVersion, and a stale refusal
+  carries the current version and the current text of the sections being edited. 9/18: 24 min, stopped
+  at its boundary to apply this.

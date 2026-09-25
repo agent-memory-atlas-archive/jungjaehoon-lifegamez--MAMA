@@ -302,8 +302,12 @@ describe('manage.wiki.* action registrations', () => {
         },
         { access: ownerAccess }
       );
-      expect(updated).toMatchObject({ status: 'completed' });
-      const after = readWikiPageContent(writer.getWikiPath(), 'projects/example.md')!.content;
+      const afterPage = readWikiPageContent(writer.getWikiPath(), 'projects/example.md')!;
+      expect(updated).toMatchObject({
+        status: 'completed',
+        data: { contentVersion: afterPage.version },
+      });
+      const after = afterPage.content;
       expect(after.match(/^---$/gm)).toHaveLength(2);
       expect(after.match(/^# Example project$/gm)).toHaveLength(1);
       expect(after).toContain('- 9/10: draft started.\n- 9/11: client approved the draft.');
@@ -323,6 +327,9 @@ describe('manage.wiki.* action registrations', () => {
         { access: ownerAccess }
       );
       expect(stale).toMatchObject({ status: 'failed' });
+      const staleMessage = (stale as { error: { message: string } }).error.message;
+      expect(staleMessage).toContain(`contentVersion is now ${afterPage.version}`);
+      expect(staleMessage).toContain('- 9/10: draft started.\\n- 9/11: client approved the draft.');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
