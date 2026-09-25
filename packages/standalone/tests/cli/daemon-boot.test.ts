@@ -162,6 +162,44 @@ describe('daemon bootstrap', () => {
     await daemon.stop();
   });
 
+  it('replay mode starts the owner and feeder without live connectors or Telegram', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'mama-daemon-replay-'));
+    roots.push(root);
+    const mamaRoot = join(root, 'mama');
+    const owner = ownerDouble([]);
+    const logs: string[] = [];
+    const logger: DaemonLogger = {
+      info: (line) => logs.push(`info:${line}`),
+      error: (line) => logs.push(`error:${line}`),
+    };
+    const replay = vi.fn(async (context: { owner: unknown }) => {
+      expect(context.owner).toBe(owner);
+    });
+    const daemon = await bootDaemon({
+      mode: 'replay',
+      home: root,
+      configPath: join(mamaRoot, 'config.yaml'),
+      config: config(mamaRoot),
+      logger,
+      replay,
+      dependencies: {
+        createOwnerRuntime: vi.fn(async () => owner as never),
+        startConnectorRuntime: vi.fn(async () => {
+          throw new Error('live connectors must not start in replay mode');
+        }),
+        createTelegramGateway: vi.fn(() => {
+          throw new Error('Telegram must not start in replay mode');
+        }),
+      },
+    });
+
+    expect(replay).toHaveBeenCalledOnce();
+    expect(logs.filter((line) => line === 'info:replay collectors: disabled')).toHaveLength(1);
+    expect(daemon.connectors).toBeNull();
+    expect(daemon.gateway).toBeNull();
+    await daemon.stop();
+  });
+
   it('does not remove preserved W5 sources while creating Claude isolation files', async () => {
     const root = mkdtempSync(join(tmpdir(), 'mama-daemon-isolation-'));
     roots.push(root);

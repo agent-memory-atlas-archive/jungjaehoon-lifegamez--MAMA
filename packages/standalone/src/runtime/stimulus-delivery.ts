@@ -71,6 +71,21 @@ function sourceRefId(ref: SourceDelta['refs'][number]): string {
   return `${ref.connector}:${sourceObservationHandle(ref)}`;
 }
 
+function sourceOccurrenceTime(delta: SourceDelta): number {
+  const sourceTimes = delta.refs.map((ref) => Date.parse(ref.sourceAt));
+  if (
+    sourceTimes.length === 0 ||
+    sourceTimes.some((value) => !Number.isSafeInteger(value) || value < 0)
+  ) {
+    throw new Error('A source delta requires timezone-qualified source times');
+  }
+  const occurredAt = delta.occurredAt ?? Math.max(...sourceTimes);
+  if (!Number.isSafeInteger(occurredAt) || occurredAt < 0) {
+    throw new Error('A source delta occurrence time must be a nonnegative epoch millisecond');
+  }
+  return occurredAt;
+}
+
 export function sourceDeltaStimulusId(delta: SourceDelta): string {
   if (delta.refs.length === 0)
     throw new Error('A source delta requires at least one observation ref');
@@ -98,6 +113,7 @@ function sourcePayload(delta: SourceDelta): JsonValue {
       ...(ref.metadata === undefined ? {} : { metadata: ref.metadata }),
     })),
     preview: [...delta.preview],
+    ...(delta.replay === undefined ? {} : { replay: delta.replay }),
   } as unknown as JsonValue;
 }
 
@@ -135,7 +151,7 @@ export function createStimulusIntake(
         })),
         preview: [...delta.preview],
         coalesceKey: delta.coalesceKey,
-        occurredAt: Math.max(...delta.refs.map((ref) => Date.parse(ref.observedAt))),
+        occurredAt: sourceOccurrenceTime(delta),
         payload: sourcePayload(delta),
       }),
     acceptScheduled: (input) =>

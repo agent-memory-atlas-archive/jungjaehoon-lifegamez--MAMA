@@ -153,7 +153,12 @@ const PENDING_RETENTION_MS = 7 * 86_400_000;
  */
 const REF_RETENTION_MS = 30 * 86_400_000;
 const SEEN_CHUNK = 500; // stay under SQLITE_MAX_VARIABLE_NUMBER
-const MAX_REFS = 50;
+/**
+ * Replay deltas intentionally carry one channel's bounded source history. The
+ * feeder preflights this same contract before accepting any window so a
+ * large channel cannot be silently split or partially delivered.
+ */
+const MAX_REFS = 500;
 
 function backoffCase(column: string): string {
   return `CASE ${column}

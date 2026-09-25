@@ -23,6 +23,14 @@ export interface SourceDelta {
   coalesceKey: string;
   refs: readonly SourceObservationRef[];
   preview: readonly string[];
+  /** Source occurrence time; replay deltas must never use host capture time. */
+  occurredAt?: number;
+  replay?: {
+    runId: string;
+    windowId: string;
+    windowStartMs: number;
+    windowEndMs: number;
+  };
 }
 
 export type RawBatchCommittedCallback = (delta: SourceDelta) => void | Promise<void>;

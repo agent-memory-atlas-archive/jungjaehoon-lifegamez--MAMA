@@ -142,3 +142,98 @@ jq -c '.entries[] | {key, state, updatedAt, nextChunkIndex, deliveryUncertain}' 
 - Evidence: core full suite is 116 files / 837 tests; standalone full suite is 44 files / 105 tests; regressions cover source/list/read/history, cursor-ceiling mismatch, graph/observation and provenance visibility, native action calls, and dynamic socket facts.
 - The standalone Vitest harness uses a single fork because concurrent native SQLite teardown otherwise exits 139 after passing replay tests; the serialized full run exits 0.
 - Still open: ordered model replay, real owner/provider turns, receipts/delivery, and C1/C2 remain intentionally outside Tasks 3–4.
+
+## Replay Task 5 — 2026-09-25
+
+- Result: metadata-only source catalog, KST half-day ordering, one delta per connector/channel/window, replay ceiling, 500-ref preflight, append-only ledger, and atomic crash cursor are implemented.
+- Evidence: replay catalog/feeder tests cover global and group ordering, source-time occurrence, cursor restart, cap failure before acceptance, and uncertain delivery stop; mailbox cap and source-delta tests pass.
+- Files: `packages/standalone/src/replay/{replay-source-catalog,replay-feeder,replay-cursor,replay-ledger}.ts`, `stimulus-delivery.ts`, `packages/mama-core/src/runtime/mailbox.ts`, and their focused tests.
+- Still open: the supervisor must run the real provider replay and inspect native receipts/model writes; no `~/.mama` state was written here.
+
+## Replay Task 6 — 2026-09-25
+
+- Result: `mama replay` boots the owner runtime and feeder only, logs `replay collectors: disabled`, leaves the configured live connector set unchanged, and writes every enabled live poll cursor to fence T after settlement; Kagemusha live messages use `(created_at,id)` keyset pages with no 5,000-row limit.
+- Evidence: daemon replay isolation, poll-fence, and 5,001-row Kagemusha tests pass; R1/R2/R4/R5 are encoded, and no overlap report or collector-set rewrite is present.
+- Files: `packages/standalone/src/cli/commands/{daemon,replay}.ts`, `runtime/connectors.ts`, `connectors/kagemusha/index.ts`, `cli/index.ts`, plus replay/runtime tests.
+- Still open: only a supervisor run can prove T→now live polling, Telegram startup, clean daemon log, native receipt, and C1/C2.
+
+## Replay Task 7 — 2026-09-25
+
+- Result: counts-only `verify-september.mjs` checks Kagemusha/raw and Trello coverage, ledger/cursor order, event-time revisions, task-shape fields, and resolvable citations; the collect-only import runner and Trello board/day manifest support the operator path.
+- Evidence: the verification fixture passes with zero coverage/order/null-time/unresolvable-citation differences; standalone full suite is 47 files / 117 tests and core full suite is 116 files / 838 tests.
+- Read-only dry run at the current Kagemusha fence found T=`1790313098001`, 4,322 mapped source rows, 50 KST half-day windows, 326 message deltas, and zero unmapped rows. Trello API history was not fetched, so final replay deltas are `326 +` the Trello board/window groups shown by replay preflight.
+- Still open: import/replay, final counts-only verification, and real owner C1/C2 confirmation remain supervisor work.
+
+## September replay — supervisor runbook (R1–R5)
+
+The implementation writes raw/index data during import only. Replay is the owner runtime plus feeder; it does not start live connectors or Telegram. The current read-only dry run predicts 50 windows and 326 Kagemusha/direct-message deltas at T=`1790313098001`; Trello action history was not fetched, so use the replay preflight line for the final delta count.
+
+1. Stop the launchd daemon before touching the disposable testbed:
+
+   ```sh
+   launchctl bootout gui/$(id -u)/com.mama.server
+   ```
+
+2. Wipe the same W1 cutover state, keeping credentials/configuration, briefs, skills, and launchd files. The exact keep-list commands are the W1 cutover block above; the destructive portion is:
+
+   ```sh
+   rm -f ~/.mama/mama-memory.db ~/.mama/mama-memory.db-shm ~/.mama/mama-memory.db-wal ~/.mama/mama-metrics.db ~/.mama/mama-sessions.db ~/.mama/runtime.sock
+   rm -rf ~/.mama/connectors ~/.mama/runtime ~/.mama/codex-runtime ~/.mama/workspace
+   rm -f ~/.mama/logs/daemon.log && mkdir -p ~/.mama/logs
+   (cd ~/.mama/.codex && rm -rf sessions shell_snapshots tmp thread-writer-locks memories \
+     state_5.sqlite* thread_history_1.sqlite* memories_1.sqlite* goals_1.sqlite* logs_2.sqlite* queue_1.sqlite*)
+   ```
+
+   Re-check that `~/.mama/.codex/auth.json`, `config.yaml`, `connectors.json`, `auth.env`, `start.sh`, `briefs/`, `.codex/skills/`, and the launchd plist still exist. Do not print `config.yaml` or credentials.
+
+3. Build and run collect-only import. Supply Trello credentials through the environment; the runner never prints them:
+
+   ```sh
+   pnpm --dir packages/standalone build
+   TRELLO_API_KEY="$TRELLO_API_KEY" TRELLO_TOKEN="$TRELLO_TOKEN" \
+     node scripts/replay/import-september.mjs \
+       --mama-db ~/.mama/mama-memory.db \
+       --raw-root ~/.mama/connectors \
+       --connectors-config ~/.mama/connectors.json \
+       --manifest ~/.mama/runtime/september-import-manifest.json
+   ```
+
+   The output is counts only. Import must leave mailbox, model-run, commitment, tool-trace, and source-delta counts unchanged; it drains raw projection queues and records the exclusive fence T in the manifest.
+
+4. Run replay. This is the only command that opens the owner runtime and feeder; it does not start live connectors or Telegram:
+
+   ```sh
+   node packages/standalone/dist/cli/index.js replay
+   ```
+
+   Watch progress without exposing contents:
+
+   ```sh
+   tail -f ~/.mama/logs/daemon.log | rg 'replay|stimulus'
+   jq '{nextWindowStartMs, currentWindow: (.currentWindow.deltas | length)}' ~/.mama/runtime/september-replay-cursor.json
+   jq -s 'group_by(.status) | map({status: .[0].status, count: length})' ~/.mama/runtime/september-replay-ledger.jsonl
+   ```
+
+5. After a crash, do not delete the cursor or ledger and do not manually re-send a delta. Stop/restart the same replay command; it reuses the deterministic stimulus IDs and waits for already-admitted rows. A `dead` or `uncertain` mailbox/native state stops replay loudly and requires receipt reconciliation before resuming.
+
+6. Finish only after the cursor reaches T and replay exits successfully. The replay command writes T to every currently enabled connector cursor without changing the connector configuration. Then start the normal daemon so live polling covers T→now and Telegram starts normally:
+
+   ```sh
+   jq '.nextWindowStartMs' ~/.mama/runtime/september-replay-cursor.json
+   jq -c 'to_entries[] | {connector: .key, poll_cursor: .value}' ~/.mama/connectors/poll-state.json
+   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.mama.server.plist
+   ```
+
+7. Verify counts and order after replay:
+
+   ```sh
+   node scripts/replay/verify-september.mjs \
+     --kagemusha-db ~/.kagemusha/kagemusha.db \
+     --mama-db ~/.mama/mama-memory.db \
+     --raw-root ~/.mama/connectors \
+     --manifest ~/.mama/runtime/september-import-manifest.json \
+     --ledger ~/.mama/runtime/september-replay-ledger.jsonl \
+     --cursor ~/.mama/runtime/september-replay-cursor.json
+   ```
+
+   A nonzero exit means at least one count or invariant differs. Finally send the real owner Telegram C1/C2 questions, retain the native receipt/daemon log/DB read-back, restart the daemon, and ask both questions again; those live owner checks are not claimed by the automated script.

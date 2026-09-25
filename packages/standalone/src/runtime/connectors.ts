@@ -1,3 +1,15 @@
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { join } from 'node:path';
 import type { DatabaseInstance } from '@jungjaehoon/mama-core/db-manager';
 import { loadConnector, LOADABLE_CONNECTORS } from '../connectors/index.js';
 import {
@@ -42,6 +54,55 @@ export interface ConnectorRuntime {
   readonly enabledConnectorNames: readonly string[];
   pollNow(): Promise<void>;
   stop(): Promise<void>;
+}
+
+function assertFence(value: number): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error('Connector poll fence must be a nonnegative epoch-millisecond integer');
+  }
+}
+
+/** Set the next live poll start without loading or polling any connector. */
+export function setLiveConnectorPollCursors(options: {
+  configPath: string;
+  statePath: string;
+  fenceMs: number;
+}): void {
+  assertFence(options.fenceMs);
+  const loaded = configurationOrThrow(loadConnectorConfig(options.configPath));
+  const stateFile = join(options.statePath, 'poll-state.json');
+  let state: Record<string, unknown> = {};
+  if (existsSync(stateFile)) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(stateFile, 'utf8')) as unknown;
+    } catch (error) {
+      throw new Error(
+        `Connector poll state is unreadable: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('Connector poll state must contain an object');
+    }
+    state = parsed as Record<string, unknown>;
+  }
+  const fence = new Date(options.fenceMs).toISOString();
+  for (const name of loaded.enabledNames) state[name] = fence;
+  mkdirSync(options.statePath, { recursive: true });
+  const temporaryPath = `${stateFile}.${process.pid}.${Date.now()}.tmp`;
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(temporaryPath, 'wx', 0o600);
+    writeFileSync(descriptor, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+    fsyncSync(descriptor);
+    closeSync(descriptor);
+    descriptor = undefined;
+    renameSync(temporaryPath, stateFile);
+  } catch (error) {
+    if (descriptor !== undefined) closeSync(descriptor);
+    rmSync(temporaryPath, { force: true });
+    throw error;
+  }
 }
 
 function coreIndexSink(adapter: DatabaseInstance): RawIndexSink {

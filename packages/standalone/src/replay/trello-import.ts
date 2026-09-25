@@ -11,6 +11,7 @@ import { existsSync } from 'node:fs';
 
 const IMPORT_FROM_MS = Date.parse('2026-09-01T00:00:00.000+09:00');
 const ACTION_PAGE_SIZE = 1_000;
+const KST_OFFSET_MS = 9 * 60 * 60 * 1_000;
 
 export interface TrelloAction {
   id: string;
@@ -36,6 +37,7 @@ export interface TrelloImportOptions {
 export interface TrelloImportResult {
   importedCount: number;
   importedByBoard: Record<string, number>;
+  countsByBoardDay: Record<string, Record<string, number>>;
   projectedCount: number;
   pendingProjectionCount: number;
 }
@@ -48,6 +50,10 @@ function actionTime(action: TrelloAction): number {
   const value = Date.parse(action.date);
   if (!Number.isSafeInteger(value) || value < 0) throw new Error('Trello action date is invalid');
   return value;
+}
+
+function boardDay(timestampMs: number): string {
+  return new Date(timestampMs + KST_OFFSET_MS).toISOString().slice(0, 10);
 }
 
 function boardChannels(path: string): Array<{ key: string; boardId: string }> {
@@ -208,6 +214,17 @@ export async function importTrelloActions(
   const result = {
     importedCount: afterTotal - beforeTotal,
     importedByBoard,
+    countsByBoardDay: options.rawStore
+      .query('trello', new Date(fromMs))
+      .filter((item) => item.timestamp.getTime() < options.untilMs)
+      .reduce<Record<string, Record<string, number>>>((counts, item) => {
+        const boardId = item.metadata?.boardId;
+        if (typeof boardId !== 'string' || boardId.trim() === '') return counts;
+        const days = (counts[boardId] ??= {});
+        const date = boardDay(item.timestamp.getTime());
+        days[date] = (days[date] ?? 0) + 1;
+        return counts;
+      }, {}),
     projectedCount,
     pendingProjectionCount,
   };
@@ -222,12 +239,14 @@ export async function importTrelloActions(
           rawObservationCount: 0,
           indexCount: 0,
           pendingProjectionCount: 0,
+          trelloCountsByBoardDay: {},
         };
     writeImportManifest(options.manifestPath, {
       ...existing,
       rawObservationCount: existing.rawObservationCount + result.importedCount,
       indexCount: existing.indexCount + result.projectedCount,
       pendingProjectionCount: result.pendingProjectionCount,
+      trelloCountsByBoardDay: result.countsByBoardDay,
     });
   }
   return result;

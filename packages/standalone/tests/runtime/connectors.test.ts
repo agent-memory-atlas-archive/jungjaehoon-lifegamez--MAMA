@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -10,7 +10,10 @@ import {
   type NativeTurnResult,
 } from '@jungjaehoon/mama-core';
 import { Mailbox, type Stimulus } from '@jungjaehoon/mama-core/runtime/mailbox';
-import { startConnectorRuntime } from '../../src/runtime/connectors.js';
+import {
+  setLiveConnectorPollCursors,
+  startConnectorRuntime,
+} from '../../src/runtime/connectors.js';
 import type { IConnector, NormalizedItem } from '../../src/connectors/framework/types.js';
 import { openCoreDatabase } from '../../src/runtime/core-db.js';
 import { RawStore } from '../../src/storage/source-archive.js';
@@ -40,6 +43,38 @@ function fake(name: string, items: NormalizedItem[]): IConnector {
 }
 
 describe('connector runtime', () => {
+  it('sets the poll fence only for the currently enabled live connector set', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'connector-runtime-fence-'));
+    roots.push(root);
+    const configPath = join(root, 'connectors.json');
+    const statePath = join(root, 'state');
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        slack: {
+          enabled: true,
+          pollIntervalMinutes: 5,
+          channels: {},
+          auth: { type: 'none' },
+        },
+        chatwork: {
+          enabled: false,
+          pollIntervalMinutes: 5,
+          channels: {},
+          auth: { type: 'none' },
+        },
+      }),
+      'utf8'
+    );
+
+    const fence = Date.parse('2026-09-02T00:00:00.000+09:00');
+    setLiveConnectorPollCursors({ configPath, statePath, fenceMs: fence });
+
+    expect(JSON.parse(readFileSync(join(statePath, 'poll-state.json'), 'utf8'))).toEqual({
+      slack: new Date(fence).toISOString(),
+    });
+  });
+
   it('initializes only the four supported enabled connectors and freezes the one-day window', async () => {
     const root = mkdtempSync(join(tmpdir(), 'connector-runtime-'));
     roots.push(root);

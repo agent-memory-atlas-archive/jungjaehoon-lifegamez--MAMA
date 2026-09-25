@@ -237,4 +237,38 @@ describe('one stimulus intake and delivery', () => {
     );
     expect(delivery.getReplaySourceEndMs()).toBeUndefined();
   });
+
+  it('records a source delta occurrence at source time, not capture time', () => {
+    const accepted: Stimulus[] = [];
+    const intake = createStimulusIntake(
+      {
+        accept: (stimulus) => {
+          accepted.push(stimulus);
+          return { inputId: stimulus.id, state: 'accepted' };
+        },
+      },
+      'owner'
+    );
+
+    intake.acceptSourceDelta({
+      kind: 'source_delta',
+      collector: 'collector',
+      channel: 'channel',
+      coalesceKey: 'source:collector:channel',
+      refs: [
+        {
+          connector: 'collector',
+          observationRef: 'observation-1',
+          sourceId: 'source-1',
+          sourceEntityId: 'entity-1',
+          sourceAt: '2026-01-01T00:00:00.000Z',
+          observedAt: '2026-02-01T00:00:00.000Z',
+          contentHash: null,
+        },
+      ],
+      preview: [],
+    });
+
+    expect(accepted[0]?.occurredAt).toBe(Date.parse('2026-01-01T00:00:00.000Z'));
+  });
 });

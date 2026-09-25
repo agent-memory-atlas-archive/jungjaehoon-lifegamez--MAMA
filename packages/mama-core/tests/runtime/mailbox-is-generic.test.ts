@@ -225,6 +225,22 @@ describe('the mechanism', () => {
     expect(mailbox.depth().pending).toBe(1);
   });
 
+  it('accepts the replay cap of 500 refs and rejects 501 before writing', () => {
+    const mailbox = new Mailbox(freshDb('reference-cap'));
+    const refs = (count: number) =>
+      Array.from({ length: count }, (_, index) => ({
+        refId: `ref-${index}`,
+        observationRef: `observation-${index}`,
+      }));
+
+    expect(mailbox.enqueue(stimulus({ id: 'five-hundred', refs: refs(500) }))).not.toBeNull();
+    expect(mailbox.depth().pending).toBe(1);
+    expect(() =>
+      mailbox.enqueue(stimulus({ id: 'five-hundred-and-one', refs: refs(501) }))
+    ).toThrow(/at most 500 refs/);
+    expect(mailbox.depth()).toEqual({ pending: 1, claimed: 0, dead: 0 });
+  });
+
   it('coalesces two pending stimuli that state the same key, keeping both refs', () => {
     const mailbox = new Mailbox(freshDb('coalesce'));
     const first = mailbox.enqueue(

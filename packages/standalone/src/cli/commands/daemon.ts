@@ -73,14 +73,23 @@ export interface DaemonBootOptions {
   config?: W1Config;
   logger?: DaemonLogger;
   mcpServerPath?: string;
+  mode?: 'live' | 'replay';
+  replay?: (context: DaemonReplayContext) => Promise<void>;
   dependencies?: DaemonBootDependencies;
+}
+
+export interface DaemonReplayContext {
+  config: W1Config;
+  paths: DaemonPaths;
+  owner: OwnerRuntime;
+  logger: DaemonLogger;
 }
 
 export interface DaemonHandle {
   readonly config: W1Config;
   readonly paths: DaemonPaths;
   readonly owner: OwnerRuntime;
-  readonly connectors: ConnectorRuntime;
+  readonly connectors: ConnectorRuntime | null;
   readonly gateway: DaemonGateway | null;
   stop(): Promise<void>;
 }
@@ -270,11 +279,27 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
       ...(config.agent.backend === 'claude' ? { mcpConfigPath: paths.mcpConfigPath } : {}),
       pluginDir: paths.pluginDir,
       ownerPolicyProvider,
-      onOwnerResult: deliverOwnerResponse,
+      ...(options.mode === 'replay' ? {} : { onOwnerResult: deliverOwnerResponse }),
       onStimulusDelivered: (row) => stimulusDelivered(logger, row),
       onStimulusFailed: (row) => stimulusFailed(logger, row.kind ?? 'unknown', row.stimulusId),
     });
     stage(logger, 'owner_runtime');
+
+    if (options.mode === 'replay') {
+      logger.info('replay collectors: disabled');
+      currentStage = 'replay';
+      if (!options.replay) throw new Error('Replay mode requires a replay feeder');
+      await options.replay({ config, paths, owner, logger });
+      stage(logger, 'replay');
+      return {
+        config,
+        paths,
+        owner,
+        connectors: null,
+        gateway: null,
+        stop: stopResources,
+      };
+    }
 
     currentStage = 'connectors';
     const acceptSourceDelta = async (delta: SourceDelta): Promise<void> => {

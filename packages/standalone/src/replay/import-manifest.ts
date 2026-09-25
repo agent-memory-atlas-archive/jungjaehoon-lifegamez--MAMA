@@ -23,6 +23,7 @@ export interface ImportManifest {
   indexCount: number;
   pendingProjectionCount: number;
   unmappedByOrigin?: Record<string, number>;
+  trelloCountsByBoardDay?: Record<string, Record<string, number>>;
 }
 
 function finiteInteger(value: unknown, field: string, nullable = false): number | null {
@@ -75,6 +76,20 @@ function normalizeManifest(value: unknown): ImportManifest {
   };
   if (row.unmappedByOrigin !== undefined) {
     manifest.unmappedByOrigin = countRecord(row.unmappedByOrigin, 'unmappedByOrigin');
+  }
+  if (row.trelloCountsByBoardDay !== undefined) {
+    if (
+      !row.trelloCountsByBoardDay ||
+      typeof row.trelloCountsByBoardDay !== 'object' ||
+      Array.isArray(row.trelloCountsByBoardDay)
+    ) {
+      throw new Error('trelloCountsByBoardDay must be an object of board/day counts');
+    }
+    const counts: Record<string, Record<string, number>> = {};
+    for (const [board, days] of Object.entries(row.trelloCountsByBoardDay)) {
+      counts[board] = countRecord(days, `trelloCountsByBoardDay.${board}`);
+    }
+    manifest.trelloCountsByBoardDay = counts;
   }
   return manifest;
 }

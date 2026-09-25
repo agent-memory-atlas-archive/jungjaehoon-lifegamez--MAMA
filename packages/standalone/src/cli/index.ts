@@ -1,11 +1,16 @@
 #!/usr/bin/env node
 
 import { daemonStatus, requestDaemonStop, runDaemon } from './commands/daemon.js';
+import { runReplay } from './commands/replay.js';
 
 async function main(): Promise<void> {
   const command = process.argv[2];
   if (command === 'daemon') {
     await runDaemon();
+    return;
+  }
+  if (command === 'replay') {
+    await runReplay();
     return;
   }
   if (command === 'status') {
@@ -16,7 +21,7 @@ async function main(): Promise<void> {
     requestDaemonStop();
     return;
   }
-  console.log('Usage: mama daemon | status | stop');
+  console.log('Usage: mama daemon | replay | status | stop');
 }
 
 void main().catch(() => {

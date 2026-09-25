@@ -129,4 +129,29 @@ describe('KagemushaConnector', () => {
       await connector.dispose();
     }
   });
+
+  it('pages all source messages with the created-at and id keyset', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'kagemusha-keyset-'));
+    roots.push(root);
+    const dbPath = join(root, 'source.db');
+    const db = createDb(dbPath);
+    const insert = db.prepare(
+      'INSERT INTO channel_messages (channel, channel_id, user_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+    );
+    for (let index = 0; index < 5_001; index += 1) {
+      insert.run('kakao', 'room-key', 'actor-key', 'user', `source-${index}`, 1_704_067_201_000);
+    }
+    db.close();
+
+    const connector = new KagemushaConnector(
+      config({ 'kagemusha:kakao:room-key': { role: 'hub' } }),
+      dbPath
+    );
+    await connector.init();
+    try {
+      await expect(connector.poll(new Date(1_704_067_200_000))).resolves.toHaveLength(5_001);
+    } finally {
+      await connector.dispose();
+    }
+  });
 });

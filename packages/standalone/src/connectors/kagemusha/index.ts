@@ -29,6 +29,8 @@ interface KagemushaTask {
   updated_at: number | string;
 }
 
+const MESSAGE_PAGE_SIZE = 1_000;
+
 function timestamp(value: number | string): number {
   const parsed = typeof value === 'number' ? value : Date.parse(value);
   if (!Number.isFinite(parsed)) throw new Error('Kagemusha source timestamp is invalid');
@@ -151,14 +153,39 @@ export class KagemushaConnector implements IConnector {
     const items: NormalizedItem[] = [];
     let hadError = false;
     try {
-      const rows = this.db
-        .prepare(
-          "SELECT * FROM channel_messages WHERE created_at > ? AND role = 'user' ORDER BY created_at ASC LIMIT 5000"
-        )
-        .all(since.getTime()) as ChannelMessage[];
-      for (const row of rows) {
-        const item = this.messageItem(row);
-        if (item) items.push(item);
+      let afterCreatedAt = since.getTime();
+      let afterId: number | string = 0;
+      let keepPaging = true;
+      while (keepPaging) {
+        const rows = this.db
+          .prepare(
+            `SELECT *
+               FROM channel_messages
+              WHERE role = 'user'
+                AND (created_at > ? OR (created_at = ? AND id > ?))
+              ORDER BY created_at ASC, id ASC
+              LIMIT ?`
+          )
+          .all(afterCreatedAt, afterCreatedAt, afterId, MESSAGE_PAGE_SIZE) as ChannelMessage[];
+        for (const row of rows) {
+          const item = this.messageItem(row);
+          if (item) items.push(item);
+        }
+        if (rows.length < MESSAGE_PAGE_SIZE) {
+          keepPaging = false;
+          continue;
+        }
+        const last = rows[rows.length - 1];
+        if (!last) throw new Error('Kagemusha keyset page ended without a last row');
+        const lastCreatedAt = timestamp(last.created_at);
+        if (
+          lastCreatedAt < afterCreatedAt ||
+          (lastCreatedAt === afterCreatedAt && last.id <= afterId)
+        ) {
+          throw new Error('Kagemusha keyset pagination made no progress');
+        }
+        afterCreatedAt = lastCreatedAt;
+        afterId = last.id;
       }
     } catch (error) {
       hadError = true;

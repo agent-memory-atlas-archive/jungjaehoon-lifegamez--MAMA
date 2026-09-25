@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { rmSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { readFileSync, rmSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -59,6 +59,7 @@ describe('collect-only Trello replay import', () => {
       return new Response(JSON.stringify(body), { status: 200 });
     };
     const raw = new RawStore(join(root, 'raw'));
+    const manifestPath = join(root, 'manifest.json');
     const rawIndexSink = (connector: string, items: Array<{ sourceId: string }>) =>
       items.map((item) => ({
         sourceId: item.sourceId,
@@ -74,6 +75,7 @@ describe('collect-only Trello replay import', () => {
         observedAtMs: Date.parse('2026-09-06T00:00:00.000Z'),
         fromMs: Date.parse('2026-09-01T00:00:00.000Z'),
         untilMs: Date.parse('2026-09-06T00:00:00.000Z'),
+        manifestPath,
       });
 
       expect(calls).toBe(2);
@@ -89,6 +91,9 @@ describe('collect-only Trello replay import', () => {
         type: 'kanban_card',
       });
       expect(raw.listPendingProjections('trello')).toEqual([]);
+      expect(JSON.parse(readFileSync(manifestPath, 'utf8')).trelloCountsByBoardDay).toEqual({
+        'board-a': { '2026-09-01': 1, '2026-09-05': 1_001 },
+      });
 
       const again = await importTrelloActions({
         connectorsConfigPath: configPath,
