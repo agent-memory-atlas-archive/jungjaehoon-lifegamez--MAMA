@@ -43,6 +43,8 @@ interface WorkListFilter {
   readonly project?: string;
   readonly text?: string;
   readonly asOf?: number;
+  /** Items written at or after this epoch-ms instant: what an orchestrated turn changed. */
+  readonly changedSince?: number;
 }
 
 interface WorkListCursor {
@@ -162,6 +164,7 @@ function workListFilter(input: Record<string, unknown>): WorkListFilter {
     ...(input.project === undefined ? {} : { project: workListString(input.project, 'project') }),
     ...(input.text === undefined ? {} : { text: workListString(input.text, 'text') }),
     ...(input.asOf === undefined ? {} : { asOf: workListAsOf(input.asOf) }),
+    ...(input.changedSince === undefined ? {} : { changedSince: workListAsOf(input.changedSince) }),
   };
 }
 
@@ -288,6 +291,7 @@ function workListMatches(item: CommitmentView, filter: WorkListFilter): boolean 
   if (filter.status !== undefined && workListStatus(item) !== filter.status) return false;
   if (filter.stage !== undefined && workListText(values.stage) !== filter.stage) return false;
   if (filter.project !== undefined && workListText(values.project) !== filter.project) return false;
+  if (filter.changedSince !== undefined && item.updatedAt < filter.changedSince) return false;
   if (filter.text !== undefined) {
     const needle = filter.text.toLocaleLowerCase();
     const haystack = [workListText(values.title), workListText(values.description)]
@@ -650,6 +654,12 @@ export function workListActionRegistrations(ports: WorkListPorts): ActionRegistr
             project: { type: 'string' },
             text: { type: 'string' },
             asOf: { type: 'integer', minimum: 0 },
+            changedSince: {
+              type: 'integer',
+              minimum: 0,
+              description:
+                'Only items written at or after this epoch-ms time, e.g. the start of your turn.',
+            },
             text_offset: { type: 'integer', minimum: 0 },
             text_limit: { type: 'integer', minimum: 1, maximum: WORK_LIST_MAX_TEXT_LIMIT },
             history: { type: 'string', enum: ['current', 'all'] },

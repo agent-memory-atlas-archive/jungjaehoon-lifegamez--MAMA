@@ -16,6 +16,7 @@ describe('W1 action surface', () => {
       'graph.query',
       'manage.wiki.publish',
       'manage.wiki.read',
+      'manage.wiki.update',
       'memory.checkpoint.list',
       'memory.read:provenance',
       'memory.save',

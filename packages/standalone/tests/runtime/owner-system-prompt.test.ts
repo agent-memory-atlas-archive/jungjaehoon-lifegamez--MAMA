@@ -57,14 +57,14 @@ describe('owner standing prompt', () => {
     expect(prompt).not.toMatch(/cite\s+item 1/i);
   });
 
-  it('plans from a replay queue and keeps child proposals under owner verification', () => {
+  it('orchestrates a replay queue: disjoint child assignments, receipts, read-back', () => {
     const prompt = ownerSystemPrompt('codex');
 
-    expect(prompt).toContain('window queue');
-    expect(prompt).toContain('work item and its full source lines');
+    expect(prompt).toContain('window queue you are the orchestrator');
+    expect(prompt).toContain('disjoint set of work items');
+    expect(prompt).toContain('receipt');
+    expect(prompt).toContain('changedSince=<your turn start>');
     expect(prompt).toContain('direct spawn_agent tool call');
-    expect(prompt).toContain('proposal');
-    expect(prompt).toContain('you alone write the records');
   });
 
   it('places external owner policy after the standing text', () => {

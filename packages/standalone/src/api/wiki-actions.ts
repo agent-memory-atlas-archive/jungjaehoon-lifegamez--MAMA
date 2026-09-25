@@ -2,11 +2,15 @@
 import type { ActionRegistration } from '@jungjaehoon/mama-core';
 import {
   listWikiPages,
+  normalizeWikiRelativePath,
+  readWikiPageContent,
   readWikiPages,
   WIKI_LIST_MAX_PATHS,
   WIKI_READ_MAX_PAGE_CHARS,
 } from '../wiki/wiki-read.js';
 import { WIKI_PAGE_TYPES } from '../wiki/types.js';
+import { applyWikiEdits, type WikiSectionEdit } from '../wiki/wiki-edits.js';
+import { WIKI_HUMAN_MARKER } from '../wiki/wiki-read.js';
 import {
   createWikiPublishAdapter,
   MAX_WIKI_PAGE_CONTENT_CHARS,
@@ -117,6 +121,96 @@ export function wikiActionRegistrations(ports: WikiPorts): ActionRegistration[] 
     },
     {
       contract: {
+        name: 'manage.wiki.update',
+        summary:
+          'Update one existing wiki page by sections instead of republishing it: append a dated line to a section (created at the page end when absent) or replace a section body. Pass the expectedContentVersion from manage.wiki.read; title, type and evidence ids are kept, and sourceIds adds evidence ids to the page metadata.',
+        inputSchema: {
+          type: 'object',
+          required: ['path', 'expectedContentVersion', 'edits'],
+          properties: {
+            path: { type: 'string', pattern: '^.+\\.md$' },
+            expectedContentVersion: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+            edits: {
+              type: 'array',
+              minItems: 1,
+              maxItems: 20,
+              items: {
+                type: 'object',
+                required: ['section'],
+                properties: {
+                  section: { type: 'string', pattern: '^#{1,6} \\S' },
+                  append: { type: 'string', minLength: 1 },
+                  replace: { type: 'string', minLength: 1 },
+                },
+              },
+            },
+            sourceIds: { type: 'array', items: { type: 'string', minLength: 1 } },
+          },
+        },
+        examples: [
+          {
+            title: 'Add today to a project page',
+            input: {
+              path: 'projects/example.md',
+              expectedContentVersion: 'a'.repeat(64),
+              edits: [
+                { section: '## History', append: '- 9/11: the client approved the second draft.' },
+                { section: '## Current state', replace: 'Approved; delivery at month end.' },
+              ],
+            },
+          },
+        ],
+      },
+      exec: (input) => {
+        const body = input as {
+          path: string;
+          expectedContentVersion: string;
+          edits: WikiSectionEdit[];
+          sourceIds?: string[];
+        };
+        const vault = requireVault(ports);
+        const path = normalizeWikiRelativePath(body.path);
+        const current = readWikiPageContent(vault.path, path);
+        if (current === null) {
+          throw namedError(
+            'TOOL_ERROR',
+            `Wiki page not found: ${path}; create it with manage.wiki.publish`
+          );
+        }
+        if (current.version !== body.expectedContentVersion) {
+          throw namedError(
+            'TOOL_ERROR',
+            `Wiki page changed since it was read: ${path}; read it again`
+          );
+        }
+        const page = parseWrittenPage(current.content);
+        const adapter =
+          ports.publishAdapter ?? createWikiPublishAdapter({ publisher: ports.publisher });
+        try {
+          adapter.publish({
+            pages: [
+              {
+                path,
+                title: page.title,
+                ...(page.type === null ? {} : { type: page.type }),
+                ...(page.confidence === null ? {} : { confidence: page.confidence }),
+                content: applyWikiEdits(page.body, body.edits),
+                expectedContentVersion: current.version,
+                sourceIds: [...new Set([...page.sourceIds, ...(body.sourceIds ?? [])])],
+              },
+            ],
+          });
+        } catch (error) {
+          throw namedError(
+            'TOOL_ERROR',
+            error instanceof Error ? error.message : 'Wiki update failed'
+          );
+        }
+        return { success: true, message: `Wiki updated: ${path}` };
+      },
+    },
+    {
+      contract: {
         name: 'manage.wiki.read',
         summary:
           'List wiki paths with no paths (page using nextCursor and readVersion as list_cursor/list_version), or read exact relative .md paths from the configured wiki directory. Continue long page content using nextContentOffset and the same content_versions entry; restart if its version changes.',
@@ -199,4 +293,46 @@ export function wikiActionRegistrations(ports: WikiPorts): ActionRegistration[] 
       },
     },
   ];
+}
+
+/**
+ * A page as the writer stored it: frontmatter scalars (JSON-quoted), the source_ids list,
+ * and the body without the title heading or the human section (the writer re-adds both).
+ */
+function parseWrittenPage(content: string): {
+  title: string;
+  type: string | null;
+  confidence: string | null;
+  sourceIds: string[];
+  body: string;
+} {
+  const match = /^---\n([\s\S]*?)\n---\n?/.exec(content);
+  if (!match)
+    throw namedError(
+      'TOOL_ERROR',
+      'Wiki page has no frontmatter; republish it with manage.wiki.publish'
+    );
+  const scalar = (key: string): string | null => {
+    const line = match[1]!.split('\n').find((candidate) => candidate.startsWith(`${key}: `));
+    if (!line) return null;
+    const raw = line.slice(key.length + 2).trim();
+    return raw.startsWith('"') ? (JSON.parse(raw) as string) : raw;
+  };
+  const title = scalar('title');
+  if (!title) throw namedError('TOOL_ERROR', 'Wiki page frontmatter has no title');
+  const sourceIds: string[] = [];
+  const lines = match[1]!.split('\n');
+  const at = lines.indexOf('source_ids:');
+  if (at !== -1) {
+    for (const line of lines.slice(at + 1)) {
+      if (!line.startsWith('  - ')) break;
+      const raw = line.slice(4).trim();
+      sourceIds.push(raw.startsWith('"') ? (JSON.parse(raw) as string) : raw);
+    }
+  }
+  let body = content.slice(match[0].length).replace(/^\s+/, '');
+  if (body.startsWith(`# ${title}`)) body = body.slice(`# ${title}`.length).replace(/^\s+/, '');
+  const human = body.indexOf(WIKI_HUMAN_MARKER);
+  if (human !== -1) body = body.slice(0, human).trimEnd();
+  return { title, type: scalar('type'), confidence: scalar('confidence'), sourceIds, body };
 }

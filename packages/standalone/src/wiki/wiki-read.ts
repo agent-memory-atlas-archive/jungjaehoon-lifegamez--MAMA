@@ -163,6 +163,17 @@ export function readWikiPageVersion(root: string, normalizedPath: string): strin
   return wikiContentVersion(readFileSync(real, 'utf-8'));
 }
 
+/** A page's full content and version at the configured root, or null when it does not exist. */
+export function readWikiPageContent(
+  root: string,
+  normalizedPath: string
+): { content: string; version: string } | null {
+  const real = resolveInsideRoot(root, normalizedPath);
+  if (real === null) return null;
+  const content = readFileSync(real, 'utf-8');
+  return { content, version: wikiContentVersion(content) };
+}
+
 export function readWikiPages(input: {
   root: string;
   paths: unknown;

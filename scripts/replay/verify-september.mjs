@@ -675,7 +675,8 @@ export function verifySeptember(input) {
     result.revisionEventTimes.nullAssignmentAppliesFrom +
     (result.lessons.count - result.lessons.withDerivedFrom) +
     result.unresolvableCitations +
-    result.subagentWrites.childWriteTraces +
+    // Subagents write their assigned lanes (reported as counts); a write with no model run
+    // cannot be attributed to the owner run or a child and stays a failure.
     result.subagentWrites.writesWithoutModelRun;
   return { result, failures };
 }

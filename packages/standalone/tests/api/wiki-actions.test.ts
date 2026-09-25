@@ -11,14 +11,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCatalog, createDispatcher, type ActionContext } from '@jungjaehoon/mama-core';
 import { wikiActionRegistrations, type WikiPorts } from '../../src/api/wiki-actions.js';
-import { wikiContentVersion } from '../../src/wiki/wiki-read.js';
+import { readWikiPageContent, wikiContentVersion } from '../../src/wiki/wiki-read.js';
+import { ObsidianWriter } from '../../src/wiki/obsidian-writer.js';
 
 const OWNER_DATE = '2026-09-06';
 
 const ownerAccess: ActionContext['access'] = {
   // Dispatch compares the call against this grant; these are the actions
   // this file calls.
-  actions: ['manage.wiki.publish', 'manage.wiki.read'],
+  actions: ['manage.wiki.publish', 'manage.wiki.read', 'manage.wiki.update'],
   principalId: 'principal_owner_1',
   agentId: 'agent',
   scopes: [],
@@ -66,11 +67,11 @@ describe('manage.wiki.* action registrations', () => {
     expect(publisher).not.toHaveBeenCalled();
   });
 
-  it('lists the read and publish actions', () => {
+  it('lists the read, publish and update actions', () => {
     const names = createCatalog(wikiActionRegistrations({}))
       .list()
       .map((contract) => contract.name);
-    expect(names.sort()).toEqual(['manage.wiki.publish', 'manage.wiki.read']);
+    expect(names.sort()).toEqual(['manage.wiki.publish', 'manage.wiki.read', 'manage.wiki.update']);
   });
 
   it('unbound wiki resources fail explicitly', async () => {
@@ -253,5 +254,77 @@ describe('manage.wiki.* action registrations', () => {
 
   it('wikiContentVersion still keys the read/publish version contract', () => {
     expect(wikiContentVersion('# Home')).toEqual(expect.any(String));
+  });
+
+  it('updates a page by sections, keeping its frontmatter, title and human section', async () => {
+    const root = vault();
+    try {
+      const writer = new ObsidianWriter(root, '.');
+      writer.ensureDirectories();
+      const ports: WikiPorts = {
+        vault: { path: writer.getWikiPath(), name: null },
+        publisher: (pages) => writer.writePagesAtomically(pages),
+      };
+      const call = dispatch(ports);
+      const created = await call(
+        {
+          action: 'manage.wiki.publish',
+          input: {
+            pages: [
+              {
+                path: 'projects/example.md',
+                title: 'Example project',
+                type: 'entity',
+                content:
+                  '## Current state\nDraft in progress.\n\n## History\n- 9/10: draft started.',
+                expectedContentVersion: null,
+                sourceIds: ['obs_1'],
+              },
+            ],
+          },
+        },
+        { access: ownerAccess }
+      );
+      expect(created).toMatchObject({ status: 'completed' });
+      const before = readWikiPageContent(writer.getWikiPath(), 'projects/example.md')!;
+      const updated = await call(
+        {
+          action: 'manage.wiki.update',
+          input: {
+            path: 'projects/example.md',
+            expectedContentVersion: before.version,
+            edits: [
+              { section: '## History', append: '- 9/11: client approved the draft.' },
+              { section: '## Current state', replace: 'Approved; delivery at month end.' },
+            ],
+            sourceIds: ['obs_2'],
+          },
+        },
+        { access: ownerAccess }
+      );
+      expect(updated).toMatchObject({ status: 'completed' });
+      const after = readWikiPageContent(writer.getWikiPath(), 'projects/example.md')!.content;
+      expect(after.match(/^---$/gm)).toHaveLength(2);
+      expect(after.match(/^# Example project$/gm)).toHaveLength(1);
+      expect(after).toContain('- 9/10: draft started.\n- 9/11: client approved the draft.');
+      expect(after).toContain('## Current state\nApproved; delivery at month end.');
+      expect(after).not.toContain('Draft in progress.');
+      expect(after).toContain('obs_1');
+      expect(after).toContain('obs_2');
+      const stale = await call(
+        {
+          action: 'manage.wiki.update',
+          input: {
+            path: 'projects/example.md',
+            expectedContentVersion: before.version,
+            edits: [{ section: '## History', append: '- late line' }],
+          },
+        },
+        { access: ownerAccess }
+      );
+      expect(stale).toMatchObject({ status: 'failed' });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

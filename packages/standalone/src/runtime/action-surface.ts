@@ -39,6 +39,7 @@ const OWNER_ACTIONS = [
   'report.publish',
   'manage.wiki.publish',
   'manage.wiki.read',
+  'manage.wiki.update',
 ] as const;
 
 const OWNER_CONNECTORS = ['chatwork', 'slack', 'trello', 'kagemusha'] as const;

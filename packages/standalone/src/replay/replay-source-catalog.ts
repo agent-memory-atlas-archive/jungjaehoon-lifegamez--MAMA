@@ -382,7 +382,7 @@ export class ReplaySourceCatalog {
     const occurredAt = first === undefined ? startMs : ordered[ordered.length - 1]!.sourceAtMs;
     const ledgerDigest = options.ledgerDigest === undefined ? undefined : [...options.ledgerDigest];
     const endInstructions =
-      "Plan from the window queue before writing: group each work item and its full source lines for a native subagent, ask the subagent for a proposal with status, stage, summary, feedback, roles, evidence and wiki text, then verify every proposal against the source and write the work records yourself; then the wiki (read Home.md first, update the page each change belongs to, create a page only when none fits and list it in Home.md, and write this day's journal daily/YYYY-MM-DD.md), the board slots, and lessons. A Codex subagent is dispatched with the direct spawn_agent tool call, never through exec; a child proposal is not a write receipt. After the writes, compare changed work with current work and settle any duplicate only after reading the evidence.";
+      "Orchestrate this window: note your turn start; decide new work from section C and give it an owner; give each native subagent a disjoint set of work items (source lines, history, current revisions) and the wiki pages it owns to write itself, and wait for every receipt (items with revision before/after, created items, pages updated, what it could not do). A Codex subagent is dispatched with the direct spawn_agent tool call, never through exec. Then read back work.list view=items changedSince=<turn start>, reconcile it with the receipts and settle gaps and duplicates; then write the board slots, the day's journal and Home.md, and lessons.";
     const delta = {
       kind: 'source_delta' as const,
       collector: 'replay',

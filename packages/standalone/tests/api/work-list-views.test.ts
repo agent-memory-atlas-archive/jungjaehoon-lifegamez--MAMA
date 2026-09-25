@@ -163,6 +163,20 @@ describe('progressive work.list views', () => {
     ).toEqual(['commitment-1']);
   });
 
+  it('filters to the items written at or after changedSince', () => {
+    const items = [
+      view(1, { updatedAt: 100 }),
+      view(2, { updatedAt: 200 }),
+      view(3, { updatedAt: 300 }),
+    ];
+    const reader = makeReader(items);
+    const result = runWorkListView({ view: 'items', changedSince: 200 }, context(reader.readWork));
+    expect(result).toMatchObject({ total: 2, returned: 2 });
+    expect(
+      (result.tasks as Array<{ commitmentId: string }>).map((task) => task.commitmentId)
+    ).toEqual(['commitment-2', 'commitment-3']);
+  });
+
   it('rejects a cursor after the commitment read version changes', () => {
     const reader = makeReader(Array.from({ length: 30 }, (_, index) => view(index + 1)));
     const first = runWorkListView({}, context(reader.readWork));
