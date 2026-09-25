@@ -11,6 +11,7 @@ import type {
 } from '@jungjaehoon/mama-core/runtime/runtime';
 import type { NativeTurnResult } from '@jungjaehoon/mama-core/runtime/native-turn';
 import type { SourceDelta } from '../connectors/framework/polling-scheduler.js';
+import type { QueueCandidateScore, QueueLine, WindowQueue } from '../replay/window-queue.js';
 
 export const OWNER_RUNTIME_SESSION_KEY = 'owner:runtime';
 
@@ -254,6 +255,58 @@ function ledgerLines(replay: JsonValue | undefined): string[] {
   );
 }
 
+function queueCandidate(score: QueueCandidateScore): string {
+  return `${score.candidate.title} ${score.confidence.toFixed(2)}`;
+}
+
+function queueLine(line: QueueLine): string {
+  return `[${line.kstTime}] ${line.channelName} · ${line.author ?? '-'} · ${line.observationRef}: ${line.text}`;
+}
+
+function queueLines(lines: readonly QueueLine[]): string[] {
+  return lines.map(queueLine);
+}
+
+/** Render the Jev material without shortening or hiding any source line. */
+export function renderWindowQueue(queue: WindowQueue): string {
+  const lines: string[] = [];
+  lines.push('## A. Matched work');
+  for (const [index, group] of queue.sections.a.entries()) {
+    lines.push(
+      `### A${index + 1}. ${group.candidate.candidate.title} · ${group.candidate.confidence.toFixed(2)} · relevance ${group.relevance.toFixed(2)}`,
+      ...queueLines(group.lines)
+    );
+  }
+  lines.push('## B. Ambiguous candidates');
+  for (const [index, entry] of queue.sections.b.entries()) {
+    lines.push(
+      `### B${index + 1}. relevance ${entry.relevance.toFixed(2)} · top-2 ${entry.candidates.map(queueCandidate).join(' | ')}`,
+      ...queueLines(entry.lines)
+    );
+  }
+  lines.push('## C. Possible new work');
+  for (const [index, entry] of queue.sections.c.entries()) {
+    lines.push(
+      `### C${index + 1}. relevance ${entry.relevance.toFixed(2)}${entry.candidates.length === 0 ? '' : ` · nearest ${entry.candidates.map(queueCandidate).join(' | ')}`}`,
+      ...queueLines(entry.lines)
+    );
+  }
+  lines.push('## Suspected duplicates');
+  for (const [index, pair] of queue.sections.suspectedDuplicates.entries()) {
+    lines.push(
+      `${index + 1}. ${pair.left.commitmentId} ⇔ ${pair.right.commitmentId} · ${pair.confidence.toFixed(2)} · refs ${pair.observationRefs.join(', ')}`
+    );
+  }
+  lines.push('## Unresolved');
+  for (const [index, entry] of queue.sections.unresolved.entries()) {
+    lines.push(
+      `### U${index + 1}. relevance ${entry.relevance.toFixed(2)} · ${entry.reason}`,
+      ...queueLines(entry.lines)
+    );
+  }
+  return lines.join('\n');
+}
+
 function boundedStimulus(row: MailboxRow): string {
   const lines = [
     '## Bounded stimulus',
@@ -282,6 +335,17 @@ function boundedStimulus(row: MailboxRow): string {
       const instructions = replay.endInstructions;
       if (typeof instructions === 'string' && instructions.trim() !== '') {
         lines.push(`window_end_instructions: ${instructions}`);
+      }
+      if (replay.queue !== undefined) {
+        lines.push('window_queue:', renderWindowQueue(replay.queue as unknown as WindowQueue));
+        if (messages !== null) {
+          const work = ledgerLines(replay);
+          lines.push(
+            `current_work (commitmentId | title | stage | assignee | lastEventTime), ${String(work.length)} items:`,
+            ...work
+          );
+        }
+        return lines.join('\n');
       }
     }
     if (messages !== null) {

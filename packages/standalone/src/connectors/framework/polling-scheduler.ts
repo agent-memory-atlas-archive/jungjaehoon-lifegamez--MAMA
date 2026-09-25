@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import type { ConnectorRegistry } from './connector-registry.js';
 import type { ChannelConfig, IConnector, NormalizedItem } from './types.js';
 import type { PendingProjection, RawIndexSink, RawStore } from '../../storage/source-archive.js';
+import type { WindowQueue } from '../../replay/window-queue.js';
 
 export interface SourceObservationRef {
   connector: string;
@@ -40,9 +41,11 @@ export interface SourceDelta {
       commitmentId: string;
       title: string | null;
       stage: string | null;
+      status: string | null;
       assignee: string | null;
       lastEventTime: string | null;
     }[];
+    queue?: WindowQueue;
     endInstructions?: string;
   };
 }

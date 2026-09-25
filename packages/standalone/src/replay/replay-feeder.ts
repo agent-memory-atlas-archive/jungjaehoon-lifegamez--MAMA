@@ -16,6 +16,7 @@ import {
   type ReplayLedgerDigestItem,
   type ReplayWindow,
 } from './replay-source-catalog.js';
+import type { WindowQueue } from './window-queue.js';
 import { ReplayLedger } from './replay-ledger.js';
 import type { SourceDelta } from '../connectors/framework/polling-scheduler.js';
 
@@ -31,7 +32,11 @@ export interface ReplayFeederOptions {
   cursorPath: string;
   ledgerPath: string;
   setReplaySourceEndMs: (value: number | undefined) => void;
-  readLedgerDigest?: () => readonly ReplayLedgerDigestItem[];
+  readLedgerDigest?: (asOfMs?: number) => readonly ReplayLedgerDigestItem[];
+  buildQueue?: (
+    window: ReplayWindow,
+    ledgerDigest: readonly ReplayLedgerDigestItem[] | undefined
+  ) => Promise<WindowQueue>;
   settlePollMs?: number;
   sleep?: (milliseconds: number) => Promise<void>;
 }
@@ -252,8 +257,13 @@ export class ReplayFeeder {
       ) {
         throw new Error('Replay cursor current window does not match the frozen source fence');
       }
+      const ledgerDigest = this.options.readLedgerDigest?.(
+        window.startMs === 0 ? 0 : window.startMs - 1
+      );
+      const queue = await this.options.buildQueue?.(window, ledgerDigest);
       const deltas = this.options.catalog.deltasForWindow(runId, window.startMs, window.endMs, {
-        ledgerDigest: this.options.readLedgerDigest?.(),
+        ...(ledgerDigest === undefined ? {} : { ledgerDigest }),
+        ...(queue === undefined ? {} : { queue }),
       });
       for (const delta of deltas) {
         cursor = await this.deliverDelta(cursor, ledger, window, delta);

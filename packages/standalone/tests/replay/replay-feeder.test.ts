@@ -10,6 +10,7 @@ import {
   type ReplaySourceEvent,
 } from '../../src/replay/replay-source-catalog.js';
 import { ReplayFeeder } from '../../src/replay/replay-feeder.js';
+import type { WindowQueue } from '../../src/replay/window-queue.js';
 
 const HOUR = 60 * 60 * 1_000;
 const start = Date.parse('2026-09-01T00:00:00.000+09:00');
@@ -66,6 +67,7 @@ function harness(
   overrides: {
     onAccept?: (id: string, delta: Parameters<StimulusIntake['acceptSourceDelta']>[0]) => void;
     readInput?: (id: string) => MailboxRow | null;
+    buildQueue?: (window: { startMs: number; endMs: number }) => Promise<WindowQueue>;
   } = {}
 ) {
   const root = mkdtempSync(join(tmpdir(), 'mama-replay-feeder-'));
@@ -99,11 +101,31 @@ function harness(
     setReplaySourceEndMs: (value) => ceilings.push(value),
     settlePollMs: 0,
     sleep: async () => {},
+    ...(overrides.buildQueue === undefined ? {} : { buildQueue: overrides.buildQueue }),
   });
   return { feeder, intake, accepted, ceilings, root };
 }
 
 describe('ReplayFeeder', () => {
+  it('attaches the prepared window queue to the source delta before delivery', async () => {
+    let attached: unknown;
+    const queue = {
+      window: { startMs: start, endMs: start + 12 * HOUR },
+      lines: [],
+      sections: { a: [], b: [], c: [], suspectedDuplicates: [], unresolved: [] },
+    } satisfies WindowQueue;
+    const { feeder } = harness([], {
+      buildQueue: async () => queue,
+      onAccept: (_id, delta) => {
+        attached = delta.replay?.queue;
+      },
+    });
+
+    await feeder.run();
+
+    expect(attached).toEqual(queue);
+  });
+
   it('delivers an empty KST window so its end-of-window work update still runs', async () => {
     let acceptedRefs = -1;
     const { feeder, intake } = harness([], {

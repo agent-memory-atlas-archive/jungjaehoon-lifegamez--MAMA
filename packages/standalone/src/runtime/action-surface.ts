@@ -15,7 +15,10 @@ import type { MemoryScopeRef } from '@jungjaehoon/mama-core/memory/types';
 import { reportActionRegistrations } from '../api/report-actions.js';
 import { createReportPublisher, type ReportStore } from '../api/report-handler.js';
 import { sourceActionRegistrations } from '../api/source-actions.js';
-import { minimalWorkActionRegistrations } from '../api/work-actions.js';
+import {
+  minimalWorkActionRegistrations,
+  workListActionRegistrations,
+} from '../api/work-actions.js';
 import type { StoredSourceReader } from '../api/stored-source-reader.js';
 import { wikiActionRegistrations, type WikiPorts } from '../api/wiki-actions.js';
 import type { BoardSlots } from '../operator/board-read-views.js';
@@ -31,6 +34,7 @@ const OWNER_ACTIONS = [
   'work.show',
   'memory.save',
   'memory.search',
+  'memory.read:provenance',
   'report.read',
   'report.publish',
   'manage.wiki.publish',
@@ -103,8 +107,10 @@ export function createActionSurface(options: ActionSurfaceOptions): ActionSurfac
       'graph.query',
       'memory.save',
       'memory.search',
+      // The cited source messages behind a memory, checked against the caller's source-read
+      // authority: a fact found by memory.search is traced to its evidence in one call.
+      'memory.read:provenance',
       'memory.checkpoint.list',
-      'work.list',
       'work.show',
     ].includes(contract.name)
   );
@@ -134,6 +140,7 @@ export function createActionSurface(options: ActionSurfaceOptions): ActionSurfac
   const registrations = [
     ...core,
     ...sourceActionRegistrations({ stored: options.storedSourceReader }),
+    ...workListActionRegistrations({ knowledge: options.knowledge }),
     ...minimalWorkActionRegistrations({ knowledge: options.knowledge }),
     ...reportActionRegistrations(reportPorts),
     ...wikiActionRegistrations(options.wikiPorts ?? {}),

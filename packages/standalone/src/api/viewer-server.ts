@@ -9,7 +9,7 @@ import type {
   ActionResult,
   WorkGraphPage,
 } from '@jungjaehoon/mama-core';
-import type { CommitmentPage, JudgmentAccess } from '@jungjaehoon/mama-core/knowledge';
+import type { JudgmentAccess } from '@jungjaehoon/mama-core/knowledge';
 import { requireViewerAuth } from './auth-middleware.js';
 import type { ReportStore } from './report-handler.js';
 import {
@@ -23,9 +23,9 @@ import {
   shapeArchiveGraph,
   shapeGraphPage,
   shapeMemorySearch,
-  shapeOperatorTasks,
-  shapeTaskDetail,
-  shapeTaskList,
+  shapeOperatorTasksFromItems,
+  shapeWorkListDetail,
+  shapeWorkListItems,
   type RevisionGraphRead,
   type ViewerEvidence,
   type ArchiveGraphResponse,
@@ -283,11 +283,6 @@ function wikiPage(root: string, path: string): Record<string, unknown> {
   };
 }
 
-function taskCount(page: CommitmentPage): number {
-  return shapeOperatorTasks(page).tasks.filter((task) => task.auto_created && !task.confirmed)
-    .length;
-}
-
 function archiveGraphPage(pages: WorkGraphPage[], nextCursor: string | null): WorkGraphPage {
   const nodes = new Map<string, WorkGraphPage['nodes'][number]>();
   const edges = new Map<string, WorkGraphPage['edges'][number]>();
@@ -306,6 +301,18 @@ function archiveGraphPage(pages: WorkGraphPage[], nextCursor: string | null): Wo
     snapshot: last.snapshot,
     nextCursor,
   };
+}
+
+const KST_OFFSET_MS = 9 * 60 * 60 * 1_000;
+
+function kstStamp(ms: number): string {
+  return `${new Date(ms + KST_OFFSET_MS).toISOString().slice(0, 16).replace('T', ' ')} KST`;
+}
+
+function edgeLabelSummary(node: WorkGraphPage['nodes'][number]): string {
+  if (node.data.kind !== 'memory') return node.label;
+  const at = node.data.recordedAt ? kstStamp(node.data.recordedAt) : '';
+  return `${at} ${node.data.topic}: ${node.data.summary}`;
 }
 
 function graphNodeKey(node: WorkGraphPage['nodes'][number]): string {
@@ -427,41 +434,76 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
   };
 
   const listTasks = async (params: URLSearchParams): Promise<unknown> => {
-    const limit = parseLimit(params, 50, 200);
+    const limit = parseLimit(params, 50, 50);
     const status = params.get('status') ?? undefined;
     const sourceChannel = params.get('source_channel') ?? undefined;
-    const page = (await callAction('work.list', { history: 'all', limit })) as CommitmentPage;
+    const page = await callAction('work.list', {
+      view: 'items',
+      limit,
+      ...(status === undefined ? {} : { status }),
+    });
+    const shaped = shapeOperatorTasksFromItems(page, { status: undefined, sourceChannel });
     return {
-      ...shapeOperatorTasks(page, { status, sourceChannel, limit }),
-      ...(page.coverage.complete ? {} : { coverage: page.coverage }),
+      tasks: shaped.tasks,
+      ...(shaped.nextCursor === null
+        ? {}
+        : { nextCursor: shaped.nextCursor, coverage: shaped.coverage }),
     };
   };
 
   const legacyTaskList = async (params: URLSearchParams): Promise<unknown> => {
-    const page = (await callAction('work.list', {
-      history: 'current',
-      limit: parseLimit(params, 50, 100),
-    })) as CommitmentPage;
-    return shapeTaskList(page);
+    const page = await callAction('work.list', {
+      view: 'items',
+      limit: parseLimit(params, 50, 50),
+    });
+    return shapeWorkListItems(page);
   };
 
   const legacyTaskDetail = async (commitmentId: string): Promise<unknown> => {
     if (commitmentId.trim() === '') {
       throw new ViewerHttpError(400, 'INVALID_COMMITMENT_ID', 'commitment id must be nonblank');
     }
-    const page = (await callAction('work.show', {
-      commitmentId,
-      history: 'all',
-    })) as CommitmentPage;
-    const item = page.items[0];
-    if (!item?.history)
+    const detail = await callAction('work.list', {
+      view: 'detail',
+      ids: [commitmentId],
+    });
+    if (
+      detail === null ||
+      typeof detail !== 'object' ||
+      Array.isArray(detail) ||
+      !Array.isArray((detail as { tasks?: unknown }).tasks)
+    ) {
+      throw new ViewerHttpError(502, 'WORK_DETAIL_INVALID', 'work.list returned no detail tasks');
+    }
+    const item = (detail as { tasks: unknown[] }).tasks[0];
+    if (item === undefined || item === null || typeof item !== 'object' || Array.isArray(item))
+      throw new ViewerHttpError(
+        404,
+        'NOT_FOUND',
+        'work.list returned no detail for the commitment'
+      );
+    const history = (item as { history?: unknown }).history;
+    if (!Array.isArray(history))
       throw new ViewerHttpError(
         502,
         'WORK_HISTORY_MISSING',
-        'work.show returned no revision history'
+        'work.list detail returned no revision history'
       );
     const reads = new Map<string, RevisionGraphRead>();
-    for (const revision of item.history) {
+    for (const rawRevision of history) {
+      if (
+        rawRevision === null ||
+        typeof rawRevision !== 'object' ||
+        Array.isArray(rawRevision) ||
+        (rawRevision as { recordRef?: unknown }).recordRef === undefined
+      ) {
+        throw new ViewerHttpError(
+          502,
+          'WORK_HISTORY_INVALID',
+          'work.list detail history is invalid'
+        );
+      }
+      const revision = rawRevision as { recordRef: { kind: string; id: string } };
       const detail = (await callAction('graph.query', {
         view: 'detail',
         seeds: [revision.recordRef],
@@ -497,7 +539,7 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
       }
       reads.set(`${revision.recordRef.kind}:${revision.recordRef.id}`, { record, evidence });
     }
-    return shapeTaskDetail(page, reads);
+    return shapeWorkListDetail(detail, reads);
   };
 
   const legacyGraph = async (params: URLSearchParams): Promise<unknown> => {
@@ -520,13 +562,11 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
   };
 
   const operatorSummary = async (): Promise<unknown> => {
-    const page = (await callAction('work.list', {
-      history: 'current',
-      limit: 100,
-    })) as CommitmentPage;
+    const page = await callAction('work.list', { view: 'items', limit: 50 });
+    const tasks = shapeOperatorTasksFromItems(page).tasks;
     return {
       report: { actionRequired: null },
-      tasks: { unconfirmed: taskCount(page) },
+      tasks: { unconfirmed: tasks.filter((task) => task.auto_created && !task.confirmed).length },
       triggers: { active: null, disabled: null, fired: null, succeeded: null, failed: null },
       reason: 'trigger machinery and report slots are not available in this build',
     };
@@ -572,7 +612,54 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
     })) as WorkGraphPage;
     const node = page.nodes.find((candidate) => graphNodeKey(candidate) === id);
     if (!node) throw new ViewerHttpError(404, 'NOT_FOUND', 'Decision not found');
-    return { node: mapArchiveGraphNode(node) };
+    const mapped = mapArchiveGraphNode(node);
+    // The graph carries references only; the detail reads what they point at through the
+    // same owner actions the agent uses, so a fact's history is readable, not just its ids.
+    if (node.data.kind === 'observation') {
+      const read = (await callAction('source.read', {
+        source: node.data.connector,
+        observationRef: node.ref.id,
+      })) as { channel?: string; author?: string; sourceAt?: number; content?: string };
+      const when = typeof read.sourceAt === 'number' ? kstStamp(read.sourceAt) : '';
+      return {
+        node: {
+          ...mapped,
+          topic: read.channel ?? mapped.topic,
+          decision: `**${when} · ${read.channel ?? ''} · ${read.author ?? ''}**\n\n${read.content ?? ''}`,
+        },
+      };
+    }
+    if (node.data.kind === 'memory') {
+      const provenance = (await callAction('memory.read:provenance', {
+        memory_id: node.ref.id,
+      })) as {
+        events?: Array<{ channel: string | null; observedAt: string | null; excerpt: string }>;
+      };
+      const earlier = page.edges
+        .filter(
+          (edge) =>
+            `${edge.resolvedFrom.kind}:${edge.resolvedFrom.id}` === id &&
+            edge.resolvedTo.kind === 'memory'
+        )
+        .map((edge) =>
+          page.nodes.find(
+            (candidate) =>
+              graphNodeKey(candidate) === `${edge.resolvedTo.kind}:${edge.resolvedTo.id}`
+          )
+        )
+        .filter((candidate) => candidate !== undefined && candidate.data.kind === 'memory')
+        .map((candidate) => `- ${edgeLabelSummary(candidate!)}`);
+      const evidence = (provenance.events ?? []).map(
+        (event) => `- ${event.observedAt ?? ''} ${event.channel ?? ''}: ${event.excerpt}`
+      );
+      const sections = [
+        mapped.reasoning ?? '',
+        evidence.length > 0 ? `**Evidence**\n${evidence.join('\n')}` : '',
+        earlier.length > 0 ? `**Earlier records**\n${earlier.join('\n')}` : '',
+      ].filter((section) => section !== '');
+      return { node: { ...mapped, reasoning: sections.join('\n\n') } };
+    }
+    return { node: mapped };
   };
 
   const graphSimilar = async (params: URLSearchParams): Promise<unknown> => {

@@ -28,6 +28,13 @@ interface VerificationResult {
   board: { slotCount: number };
   wiki: { pageCount: number };
   lessons: { count: number; withDerivedFrom: number };
+  subagentWrites: {
+    childModelRuns: number;
+    childTraceCount: number;
+    childWriteTraces: number;
+    parentWriteTraces: number;
+    writesWithoutModelRun: number;
+  };
 }
 
 afterEach(() => {
@@ -184,10 +191,30 @@ describe('September replay verification', () => {
       CREATE TABLE twin_edges (
         subject_id TEXT NOT NULL,
         edge_type TEXT NOT NULL
+      );
+      CREATE TABLE model_runs (
+        model_run_id TEXT PRIMARY KEY,
+        parent_model_run_id TEXT
+      );
+      CREATE TABLE tool_traces (
+        model_run_id TEXT,
+        tool_name TEXT
       )
     `);
     mama.prepare('INSERT INTO observation_versions (observation_id) VALUES (?)').run('obs-1');
     mama.prepare('INSERT INTO commitments (commitment_id) VALUES (?)').run('commitment-1');
+    mama
+      .prepare('INSERT INTO model_runs (model_run_id, parent_model_run_id) VALUES (?, ?)')
+      .run('model-parent', null);
+    mama
+      .prepare('INSERT INTO model_runs (model_run_id, parent_model_run_id) VALUES (?, ?)')
+      .run('model-child', 'model-parent');
+    mama
+      .prepare('INSERT INTO tool_traces (model_run_id, tool_name) VALUES (?, ?)')
+      .run('model-parent', 'work.revise');
+    mama
+      .prepare('INSERT INTO tool_traces (model_run_id, tool_name) VALUES (?, ?)')
+      .run('model-child', 'work.list');
     mama
       .prepare(
         'INSERT INTO decisions (id, record_kind, event_datetime, source_refs_json, payload_json) VALUES (?, ?, ?, ?, ?)'
@@ -301,5 +328,12 @@ describe('September replay verification', () => {
     expect(result.board.slotCount).toBe(1);
     expect(result.wiki.pageCount).toBe(1);
     expect(result.lessons).toEqual({ count: 0, withDerivedFrom: 0 });
+    expect(result.subagentWrites).toEqual({
+      childModelRuns: 1,
+      childTraceCount: 1,
+      childWriteTraces: 0,
+      parentWriteTraces: 1,
+      writesWithoutModelRun: 0,
+    });
   });
 });

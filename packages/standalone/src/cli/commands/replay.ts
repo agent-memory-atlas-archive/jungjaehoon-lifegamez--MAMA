@@ -10,6 +10,8 @@ import {
   createReplaySourceCatalog,
   type ReplayLedgerDigestItem,
 } from '../../replay/replay-source-catalog.js';
+import { createJevClient } from '../../replay/jev-client.js';
+import { buildWindowQueue, trelloCardsFromEvents } from '../../replay/window-queue.js';
 
 export interface ReplayCommandOptions {
   daemon?: Omit<DaemonBootOptions, 'mode' | 'replay'>;
@@ -38,7 +40,10 @@ function requireMailbox(context: DaemonReplayContext) {
   return mailbox;
 }
 
-function replayLedgerDigest(context: DaemonReplayContext): readonly ReplayLedgerDigestItem[] {
+function replayLedgerDigest(
+  context: DaemonReplayContext,
+  asOfMs?: number
+): readonly ReplayLedgerDigestItem[] {
   const result: ReplayLedgerDigestItem[] = [];
   let cursor: string | undefined;
   for (;;) {
@@ -46,18 +51,20 @@ function replayLedgerDigest(context: DaemonReplayContext): readonly ReplayLedger
       {
         history: 'current',
         limit: 100,
+        ...(asOfMs === undefined ? {} : { asOf: asOfMs }),
         ...(cursor === undefined ? {} : { cursor }),
       },
       context.owner.surface.ownerAccess
     );
     for (const item of page.items) {
-      if (item.withdrawn) continue;
       const values = item.values as Record<string, unknown>;
       const text = (value: unknown): string | null => (typeof value === 'string' ? value : null);
+      const status = text(values.status) ?? (item.withdrawn ? 'cancelled' : null);
       result.push({
         commitmentId: item.commitmentId,
         title: text(values.title),
         stage: text(values.stage),
+        status,
         assignee: text(values.assignee) ?? text(values.assigneeText),
         lastEventTime: text(values.lastEventTime),
       });
@@ -110,7 +117,30 @@ export async function runReplay(options: ReplayCommandOptions = {}): Promise<Rep
         cursorPath,
         ledgerPath,
         setReplaySourceEndMs: context.owner.setReplaySourceEndMs,
-        readLedgerDigest: () => replayLedgerDigest(context),
+        readLedgerDigest: (asOfMs) => replayLedgerDigest(context, asOfMs),
+        buildQueue: async (window, ledgerDigest) => {
+          const jev = createJevClient({
+            keyFile: context.config.jev.keyFile,
+            vocabFile: context.config.jev.vocabFile,
+          });
+          return buildWindowQueue({
+            startMs: window.startMs,
+            endMs: window.endMs,
+            events: catalog.eventsForWindow(window.startMs, window.endMs),
+            workItems: (ledgerDigest ?? []).map((item) => ({
+              commitmentId: item.commitmentId,
+              title: item.title,
+              stage: item.stage,
+              status: item.status,
+            })),
+            // Card facts as of the window end: a replayed day must not see later activity.
+            trelloCards: trelloCardsFromEvents(
+              catalog.allEvents().filter((event) => event.sourceAtMs < window.endMs)
+            ),
+            vocabulary: jev.vocabulary,
+            jev,
+          });
+        },
       });
       const preflight = feeder.preflight();
       context.logger.info(

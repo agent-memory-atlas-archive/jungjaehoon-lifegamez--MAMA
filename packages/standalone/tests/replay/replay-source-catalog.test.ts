@@ -9,6 +9,7 @@ import {
   readReplaySourceEvents,
   type ReplaySourceEvent,
 } from '../../src/replay/replay-source-catalog.js';
+import type { WindowQueue } from '../../src/replay/window-queue.js';
 
 const HOUR = 60 * 60 * 1_000;
 const start = Date.parse('2026-09-01T00:00:00.000+09:00');
@@ -95,12 +96,19 @@ describe('ReplaySourceCatalog', () => {
           commitmentId: 'commitment-1',
           title: 'Current item',
           stage: 'active',
+          status: 'pending',
           assignee: 'worker',
           lastEventTime: new Date(start).toISOString(),
         },
       ],
+      queue: {
+        window: { startMs: start, endMs: start + 12 * HOUR },
+        lines: [],
+        sections: { a: [], b: [], c: [], suspectedDuplicates: [], unresolved: [] },
+      } satisfies WindowQueue,
     });
     expect(withLedger[0]?.replay?.ledgerDigest).toHaveLength(1);
+    expect(withLedger[0]?.replay?.queue?.window.startMs).toBe(start);
   });
 
   it('keeps descriptors immutable and rejects an event outside its declared range', () => {

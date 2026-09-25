@@ -330,3 +330,36 @@ The implementation writes raw/index data during import only. Replay is the owner
   promotion; subagent writes checked by trace, not blocked; candidates are the as-of universe; P5
   fixed to three arms on one snapshot with owner-confirmed labels. Added P0 (progressive work.list):
   68 items = 62k characters current / 165k with history per call.
+
+- P0 implemented: `work.list` now exposes overview/items/detail over `knowledge.readWork`, with
+  bounded 25/50 pages, filter-bound read-version cursors, four-id detail, basis/history and text
+  continuation. Evidence: standalone full suite 67 files / 376 tests; viewer routes now dispatch items/detail.
+- P1 implemented: typed Jev client carries configured key/vocabulary paths, retries 429/529 and
+  raises ref-bearing incomplete batches; `jev.keyFile` and `jev.vocabFile` default under the owner
+  home without logging key contents. Evidence: injected-fetch success/retry/incomplete tests pass.
+- P2 implemented: queue generation keeps source identity only, asks Jev for adjacent chunking/relevance/
+  candidates/duplicate pairs, uses as-of open+closed work and Trello time/embedding candidates, and
+  surfaces missing verdicts with observation refs. Evidence: injected Jev/embedder queue tests pass.
+- P3 implemented: replay deltas carry the queue and stimulus renders A/B/C, suspected duplicates and
+  unresolved sections with complete KST lines; replay feeder and source-catalog tests pin the payload
+  and renderer. Evidence: replay/runtime targeted tests and the full standalone suite pass.
+- P4 implemented: standing/window instructions require queue planning, direct `spawn_agent` proposals,
+  owner verification/writes, and trace-based child-write checks in `verify-september.mjs`. Live Jev,
+  daemon, replay and live subagent trace runs were intentionally not performed under the brief.
+
+## Window pipeline implementation review — 2026-09-25
+
+- Codex implemented P0–P4 in worktree rebuild/window-pipeline (standalone 376 tests). Supervisor review
+  fixed: question wording moved back into code as in the archive (the owner vocabulary notes travel as
+  state.note; Codex had required note keys the owner file does not have); candidate questions now name
+  their candidate (all were identical); adjacent pairs batched per channel and pooled; embeddings cached
+  once per window; work candidates narrowed to embedding top-8 plus exact hints; Trello card facts built
+  as of the window end (they read later activity) and from the imported action shape (data.card,
+  listAfter; none were built); no default 'pending' in the digest; the Jev request body carried the whole
+  owner vocabulary as `vocab`, which the API rejected with HTTP 400 — removed (the archive sent model,
+  state, questions only).
+- Live 9/2 queue (read-only DB, real Jev; `queue-0902-p2.json`): 163 lines in 12 s; all 10 hand-simulation
+  movements land in A, B or C. With the archive pair question ("same single work item?") C held 52
+  mostly single lines; asking whether B continues A's topic gave A 7 / B 4 / C 17 / unresolved 10.
+- P4 additions (relations, provenance, viewer source text, daily journal, Home.md-first wiki, no host
+  index) implemented with tests; standalone 378 tests.

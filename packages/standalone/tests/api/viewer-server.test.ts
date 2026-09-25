@@ -22,19 +22,56 @@ function completed(data: unknown): ActionResult {
   return { status: 'completed', data };
 }
 
-function workPage() {
+function workItems() {
   return {
-    items: [
+    view: 'items',
+    tasks: [
       {
+        id: 1,
         commitmentId: 'commitment-1',
-        rowId: 1,
         revision: 1,
-        latestJudgmentRef: { kind: 'memory', id: 'memory-1' },
-        values: { title: 'work title', project: 'project-ref', stage: 'review' },
-        withdrawn: false,
-        basis: [{ kind: 'memory', id: 'memory-1' }],
-        createdAt: 1,
+        title: 'work title',
+        project: 'project-ref',
+        stage: 'review',
+        status: 'pending',
+        priority: 'normal',
+        temporal_state: 'unscheduled',
         updatedAt: 2,
+      },
+    ],
+    total: 1,
+    returned: 1,
+    nextCursor: null,
+    observedAt: new Date(2).toISOString(),
+    readVersion: 'read-version',
+  };
+}
+
+function workDetail() {
+  return {
+    view: 'detail',
+    tasks: [
+      {
+        id: 1,
+        commitmentId: 'commitment-1',
+        revision: 1,
+        title: {
+          value: 'work title',
+          offset: 0,
+          limit: 1_000,
+          total: 10,
+          nextOffset: null,
+          complete: true,
+        },
+        project: 'project-ref',
+        stage: 'review',
+        status: 'pending',
+        priority: 'normal',
+        temporal_state: 'unscheduled',
+        updatedAt: 2,
+        createdAt: 1,
+        values: { title: 'work title' },
+        basis: [{ kind: 'memory', id: 'memory-1' }],
         history: [
           {
             revision: 1,
@@ -48,8 +85,8 @@ function workPage() {
         ],
       },
     ],
-    nextCursor: null,
-    coverage: { returned: 1, total: 1, complete: true, reasons: [] },
+    missingIds: [],
+    observedAt: new Date(2).toISOString(),
   };
 }
 
@@ -116,8 +153,8 @@ describe('viewer HTTP server', () => {
     await withServer(
       async (call) => {
         expect(call.action).toBe('work.list');
-        expect(call.input).toEqual({ history: 'current', limit: 5 });
-        return completed(workPage());
+        expect(call.input).toEqual({ view: 'items', limit: 5 });
+        return completed(workItems());
       },
       async (server, calls) => {
         const response = await makeRequest(server, '/api/viewer/tasks?limit=5');
@@ -140,12 +177,9 @@ describe('viewer HTTP server', () => {
   it('loads a task history, reads graph evidence, and cites source.read observations', async () => {
     await withServer(
       async (call) => {
-        if (call.action === 'work.show') {
-          expect(call.input).toEqual({
-            commitmentId: 'commitment-1',
-            history: 'all',
-          });
-          return completed(workPage());
+        if (call.action === 'work.list') {
+          expect(call.input).toEqual({ view: 'detail', ids: ['commitment-1'] });
+          return completed(workDetail());
         }
         if (call.action === 'graph.query') {
           const input = call.input as Record<string, unknown>;
@@ -229,8 +263,10 @@ describe('viewer HTTP server', () => {
         const response = await makeRequest(server, '/api/viewer/tasks/commitment-1');
         expect(response.status).toBe(200);
         const body = JSON.parse(response.body) as {
+          title: string | null;
           revisions: Array<{ evidence: Array<{ observationRef: string; content: string }> }>;
         };
+        expect(body.title).toBe('work title');
         expect(body.revisions[0]?.evidence).toEqual([
           {
             observationRef: 'observation-1',
@@ -242,7 +278,7 @@ describe('viewer HTTP server', () => {
           },
         ]);
         expect(calls.map((call) => call.action)).toEqual([
-          'work.show',
+          'work.list',
           'graph.query',
           'graph.query',
           'source.read',
