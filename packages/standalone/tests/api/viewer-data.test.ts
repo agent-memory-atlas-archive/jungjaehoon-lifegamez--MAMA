@@ -4,6 +4,7 @@ import type { WorkGraphPage } from '@jungjaehoon/mama-core';
 import {
   shapeGraphPage,
   shapeMemorySearch,
+  shapeOperatorTasks,
   shapeTaskDetail,
   shapeTaskList,
   type RevisionGraphRead,
@@ -181,6 +182,7 @@ describe('viewer data shaping', () => {
             {
               observationRef: 'observation-1',
               source: 'connector',
+              channel: 'channel-1',
               content: 'preserved evidence',
               sourceAt: 1_700_000_000_150,
               observedAt: 1_700_000_000_160,
@@ -193,6 +195,8 @@ describe('viewer data shaping', () => {
     const result = shapeTaskDetail(work, reads);
 
     expect(result.revisions.map((revision) => revision.revision)).toEqual([1, 2]);
+    expect(result.createdAt).toBe(1_700_000_000_100);
+    expect(result.updatedAt).toBe(1_700_000_000_200);
     expect(result.revisions[0]).toMatchObject({
       summary: 'created the work',
       reasoning: 'reason for create',
@@ -205,7 +209,57 @@ describe('viewer data shaping', () => {
       feedback: 'feedback text',
       roles: [{ personRef: 'person-ref', role: 'reviewer', confirmed: false }],
       files: [{ locator: 'file-ref', version: 'v2', hash: 'hash-v2' }],
-      evidence: [{ observationRef: 'observation-1', content: 'preserved evidence' }],
+      evidence: [
+        {
+          observationRef: 'observation-1',
+          channel: 'channel-1',
+          content: 'preserved evidence',
+        },
+      ],
+    });
+  });
+
+  it('adds the commitment id and event-time bounds to the archive operator task shape', () => {
+    const result = shapeOperatorTasks(
+      page([
+        {
+          commitmentId: 'commitment-1',
+          rowId: 7,
+          revision: 2,
+          latestJudgmentRef: { kind: 'memory', id: 'memory-2' },
+          values: { title: 'work title' },
+          withdrawn: false,
+          basis: [],
+          createdAt: 10,
+          updatedAt: 20,
+          history: [
+            {
+              revision: 2,
+              operation: 'revise',
+              recordRef: { kind: 'memory', id: 'memory-2' },
+              set: {},
+              clear: [],
+              eventDatetime: 300,
+              createdAt: 301,
+            },
+            {
+              revision: 1,
+              operation: 'create',
+              recordRef: { kind: 'memory', id: 'memory-1' },
+              set: { title: 'work title' },
+              clear: [],
+              eventDatetime: 100,
+              createdAt: 101,
+            },
+          ],
+        },
+      ])
+    );
+
+    expect(result.tasks[0]).toMatchObject({
+      commitment_id: 'commitment-1',
+      created_at: 100,
+      updated_at: 300,
     });
   });
 

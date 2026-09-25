@@ -31,6 +31,7 @@ export type TaskTemporalState =
 
 export interface OperatorTask {
   id: number;
+  commitment_id: string;
   title: string;
   status: TaskStatus;
   priority: TaskPriority;
@@ -51,6 +52,46 @@ export interface OperatorTask {
   confirmed: boolean;
   created_at: number;
   updated_at: number;
+}
+
+export interface OperatorTaskEvidence {
+  observationRef: string;
+  source: string;
+  channel?: string | null;
+  sourceAt?: number | null;
+  observedAt?: number | null;
+  content: string;
+}
+
+export interface OperatorTaskRevision {
+  revision: number;
+  operation: 'create' | 'revise' | 'withdraw';
+  eventTime: number;
+  eventTimeSource: 'event' | 'recorded';
+  recordedAt: number;
+  summary: string | null;
+  reasoning: string | null;
+  change: Record<string, unknown>;
+  clear: string[];
+  feedback: string | null;
+  roles: unknown[] | null;
+  files: unknown[] | null;
+  evidence: OperatorTaskEvidence[];
+}
+
+export interface OperatorTaskDetail {
+  commitmentId: string;
+  rowId: number;
+  revision: number;
+  title: string | null;
+  project: string | null;
+  stage: string | null;
+  assignee: string | null;
+  lastEventTime: string | number | null;
+  updatedAt: number;
+  createdAt: number;
+  withdrawn: boolean;
+  revisions: OperatorTaskRevision[];
 }
 
 export interface TaskPatch {
@@ -83,6 +124,8 @@ export const api = {
     params.set('limit', String(filters.limit ?? 50));
     return request<{ tasks: OperatorTask[] }>(`/api/operator/tasks?${params.toString()}`);
   },
+  getTaskDetail: (commitmentId: string) =>
+    request<OperatorTaskDetail>(`/api/viewer/tasks/${encodeURIComponent(commitmentId)}`),
   updateTask: (id: number, patch: TaskPatch) =>
     request<{ ok: true; task: OperatorTask }>(`/api/operator/tasks/${id}`, {
       method: 'PATCH',

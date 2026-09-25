@@ -117,6 +117,11 @@ export default function Tasks({
   const tasks = query.data?.tasks ?? [];
   const selectedTask =
     selectedTaskId === null ? null : (tasks.find((task) => task.id === selectedTaskId) ?? null);
+  const taskDetailQuery = useQuery({
+    queryKey: ['operatorTaskDetail', selectedTask?.commitment_id],
+    queryFn: () => api.getTaskDetail(selectedTask!.commitment_id),
+    enabled: selectedTask !== null,
+  });
 
   // A selected id the loaded page does not answer (outside the newest 50, moved
   // out by a status filter or a refetch, deleted) must not leave a phantom
@@ -269,6 +274,10 @@ export default function Tasks({
       {selectedTask && (
         <TaskDrawer
           task={selectedTask}
+          detail={taskDetailQuery.data}
+          detailError={
+            taskDetailQuery.error instanceof Error ? taskDetailQuery.error.message : null
+          }
           now={now}
           opener={drawerOpener}
           fallbackFocusRef={firstFilterRef}

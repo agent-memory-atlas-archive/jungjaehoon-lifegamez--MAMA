@@ -228,7 +228,7 @@ describe('archive-compatible viewer routes', () => {
     await withServer(
       async (call) => {
         expect(call.action).toBe('work.list');
-        expect(call.input).toEqual({ history: 'current', limit: 50 });
+        expect(call.input).toEqual({ history: 'all', limit: 50 });
         return completed(workPage());
       },
       async (server) => {
@@ -238,6 +238,7 @@ describe('archive-compatible viewer routes', () => {
           tasks: [
             {
               id: 7,
+              commitment_id: 'commitment-1',
               title: 'work title',
               status: 'in_progress',
               priority: 'high',

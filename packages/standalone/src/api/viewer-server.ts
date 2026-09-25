@@ -276,6 +276,7 @@ function sourceReadEvidence(data: unknown, source: string, observationRef: strin
   return {
     observationRef,
     source,
+    ...(typeof row.channel === 'string' ? { channel: row.channel } : {}),
     sourceAt: typeof row.sourceAt === 'number' ? row.sourceAt : null,
     observedAt: typeof row.observedAt === 'number' ? row.observedAt : null,
     content: row.content,
@@ -336,7 +337,7 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
     const limit = parseLimit(params, 50, 200);
     const status = params.get('status') ?? undefined;
     const sourceChannel = params.get('source_channel') ?? undefined;
-    const page = (await callAction('work.list', { history: 'current', limit })) as CommitmentPage;
+    const page = (await callAction('work.list', { history: 'all', limit })) as CommitmentPage;
     return {
       ...shapeOperatorTasks(page, { status, sourceChannel, limit }),
       ...(page.coverage.complete ? {} : { coverage: page.coverage }),
@@ -396,6 +397,8 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
           view: 'stored',
           detail: 'full',
           observationRef: candidate.ref.id,
+          content_offset: 0,
+          content_limit: 4_000,
         });
         evidence.push(sourceReadEvidence(source, candidate.source, candidate.ref.id));
       }

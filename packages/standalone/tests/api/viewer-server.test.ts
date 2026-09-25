@@ -211,10 +211,13 @@ describe('viewer HTTP server', () => {
           expect(call.input).toMatchObject({
             source: 'connector',
             observationRef: 'observation-1',
+            content_offset: 0,
+            content_limit: 4000,
           });
           return completed({
             source: 'connector',
             observationRef: 'observation-1',
+            channel: 'channel-1',
             sourceAt: 1,
             observedAt: 2,
             content: 'preserved evidence',
@@ -232,6 +235,7 @@ describe('viewer HTTP server', () => {
           {
             observationRef: 'observation-1',
             source: 'connector',
+            channel: 'channel-1',
             sourceAt: 1,
             observedAt: 2,
             content: 'preserved evidence',

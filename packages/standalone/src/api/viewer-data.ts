@@ -27,6 +27,7 @@ export interface ViewerTaskList {
 export interface ViewerEvidence {
   observationRef: string;
   source: string;
+  channel?: string | null;
   sourceAt?: number | null;
   observedAt?: number | null;
   content: string;
@@ -55,6 +56,7 @@ export interface ViewerRevision {
 }
 
 export interface ViewerTaskDetail extends ViewerTaskSummary {
+  createdAt: number;
   revisions: ViewerRevision[];
 }
 
@@ -159,7 +161,12 @@ export function shapeTaskDetail(
       evidence: read?.evidence ?? [],
     };
   });
-  return { ...taskSummary(item), revisions };
+  return {
+    ...taskSummary(item),
+    createdAt: revisions[0]?.eventTime ?? item.createdAt,
+    updatedAt: revisions[revisions.length - 1]?.eventTime ?? item.updatedAt,
+    revisions,
+  };
 }
 
 export function shapeGraphPage(
@@ -189,6 +196,7 @@ export function shapeMemorySearch(data: unknown): ViewerMemorySearchResult {
 
 export interface ArchiveOperatorTask {
   id: number;
+  commitment_id: string;
   title: string;
   status: 'pending' | 'in_progress' | 'review' | 'blocked' | 'done' | 'cancelled';
   priority: 'high' | 'normal' | 'low';
@@ -310,8 +318,25 @@ function temporalState(
   return 'date_overdue';
 }
 
+function operatorTaskEventTimes(item: CommitmentView): { createdAt: number; updatedAt: number } {
+  if (item.history === undefined || item.history.length === 0) {
+    return { createdAt: item.createdAt, updatedAt: item.updatedAt };
+  }
+  const revisions = [...item.history].sort(
+    (left, right) =>
+      (left.eventDatetime ?? left.createdAt) - (right.eventDatetime ?? right.createdAt) ||
+      left.revision - right.revision
+  );
+  return {
+    createdAt: revisions[0]!.eventDatetime ?? revisions[0]!.createdAt,
+    updatedAt:
+      revisions[revisions.length - 1]!.eventDatetime ?? revisions[revisions.length - 1]!.createdAt,
+  };
+}
+
 function archiveTask(item: CommitmentView, now: number): ArchiveOperatorTask {
   const values = recordValue(item.values);
+  const eventTimes = operatorTaskEventTimes(item);
   const status = archiveStatus(values.status, item.withdrawn);
   const dueDate = stringValue(values.deadline);
   const dueAt = normalizeDueAt(values.dueAt);
@@ -322,6 +347,7 @@ function archiveTask(item: CommitmentView, now: number): ArchiveOperatorTask {
       : null;
   return {
     id: item.rowId,
+    commitment_id: item.commitmentId,
     title: stringValue(values.title) ?? '',
     status,
     priority: archivePriority(values.priority),
@@ -335,8 +361,8 @@ function archiveTask(item: CommitmentView, now: number): ArchiveOperatorTask {
     latest_event: stringValue(values.latestEvent ?? values.latest_event),
     auto_created: values.autoCreated === true || values.auto_created === true,
     confirmed: values.confirmed === true,
-    created_at: item.createdAt,
-    updated_at: item.updatedAt,
+    created_at: eventTimes.createdAt,
+    updated_at: eventTimes.updatedAt,
   };
 }
 

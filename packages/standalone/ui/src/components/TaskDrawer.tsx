@@ -1,5 +1,11 @@
 import { useEffect, useRef, type RefObject } from 'react';
-import type { OperatorTask, TaskStatus } from '../api/client';
+import type {
+  OperatorTask,
+  OperatorTaskDetail,
+  OperatorTaskEvidence,
+  OperatorTaskRevision,
+  TaskStatus,
+} from '../api/client';
 import DrawerDetail from './DrawerDetail';
 import { shouldShowModal } from '../lib/dialog-state';
 import { lockScrollBehind } from '../lib/scroll-lock';
@@ -17,13 +23,15 @@ const STATUS_CLASSES: Record<TaskStatus, string> = {
 
 /**
  * What the drawer says when the ledger row carries no evidence link. The
- * drawer is bounded on purpose: it shows the fields the task row already
- * persists and never fetches raw channel messages behind them.
+ * drawer is bounded on purpose: it shows the task row and the bounded
+ * source.read observations cited by its revisions.
  */
 const NO_SOURCE = 'No linked source recorded';
 
 interface TaskDrawerProps {
   task: OperatorTask;
+  detail?: OperatorTaskDetail;
+  detailError?: string | null;
   now: number;
   opener: HTMLElement | null;
   fallbackFocusRef: RefObject<HTMLElement | null>;
@@ -34,8 +42,88 @@ function absoluteTime(timestamp: number): string {
   return new Date(timestamp).toLocaleString();
 }
 
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  return [
+    ...new Set(
+      values.filter(
+        (value): value is string => value !== undefined && value !== null && value !== ''
+      )
+    ),
+  ];
+}
+
+function uniqueEvidence(evidence: OperatorTaskEvidence[]): OperatorTaskEvidence[] {
+  const seen = new Set<string>();
+  return evidence.filter((item) => {
+    if (seen.has(item.observationRef)) return false;
+    seen.add(item.observationRef);
+    return true;
+  });
+}
+
+function patchText(revision: OperatorTaskRevision): string | null {
+  const set = Object.entries(revision.change).map(([key, value]) => {
+    const serialized = JSON.stringify(value);
+    return `${key}: ${serialized === undefined ? String(value) : serialized}`;
+  });
+  const clear = revision.clear.map((key) => `${key}: cleared`);
+  const parts = [...set, ...clear];
+  return parts.length > 0 ? parts.join('; ') : null;
+}
+
+function EvidenceBlock({ evidence }: { evidence: OperatorTaskEvidence }) {
+  return (
+    <div className="rounded-lg border border-border bg-surface-secondary px-3 py-2">
+      <div className="text-[11px] font-semibold text-text-secondary">
+        {evidence.observationRef}
+        {evidence.channel || evidence.source ? ` · ${evidence.channel ?? evidence.source}` : ''}
+      </div>
+      <p className="mt-1 whitespace-pre-wrap break-words text-xs text-text">{evidence.content}</p>
+    </div>
+  );
+}
+
+function RevisionEntry({ revision }: { revision: OperatorTaskRevision }) {
+  const changes = patchText(revision);
+  return (
+    <article className="rounded-lg border border-border bg-surface-secondary px-3 py-3">
+      <div className="flex items-start justify-between gap-3">
+        <h4 className="text-sm font-semibold text-text">
+          Revision {revision.revision} · {revision.operation}
+        </h4>
+        <time className="shrink-0 text-right text-[11px] text-text-secondary">
+          {revision.eventTimeSource === 'event' ? 'Event time' : 'Recorded time'}
+          <br />
+          {absoluteTime(revision.eventTime)}
+        </time>
+      </div>
+      <dl className="mt-3 space-y-3">
+        {revision.summary && <DrawerDetail label="Summary">{revision.summary}</DrawerDetail>}
+        {revision.reasoning && <DrawerDetail label="Why">{revision.reasoning}</DrawerDetail>}
+        {changes && <DrawerDetail label="Changed">{changes}</DrawerDetail>}
+        {revision.feedback && <DrawerDetail label="Feedback">{revision.feedback}</DrawerDetail>}
+      </dl>
+      {revision.evidence.length > 0 && (
+        <div className="mt-3 space-y-2">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
+            Cited observations
+          </div>
+          {revision.evidence.map((evidence) => (
+            <EvidenceBlock
+              key={`${revision.revision}-${evidence.observationRef}`}
+              evidence={evidence}
+            />
+          ))}
+        </div>
+      )}
+    </article>
+  );
+}
+
 export default function TaskDrawer({
   task,
+  detail,
+  detailError,
   now,
   opener,
   fallbackFocusRef,
@@ -81,6 +169,15 @@ export default function TaskDrawer({
     dueAt: task.due_at,
     dueDate: task.due_date,
   });
+  const revisions = detail?.revisions ?? [];
+  const allEvidence = revisions.flatMap((revision) => revision.evidence);
+  const citedEvidence = uniqueEvidence(allEvidence);
+  const sourceChannels = uniqueStrings([
+    task.source_channel,
+    ...allEvidence.map((evidence) => evidence.channel ?? evidence.source),
+  ]);
+  const createdAt = detail?.createdAt ?? task.created_at;
+  const updatedAt = detail?.updatedAt ?? task.updated_at;
 
   return (
     <dialog
@@ -106,7 +203,7 @@ export default function TaskDrawer({
               #{task.id} {task.title}
             </h2>
             <p id="task-drawer-description" className="mt-1 text-xs text-text-secondary">
-              Ledger record for this task. No channel transcript is read.
+              Ledger record with bounded cited source evidence.
             </p>
           </div>
           <button
@@ -154,9 +251,9 @@ export default function TaskDrawer({
                 {temporal.badgeLabel} - {temporal.fact}
               </DrawerDetail>
               <DrawerDetail label="Due">{temporal.dueLabel}</DrawerDetail>
-              <DrawerDetail label="Created">{absoluteTime(task.created_at)}</DrawerDetail>
+              <DrawerDetail label="Created">{absoluteTime(createdAt)}</DrawerDetail>
               <DrawerDetail label="Updated">
-                {absoluteTime(task.updated_at)} ({formatRelativeTime(now, task.updated_at)})
+                {absoluteTime(updatedAt)} ({formatRelativeTime(now, updatedAt)})
               </DrawerDetail>
             </dl>
           </section>
@@ -166,11 +263,43 @@ export default function TaskDrawer({
               Source evidence
             </h3>
             <dl className="mt-3 space-y-3">
-              <DrawerDetail label="Source channel">{task.source_channel || NO_SOURCE}</DrawerDetail>
+              <DrawerDetail label="Source channel">
+                {sourceChannels.length > 0 ? sourceChannels.join(', ') : NO_SOURCE}
+              </DrawerDetail>
+              {citedEvidence.length > 0 && (
+                <DrawerDetail label="Cited observations">
+                  <div className="space-y-2">
+                    {citedEvidence.map((evidence) => (
+                      <EvidenceBlock key={evidence.observationRef} evidence={evidence} />
+                    ))}
+                  </div>
+                </DrawerDetail>
+              )}
             </dl>
             <p className="mt-2 text-xs text-text-secondary">
-              The channel this task was recorded from. Messages are not loaded here.
+              Each cited observation is a bounded source.read slice identified by observation id.
             </p>
+          </section>
+
+          <section aria-labelledby="task-history-heading">
+            <h3 id="task-history-heading" className="text-sm font-semibold text-text">
+              History
+            </h3>
+            {detailError ? (
+              <p role="alert" className="mt-2 text-sm text-warning-text">
+                {detailError}
+              </p>
+            ) : detail === undefined ? (
+              <p className="mt-2 text-sm text-text-secondary">Loading task history...</p>
+            ) : revisions.length === 0 ? (
+              <p className="mt-2 text-sm text-text-secondary">No revisions recorded.</p>
+            ) : (
+              <div className="mt-3 space-y-4">
+                {revisions.map((revision) => (
+                  <RevisionEntry key={revision.revision} revision={revision} />
+                ))}
+              </div>
+            )}
           </section>
 
           <section aria-labelledby="task-ledger-heading">

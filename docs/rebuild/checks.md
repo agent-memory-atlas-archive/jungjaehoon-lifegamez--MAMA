@@ -240,7 +240,7 @@ The implementation writes raw/index data during import only. Replay is the owner
 
 ## W10 — 2026-09-25
 
-- Result: the archive viewer shell, modules, static assets, and React operator app are carried unchanged; only the retired `operator/triggers` route and trigger page machinery are removed.
-- Evidence: `build:viewer`, `build:ui`, standalone build/typecheck, lint, archive-route tests (6), and the standalone viewer regressions pass; graph, search, tasks, runtime, connector, report, wiki, log, and empty-state routes are read-only.
-- Data path: graph/search/checkpoints/tasks use the catalog dispatcher under owner access; connector status comes from the live registry; unavailable W6/W7/skills/tokens/intelligence/cron data returns archive-shaped empty results with an explicit reason.
-- Still open: full core and MCP suites are blocked by the pre-existing ONNX `model_quantized.onnx` protobuf cache failure; owner replay/live C1/C2 remains supervisor work.
+- Result: the carried Tasks drawer now loads the archive-compatible task detail path and renders one event-time-ordered History entry per revision, including summary, reasoning, and cited observations.
+- Evidence: standalone FULL suite is 52 files / 137 tests, core is 116 / 838, MCP is 13 passed files / 121 passed and 14 skipped tests, plugin is 11 / 165; forced build, typecheck, lint, focused API tests, and the component render test pass.
+- Data path: operator tasks request `work.list(history: all)` and add `commitment_id`; drawer detail reads `work.show`, `graph.query(derived_from)`, and bounded `source.read` slices, projecting event-time Created/Updated and source channels/observation ids.
+- Still open: supervisor replay/live owner C1/C2 evidence remains outside this viewer change; the model cache remained exactly 561768762 bytes after the full suite.
