@@ -109,7 +109,9 @@ export function createJevClient(options: JevClientOptions): JevClient {
         const answers = object(parsed, 'answers response').answers;
         return object(answers, 'answers') as JevAnswers;
       }
-      if (response.status !== 429 && response.status !== 529) {
+      // 429/529 are the archive's retried statuses; 500/502/503 are transient server errors of
+      // an idempotent judgment (live 2026-09-25: one 500 stopped the 9/11 window).
+      if (![429, 500, 502, 503, 529].includes(response.status)) {
         throw new Error(`Jev HTTP ${response.status}`);
       }
       lastRetryStatus = response.status;

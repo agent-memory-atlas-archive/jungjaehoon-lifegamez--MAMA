@@ -38,6 +38,17 @@ describe('Jev client', () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
+  it('retries a transient 500 before accepting a later success', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('oops', { status: 500 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ answers: { q1: { noul: 0.4 } } }), { status: 200 })
+      );
+    await expect(client(fetchImpl).ask(request)).resolves.toEqual({ q1: { noul: 0.4 } });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it('retries 429 and 529 before accepting a later success', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
