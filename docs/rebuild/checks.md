@@ -310,3 +310,23 @@ The implementation writes raw/index data during import only. Replay is the owner
   The turn had made reads only (report.read 5, graph.query 1, memory.search 1). Fixed in 79f32a954
   (reasoning items refresh the idle timer); row 14 returned to pending; resumed. The owner status
   correction (row 13) had completed: all latest statuses are in the contract (0 off-contract).
+
+## Window pipeline evidence and review — 2026-09-25
+
+- Artifacts (testbed only, business content): `~/.mama/runtime/measurements/2026-09-25/` —
+  `window-0902-lines.txt` (mailbox row 2 rendered as compact lines), `hand-simulation-0902.md`
+  (supervisor gold proposal, 10 movements, owner confirmation pending), `codex-step-timings.json`
+  (per-request time/input/reasoning/output from every replay Codex session),
+  `jev-archive-pipeline-0902-{queue.md,plan.json}` (archive `backfill.mjs` run with FROM/TO on 9/2,
+  a measurement copy with a metadata shim and an external model cache; not in the repo).
+- Numbers: agent record for 9/2 = 9 revisions / 8 items, 3 items for 2 deliverables, 1 wrong project
+  tag, 1 stale state, 5 missed movements. Archive Jev run: 144 conversations → 130 after its text
+  dedup → 95 chunks; 84 pair verdicts in 1.2 s; 30 chunks attributed in 1.6 s; bands A 10 / B 3 / C 2
+  / D 15; the non-deliverable owner work fell to D. Subagent use: every replay session's tool calls
+  are `exec` only (0 `spawn_agent`).
+- Codex adversarial review of window-pipeline.md (read-only, gpt-5.6-luna max) applied: no verbatim
+  port of archive logic that judges in code (first-80 dedup, card propagation, length filters); Jev
+  batch failure stops as incomplete; the low band is "unresolved", shown in full and measured for
+  promotion; subagent writes checked by trace, not blocked; candidates are the as-of universe; P5
+  fixed to three arms on one snapshot with owner-confirmed labels. Added P0 (progressive work.list):
+  68 items = 62k characters current / 165k with history per call.

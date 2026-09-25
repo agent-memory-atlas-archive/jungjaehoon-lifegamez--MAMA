@@ -1,80 +1,94 @@
 # Day-window pipeline: code → Jev → planner → subagents → verify
 
-Owner checks served: **recognise** (every owner-work message lands on a work item), **attach**
-(evidence and the right project), and the speed the owner needs to replay a month and run live.
-Owner decision 2026-09-25: use Jev for classification, and let the owner agent plan, distribute
-to subagents and verify.
+Owner checks targeted: **recognise** (every owner-work message lands on a work item), **attach**
+(evidence and the right project), and a replay/live speed the owner can use. C1/C2 are still open.
+Owner decisions 2026-09-25: classify with Jev; the owner agent plans, distributes to subagents and
+verifies. Codex adversarial review applied (checks.md, "Window pipeline evidence and review").
 
-## Evidence (measured 2026-09-25; details in checks.md)
+## Evidence
 
-- Hand simulation of the 9/2 window (163 lines) against what the agent recorded: 3 items created
-  for 2 deliverables in one turn; one client request tagged with the wrong project (channel ids
-  without names); an invoice closed the same day left as waiting; 6 threads missed (a motion asset's review
-  cycle, a parts-data delivery, a client schedule request, 2 invoices, a lodging-operations thread); long feedback cut at 280 characters.
-- Time per window is model time, not tool time (<3 s tools per window). Judgment steps take 1–2.5
-  min (3–8.5k reasoning tokens at max); writing steps 1.5–3 min (7–10k output tokens); short
-  lookup steps ~20 s each, re-reading 100–150k tokens.
-- The archive Jev pipeline (`scripts/backfill/backfill.mjs`, measured to 91.3% chunking) run on
-  9/2: chunking 84 pairs in 1.2 s, attribution of 30 chunks in 1.6 s; it attributed the motion asset and
-  the parts-data delivery (both missed by the agent) and separated two sibling assets. It classified
-  the invoices, the schedule request, a new client order and the lodging thread as chatter, because its question
-  is "about a deliverable?" and its candidates are Trello cards only; it drops chunks whose messages
-  are all under 30 characters (65 of 95).
-- Codex-native subagents are enabled (`multi_agent = true`) and the host wires
-  `createSubagentBridge`; the agent never used one.
+Artifacts live in the testbed, not the repo (they contain business content):
+`~/.mama/runtime/measurements/2026-09-25/`. Method and numbers are in checks.md.
+
+- 9/2 hand simulation vs the agent's record (`hand-simulation-0902.md`, `window-0902-lines.txt`):
+  10 expected work movements; the agent (low effort, old input) created 3 items for 2 deliverables,
+  mis-tagged one project, left a same-day-closed invoice waiting, and missed 5 movements.
+- Step timing (`codex-step-timings.json`): tools < 3 s per window; judgment steps 1–2.5 min at max
+  effort, writing steps 1.5–3 min, lookup steps ~20 s re-reading 100–150k tokens.
+- The archive Jev pipeline on 9/2 (`jev-archive-pipeline-0902-queue.md`): 84 pair judgments in
+  1.2 s, 30 attributions in 1.6 s; two movements the agent missed were attributed; invoices, a
+  schedule request, a new order and a lodging thread fell to its "not a deliverable" band.
+- Subagents: `multi_agent = true` (codex-home.ts:434-443); the owner turn supplies `prepareAccess`
+  and the child bridge re-issues it (native-session.ts:340-347, native-turn.ts:701-733); every
+  replay session so far called only `exec` (0 `spawn_agent`).
+- `work.list` returns every item's full values, evidence basis and, with `history: all`, every
+  revision: 68 items = 62k characters current, 165k with history; the agent and the viewer call it
+  repeatedly.
 
 ## Stages
 
-| Stage            | Owner            | Does                                                                                                                                    | Never                                              |
-| ---------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| 1 collect        | code             | window messages, channel names, Slack threads, Trello transitions, exact duplicate removal                                              | judge type, sameness or relevance; drop rows       |
-| 2 classify       | Jev              | adjacent-message chunking; "owner work or chatter?"; which candidate work item; suspected duplicate pairs                               | say "absent" without candidates; know vocabulary   |
-| 3 plan           | owner agent      | read the queue, decide new work (band C), group work for subagents                                                                      | skip the raw text when a band is uncertain         |
-| 4 draft          | native subagents | per work group: read the raw (source.read), draft a proposal (status, stage, summary, feedback translation, roles, evidence, wiki text) | be restricted by the host (instructed, not fenced) |
-| 5 verify + write | owner agent      | check each proposal against evidence, settle duplicates, write work/wiki/board/lessons                                                  | —                                                  |
+| Stage            | Owner            | Does                                                                                                                  | Never                                                            |
+| ---------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| 1 collect        | code             | window messages by source identity, channel names, Slack threads, Trello transitions                                  | dedupe by text, judge type/sameness/relevance, drop by length    |
+| 2 classify       | Jev              | adjacent-message chunking; owner work or not; which candidate work item; suspected duplicate pairs                    | say "absent" without candidates; know vocabulary                 |
+| 3 plan           | owner agent      | read the queue, decide new work, promote or dismiss unresolved lines, group work for subagents                        | skip raw text when a band is uncertain                           |
+| 4 draft          | native subagents | per work group: read raw, draft a proposal (status, stage, summary, feedback translation, roles, evidence, wiki text) | — (no host restriction; the instruction says propose, not write) |
+| 5 verify + write | owner agent      | check proposals against evidence, settle duplicates, write work/wiki/board/lessons                                    | —                                                                |
 
-Rules carried from the archive: code does the mechanical part, Jev narrows and scores, the agent
-decides; vocabulary is owner config (`~/.mama/backfill/vocab.json`), never source.
+Rule carried from the archive README: code does the mechanical part, Jev narrows and scores, the
+agent decides; vocabulary is owner config (`~/.mama/backfill/vocab.json`). The archive code broke
+this rule in places, so it is not ported verbatim: first-80-character text dedup, propagating one
+exact card match to a whole chunk, and the 8- and 30-character filters are not carried; an exact
+code or name match becomes a candidate hint for Jev and the agent.
 
 ## Work items
 
-**P1 — Jev client.** Carry `jev()` and `pool()` from `archive/unified-core-2026-09-25:scripts/backfill/lib.mjs`
-into `packages/standalone/src/replay/jev-client.ts` (TypeScript port, same retry on 429/529).
-Config: `jev.keyFile` (default `~/.mama/jev-key`, never read into logs) and `jev.vocabFile`
-(default `~/.mama/backfill/vocab.json`) in `config.yaml`. Done: unit test with an injected
-fetch; one live call returns answers.
+**P0 — progressive `work.list`.** Carry the archive's view contract
+(`archive/unified-core-2026-09-25:packages/standalone/src/api/work-actions.ts`: `overview` counts,
+`items` compact rows 25 default / 50 max with a read-version cursor, `detail` up to 4 ids with full
+values, history and text continuation) onto the current commitment reader. Filters: status, stage,
+project, text over title/description. Evidence basis and revision history only in `detail`. The
+viewer uses `items`/`detail`. Done: an `items` page of 25 is at most 6k characters; a ledger change
+between pages is rejected with restart guidance; viewer tests pass.
 
-**P2 — window queue.** Port stages 1–4 of `backfill.mjs` (collect, chunk, attribute, queue) into
-`packages/standalone/src/replay/window-queue.ts`, verbatim logic first, with exactly these
-changes, each named in the file:
+**P1 — Jev client.** `packages/standalone/src/replay/jev-client.ts` from the archive `jev()`/`pool()`
+(retry on 429/529). A batch that still fails stops the window as incomplete, naming its observation
+refs; an undefined verdict is never read as a boundary or an absence. Config `jev.keyFile` (default
+`~/.mama/jev-key`, never logged) and `jev.vocabFile` (default `~/.mama/backfill/vocab.json`).
+Done: unit tests with an injected fetch for success, retry, and incomplete stop; one live call.
 
-1. The relevance question is "is this chunk owner work (a request, decision, schedule, billing,
-   delivery, feedback, or a work-item change) rather than chatter?" instead of "about a
-   deliverable?".
-2. Candidates are the current work items (commitmentId, title, stage) together with Trello cards
-   (±24 h activity ∪ embedding top-K), each with its facts.
-3. No length filter: every chunk is classified; short messages stay in their chunk.
-4. Times are KST.
-5. Suspected duplicates: current work items paired with their embedding neighbours, Jev "same
-   deliverable?" per pair.
-   Done: run on the 9/2 window of the current testbed; every item of the hand simulation above is in
-   band A, B or C, and the report lists what landed in D.
+**P2 — window queue.** `packages/standalone/src/replay/window-queue.ts`, carrying the archive's
+plumbing and data shapes, with:
 
-**P3 — stimulus from the queue.** The day-window stimulus renders the queue in place of the flat
-message list: A grouped by work item with Jev confidence, B with top-2 candidates, C as possible
-new work, suspected duplicate pairs, then D (chatter) as full lines at the end. Every message line
-keeps channel name, sender, KST time, observationRef and full text. Done: stimulus test pins each
-section; 9/2 rendered size is reported.
+1. Relevance: "is this chunk owner work (request, decision, schedule, billing, delivery, feedback,
+   or a work-item change) rather than chatter?"
+2. Candidates: the as-of work items (open and closed: commitmentId, title, stage, status) together
+   with Trello cards (±24 h activity ∪ embedding top-K), each with facts. Candidate generation only;
+   identity stays with the agent.
+3. No length filters; source-identity dedup only.
+4. KST for display and window boundaries; source times stay epoch.
+5. Suspected duplicates: work items paired with embedding neighbours, Jev "same deliverable?" per
+   pair; no gate, the agent settles.
+   Done: on the 9/2 window every movement of the hand simulation is in A, B or C, and the report lists
+   the unresolved band.
 
-**P4 — plan, distribute, verify.** Standing text and window instruction: plan from the queue,
-give each work group to a native subagent with its lines and the work item's history, subagents
-return proposals and do not write, the owner agent verifies and writes, then board, wiki and
-lessons. Done: one live window where at least one subagent ran, its tool calls were authorized
-(no `subagent authority unavailable` in daemon.log), and all writes came from the owner run.
+**P3 — stimulus from the queue.** Sections: A grouped by work item with Jev confidence, B with
+top-2, C possible new work, suspected duplicates, then **unresolved** (low-confidence, full lines).
+Every line keeps channel name, sender, KST time, observationRef and full text. Done: stimulus test
+pins each section; 9/2 rendered size reported.
 
-**P5 — measure before applying.** Re-run the 9/2 window on a copy of the testbed with P1–P4 and
-compare with the hand simulation and with the old run: missed threads, wrong project tags,
-duplicates, wall time, model steps. The owner decides from this whether to apply to the remaining
-windows or restart from 9/1.
+**P4 — plan, distribute, verify.** Standing text and window instruction: plan from the queue, give
+each work group to a native subagent with its lines and the work item's history; subagents return
+proposals; the owner agent verifies and writes, then board, wiki and lessons. Acceptance by trace,
+not by restriction: child model runs show reads and proposals only, all writes carry the parent
+model run (`tool_traces.model_run_id`, child `parent_model_run_id`), and daemon.log has no
+`subagent authority unavailable`.
 
-Out of scope here: the live polling path (it reuses the same queue builder after the replay).
+**P5 — fair measurement before applying.** Same 9/2 window, same observation-ref manifest, same DB
+snapshot, same model/effort/prompt, three arms: current pipeline; P0–P3; P0–P4. Gold labels: the
+hand simulation, confirmed by the owner. Report per arm: recall of movements, wrong attribution,
+duplicates, unresolved lines promoted, citation faithfulness, wall time, model steps, total model
+and Jev tokens. The owner decides from this whether to apply to the remaining windows or restart
+from 9/1.
+
+Out of scope: the live polling path (reuses the queue builder after the replay).
