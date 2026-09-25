@@ -179,6 +179,9 @@ export function createActionSurface(options: ActionSurfaceOptions): ActionSurfac
         index
     ),
     connectors: options.connectors ?? OWNER_CONNECTORS,
+    // The owner reads every channel of its own connectors; imported originals carry no
+    // memory-scope tag, so without this their observations are invisible in the graph.
+    connectorWideRead: options.connectors ?? OWNER_CONNECTORS,
     actions: [...OWNER_ACTIONS],
   };
 

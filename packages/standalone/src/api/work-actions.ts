@@ -56,7 +56,17 @@ const workPatchSchema: ActionSchemaObject = {
       ...nullableText,
       description: 'Work description, e.g. "Collect review" or null.',
     },
-    status: { ...nullableText, description: 'Work status, e.g. "open" or null.' },
+    status: {
+      description:
+        'Work status: pending, in_progress, review, blocked, done or cancelled; or null. The owner stage stays in stage.',
+      oneOf: [
+        {
+          type: 'string',
+          enum: ['pending', 'in_progress', 'review', 'blocked', 'done', 'cancelled'],
+        },
+        { type: 'null' },
+      ],
+    },
     priority: { ...nullableText, description: 'Work priority, e.g. "high" or null.' },
     dueAt: { ...nullableText, description: 'Due-time text, e.g. "2026-09-30" or null.' },
     deadline: { ...nullableText, description: 'Deadline text, e.g. "Friday" or null.' },

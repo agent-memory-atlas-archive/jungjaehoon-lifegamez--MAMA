@@ -277,6 +277,10 @@ function archiveStatus(value: unknown, withdrawn: boolean): ArchiveOperatorTask[
   if (typeof value === 'string' && TASK_STATUSES.has(value as ArchiveOperatorTask['status'])) {
     return value as ArchiveOperatorTask['status'];
   }
+  if (value !== undefined && value !== null) {
+    // work.* enforces the status vocabulary; anything else is a defect to surface, not "pending".
+    throw new Error(`work status outside the contract: ${JSON.stringify(value)}`);
+  }
   return withdrawn ? 'cancelled' : 'pending';
 }
 

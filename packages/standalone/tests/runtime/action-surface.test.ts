@@ -46,4 +46,41 @@ describe('W1 action surface', () => {
       1
     );
   });
+
+  it('lets the owner read every channel of its connectors in the graph', () => {
+    const connectors = ['chatwork', 'slack', 'trello', 'kagemusha'];
+    const surface = createActionSurface({
+      adapter: {} as DatabaseInstance,
+      knowledge: {} as Knowledge,
+      ownerPrincipalId: 'owner-test',
+      agentId: 'agent-test',
+      connectors,
+    });
+    expect(surface.ownerAccess.connectorWideRead).toEqual(connectors);
+  });
+
+  it('rejects a work status outside the shared vocabulary before it reaches knowledge', async () => {
+    const surface = createActionSurface({
+      adapter: {} as DatabaseInstance,
+      knowledge: {} as Knowledge,
+      ownerPrincipalId: 'owner-test',
+      agentId: 'agent-test',
+      connectors: ['slack'],
+    });
+    const result = await surface.dispatch(
+      {
+        action: 'work.create',
+        input: {
+          topic: 'work topic',
+          summary: 'what the work means',
+          set: { title: 'Item', status: 'in progress (free text)' },
+        },
+      },
+      { access: surface.ownerAccess }
+    );
+    expect(result).toMatchObject({
+      status: 'failed',
+      error: { code: 'invalid_input', message: expect.stringMatching(/status/) },
+    });
+  });
 });
