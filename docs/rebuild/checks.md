@@ -234,7 +234,7 @@ The implementation writes raw/index data during import only. Replay is the owner
      --manifest ~/.mama/runtime/september-import-manifest.json \
      --ledger ~/.mama/runtime/september-replay-ledger.jsonl \
      --cursor ~/.mama/runtime/september-replay-cursor.json \
-     --report-slots ~/.mama/runtime/report-slots.json \
+     --report-slots ~/.mama/report-slots.json \
      --wiki-root "$WIKI_ROOT"
    ```
 
