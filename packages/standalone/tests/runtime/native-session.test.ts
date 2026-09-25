@@ -74,6 +74,7 @@ describe('one owner native session', () => {
           .sort()
       ).toEqual([
         'graph.query',
+        'memory.checkpoint.list',
         'memory.save',
         'memory.search',
         'source.read',

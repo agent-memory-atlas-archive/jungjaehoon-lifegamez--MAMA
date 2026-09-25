@@ -326,7 +326,8 @@ describe('viewer HTTP server', () => {
         expect(response.status).toBe(200);
         expect(response.headers['content-type']).toContain('text/html');
         expect(response.body).toContain('Tasks');
-        expect(response.body).toContain('Memory graph');
+        expect(response.body).toContain('operator-mount');
+        expect(response.body).toContain('Memory');
         expect(calls).toHaveLength(0);
       }
     );

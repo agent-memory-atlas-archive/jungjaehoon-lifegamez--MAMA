@@ -12,24 +12,61 @@ import type {
 import type { CommitmentPage, JudgmentAccess } from '@jungjaehoon/mama-core/knowledge';
 import { requireViewerAuth } from './auth-middleware.js';
 import {
+  mapArchiveGraphNode,
+  shapeArchiveGraph,
   shapeGraphPage,
   shapeMemorySearch,
+  shapeOperatorTasks,
   shapeTaskDetail,
   shapeTaskList,
   type RevisionGraphRead,
   type ViewerEvidence,
+  type ArchiveGraphResponse,
 } from './viewer-data.js';
 
-const GRAPH_KINDS = new Set(['memory', 'case', 'report', 'edge', 'raw', 'registry', 'observation']);
-
+const GRAPH_KINDS = new Set([
+  'memory',
+  'case',
+  'report',
+  'edge',
+  'raw',
+  'registry',
+  'observation',
+  'entity',
+]);
 const CONTENT_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
+  '.ico': 'image/x-icon',
   '.js': 'application/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
-  '.svg': 'image/svg+xml',
   '.png': 'image/png',
+  '.svg': 'image/svg+xml',
 };
+
+export interface ViewerConnectorStatus {
+  name: string;
+  enabled: boolean;
+  healthy: boolean;
+  lastPoll: string | null;
+  channelCount: number | null;
+}
+
+export interface ViewerRuntimeConnector {
+  name: string;
+  enabled: boolean;
+  state: 'connected' | 'disconnected' | 'unknown';
+}
+
+export interface ViewerRuntimeStatus {
+  running: boolean;
+  version: string;
+  backend: string;
+  model: string;
+  startedAt: number;
+  health: { score: number; status: string } | null;
+  connectors: ViewerRuntimeConnector[];
+}
 
 export interface ViewerServerOptions {
   dispatch: ActionDispatcher;
@@ -37,6 +74,9 @@ export interface ViewerServerOptions {
   port?: number;
   host?: string;
   viewerDirectory?: string;
+  getConnectorStatus?: () => ViewerConnectorStatus[] | Promise<ViewerConnectorStatus[]>;
+  getRuntimeStatus?: () => ViewerRuntimeStatus | Promise<ViewerRuntimeStatus>;
+  logPath?: string;
 }
 
 export interface ViewerServer {
@@ -138,6 +178,47 @@ function actionFailureStatus(
   return 502;
 }
 
+function graphRef(value: string): { kind: string; id: string } | null {
+  const split = value.indexOf(':');
+  if (split < 1 || split === value.length - 1) return null;
+  const kind = value.slice(0, split);
+  if (!GRAPH_KINDS.has(kind)) return null;
+  return { kind, id: value.slice(split + 1) };
+}
+
+function notAvailable(): { reason: 'not available in this build' } {
+  return { reason: 'not available in this build' };
+}
+
+function taskCount(page: CommitmentPage): number {
+  return shapeOperatorTasks(page).tasks.filter((task) => task.auto_created && !task.confirmed)
+    .length;
+}
+
+function archiveGraphPage(pages: WorkGraphPage[], nextCursor: string | null): WorkGraphPage {
+  const nodes = new Map<string, WorkGraphPage['nodes'][number]>();
+  const edges = new Map<string, WorkGraphPage['edges'][number]>();
+  const last = pages[pages.length - 1];
+  for (const page of pages) {
+    for (const node of page.nodes) nodes.set(graphNodeKey(node), node);
+    for (const edge of page.edges) edges.set(edge.id, edge);
+  }
+  if (!last) {
+    throw new ViewerHttpError(502, 'GRAPH_QUERY_INVALID', 'graph.query returned no page');
+  }
+  return {
+    nodes: [...nodes.values()],
+    edges: [...edges.values()],
+    coverage: last.coverage,
+    snapshot: last.snapshot,
+    nextCursor,
+  };
+}
+
+function graphNodeKey(node: WorkGraphPage['nodes'][number]): string {
+  return `${node.ref.kind}:${node.ref.id}`;
+}
+
 function memoryNode(page: WorkGraphPage, id: string): WorkGraphPage['nodes'][number] | null {
   return (
     page.nodes.find(
@@ -163,12 +244,13 @@ function observationEvidence(
       edge.relation !== 'derived_from' ||
       edge.from.kind !== revisionRef.kind ||
       edge.from.id !== revisionRef.id ||
-      edge.to.kind !== 'observation'
+      edge.to.kind !== 'observation' ||
+      seen.has(edge.to.id)
     ) {
       continue;
     }
     const source = observations.get(edge.to.id);
-    if (source === undefined || seen.has(edge.to.id)) continue;
+    if (source === undefined) continue;
     seen.add(edge.to.id);
     evidence.push({ ref: edge.to, source });
   }
@@ -180,7 +262,7 @@ function sourceReadEvidence(data: unknown, source: string, observationRef: strin
     throw new ViewerHttpError(
       502,
       'SOURCE_READ_INVALID',
-      `source.read returned no readable observation for ${observationRef}`
+      `source.read returned no observation for ${observationRef}`
     );
   }
   const row = data as Record<string, unknown>;
@@ -200,6 +282,38 @@ function sourceReadEvidence(data: unknown, source: string, observationRef: strin
   };
 }
 
+function readLogTail(
+  logPath: string | undefined,
+  params: URLSearchParams
+): Record<string, unknown> {
+  const tail = parseLimit(params, 500, 2_000);
+  if (logPath === undefined || !existsSync(logPath)) {
+    return {
+      lines: [],
+      total: 0,
+      totalBytes: 0,
+      fileSize: 0,
+      mtime: 0,
+      truncated: false,
+      ...notAvailable(),
+    };
+  }
+  const metadata = statSync(logPath);
+  const source = readFileSync(logPath, 'utf8');
+  const allLines = source.split(/\r?\n/).filter((line) => line.length > 0);
+  const sinceRaw = params.get('since');
+  const since = sinceRaw === null ? 0 : Number(sinceRaw);
+  const lines = Number.isFinite(since) && metadata.mtimeMs <= since ? [] : allLines.slice(-tail);
+  return {
+    lines,
+    total: allLines.length,
+    totalBytes: metadata.size,
+    fileSize: metadata.size,
+    mtime: metadata.mtimeMs,
+    truncated: allLines.length > lines.length,
+  };
+}
+
 export function createViewerServer(options: ViewerServerOptions): ViewerServer {
   const port = options.port ?? resolveApiPort(process.env.MAMA_API_PORT);
   const host = options.host ?? process.env.MAMA_API_HOST ?? '127.0.0.1';
@@ -207,6 +321,7 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
   let server: Server | null = null;
   let actualPort = port;
   let stopped = false;
+  const reportClients = new Set<ServerResponse>();
 
   const callAction = async (action: string, input: Record<string, unknown>): Promise<unknown> => {
     const operationId = `viewer:${action}:${randomUUID()}`;
@@ -217,18 +332,26 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
     throw new ViewerHttpError(actionFailureStatus(result), result.error.code, result.error.message);
   };
 
-  const taskList = async (params: URLSearchParams): Promise<unknown> => {
-    const input: Record<string, unknown> = {
+  const listTasks = async (params: URLSearchParams): Promise<unknown> => {
+    const limit = parseLimit(params, 50, 200);
+    const status = params.get('status') ?? undefined;
+    const sourceChannel = params.get('source_channel') ?? undefined;
+    const page = (await callAction('work.list', { history: 'current', limit })) as CommitmentPage;
+    return {
+      ...shapeOperatorTasks(page, { status, sourceChannel, limit }),
+      ...(page.coverage.complete ? {} : { coverage: page.coverage }),
+    };
+  };
+
+  const legacyTaskList = async (params: URLSearchParams): Promise<unknown> => {
+    const page = (await callAction('work.list', {
       history: 'current',
       limit: parseLimit(params, 50, 100),
-    };
-    const cursor = params.get('cursor');
-    if (cursor !== null) input.cursor = cursor;
-    const page = (await callAction('work.list', input)) as CommitmentPage;
+    })) as CommitmentPage;
     return shapeTaskList(page);
   };
 
-  const taskDetail = async (commitmentId: string): Promise<unknown> => {
+  const legacyTaskDetail = async (commitmentId: string): Promise<unknown> => {
     if (commitmentId.trim() === '') {
       throw new ViewerHttpError(400, 'INVALID_COMMITMENT_ID', 'commitment id must be nonblank');
     }
@@ -237,13 +360,12 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
       history: 'all',
     })) as CommitmentPage;
     const item = page.items[0];
-    if (!item || item.history === undefined) {
+    if (!item?.history)
       throw new ViewerHttpError(
         502,
         'WORK_HISTORY_MISSING',
         'work.show returned no revision history'
       );
-    }
     const reads = new Map<string, RevisionGraphRead>();
     for (const revision of item.history) {
       const detail = (await callAction('graph.query', {
@@ -252,13 +374,12 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
         history: 'all',
       })) as WorkGraphPage;
       const record = memoryNode(detail, revision.recordRef.id);
-      if (record === null) {
+      if (!record)
         throw new ViewerHttpError(
           502,
           'REVISION_RECORD_MISSING',
-          `graph.query returned no record for revision ${String(revision.revision)}`
+          'graph.query returned no revision record'
         );
-      }
       const neighbors = (await callAction('graph.query', {
         view: 'neighbors',
         seeds: [revision.recordRef],
@@ -270,46 +391,141 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
       })) as WorkGraphPage;
       const evidence: ViewerEvidence[] = [];
       for (const candidate of observationEvidence(neighbors, revision.recordRef)) {
-        const sourceData = await callAction('source.read', {
+        const source = await callAction('source.read', {
           source: candidate.source,
           view: 'stored',
           detail: 'full',
           observationRef: candidate.ref.id,
         });
-        evidence.push(sourceReadEvidence(sourceData, candidate.source, candidate.ref.id));
+        evidence.push(sourceReadEvidence(source, candidate.source, candidate.ref.id));
       }
       reads.set(`${revision.recordRef.kind}:${revision.recordRef.id}`, { record, evidence });
     }
     return shapeTaskDetail(page, reads);
   };
 
-  const graph = async (params: URLSearchParams): Promise<unknown> => {
-    const input: Record<string, unknown> = {
+  const legacyGraph = async (params: URLSearchParams): Promise<unknown> => {
+    const page = (await callAction('graph.query', {
       view: 'browse',
       history: 'all',
-      limit: parseLimit(params, 300, 2000),
-    };
-    const cursor = params.get('cursor');
-    if (cursor !== null) input.cursor = cursor;
-    const relations = params.get('relation');
-    if (relations !== null && relations.trim() !== '') {
-      input.relations = relations
-        .split(',')
-        .map((relation) => relation.trim())
-        .filter(Boolean);
-    }
-    const page = (await callAction('graph.query', input)) as WorkGraphPage;
-    const filtered = shapeGraphPage(page, parseKinds(params));
+      limit: parseLimit(params, 300, 2_000),
+      ...(params.get('cursor') === null ? {} : { cursor: params.get('cursor') }),
+    })) as WorkGraphPage;
     return {
-      graph: filtered,
+      graph: shapeGraphPage(page, parseKinds(params)),
       missing: [
         {
           kind: 'revision_chain',
           message:
-            'graph.query returns commitment revisions as memory nodes with data.work, but it does not return revision-to-revision edges; task detail reads work.show history all.',
+            'graph.query does not expose revision-to-revision edges; use work.show history all.',
         },
       ],
     };
+  };
+
+  const operatorSummary = async (): Promise<unknown> => {
+    const page = (await callAction('work.list', {
+      history: 'current',
+      limit: 100,
+    })) as CommitmentPage;
+    return {
+      report: { actionRequired: null },
+      tasks: { unconfirmed: taskCount(page) },
+      triggers: { active: null, disabled: null, fired: null, succeeded: null, failed: null },
+      reason: 'trigger machinery and report slots are not available in this build',
+    };
+  };
+
+  const graph = async (params: URLSearchParams): Promise<ArchiveGraphResponse> => {
+    const started = Date.now();
+    const limit = parseLimit(params, 300, 2_000);
+    const history = params.get('history') === 'current' ? 'current' : 'all';
+    const pages: WorkGraphPage[] = [];
+    const nodes = new Set<string>();
+    let cursor: string | null = params.get('cursor');
+    let pageCount = 0;
+    do {
+      const input: Record<string, unknown> = {
+        view: 'browse',
+        history,
+        limit: Math.min(500, Math.max(1, limit - nodes.size)),
+      };
+      if (cursor !== null) input.cursor = cursor;
+      const page = (await callAction('graph.query', input)) as WorkGraphPage;
+      pages.push(page);
+      for (const node of page.nodes) nodes.add(graphNodeKey(node));
+      cursor = page.nextCursor;
+      pageCount += 1;
+    } while (cursor !== null && nodes.size < limit && pageCount < 20);
+    return shapeArchiveGraph(
+      archiveGraphPage(pages, cursor),
+      Date.now() - started,
+      parseKinds(params)
+    );
+  };
+
+  const graphDetail = async (params: URLSearchParams): Promise<unknown> => {
+    const id = params.get('id');
+    if (!id) throw new ViewerHttpError(400, 'MISSING_ID', 'Missing required parameter: id');
+    const ref = graphRef(id);
+    if (!ref) throw new ViewerHttpError(400, 'INVALID_ID', 'id must be a graph reference');
+    const page = (await callAction('graph.query', {
+      view: 'detail',
+      seeds: [ref],
+      history: 'all',
+    })) as WorkGraphPage;
+    const node = page.nodes.find((candidate) => graphNodeKey(candidate) === id);
+    if (!node) throw new ViewerHttpError(404, 'NOT_FOUND', 'Decision not found');
+    return { node: mapArchiveGraphNode(node) };
+  };
+
+  const graphSimilar = async (params: URLSearchParams): Promise<unknown> => {
+    const id = params.get('id');
+    if (!id) throw new ViewerHttpError(400, 'MISSING_ID', 'Missing required parameter: id');
+    const ref = graphRef(id);
+    if (!ref) throw new ViewerHttpError(400, 'INVALID_ID', 'id must be a graph reference');
+    const page = (await callAction('graph.query', {
+      view: 'detail',
+      seeds: [ref],
+      history: 'all',
+    })) as WorkGraphPage;
+    const node = page.nodes.find((candidate) => graphNodeKey(candidate) === id);
+    if (!node || node.data.kind !== 'memory') {
+      return { id, similar: [], count: 0, ...notAvailable() };
+    }
+    const query = `${node.data.topic} ${node.data.summary.slice(0, 400)}`.trim();
+    const searched = (await callAction('memory.search', { query, limit: 6 })) as {
+      results?: unknown;
+    };
+    const similar = Array.isArray(searched.results)
+      ? searched.results
+          .filter((candidate): candidate is Record<string, unknown> => {
+            if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) {
+              return false;
+            }
+            const candidateId = String(candidate.id ?? '');
+            return candidateId !== ref.id && candidateId !== id;
+          })
+          .slice(0, 5)
+          .map((candidate) => ({
+            id: String(candidate.id ?? ''),
+            topic: typeof candidate.topic === 'string' ? candidate.topic : '',
+            decision:
+              typeof candidate.decision === 'string'
+                ? candidate.decision
+                : typeof candidate.summary === 'string'
+                  ? candidate.summary
+                  : '',
+            similarity:
+              typeof candidate.similarity === 'number'
+                ? candidate.similarity
+                : typeof candidate.final_score === 'number'
+                  ? candidate.final_score
+                  : 0,
+            outcome: typeof candidate.outcome === 'string' ? candidate.outcome : null,
+          }))
+      : [];
+    return { id, similar, count: similar.length };
   };
 
   const memorySearch = async (params: URLSearchParams): Promise<unknown> => {
@@ -319,27 +535,54 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
     return shapeMemorySearch(await callAction('memory.search', input));
   };
 
+  const checkpoints = async (): Promise<unknown> => {
+    return callAction('memory.checkpoint.list', { limit: 50 });
+  };
+
+  const handleReportEvents = (req: IncomingMessage, res: ServerResponse): void => {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+    reportClients.add(res);
+    res.write(
+      `event: report-update\ndata: ${JSON.stringify({ slots: [], ...notAvailable() })}\n\n`
+    );
+    const keepAlive = setInterval(() => res.write(': keep-alive\n\n'), 15_000);
+    req.on('close', () => {
+      clearInterval(keepAlive);
+      reportClients.delete(res);
+    });
+  };
+
   const serveStatic = (pathname: string, req: IncomingMessage, res: ServerResponse): boolean => {
     if (pathname === '/') {
       res.writeHead(302, { Location: '/viewer' });
       res.end();
       return true;
     }
-    const relativePath =
-      pathname === '/viewer' || pathname === '/viewer/'
-        ? 'viewer.html'
-        : pathname.startsWith('/viewer/')
-          ? pathname.slice('/viewer/'.length)
-          : null;
-    if (relativePath === null || (req.method !== 'GET' && req.method !== 'HEAD')) return false;
-    const filePath = resolve(root, relativePath);
+    let filePath: string | null = null;
+    if (pathname === '/favicon.ico') {
+      filePath = resolve(root, '..', 'favicon.ico');
+    } else if (pathname === '/viewer' || pathname === '/viewer/') {
+      filePath = resolve(root, 'viewer.html');
+    } else if (pathname.startsWith('/viewer/')) {
+      filePath = resolve(root, pathname.slice('/viewer/'.length));
+    }
+    if (filePath === null || (req.method !== 'GET' && req.method !== 'HEAD')) return false;
     const rel = relative(root, filePath);
-    if (rel.startsWith('..') || rel.includes('..' + '/')) return false;
+    if (pathname === '/favicon.ico') {
+      if (relative(resolve(root, '..'), filePath).startsWith('..')) return false;
+    } else if (rel.startsWith('..') || rel.includes('..' + '/') || rel.includes('\\')) {
+      return false;
+    }
     try {
       if (!statSync(filePath).isFile()) return false;
       const content = readFileSync(filePath);
       res.writeHead(200, {
         'Content-Type': CONTENT_TYPES[extname(filePath)] ?? 'application/octet-stream',
+        'Cache-Control': 'no-cache',
       });
       res.end(req.method === 'HEAD' ? undefined : content);
       return true;
@@ -347,6 +590,14 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
       return false;
     }
   };
+
+  const apiPath = (pathname: string): boolean =>
+    pathname.startsWith('/api/') ||
+    pathname === '/graph' ||
+    pathname === '/graph/detail' ||
+    pathname === '/graph/similar' ||
+    pathname === '/checkpoints' ||
+    pathname === '/graph/update';
 
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
@@ -358,6 +609,7 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
+
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
       res.end();
@@ -367,33 +619,113 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
       json(res, 200, { status: 'ok' });
       return;
     }
-    if (url.pathname.startsWith('/api/viewer/')) {
+    if (apiPath(url.pathname)) {
       if (req.method !== 'GET') {
-        json(res, 405, { error: true, code: 'METHOD_NOT_ALLOWED', message: 'GET is required' });
+        json(res, 405, {
+          error: true,
+          code: 'METHOD_NOT_ALLOWED',
+          message: 'read-only viewer: GET is required',
+        });
         return;
       }
       if (!requireViewerAuth(req, res)) return;
-      const parts = url.pathname.split('/').filter(Boolean);
-      const result =
-        parts[1] === 'viewer' && parts[2] === 'tasks' && parts.length === 3
-          ? await taskList(url.searchParams)
-          : parts[1] === 'viewer' && parts[2] === 'tasks' && parts.length === 4
-            ? await taskDetail(decodeURIComponent(parts[3]!))
-            : parts[1] === 'viewer' && parts[2] === 'graph' && parts.length === 3
-              ? await graph(url.searchParams)
-              : parts[1] === 'viewer' &&
-                  parts[2] === 'memory' &&
-                  parts[3] === 'search' &&
-                  parts.length === 4
-                ? await memorySearch(url.searchParams)
-                : null;
-      if (result === null) {
-        json(res, 404, { error: true, code: 'NOT_FOUND', message: 'Viewer endpoint not found' });
+
+      if (url.pathname === '/api/report/events') {
+        handleReportEvents(req, res);
         return;
+      }
+
+      let result: unknown;
+      if (url.pathname === '/graph' || url.pathname === '/api/graph') {
+        result = await graph(url.searchParams);
+      } else if (url.pathname === '/graph/detail' || url.pathname === '/api/graph/detail') {
+        result = await graphDetail(url.searchParams);
+      } else if (url.pathname === '/graph/similar' || url.pathname === '/api/graph/similar') {
+        result = await graphSimilar(url.searchParams);
+      } else if (url.pathname === '/checkpoints' || url.pathname === '/api/checkpoints') {
+        result = await checkpoints();
+      } else if (url.pathname === '/api/mama/search') result = await memorySearch(url.searchParams);
+      else if (url.pathname === '/api/viewer/tasks')
+        result = await legacyTaskList(url.searchParams);
+      else if (url.pathname.startsWith('/api/viewer/tasks/')) {
+        result = await legacyTaskDetail(
+          decodeURIComponent(url.pathname.slice('/api/viewer/tasks/'.length))
+        );
+      } else if (url.pathname === '/api/viewer/graph') result = await legacyGraph(url.searchParams);
+      else if (url.pathname === '/api/viewer/memory/search')
+        result = await memorySearch(url.searchParams);
+      else if (url.pathname === '/api/operator/tasks') result = await listTasks(url.searchParams);
+      else if (url.pathname === '/api/operator/summary') result = await operatorSummary();
+      else if (url.pathname === '/api/report') result = { slots: [], ...notAvailable() };
+      else if (url.pathname === '/api/wiki/tree') result = { tree: [], ...notAvailable() };
+      else if (url.pathname === '/api/wiki/page') {
+        throw new ViewerHttpError(404, 'NOT_AVAILABLE', 'not available in this build');
+      } else if (url.pathname === '/api/runtime/status') {
+        if (!options.getRuntimeStatus) {
+          throw new ViewerHttpError(503, 'NOT_AVAILABLE', 'not available in this build');
+        }
+        result = await options.getRuntimeStatus();
+      } else if (url.pathname === '/api/connectors/status') {
+        if (!options.getConnectorStatus) {
+          result = { connectors: [], ...notAvailable() };
+        } else {
+          result = { connectors: await options.getConnectorStatus() };
+        }
+      } else if (url.pathname === '/api/connectors/activity') {
+        result = { connectors: [], ...notAvailable() };
+      } else if (url.pathname.startsWith('/api/connectors/') && url.pathname.endsWith('/feed')) {
+        const connector = decodeURIComponent(
+          url.pathname.slice('/api/connectors/'.length, -'/feed'.length)
+        );
+        result = { connector, feed: [], itemCount: 0, ...notAvailable() };
+      } else if (url.pathname === '/api/metrics/health') {
+        result = {
+          score: null,
+          status: 'unavailable',
+          components: [],
+          checks: [],
+          summary: null,
+          ...notAvailable(),
+        };
+      } else if (url.pathname === '/api/dashboard/status') {
+        result = { memory: { total: null, thisWeek: null }, ...notAvailable() };
+      } else if (url.pathname === '/api/logs/daemon') {
+        result = readLogTail(options.logPath, url.searchParams);
+      } else if (url.pathname === '/api/cron') {
+        result = { jobs: [], ...notAvailable() };
+      } else if (url.pathname.startsWith('/api/cron/')) {
+        result = { logs: [], ...notAvailable() };
+      } else if (url.pathname === '/api/tokens/summary') {
+        result = { today: {}, week: {}, month: {}, ...notAvailable() };
+      } else if (url.pathname === '/api/tokens/by-agent') {
+        result = { agents: [], ...notAvailable() };
+      } else if (url.pathname === '/api/tokens/daily') {
+        result = { days: [], ...notAvailable() };
+      } else if (
+        url.pathname === '/api/skills' ||
+        url.pathname === '/api/skills/catalog' ||
+        url.pathname === '/api/skills/search'
+      ) {
+        result = { skills: [], ...notAvailable() };
+      } else if (url.pathname.startsWith('/api/intelligence/')) {
+        const key = url.pathname.slice('/api/intelligence/'.length);
+        result =
+          key === 'activity'
+            ? { activity: [], limit: 0, ...notAvailable() }
+            : key === 'summary'
+              ? { text: '', generatedAt: null, ...notAvailable() }
+              : key === 'projects' || key === 'pipeline'
+                ? { [key]: [], ...notAvailable() }
+                : key === 'notices'
+                  ? { notices: [], ...notAvailable() }
+                  : { alerts: [], ...notAvailable() };
+      } else {
+        throw new ViewerHttpError(404, 'NOT_FOUND', 'Viewer endpoint not found');
       }
       json(res, 200, result);
       return;
     }
+
     if (serveStatic(url.pathname, req, res)) return;
     json(res, 404, { error: true, code: 'NOT_FOUND', message: 'Not found' });
   };
@@ -411,13 +743,15 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
       const candidate = createServer((req, res) => {
         void handle(req, res).catch((error) => {
           const failure = requestError(error);
-          if (!res.headersSent)
+          if (!res.headersSent) {
             json(res, failure.status, {
               error: true,
               code: failure.code,
               message: failure.message,
             });
-          else res.end();
+          } else {
+            res.end();
+          }
         });
       });
       await new Promise<void>((resolveListen, rejectListen) => {
@@ -438,6 +772,8 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
       const current = server;
       server = null;
       stopped = true;
+      for (const client of reportClients) client.end();
+      reportClients.clear();
       await new Promise<void>((resolveClose, rejectClose) => {
         current.close((error) => (error ? rejectClose(error) : resolveClose()));
       });

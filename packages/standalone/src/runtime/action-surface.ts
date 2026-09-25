@@ -19,6 +19,7 @@ const OWNER_ACTIONS = [
   'graph.query',
   'source.search',
   'source.read',
+  'memory.checkpoint.list',
   'work.create',
   'work.revise',
   'work.list',
@@ -86,9 +87,14 @@ function traceSummary(value: unknown): string | null {
 
 export function createActionSurface(options: ActionSurfaceOptions): ActionSurface {
   const core = coreActionRegistrations(options.knowledge, options.adapter).filter(({ contract }) =>
-    ['graph.query', 'memory.save', 'memory.search', 'work.list', 'work.show'].includes(
-      contract.name
-    )
+    [
+      'graph.query',
+      'memory.save',
+      'memory.search',
+      'memory.checkpoint.list',
+      'work.list',
+      'work.show',
+    ].includes(contract.name)
   );
   const registrations = [
     ...core,

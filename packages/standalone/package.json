@@ -10,7 +10,9 @@
     "mama-code-act-mcp": "./dist/mcp/code-act-server.js"
   },
   "scripts": {
-    "build": "pnpm clean && tsc",
+    "build": "pnpm clean && tsc && pnpm run build:viewer && pnpm run build:ui",
+    "build:ui": "pnpm --dir ui run bundle",
+    "build:viewer": "rm -rf public/viewer/js && tsc -p public/viewer/tsconfig.viewer.json",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"

@@ -240,7 +240,7 @@ The implementation writes raw/index data during import only. Replay is the owner
 
 ## W10 — 2026-09-25
 
-- Result: read-only viewer server, Tasks/history drawer, canonical graph view, generic-kind filter, and memory search are carried and trimmed; Board, Triggers, Wiki, and lessons are absent.
-- Evidence: viewer dispatcher/auth/data-shaping tests pass (13 tests), daemon live/replay wiring passes, package build/typecheck pass; every data route dispatches under owner access and task evidence is read through `source.read`.
-- Files carried: archive `public/viewer/viewer.css` → same path (1,043 archived lines plus W10 shell styles), archive `public/viewer/icons/mama-icon.svg` → same path, with a new trimmed `viewer.html`/`viewer.js` shell and new `api/{auth-middleware,viewer-data,viewer-server}.ts`.
-- Still open: `graph.query` has no revision-to-revision chain edge (it returns revision memory nodes with `data.work`); the viewer reports that gap and uses `work.show history: all` for the detail drawer. The standalone full suite is 49/50 files (128/129 tests) because the pre-existing process-wide ONNX cache fails protobuf parsing; owner replay/live C1/C2 remains supervisor work.
+- Result: the archive viewer shell, modules, static assets, and React operator app are carried unchanged; only the retired `operator/triggers` route and trigger page machinery are removed.
+- Evidence: `build:viewer`, `build:ui`, standalone build/typecheck, lint, archive-route tests (6), and the standalone viewer regressions pass; graph, search, tasks, runtime, connector, report, wiki, log, and empty-state routes are read-only.
+- Data path: graph/search/checkpoints/tasks use the catalog dispatcher under owner access; connector status comes from the live registry; unavailable W6/W7/skills/tokens/intelligence/cron data returns archive-shaped empty results with an explicit reason.
+- Still open: full core and MCP suites are blocked by the pre-existing ONNX `model_quantized.onnx` protobuf cache failure; owner replay/live C1/C2 remains supervisor work.

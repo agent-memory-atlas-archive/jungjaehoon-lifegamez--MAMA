@@ -186,3 +186,255 @@ export function shapeMemorySearch(data: unknown): ViewerMemorySearchResult {
   }
   return { count: result.count as number, results: result.results };
 }
+
+export interface ArchiveOperatorTask {
+  id: number;
+  title: string;
+  status: 'pending' | 'in_progress' | 'review' | 'blocked' | 'done' | 'cancelled';
+  priority: 'high' | 'normal' | 'low';
+  assignee: string | null;
+  due_date: string | null;
+  due_at: string | null;
+  deadline_offset_minutes: number | null;
+  revision: number;
+  temporal_state:
+    | 'closed'
+    | 'exact_upcoming'
+    | 'exact_overdue'
+    | 'date_upcoming'
+    | 'date_due'
+    | 'date_overdue'
+    | 'unscheduled';
+  source_channel: string | null;
+  latest_event: string | null;
+  auto_created: boolean;
+  confirmed: boolean;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ArchiveGraphNode {
+  id: string;
+  kind?: string;
+  state?: string;
+  label?: string;
+  topic?: string;
+  decision_preview?: string;
+  decision?: string;
+  reasoning?: string;
+  confidence?: number | null;
+  created_at?: number;
+  outcome?: string | null;
+  [key: string]: unknown;
+}
+
+export interface ArchiveGraphEdge {
+  id: string;
+  from: string;
+  to: string;
+  relationship: string;
+  reason?: string | null;
+  [key: string]: unknown;
+}
+
+export interface ArchiveGraphResponse {
+  nodes: ArchiveGraphNode[];
+  edges: ArchiveGraphEdge[];
+  similarityEdges: unknown[];
+  meta: Record<string, unknown>;
+  latency: number;
+}
+
+const TASK_STATUSES = new Set<ArchiveOperatorTask['status']>([
+  'pending',
+  'in_progress',
+  'review',
+  'blocked',
+  'done',
+  'cancelled',
+]);
+const TASK_PRIORITIES = new Set<ArchiveOperatorTask['priority']>(['high', 'normal', 'low']);
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() !== '' ? value : null;
+}
+
+function archiveStatus(value: unknown, withdrawn: boolean): ArchiveOperatorTask['status'] {
+  if (typeof value === 'string' && TASK_STATUSES.has(value as ArchiveOperatorTask['status'])) {
+    return value as ArchiveOperatorTask['status'];
+  }
+  return withdrawn ? 'cancelled' : 'pending';
+}
+
+function archivePriority(value: unknown): ArchiveOperatorTask['priority'] {
+  return typeof value === 'string' && TASK_PRIORITIES.has(value as ArchiveOperatorTask['priority'])
+    ? (value as ArchiveOperatorTask['priority'])
+    : 'normal';
+}
+
+function validDate(value: string | null): boolean {
+  if (value === null || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split('-').map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return (
+    parsed.getUTCFullYear() === year &&
+    parsed.getUTCMonth() === month - 1 &&
+    parsed.getUTCDate() === day
+  );
+}
+
+function normalizeDueAt(value: unknown): string | null {
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
+}
+
+function temporalState(
+  status: ArchiveOperatorTask['status'],
+  dueAt: string | null,
+  dueDate: string | null,
+  now: number
+): ArchiveOperatorTask['temporal_state'] {
+  if (status === 'done' || status === 'cancelled') return 'closed';
+  if (dueAt !== null) return Date.parse(dueAt) > now ? 'exact_upcoming' : 'exact_overdue';
+  if (dueDate === null || !validDate(dueDate)) return 'unscheduled';
+  const today = new Date(now).toISOString().slice(0, 10);
+  if (dueDate > today) return 'date_upcoming';
+  if (dueDate === today) return 'date_due';
+  return 'date_overdue';
+}
+
+function archiveTask(item: CommitmentView, now: number): ArchiveOperatorTask {
+  const values = recordValue(item.values);
+  const status = archiveStatus(values.status, item.withdrawn);
+  const dueDate = stringValue(values.deadline);
+  const dueAt = normalizeDueAt(values.dueAt);
+  const offset =
+    typeof values.deadlineOffsetMinutes === 'number' &&
+    Number.isSafeInteger(values.deadlineOffsetMinutes)
+      ? values.deadlineOffsetMinutes
+      : null;
+  return {
+    id: item.rowId,
+    title: stringValue(values.title) ?? '',
+    status,
+    priority: archivePriority(values.priority),
+    assignee: stringValue(values.assignee ?? values.assigneeText),
+    due_date: dueDate !== null && validDate(dueDate) ? dueDate : null,
+    due_at: dueAt,
+    deadline_offset_minutes: offset,
+    revision: item.revision,
+    temporal_state: temporalState(status, dueAt, dueDate, now),
+    source_channel: stringValue(values.sourceChannel ?? values.source_channel),
+    latest_event: stringValue(values.latestEvent ?? values.latest_event),
+    auto_created: values.autoCreated === true || values.auto_created === true,
+    confirmed: values.confirmed === true,
+    created_at: item.createdAt,
+    updated_at: item.updatedAt,
+  };
+}
+
+export function shapeOperatorTasks(
+  page: CommitmentPage,
+  options: { now?: number; status?: string; sourceChannel?: string; limit?: number } = {}
+): { tasks: ArchiveOperatorTask[]; reason?: string } {
+  const now = options.now ?? Date.now();
+  let tasks = page.items.map((item) => archiveTask(item, now));
+  if (options.status !== undefined) tasks = tasks.filter((task) => task.status === options.status);
+  if (options.sourceChannel !== undefined) {
+    tasks = tasks.filter((task) => task.source_channel === options.sourceChannel);
+  }
+  if (options.limit !== undefined) tasks = tasks.slice(0, options.limit);
+  return { tasks };
+}
+
+function graphRef(ref: { kind: string; id: string }): string {
+  return `${ref.kind}:${ref.id}`;
+}
+
+function preview(value: string): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  return normalized.length <= 220 ? normalized : `${normalized.slice(0, 220)}...`;
+}
+
+export function mapArchiveGraphNode(node: WorkGraphPage['nodes'][number]): ArchiveGraphNode {
+  const data = node.data;
+  const memory = data.kind === 'memory' ? data : null;
+  const summary = memory?.summary ?? node.label;
+  const payload = memory?.payload ?? null;
+  return {
+    id: graphRef(node.ref),
+    kind: data.kind,
+    state: memory?.stateAtSnapshot,
+    label: node.label,
+    topic: memory?.topic ?? data.kind,
+    decision_preview: preview(summary),
+    decision: summary,
+    reasoning: payload && typeof payload.reasoning === 'string' ? payload.reasoning : undefined,
+    outcome: payload && typeof payload.outcome === 'string' ? payload.outcome : null,
+    confidence: null,
+    created_at: memory?.recordedAt ?? (data.kind === 'observation' ? data.observedAt : 0),
+  };
+}
+
+export function mapArchiveGraphEdge(edge: WorkGraphPage['edges'][number]): ArchiveGraphEdge {
+  const attrs = recordValue(edge.attrs);
+  return {
+    id: edge.id,
+    from: graphRef(edge.resolvedFrom),
+    to: graphRef(edge.resolvedTo),
+    relationship: edge.relation,
+    reason: typeof attrs.reason_text === 'string' ? attrs.reason_text : null,
+  };
+}
+
+export function shapeArchiveGraph(
+  page: WorkGraphPage,
+  latency: number,
+  kinds: readonly string[] = []
+): ArchiveGraphResponse {
+  const nodes = page.nodes.map(mapArchiveGraphNode);
+  const edges = page.edges.map(mapArchiveGraphEdge);
+  if (kinds.length === 0) {
+    return {
+      nodes,
+      edges,
+      similarityEdges: [],
+      meta: {
+        total_nodes: nodes.length,
+        total_edges: edges.length,
+        similarity_edges: 0,
+        partial: page.nextCursor !== null,
+        next_cursor: page.nextCursor,
+        source: 'graph.query:browse',
+      },
+      latency,
+    };
+  }
+  const wanted = new Set(kinds);
+  const visible = new Set(
+    page.nodes.filter((node) => wanted.has(node.ref.kind)).map((node) => graphRef(node.ref))
+  );
+  const filteredNodes = nodes.filter((node) => visible.has(node.id));
+  const filteredEdges = edges.filter((edge) => visible.has(edge.from) && visible.has(edge.to));
+  return {
+    nodes: filteredNodes,
+    edges: filteredEdges,
+    similarityEdges: [],
+    meta: {
+      total_nodes: filteredNodes.length,
+      total_edges: filteredEdges.length,
+      similarity_edges: 0,
+      partial: page.nextCursor !== null,
+      next_cursor: page.nextCursor,
+      source: 'graph.query:browse',
+    },
+    latency,
+  };
+}

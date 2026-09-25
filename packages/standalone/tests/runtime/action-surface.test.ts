@@ -14,6 +14,7 @@ describe('W1 action surface', () => {
     });
     const expected = [
       'graph.query',
+      'memory.checkpoint.list',
       'memory.save',
       'memory.search',
       'source.read',

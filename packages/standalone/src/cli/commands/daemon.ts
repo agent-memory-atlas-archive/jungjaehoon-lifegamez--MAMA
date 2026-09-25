@@ -24,9 +24,11 @@ import type { SourceDelta } from '../../connectors/framework/polling-scheduler.j
 import { createOwnerPolicyProvider } from '../../runtime/owner-policy.js';
 import {
   createViewerServer as createDefaultViewerServer,
+  type ViewerConnectorStatus,
   type ViewerServer,
   type ViewerServerOptions,
 } from '../../api/viewer-server.js';
+import { resolvePackageVersion } from '../../package-version.js';
 
 const OWNER_PRINCIPAL_ID = 'owner';
 const OWNER_AGENT_ID = 'owner-agent';
@@ -226,6 +228,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
   let connectors: ConnectorRuntime | undefined;
   let gateway: DaemonGateway | null = null;
   let stopped = false;
+  const startedAt = Date.now();
   let currentStage = 'config';
 
   const stopResources = async (): Promise<void> => {
@@ -316,6 +319,35 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
     viewer = viewerFactory({
       dispatch: owner.surface.dispatch,
       ownerAccess: owner.surface.ownerAccess,
+      logPath: config.logging.file,
+      getRuntimeStatus: () => ({
+        running: true,
+        version: resolvePackageVersion(),
+        backend: config.agent.backend,
+        model: config.agent.model,
+        startedAt,
+        health: null,
+        connectors: (connectors?.enabledConnectorNames ?? []).map((name) => ({
+          name,
+          enabled: true,
+          state: connectors?.registry.get(name) ? ('connected' as const) : ('unknown' as const),
+        })),
+      }),
+      getConnectorStatus: async (): Promise<ViewerConnectorStatus[]> => {
+        if (!connectors) return [];
+        const connectorRuntime = connectors;
+        const health = await connectorRuntime.registry.healthCheckAll();
+        return connectorRuntime.enabledConnectorNames.map((name) => {
+          const current = health[name];
+          return {
+            name,
+            enabled: true,
+            healthy: current?.healthy === true,
+            lastPoll: current?.lastPollTime?.toISOString() ?? null,
+            channelCount: connectorRuntime.channelCounts[name] ?? null,
+          };
+        });
+      },
     });
     await viewer.start();
     logger.info(`viewer server listening on port=${String(viewer.port)}`);
