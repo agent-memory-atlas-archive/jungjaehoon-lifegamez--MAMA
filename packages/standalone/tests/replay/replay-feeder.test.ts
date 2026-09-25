@@ -98,7 +98,6 @@ function harness(
     ledgerPath: join(root, 'ledger.jsonl'),
     setReplaySourceEndMs: (value) => ceilings.push(value),
     settlePollMs: 0,
-    settleTimeoutMs: 100,
     sleep: async () => {},
   });
   return { feeder, intake, accepted, ceilings, root };

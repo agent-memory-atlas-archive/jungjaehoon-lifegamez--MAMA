@@ -31,7 +31,6 @@ export interface ReplayFeederOptions {
   ledgerPath: string;
   setReplaySourceEndMs: (value: number | undefined) => void;
   settlePollMs?: number;
-  settleTimeoutMs?: number;
   sleep?: (milliseconds: number) => Promise<void>;
 }
 
@@ -70,14 +69,8 @@ function deltaLedgerFields(delta: SourceDelta): {
   return { firstSourceAtMs: Math.min(...times), lastSourceAtMs: Math.max(...times) };
 }
 
-function deliveryState(row: MailboxRow | null): string {
-  if (!row) return 'missing';
-  return row.nativeDelivery?.state ?? 'not-dispatched';
-}
-
 export class ReplayFeeder {
   private readonly settlePollMs: number;
-  private readonly settleTimeoutMs: number;
   private readonly sleep: (milliseconds: number) => Promise<void>;
 
   constructor(private readonly options: ReplayFeederOptions) {
@@ -89,12 +82,8 @@ export class ReplayFeeder {
     assertMs(options.untilMs, 'untilMs');
     if (options.untilMs < options.fromMs) throw new Error('untilMs must not precede fromMs');
     this.settlePollMs = options.settlePollMs ?? 250;
-    this.settleTimeoutMs = options.settleTimeoutMs ?? 60_000;
     if (!Number.isSafeInteger(this.settlePollMs) || this.settlePollMs < 0) {
       throw new Error('settlePollMs must be a nonnegative safe integer');
-    }
-    if (!Number.isSafeInteger(this.settleTimeoutMs) || this.settleTimeoutMs < 1) {
-      throw new Error('settleTimeoutMs must be a positive safe integer');
     }
     this.sleep =
       options.sleep ??
@@ -153,25 +142,19 @@ export class ReplayFeeder {
     }
   }
 
+  /**
+   * Wait until the delivery settles. A model turn takes minutes, so there is no feeder-side
+   * deadline: the turn has its own configured timeout, a pre-dispatch failure returns the row
+   * to the mailbox's retry (dead after its attempts), and a post-dispatch failure is uncertain.
+   * Dead and uncertain stop the replay loudly in assertNotLost.
+   */
   private async waitForSettled(stimulusId: string): Promise<void> {
-    let elapsed = 0;
-    const maxAttempts = Math.max(
-      1,
-      Math.ceil(this.settleTimeoutMs / Math.max(this.settlePollMs, 1)) + 1
-    );
-    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    for (;;) {
       const row = this.row(stimulusId);
       this.assertNotLost(stimulusId, row);
       if (row.status === 'acked' && row.nativeDelivery?.state === 'settled') return;
-      if (elapsed >= this.settleTimeoutMs || attempt + 1 >= maxAttempts) {
-        throw new Error(
-          `Replay stimulus ${stimulusId} did not settle (mailbox=${row.status}, native=${deliveryState(row)})`
-        );
-      }
       await this.sleep(this.settlePollMs);
-      elapsed += Math.max(this.settlePollMs, 1);
     }
-    throw new Error(`Replay stimulus ${stimulusId} did not settle`);
   }
 
   private async deliverDelta(
