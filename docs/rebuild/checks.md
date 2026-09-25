@@ -177,7 +177,7 @@ The implementation writes raw/index data during import only. Replay is the owner
 2. Wipe the same W1 cutover state, keeping credentials/configuration, briefs, skills, and launchd files. The exact keep-list commands are the W1 cutover block above; the destructive portion is:
 
    ```sh
-   rm -f ~/.mama/mama-memory.db ~/.mama/mama-memory.db-shm ~/.mama/mama-memory.db-wal ~/.mama/mama-metrics.db ~/.mama/mama-sessions.db ~/.mama/runtime.sock
+   rm -f ~/.mama/mama-memory.db ~/.mama/mama-memory.db-shm ~/.mama/mama-memory.db-wal ~/.mama/mama-metrics.db ~/.mama/mama-sessions.db ~/.mama/runtime.sock ~/.mama/report-slots.json
    rm -rf ~/.mama/connectors ~/.mama/runtime ~/.mama/codex-runtime ~/.mama/workspace
    rm -f ~/.mama/logs/daemon.log && mkdir -p ~/.mama/logs
    (cd ~/.mama/.codex && rm -rf sessions shell_snapshots tmp thread-writer-locks memories \
@@ -280,3 +280,18 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Result: the owner agent's action MCP adapter is standalone's own `src/runtime/action-mcp-server.ts` (built to `dist/runtime/action-mcp-server.js`); standalone no longer depends on `@jungjaehoon/mama-server`. The owner pointed out that the public MCP server (Claude Code development memory) is a separate product unrelated to MAMA OS; the engine carry (03da2c6fd) had pulled it in with the archive.
 - Evidence: core 838, standalone 232 (archive handleRequest unit tests carried), mcp-server 121, plugin 165 passed; the built adapter answers `initialize` over stdio; `resolveActionServerPath()` points at standalone's dist for both backends (Claude MCP config and Codex `mcp_servers` read the same file).
 - Still open: `packages/mcp-server` and the plugin keep the archive's carried state, in which the public server calls the daemon socket (`~/.mama`) instead of its own `~/.claude` database. That mixes the two data homes and must be fixed before any mcp-server release; it is outside the owner-flow work.
+- 2026-09-25 day-window run: stopped after window 4 settled to ship the standalone action MCP door and the
+  wiki wording fix (the agent read "publish wiki pages for cases that changed" as "no page changed" on an
+  empty wiki). Window 5's turn was interrupted after writes (work.revise 2, work.create 2, memory.save 1);
+  mailbox row 5 (claimed/accepted) was returned to pending and its native delivery record removed so the
+  whole day is re-delivered; the agent resolves against existing work before writing (testbed, supervisor).
+- 2026-09-25 19:31 KST: stopped after window 9 settled because the daemon's Codex home (`~/.mama/.codex`,
+  a separate free-plan account) had used 13% → 79% of its 30-day limit in nine windows (~7% per window).
+  Window 10's turn had made no action calls; row 10 was returned to pending. Resume after the owner logs
+  the daemon's Codex home into an account with headroom.
+- 2026-09-25 ~19:55 KST quality check after window 10: task titles follow the owner title format with
+  stage and source time; board slots are grounded; 10 lessons come from the owner's own Telegram
+  corrections. Two defects: the board file `~/.mama/report-slots.json` was outside the wipe list, so two
+  archive-era slots (taskBasis, next_actions) survived; and wiki pages were thin day deltas that replaced
+  the page (plus one catch-all page). Fixed: wipe list, and the window/standing instruction asks for one
+  page per case rewritten as its whole running history.

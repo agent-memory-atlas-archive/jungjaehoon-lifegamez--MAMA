@@ -316,7 +316,7 @@ export class ReplaySourceCatalog {
     const occurredAt = first === undefined ? startMs : ordered[ordered.length - 1]!.sourceAtMs;
     const ledgerDigest = options.ledgerDigest === undefined ? undefined : [...options.ledgerDigest];
     const endInstructions =
-      "Record the day's work changes first, then update all four board slots (briefing, action_required, decisions, pipeline), write the wiki page of every case whose work changed in this window (create the page when the case has none yet; the wiki starts empty), and save owner corrections or learned patterns as lesson memory with derived_from evidence.";
+      "Record the day's work changes first, then update all four board slots (briefing, action_required, decisions, pipeline), write the wiki page of every case whose work changed in this window: one page per case, read its current page first and publish the whole page again as the case's running history (current state, then dated events with observation ids), creating it when none exists; and save owner corrections or learned patterns as lesson memory with derived_from evidence.";
     const delta = {
       kind: 'source_delta' as const,
       collector: 'replay',
