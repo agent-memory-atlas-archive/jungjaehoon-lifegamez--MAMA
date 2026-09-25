@@ -56,6 +56,17 @@ describe('W1 runtime configuration', () => {
     ).toThrow(/agent\.timeout/);
   });
 
+  it('polls Telegram when telegram.polling is absent, as the owner config has it', () => {
+    const base = validConfig();
+    const { polling: _polling, ...telegramWithoutPolling } = base.telegram;
+    const parsed = parseConfig({ ...base, telegram: telegramWithoutPolling });
+    expect(parsed.telegram.polling).toBe(true);
+    expect(
+      parseConfig({ ...base, telegram: { ...telegramWithoutPolling, polling: false } }).telegram
+        .polling
+    ).toBe(false);
+  });
+
   it('loads YAML from an explicit path and fails on a missing required section', () => {
     const root = mkdtempSync(join(tmpdir(), 'mama-config-'));
     try {

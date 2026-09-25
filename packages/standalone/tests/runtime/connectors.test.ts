@@ -277,7 +277,7 @@ describe('connector runtime', () => {
       const row = mailbox.claimNext();
       expect(row).not.toBeNull();
       expect(row?.kind).toBe('source_delta');
-      const delivery = createStimulusDelivery({ standingText: 'standing policy' });
+      const delivery = createStimulusDelivery({});
       const reads: string[] = [];
       const context: NativeDeliveryContext = {
         nativeInputId: 'native-input',

@@ -238,7 +238,9 @@ function parseConfigValue(
           : { token: text(telegramRaw.token, 'telegram.token') }),
         allowed_chats: allowedChats,
         owner_user_ids: deriveTelegramOwnerIds(telegramRaw, allowedChats),
-        polling: (telegramRaw.polling ?? false) as boolean,
+        // Absent means the daemon polls, as in the archive gateway (`polling !== false`);
+        // only an explicit `false` hands inbound polling to another instance.
+        polling: (telegramRaw.polling ?? true) as boolean,
       },
     },
     ignored: Object.freeze(state.ignored),

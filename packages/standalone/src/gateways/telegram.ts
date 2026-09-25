@@ -180,13 +180,25 @@ export class TelegramGateway extends BaseGateway {
       });
       this.bot.catch((error) => {
         this.lastError = telegramErrorMessage(error);
+        console.error(`telegram handler failed error=${this.lastError}`);
       });
       await this.bot.init();
       this.connected = true;
       this.lastError = null;
       this.emitEvent({ type: 'connected', source: 'telegram', timestamp: new Date() });
       await this.recoverPendingResponses();
-      if (this.config.polling !== false) void this.bot.start();
+      if (this.config.polling !== false) {
+        // Polling runs for the life of the process; a failure here means no owner message
+        // is ever received, so it is logged, not swallowed.
+        this.bot.start().catch((error: unknown) => {
+          this.lastError = telegramErrorMessage(error);
+          this.connected = false;
+          console.error(`telegram polling stopped error=${this.lastError}`);
+        });
+        console.log(`telegram polling started polling=${this.config.polling ?? 'default'}`);
+      } else {
+        console.log('telegram polling disabled by config');
+      }
     } catch (error) {
       this.lastError = telegramErrorMessage(error);
       if (this.bot) await this.bot.stop().catch(() => {});

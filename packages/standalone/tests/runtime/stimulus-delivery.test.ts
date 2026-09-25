@@ -46,7 +46,7 @@ async function boot(model: NativeSessionHandle['runTurn']) {
     mailbox: { adapter },
     nativeSession: { runTurn: model, stop: async () => {} },
     delivery: {
-      ...createStimulusDelivery({ standingText: 'standing policy' }),
+      ...createStimulusDelivery({}),
       intervalMs: 0,
     },
   });
@@ -151,7 +151,6 @@ describe('one stimulus intake and delivery', () => {
     );
     expect(order).toEqual(['start:owner', 'end:owner', 'start:source', 'end:source']);
     const prompts = runTurn.mock.calls.map((call) => call[0][0].text);
-    expect(prompts.every((text) => text.includes('standing policy'))).toBe(true);
     expect(prompts.some((text) => text.includes('owner request'))).toBe(true);
     expect(prompts.some((text) => text.includes('source-1'))).toBe(true);
     expect(runTurn.mock.calls.every((call) => call[1]?.sessionKey === 'owner:runtime')).toBe(true);

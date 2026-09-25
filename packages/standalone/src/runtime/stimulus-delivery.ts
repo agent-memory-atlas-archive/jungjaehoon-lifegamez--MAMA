@@ -47,7 +47,6 @@ export interface StimulusIntake {
 }
 
 export interface StimulusDeliveryOptions {
-  standingText: string;
   onOwnerResult?: (row: MailboxRow, result: NativeTurnResult) => void | Promise<void>;
   onSourceResult?: (row: MailboxRow, result: NativeTurnResult) => void | Promise<void>;
   onScheduledNoop?: (row: MailboxRow) => void | Promise<void>;
@@ -169,8 +168,9 @@ function boundedStimulus(row: MailboxRow): string {
   return lines.join('\n');
 }
 
-function assembledContent(standingText: string, row: MailboxRow): ContentBlock[] {
-  return [{ type: 'text', text: `${standingText}\n\n${boundedStimulus(row)}` }];
+/** The turn carries only the stimulus; the standing text is the session's system prompt. */
+function assembledContent(row: MailboxRow): ContentBlock[] {
+  return [{ type: 'text', text: boundedStimulus(row) }];
 }
 
 /** Deliver every model-bearing kind through one serialized owner session. */
@@ -195,7 +195,7 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Stimul
         ) {
           throw new Error('Stimulus kind is missing; no owner turn can be assembled');
         }
-        const result = await context.run(assembledContent(options.standingText, row), {
+        const result = await context.run(assembledContent(row), {
           sessionKey: OWNER_RUNTIME_SESSION_KEY,
           source: row.kind,
           channelId: row.channelKey,

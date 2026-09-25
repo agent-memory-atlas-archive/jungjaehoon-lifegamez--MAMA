@@ -172,6 +172,27 @@ describe('one owner native session', () => {
     await session.stop();
   });
 
+  it('sends the standing text as the system prompt, not inside the turn content', async () => {
+    const model = runner('claude');
+    const session = createNativeSession({
+      backend: 'claude',
+      model: 'test-model',
+      workspaceDir: '/tmp/mama-native-workspace',
+      runtimeRoot: '/tmp/mama-native-runtime',
+      actionSurface: surface(),
+      agent: model,
+      ownerSystemPrompt: 'standing policy',
+      maxTurns: 20,
+      timeout: 1_000,
+    });
+
+    await session.runTurn([{ type: 'text', text: 'stimulus' }], { sessionKey: 'owner:runtime' });
+    const call = (model.prompt as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(JSON.stringify(call?.[0])).not.toContain('standing policy');
+    expect(call?.[2]).toMatchObject({ systemPrompt: expect.stringContaining('standing policy') });
+    await session.stop();
+  });
+
   it('repairs Claude MCP config to the shared action server before the session starts', () => {
     const root = mkdtempSync(join(tmpdir(), 'native-config-'));
     try {

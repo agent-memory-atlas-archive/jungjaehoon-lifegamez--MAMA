@@ -151,7 +151,9 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
         workspaceDir: options.workspaceDir,
         runtimeRoot: options.runtimeRoot,
         actionSurface: surface,
-        ownerSystemPrompt: '',
+        // The standing text is the session's system prompt: sent on a new thread and
+        // re-supplied when a durable thread resumes after a restart.
+        ownerSystemPrompt: standingText,
         ...(options.effort === undefined ? {} : { effort: options.effort }),
         timeout: options.timeout,
         maxTurns: options.maxTurns,
@@ -172,7 +174,6 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       mailbox: { adapter: database.adapter },
       nativeSession,
       delivery: createStimulusDelivery({
-        standingText,
         ...(options.onOwnerResult === undefined ? {} : { onOwnerResult: options.onOwnerResult }),
         ...(options.onSourceResult === undefined ? {} : { onSourceResult: options.onSourceResult }),
         ...(options.onScheduledNoop === undefined
