@@ -1,0 +1,2982 @@
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  symlinkSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { NativeEffectReplayBoundary } from '@jungjaehoon/mama-core/runtime/native-session';
+import { CodexAppServerProcess } from '@jungjaehoon/mama-core/runtime/drivers/codex-app-server-process';
+// The protocol class the driver throws — same module the driver loads.
+import {
+  HostToolTerminalError,
+  NativeSteeringTargetUnavailableError,
+} from '@jungjaehoon/mama-core/runtime/drivers/types';
+import type {
+  HostToolBridge,
+  HostToolCall,
+  HostToolCallResult,
+  HostToolDefinition,
+} from '@jungjaehoon/mama-core/runtime/drivers/types';
+import { CodexRuntimeProcess } from '@jungjaehoon/mama-core/runtime/runtime-process';
+const roots: string[] = [];
+
+interface FixtureTurn {
+  id: string;
+  items: unknown[];
+  itemsView: 'full';
+  status: 'completed' | 'interrupted' | 'failed' | 'inProgress';
+  error: { message: string; codexErrorInfo: null; additionalDetails: string | null } | null;
+  startedAt: number | null;
+  completedAt: number | null;
+  durationMs: number | null;
+}
+
+interface FixtureThread {
+  id: string;
+  sessionId: string;
+  forkedFromId: string | null;
+  parentThreadId: string | null;
+  preview: string;
+  ephemeral: boolean;
+  modelProvider: string;
+  createdAt: number;
+  updatedAt: number;
+  recencyAt: number | null;
+  status: { type: 'idle' };
+  path: string | null;
+  cwd: string;
+  cliVersion: string;
+  source: 'appServer';
+  threadSource: string | null;
+  agentNickname: string | null;
+  agentRole: string | null;
+  gitInfo: null;
+  name: string | null;
+  turns: FixtureTurn[];
+}
+
+interface FixtureInitializeResponse {
+  userAgent: string;
+  codexHome: string;
+  platformFamily: string;
+  platformOs: string;
+}
+
+interface FixtureThreadResponse {
+  thread: FixtureThread;
+  model: string;
+  modelProvider: string;
+  serviceTier: string | null;
+  cwd: string;
+  instructionSources: string[];
+  approvalPolicy: 'never';
+  approvalsReviewer: 'user';
+  sandbox: Record<string, unknown>;
+  reasoningEffort: string | null;
+}
+
+function fixtureTurn(): FixtureTurn {
+  return {
+    id: '',
+    items: [],
+    itemsView: 'full',
+    status: 'inProgress',
+    error: null,
+    startedAt: 1,
+    completedAt: null,
+    durationMs: null,
+  };
+}
+
+function fixtureThread(root: string): FixtureThread {
+  return {
+    id: '',
+    sessionId: 'session-1',
+    forkedFromId: null,
+    parentThreadId: null,
+    preview: '',
+    ephemeral: false,
+    modelProvider: 'openai',
+    createdAt: 1,
+    updatedAt: 1,
+    recencyAt: 1,
+    status: { type: 'idle' },
+    path: null,
+    cwd: root,
+    cliVersion: '0.144.0',
+    source: 'appServer',
+    threadSource: null,
+    agentNickname: null,
+    agentRole: null,
+    gitInfo: null,
+    name: null,
+    turns: [],
+  };
+}
+
+const dynamicTools: HostToolBridge['tools'] = [
+  {
+    type: 'function',
+    name: 'synthetic_lookup',
+    description: 'Run a synthetic lookup',
+    inputSchema: {
+      type: 'object',
+      properties: { topic: { type: 'string' } },
+      additionalProperties: true,
+    },
+  },
+];
+
+function hostBridge(
+  execute: HostToolBridge['execute'] = async () => ({ content: 'lookup ready', isError: false })
+): HostToolBridge {
+  return { tools: dynamicTools, execute };
+}
+
+function fixture(
+  mode = 'success',
+  secret = ''
+): {
+  root: string;
+  command: string;
+  capture: string;
+  options: ConstructorParameters<typeof CodexAppServerProcess>[0];
+} {
+  const root = mkdtempSync(join(tmpdir(), 'mama-codex-process-'));
+  roots.push(root);
+  const command = join(root, 'fake-codex.mjs');
+  const capture = join(root, 'capture.ndjson');
+  const codexHome = join(root, 'managed-codex');
+  const initializeResponse: FixtureInitializeResponse = {
+    userAgent: 'fake',
+    codexHome,
+    platformFamily: 'unix',
+    platformOs: 'macos',
+  };
+  const threadFixture = fixtureThread(root);
+  const turnFixture = fixtureTurn();
+  const responseFixture: Omit<FixtureThreadResponse, 'thread' | 'model' | 'cwd' | 'sandbox'> = {
+    modelProvider: 'openai',
+    serviceTier: null,
+    instructionSources: [],
+    approvalPolicy: 'never',
+    approvalsReviewer: 'user',
+    reasoningEffort: null,
+  };
+  writeFileSync(
+    command,
+    `#!/usr/bin/env node
+import fs from 'node:fs';
+import readline from 'node:readline';
+const mode = ${JSON.stringify(mode)};
+const capture = ${JSON.stringify(capture)};
+fs.appendFileSync(capture, JSON.stringify({argv:process.argv.slice(2),home:process.env.HOME,codexHome:process.env.CODEX_HOME,secret:process.env.TEST_SECRET,pid:process.pid})+'\\n');
+if (${JSON.stringify(secret)}) process.stderr.write(${JSON.stringify(secret)}+'\\n');
+const send = value => { const wire = mode === 'no-jsonrpc' ? Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'jsonrpc')) : value; process.stdout.write(JSON.stringify(wire)+'\\n'); };
+let thread = 0;
+let turn = 0;
+let overloaded = false;
+const toolReplies = new Map();
+const fullTurn = (id,status='inProgress',error=null) => ({...${JSON.stringify(turnFixture)},id,items:status==='completed'&&mode!=='missing-final'?[{id:'final-'+id,type:'agentMessage',...(mode==='unphased-final'?{}:{phase:'final_answer'}),text:'hello'}]:[],status,error,completedAt:status==='inProgress'?null:2,durationMs:status==='inProgress'?null:1});
+const fullThread = id => ({...${JSON.stringify(threadFixture)},id});
+const rl = readline.createInterface({input:process.stdin});
+rl.on('line', line => {
+  const message = JSON.parse(line);
+  fs.appendFileSync(capture, JSON.stringify(message)+'\\n');
+  if (!message.method && (Object.hasOwn(message, 'result') || Object.hasOwn(message, 'error'))) {
+    const callback = toolReplies.get(message.id);
+    if (callback) callback(message);
+    if (mode === 'tool-stale' && message.id === 710) fs.writeFileSync(${JSON.stringify(join(root, 'late-tool-reply'))},'1');
+    return;
+  }
+  if (message.method === 'initialize') {
+    if (mode === 'init-timeout') return;
+    if (mode === 'init-delayed') {
+      fs.writeFileSync(${JSON.stringify(join(root, 'initialize-seen'))},'1');
+      const interval=setInterval(()=>{if(fs.existsSync(${JSON.stringify(join(root, 'release-initialize'))})){clearInterval(interval);send({jsonrpc:'2.0',id:message.id,result:${JSON.stringify(initializeResponse)}});}},5);
+      return;
+    }
+    if (mode === 'null-json') return process.stdout.write('null\\n');
+    if (mode === 'bad-jsonrpc') return send({jsonrpc:'1.0',id:message.id,result:{}});
+    if (mode === 'combined-shape') return send({jsonrpc:'2.0',id:message.id,method:'bad',result:{}});
+    if (mode === 'version-only') return send({jsonrpc:'2.0'});
+    if (mode === 'result-no-id') return send({jsonrpc:'2.0',result:{}});
+    if (mode === 'error-no-id') return send({jsonrpc:'2.0',error:{code:-1,message:'bad'}});
+    if (mode === 'id-only') return send({jsonrpc:'2.0',id:message.id});
+    if (mode === 'bad-response') return send({jsonrpc:'2.0',id:message.id});
+    if (mode === 'rpc-error') return send({jsonrpc:'2.0',id:message.id,error:{code:-32000,message:'rpc boom'}});
+    const initialized=${JSON.stringify(initializeResponse)};
+    if (mode === 'canonical-home') initialized.codexHome = fs.realpathSync(process.env.CODEX_HOME);
+    send({jsonrpc:'2.0',id:message.id,result:initialized});
+    if (mode === 'unknown-response') setTimeout(()=>send({jsonrpc:'2.0',id:999,result:{}}),5);
+    return;
+  }
+  const threadResult = (id,params) => { const sandbox=params.sandbox === 'workspace-write'?{type:'workspaceWrite',writableRoots:[params.cwd],networkAccess:false,excludeTmpdirEnvVar:false,excludeSlashTmp:false}:params.sandbox === 'read-only'?{type:'readOnly',networkAccess:false}:{type:'dangerFullAccess'}; const instructionSources=mode==='symlink-source'?[params.cwd+'/AGENTS.md']:fs.existsSync(${JSON.stringify(join(root, 'bad-source'))})?['/outside/AGENTS.md']:[]; const result={...${JSON.stringify(responseFixture)},thread:fullThread(id),model:mode === 'bad-policy'?'unexpected-model':params.model,cwd:params.cwd,instructionSources,sandbox}; if(mode==='bad-thread-schema') delete result.thread.sessionId; return result; };
+  if (message.method === 'thread/start') return send({jsonrpc:'2.0',id:message.id,result:threadResult('thread-'+(++thread),message.params)});
+  if (message.method === 'thread/resume') return send({jsonrpc:'2.0',id:message.id,result:threadResult(message.params.threadId,message.params)});
+  if (message.method === 'command/exec') return send({jsonrpc:'2.0',id:message.id,result:{exitCode:0,stdout:'sandboxed command',stderr:''}});
+  if (message.method === 'turn/steer') {
+    if (fs.existsSync(${JSON.stringify(join(root, 'reject-steer'))})) {
+      return send({id:message.id,error:{code:-32602,message:'turn cannot accept this input'}});
+    }
+    const turnId = fs.existsSync(${JSON.stringify(join(root, 'bad-steer-ack'))}) ? 'different-turn' : message.params.expectedTurnId;
+    return send({id:message.id,result:{turnId}});
+  }
+  if (message.method === 'turn/start') {
+    if (mode === 'overloaded-once' && !overloaded) { overloaded = true; return send({jsonrpc:'2.0',id:message.id,error:{code:-32001,message:'Server overloaded; retry later.'}}); }
+    if (mode === 'timeout') return;
+    if (mode === 'timeout-once' && !fs.existsSync(${JSON.stringify(join(root, 'timed-out'))})) { fs.writeFileSync(${JSON.stringify(join(root, 'timed-out'))},'1'); return; }
+    if (mode === 'exit') return process.exit(17);
+    const id = 'turn-'+(++turn);
+    if (['turn-start-error-held-once','turn-start-malformed-held-once'].includes(mode) && !fs.existsSync(${JSON.stringify(join(root, 'held-turn-start'))})) {
+      fs.writeFileSync(${JSON.stringify(join(root, 'held-turn-start'))},'1');
+      const interval=setInterval(()=>{
+        if (!fs.existsSync(${JSON.stringify(join(root, 'release-turn-start'))})) return;
+        clearInterval(interval);
+        if (mode === 'turn-start-error-held-once') send({jsonrpc:'2.0',id:message.id,error:{code:-32000,message:'rejected before execution'}});
+        else send({jsonrpc:'2.0',id:message.id,result:{turn:{id}}});
+      },5);
+      return;
+    }
+    if (mode === 'turn-start-late-once' && !fs.existsSync(${JSON.stringify(join(root, 'late-turn-start'))})) {
+      fs.writeFileSync(${JSON.stringify(join(root, 'late-turn-start'))},'1');
+      setTimeout(()=>send({jsonrpc:'2.0',id:message.id,result:{turn:fullTurn(id)}}),900);
+      return;
+    }
+    const requestBase = 700 + turn * 10;
+    const earlyTool = mode === 'tool-early';
+    const toolParams = mode === 'auxiliary-write'
+      ? {threadId:message.params.threadId,turnId:id,callId:'call-1',namespace:null,tool:'Write',arguments:{path:${JSON.stringify(join(root, 'auxiliary-output.txt'))},content:'written'}}
+      : mode === 'auxiliary-bash'
+      ? {threadId:message.params.threadId,turnId:id,callId:'call-1',namespace:null,tool:'Bash',arguments:{command:'pwd',workdir:${JSON.stringify(root)}}}
+      : {threadId:message.params.threadId,turnId:id,callId:'call-1',namespace:null,tool:mode==='tool-dotted'?'deliver_drive':'synthetic_lookup',arguments:{topic:'status'}};
+    const requestTool = (requestId, params, callback) => { toolReplies.set(requestId, callback); send({jsonrpc:'2.0',id:requestId,method:'item/tool/call',params}); };
+    let toolReplyCount = 0;
+    const afterToolReply = () => { toolReplyCount += 1; const expected=['tool-duplicate','tool-duplicate-conflict','tool-serialized'].includes(mode) ? 2 : 1; if(toolReplyCount === expected) complete(); };
+    if (earlyTool) requestTool(requestBase,toolParams,afterToolReply);
+    send({jsonrpc:'2.0',id:message.id,result:{turn:mode==='bad-turn-schema'?{id}:fullTurn(id)}});
+    if (mode.startsWith('native-effects')) {
+      const nativeEvent = (method, type, itemId, turnId=id) => send({jsonrpc:'2.0',method,params:{threadId:message.params.threadId,turnId,item:{id:itemId,type,status:'completed',exitCode:0}}});
+      nativeEvent('item/started','commandExecution','stale','prior-turn');
+      nativeEvent('item/started','mcpToolCall','mcp');
+      nativeEvent('item/started','commandExecution','native-1');
+      nativeEvent('item/started','commandExecution','native-1');
+      if (mode !== 'native-effects-pending') {
+        nativeEvent('item/completed','commandExecution','native-1');
+        nativeEvent('item/completed','commandExecution','native-1');
+        nativeEvent('item/completed','fileChange','native-2');
+      }
+    }
+    if (mode === 'malformed') return process.stdout.write('{bad json\\n');
+    send({jsonrpc:'2.0',method:'item/agentMessage/delta',params:{threadId:message.params.threadId,delta:'missing'}});
+    send({jsonrpc:'2.0',method:'item/agentMessage/delta',params:{threadId:message.params.threadId,turnId:'prior-turn',delta:'prior'}});
+    send({jsonrpc:'2.0',method:'thread/tokenUsage/updated',params:{threadId:message.params.threadId,tokenUsage:{last:{inputTokens:99,outputTokens:99}}}});
+    send({jsonrpc:'2.0',method:'thread/tokenUsage/updated',params:{threadId:message.params.threadId,turnId:'prior-turn',tokenUsage:{last:{inputTokens:88,outputTokens:88}}}});
+    send({jsonrpc:'2.0',method:'turn/completed',params:{threadId:'other',turn:fullTurn(id,'completed')}});
+    send({jsonrpc:'2.0',method:'turn/completed',params:{threadId:message.params.threadId,turn:fullTurn('wrong-turn','completed')}});
+    send({jsonrpc:'2.0',method:'turn/completed',params:{threadId:message.params.threadId,turn:fullTurn(id,'inProgress')}});
+    const complete = () => {
+    if (mode === 'commentary-final' || mode === 'missing-final') {
+      send({jsonrpc:'2.0',method:'item/started',params:{threadId:message.params.threadId,turnId:id,item:{id:'comment-'+id,type:'agentMessage',phase:'commentary',text:''}}});
+      send({jsonrpc:'2.0',method:'item/agentMessage/delta',params:{threadId:message.params.threadId,turnId:id,itemId:'comment-'+id,delta:'Checking status...'}});
+      send({jsonrpc:'2.0',method:'item/completed',params:{threadId:message.params.threadId,turnId:id,item:{id:'comment-'+id,type:'agentMessage',phase:'commentary',text:'Checking status...'}}});
+    }
+    if (mode !== 'missing-final') {
+      if (mode !== 'progress-delayed') send({jsonrpc:'2.0',method:'item/started',params:{threadId:message.params.threadId,turnId:id,item:{id:'final-'+id,type:'agentMessage',...(mode==='unphased-final'?{}:{phase:'final_answer'}),text:''}}});
+      send({jsonrpc:'2.0',method:'item/agentMessage/delta',params:{threadId:message.params.threadId,turnId:id,itemId:'final-'+id,delta:'hello'}});
+      send({jsonrpc:'2.0',method:'item/completed',params:{threadId:message.params.threadId,turnId:id,item:{id:'final-'+id,type:'agentMessage',...(mode==='unphased-final'?{}:{phase:'final_answer'}),text:'hello'}}});
+    }
+    // Cumulative totals continue across turns AND child restarts (file-backed
+    // counter), like a real durable thread - pins that resumed-history offsets
+    // are never attributed to the current turn.
+    const usageSeqPath = ${JSON.stringify(join(root, 'usage-seq'))};
+    const useq = fs.existsSync(usageSeqPath) ? Number(fs.readFileSync(usageSeqPath, 'utf8')) : 0;
+    fs.writeFileSync(usageSeqPath, String(useq + 1));
+    if (mode === 'usage-no-total') {
+    send({jsonrpc:'2.0',method:'thread/tokenUsage/updated',params:{threadId:message.params.threadId,turnId:id,tokenUsage:{last:{inputTokens:3,outputTokens:2,cachedInputTokens:1}}}});
+    send({jsonrpc:'2.0',method:'thread/tokenUsage/updated',params:{threadId:message.params.threadId,turnId:id,tokenUsage:{last:{inputTokens:5,outputTokens:4,cachedInputTokens:2}}}});
+    } else if (mode === 'usage-mixed-total') {
+    send({jsonrpc:'2.0',method:'thread/tokenUsage/updated',params:{threadId:message.params.threadId,turnId:id,tokenUsage:{last:{inputTokens:3,outputTokens:2,cachedInputTokens:1}}}});
+    send({jsonrpc:'2.0',method:'thread/tokenUsage/updated',params:{threadId:message.params.threadId,turnId:id,tokenUsage:{last:{inputTokens:5,outputTokens:4,cachedInputTokens:2},total:{inputTokens:8+8*useq,outputTokens:6+6*useq,cachedInputTokens:3+3*useq}}}});
+    } else if (mode === 'usage-shrinking-total') {
+    send({jsonrpc:'2.0',method:'thread/tokenUsage/updated',params:{threadId:message.params.threadId,turnId:id,tokenUsage:{last:{inputTokens:3,outputTokens:2,cachedInputTokens:1},total:{inputTokens:10,outputTokens:8,cachedInputTokens:4}}}});
+    send({jsonrpc:'2.0',method:'thread/tokenUsage/updated',params:{threadId:message.params.threadId,turnId:id,tokenUsage:{last:{inputTokens:5,outputTokens:4,cachedInputTokens:2},total:{inputTokens:5,outputTokens:4,cachedInputTokens:2}}}});
+    } else {
+    send({jsonrpc:'2.0',method:'thread/tokenUsage/updated',params:{threadId:message.params.threadId,turnId:id,tokenUsage:{last:{inputTokens:3,outputTokens:2,cachedInputTokens:1},total:{inputTokens:3+8*useq,outputTokens:2+6*useq,cachedInputTokens:1+3*useq}}}});
+    send({jsonrpc:'2.0',method:'thread/tokenUsage/updated',params:{threadId:message.params.threadId,turnId:id,tokenUsage:{last:{inputTokens:5,outputTokens:4,cachedInputTokens:2},total:{inputTokens:8+8*useq,outputTokens:6+6*useq,cachedInputTokens:3+3*useq}}}});
+    }
+    const status=['failed','native-effects-failed','native-effects-pending'].includes(mode) ? 'failed' : mode === 'interrupted' ? 'interrupted' : 'completed';
+    const error=status==='failed'?{message:'turn boom',codexErrorInfo:null,additionalDetails:null}:null;
+    send({jsonrpc:'2.0',method:'turn/completed',params:{threadId:message.params.threadId,turn:fullTurn(id,status,error)}});
+    send({jsonrpc:'2.0',method:'turn/completed',params:{threadId:message.params.threadId,turn:fullTurn(id,'completed')}});
+    if (mode === 'exit-after-turn') setTimeout(() => process.exit(23), 5);
+    };
+    if (mode === 'held-for-steer') {
+      const interval=setInterval(()=>{if(fs.existsSync(${JSON.stringify(join(root, 'release-held-turn'))})){clearInterval(interval);complete();}},5);
+      return;
+    }
+    if (['tool-success','tool-dotted','auxiliary-write','auxiliary-bash','tool-failure','tool-null-result','tool-error-stop','tool-abort-completed-first','tool-terminal-exit','tool-interrupt-hang','tool-malformed','tool-malformed-once','tool-malformed-turn','tool-malformed-call','tool-malformed-tool','tool-malformed-namespace','tool-unknown','tool-duplicate','tool-duplicate-conflict','tool-serialized','tool-queue-cancel','tool-stop','tool-stale'].includes(mode)) {
+      if (mode === 'tool-stale' && fs.existsSync(${JSON.stringify(join(root, 'tool-issued'))})) { complete(); return; }
+      if (mode === 'tool-stale') fs.writeFileSync(${JSON.stringify(join(root, 'tool-issued'))},'1');
+      if (mode === 'tool-malformed-once' && fs.existsSync(${JSON.stringify(join(root, 'malformed-tool-issued'))})) { complete(); return; }
+      if (mode === 'tool-malformed-once') fs.writeFileSync(${JSON.stringify(join(root, 'malformed-tool-issued'))},'1');
+      const params=mode === 'tool-malformed' || mode === 'tool-malformed-once'?{...toolParams,arguments:[]}:mode === 'tool-malformed-turn'?{...toolParams,turnId:7}:mode === 'tool-malformed-call'?{...toolParams,callId:7}:mode === 'tool-malformed-tool'?{...toolParams,tool:7}:mode === 'tool-malformed-namespace'?{...toolParams,namespace:7}:mode === 'tool-unknown'?{...toolParams,tool:'not_advertised'}:toolParams;
+      const callback=['tool-stop','tool-interrupt-hang'].includes(mode)?()=>{}:mode === 'tool-terminal-exit'?()=>process.exit(23):mode === 'tool-error-stop'?()=>send({jsonrpc:'2.0',method:'turn/completed',params:{threadId:message.params.threadId,turn:fullTurn(id,'interrupted')}}):mode === 'tool-abort-completed-first'?()=>send({jsonrpc:'2.0',method:'turn/completed',params:{threadId:message.params.threadId,turn:fullTurn(id,'completed')}}):afterToolReply;
+      requestTool(requestBase,params,callback);
+      if (mode === 'tool-duplicate') requestTool(requestBase+1,{...params},afterToolReply);
+      if (mode === 'tool-duplicate-conflict') requestTool(requestBase+1,{...params,arguments:{topic:'different'}},afterToolReply);
+      if (mode === 'tool-serialized') requestTool(requestBase+1,{...params,callId:'call-2'},afterToolReply);
+      if (mode === 'tool-queue-cancel') {
+        requestTool(requestBase+1,{...params,callId:'call-2'},()=>{});
+        setTimeout(()=>send({jsonrpc:'2.0',method:'turn/completed',params:{threadId:message.params.threadId,turn:fullTurn(id,'failed',{message:'queue canceled',codexErrorInfo:null,additionalDetails:null})}}),20);
+      }
+      return;
+    }
+    if (earlyTool) return;
+    if (mode === 'progress-reasoning') { let ticks=0; const interval=setInterval(()=>{ticks += 1;send({jsonrpc:'2.0',method:'item/completed',params:{threadId:message.params.threadId,turnId:id,item:{id:'reasoning-'+id+'-'+ticks,type:'reasoning',summary:[],content:[]}}});if(ticks===8){clearInterval(interval);complete();}},30); }
+    else if (mode === 'progress-delayed') { send({jsonrpc:'2.0',method:'item/started',params:{threadId:message.params.threadId,turnId:id,item:{id:'final-'+id,type:'agentMessage',phase:'final_answer',text:''}}}); let progress=0; const interval=setInterval(()=>{progress += 1;send({jsonrpc:'2.0',method:'item/agentMessage/delta',params:{threadId:message.params.threadId,turnId:id,itemId:'final-'+id,delta:'tick'}});if(progress===4){clearInterval(interval);complete();}},25); }
+    else if (mode === 'delayed') { const interval=setInterval(()=>{if(fs.existsSync(${JSON.stringify(join(root, 'release'))})){clearInterval(interval);complete();}},5); } else if(mode === 'unknown-response') setTimeout(complete,20);
+    else if (mode.startsWith('subagent')) {
+      const RELEASE_LATE = ${JSON.stringify(join(root, 'release-late'))};
+      const parentThread = message.params.threadId;
+      // A foreign announcement claims a thread this process already drives as its "child".
+      const announced = mode === 'subagent-foreign' ? parentThread : 'child-1';
+      const activity = (kind,thread) => ({type:'subAgentActivity',id:'sub-1',kind,agentThreadId:thread,agentPath:'/root/board'});
+      send({jsonrpc:'2.0',method:'item/started',params:{threadId:parentThread,turnId:id,item:activity('started',announced)}});
+      // 'subagent-restart' holds the SECOND view of the same 'started' announcement back
+      // until after the child's own turn/completed, so it lands on a finished child.
+      if (mode !== 'subagent-restart') send({jsonrpc:'2.0',method:'item/completed',params:{threadId:parentThread,turnId:id,item:activity('started',announced)}});
+      complete();
+      const childMessage = {id:'m1',type:'agentMessage',text:'child says done',phase:'final_answer'};
+      const startChild = () => {
+        send({jsonrpc:'2.0',method:'turn/started',params:{threadId:'child-1',turnId:'child-turn-1'}});
+        if (mode === 'subagent-parent-first') {
+          // The parent announces the completion the child's own turn never confirms.
+          send({jsonrpc:'2.0',method:'item/completed',params:{threadId:parentThread,item:activity('completed','child-1')}});
+          // ...and then, only when the test asks for it, the child's own turn arrives LATE.
+          const late=setInterval(()=>{if(fs.existsSync(RELEASE_LATE)){clearInterval(late);send({jsonrpc:'2.0',method:'item/completed',params:{threadId:'child-1',turnId:'child-turn-1',item:childMessage}});send({jsonrpc:'2.0',method:'turn/completed',params:{threadId:'child-1',turn:{...fullTurn('child-turn-1','completed'),items:[childMessage]}}});}},5);
+          return;
+        }
+        if (mode === 'subagent-restart') {
+          send({jsonrpc:'2.0',method:'item/completed',params:{threadId:'child-1',turnId:'child-turn-1',item:childMessage}});
+          send({jsonrpc:'2.0',method:'turn/completed',params:{threadId:'child-1',turn:{...fullTurn('child-turn-1','completed'),items:[childMessage]}}});
+          setTimeout(()=>send({jsonrpc:'2.0',method:'item/completed',params:{threadId:parentThread,turnId:id,item:activity('started','child-1')}}),10);
+          return;
+        }
+        if (mode === 'subagent-ttl') return;
+        requestTool(requestBase+5,{threadId:'child-1',turnId:'child-turn-1',callId:'call-c1',namespace:null,tool:'synthetic_lookup',arguments:{topic:'child'}},()=>{
+          send({jsonrpc:'2.0',method:'item/completed',params:{threadId:'child-1',turnId:'child-turn-1',item:childMessage}});
+          send({jsonrpc:'2.0',method:'turn/completed',params:{threadId:'child-1',turn:{...fullTurn('child-turn-1','completed'),items:[childMessage]}}});
+          send({jsonrpc:'2.0',method:'item/completed',params:{threadId:parentThread,item:activity('completed','child-1')}});
+        });
+      };
+      if (mode === 'subagent-unannounced') {
+        // A tool call on a thread nobody announced: no child, no authority, no bridge.
+        const interval=setInterval(()=>{if(fs.existsSync(${JSON.stringify(join(root, 'release-child'))})){clearInterval(interval);requestTool(requestBase+5,{threadId:'stranger-1',turnId:'stranger-turn-1',callId:'call-s1',namespace:null,tool:'synthetic_lookup',arguments:{topic:'child'}},()=>{});}},5);
+      } else {
+        // The child starts only when the test releases it: the parent resolving first is
+        // an ordering guarantee, not a race against a timer.
+        const interval=setInterval(()=>{if(fs.existsSync(${JSON.stringify(join(root, 'release-child'))})){clearInterval(interval);startChild();}},5);
+      }
+    }
+    else complete();
+    return;
+  }
+  if (message.method === 'turn/interrupt') {
+    if (mode === 'tool-interrupt-hang') return;
+    send({jsonrpc:'2.0',id:message.id,result:{} });
+    send({jsonrpc:'2.0',method:'turn/completed',params:{threadId:message.params.threadId,turn:fullTurn(message.params.turnId,'interrupted')}});
+    return;
+  }
+  if (Object.hasOwn(message, 'result') || Object.hasOwn(message, 'error')) return;
+});
+setTimeout(() => {
+  const requests = [
+    ['item/tool/requestUserInput',{answers:{}}],
+    ['mcpServer/elicitation/request',{action:'decline',content:null,_meta:null}],
+    ['item/tool/call',{success:false,contentItems:[{type:'inputText',text:'Native app-server tools are disabled by MAMA'}]}],
+    ['item/commandExecution/requestApproval',{decision:'decline'}],
+    ['item/fileChange/requestApproval',{decision:'decline'}],
+    ['item/permissions/requestApproval',{permissions:{},scope:'turn',strictAutoReview:true}],
+    ['applyPatchApproval',{decision:'denied'}],
+    ['execCommandApproval',{decision:'denied'}],
+  ];
+  let id = 900;
+  for (const [method] of requests) send({jsonrpc:'2.0',id:id === 900 ? 'request-900' : id,method,params:{}}), id++;
+  send({jsonrpc:'2.0',id:id++,method:'unknown/request',params:{}});
+}, 10);
+process.on('SIGTERM', () => { if (mode !== 'ignore-term') process.exit(0); });
+`,
+    { mode: 0o700 }
+  );
+  chmodSync(command, 0o700);
+  const isolatedHome = join(root, 'isolated-home');
+  const registryRoot = join(root, 'runtime', 'threads');
+  mkdirSync(join(root, 'source-home', '.codex'), { recursive: true });
+  return {
+    root,
+    command,
+    capture,
+    options: {
+      sessionKey: 'session-a',
+      model: 'gpt-test',
+      systemPrompt: 'system rules',
+      cwd: root,
+      sandbox: 'workspace-write',
+      command,
+      // Spawn-covering default: the first prompt lazily launches the fake Node
+      // app-server and bounds its initialize handshake with this value. 500ms
+      // timed out `initialize` on a loaded host (load ~4 on 10 cores). Timeout-path
+      // tests pass their own explicit budgets.
+      requestTimeout: 2_000,
+      codexHome,
+      isolatedHome,
+      registryRoot,
+      // Where this fixture's "installed CLI" keeps its credential. The driver used to
+      // find it under $HOME; it is stated now, because a shared driver does not know
+      // whose home it is running in. The cases below write to this exact path.
+      authSourcePath: join(root, 'source-home', '.codex', 'auth.json'),
+    },
+  };
+}
+
+function messages(path: string): Array<Record<string, unknown>> {
+  return readFileSync(path, 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+function objectResult(entry: Record<string, unknown>): Record<string, unknown> | undefined {
+  return typeof entry.result === 'object' && entry.result !== null && !Array.isArray(entry.result)
+    ? (entry.result as Record<string, unknown>)
+    : undefined;
+}
+
+async function waitForFile(path: string): Promise<void> {
+  // 2s: the flag is written by the freshly spawned fake app-server, so this bound
+  // covers process start on a loaded host, not just the handshake it observes.
+  for (let attempt = 0; attempt < 400; attempt += 1) {
+    if (existsSync(path)) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`Timed out waiting for ${path}`);
+}
+
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  vi.restoreAllMocks();
+});
+
+describe('Story: Codex app-server process', () => {
+  it('does not send turn/start when the durable dispatch write fails', async () => {
+    const item = fixture('held-for-steer');
+    const driver = new CodexAppServerProcess(item.options);
+    try {
+      await expect(
+        driver.prompt(
+          'inspect',
+          {
+            onInputDispatch: (input) => {
+              expect(input).toEqual({
+                backend: 'codex',
+                sessionId: 'thread-1',
+                inputId: 'durable-id',
+              });
+              throw new Error('disk full');
+            },
+          },
+          { nativeInputId: 'durable-id' }
+        )
+      ).rejects.toThrow('disk full');
+      expect(messages(item.capture).filter((entry) => entry.method === 'turn/start')).toEqual([]);
+    } finally {
+      await driver.stop();
+    }
+  });
+
+  it('TG-05 acknowledges native input before completion and steers the same active turn', async () => {
+    const item = fixture('held-for-steer');
+    const driver = new CodexAppServerProcess(item.options);
+    const accepted: unknown[] = [];
+    let completed = false;
+    const result = driver.prompt('investigate', {
+      onAccepted: (receipt: unknown) => accepted.push(receipt),
+    });
+    void result.then(
+      () => {
+        completed = true;
+      },
+      () => {}
+    );
+    try {
+      await vi.waitFor(() =>
+        expect(accepted).toEqual([{ backend: 'codex', sessionId: 'thread-1', turnId: 'turn-1' }])
+      );
+      expect(completed).toBe(false);
+      const target = { backend: 'codex', sessionId: 'thread-1', turnId: 'turn-1' } as const;
+      const beforeSend = vi.fn(() => {
+        expect(
+          messages(item.capture).filter((entry) => entry.method === 'turn/steer')
+        ).toHaveLength(0);
+      });
+      expect(
+        await driver.steer('use the corrected version', target, undefined, beforeSend)
+      ).toEqual(target);
+      expect(beforeSend).toHaveBeenCalledTimes(1);
+      expect(completed).toBe(false);
+      const sent = messages(item.capture);
+      expect(sent.filter((entry) => entry.method === 'turn/start')).toHaveLength(1);
+      expect(sent.find((entry) => entry.method === 'turn/steer')).toMatchObject({
+        params: {
+          threadId: 'thread-1',
+          expectedTurnId: 'turn-1',
+          input: [{ type: 'text', text: 'use the corrected version' }],
+        },
+      });
+      writeFileSync(join(item.root, 'release-held-turn'), '1');
+      await expect(result).resolves.toMatchObject({ response: 'hello' });
+      expect(accepted).toHaveLength(1);
+    } finally {
+      await driver.stop();
+      await result.catch(() => {});
+    }
+  });
+
+  it('passes the durable steer dispatch callback through CodexRuntimeProcess', async () => {
+    const item = fixture('held-for-steer');
+    const runtime = new CodexRuntimeProcess(item.options);
+    let receipt: { backend: 'codex'; sessionId: string; turnId: string } | undefined;
+    const result = runtime.prompt('investigate', {
+      onAccepted: (value) => {
+        if (value.backend === 'codex') receipt = value;
+      },
+    });
+    void result.catch(() => {});
+    try {
+      await vi.waitFor(() => expect(receipt).toBeDefined());
+      const beforeSend = vi.fn(() => {
+        expect(
+          messages(item.capture).filter((entry) => entry.method === 'turn/steer')
+        ).toHaveLength(0);
+      });
+      await expect(
+        runtime.steer('correction', receipt!, { sessionKey: 'default', beforeSend })
+      ).resolves.toEqual(receipt);
+      expect(beforeSend).toHaveBeenCalledTimes(1);
+      writeFileSync(join(item.root, 'release-held-turn'), '1');
+      await expect(result).resolves.toMatchObject({ response: 'hello' });
+    } finally {
+      await runtime.stop();
+      await result.catch(() => {});
+    }
+  });
+
+  it('refuses stale steering targets without creating a new turn or losing the active one', async () => {
+    const item = fixture('held-for-steer');
+    const driver = new CodexAppServerProcess(item.options);
+    let accepted = false;
+    const result = driver.prompt('investigate', {
+      onAccepted: () => {
+        accepted = true;
+      },
+    });
+    void result.catch(() => {});
+    try {
+      await vi.waitFor(() => expect(accepted).toBe(true));
+      const beforeSend = vi.fn();
+      await expect(
+        driver.steer(
+          'correction',
+          { backend: 'codex', sessionId: 'other', turnId: 'turn-1' },
+          undefined,
+          beforeSend
+        )
+      ).rejects.toBeInstanceOf(NativeSteeringTargetUnavailableError);
+      await expect(
+        driver.steer(
+          'correction',
+          { backend: 'codex', sessionId: 'thread-1', turnId: 'old' },
+          undefined,
+          beforeSend
+        )
+      ).rejects.toThrow(/active turn/);
+      await expect(
+        driver.steer(
+          'correction',
+          { backend: 'codex', sessionId: 'thread-1', turnId: 'turn-1' },
+          undefined,
+          () => {
+            throw new Error('journal unavailable');
+          }
+        )
+      ).rejects.toThrow('journal unavailable');
+      expect(beforeSend).not.toHaveBeenCalled();
+      expect(messages(item.capture).filter((entry) => entry.method === 'turn/steer')).toHaveLength(
+        0
+      );
+      writeFileSync(join(item.root, 'release-held-turn'), '1');
+      await expect(result).resolves.toMatchObject({ response: 'hello' });
+    } finally {
+      await driver.stop();
+      await result.catch(() => {});
+    }
+  });
+
+  it('does not replace a rejected or uncertain steer with another model turn', async () => {
+    const item = fixture('held-for-steer');
+    const driver = new CodexAppServerProcess(item.options);
+    let accepted = false;
+    const result = driver.prompt('investigate', {
+      onAccepted: () => {
+        accepted = true;
+      },
+    });
+    void result.catch(() => {});
+    try {
+      await vi.waitFor(() => expect(accepted).toBe(true));
+      const target = { backend: 'codex', sessionId: 'thread-1', turnId: 'turn-1' } as const;
+      writeFileSync(join(item.root, 'reject-steer'), '1');
+      await expect(driver.steer('correction', target)).rejects.toThrow('turn cannot accept');
+      rmSync(join(item.root, 'reject-steer'));
+      writeFileSync(join(item.root, 'bad-steer-ack'), '1');
+      await expect(driver.steer('another correction', target)).rejects.toThrow(/uncertain/);
+      expect(messages(item.capture).filter((entry) => entry.method === 'turn/start')).toHaveLength(
+        1
+      );
+      writeFileSync(join(item.root, 'release-held-turn'), '1');
+      await expect(result).resolves.toMatchObject({ response: 'hello' });
+    } finally {
+      await driver.stop();
+      await result.catch(() => {});
+    }
+  });
+
+  it('returns only final_answer when Codex emits commentary before the final message', async () => {
+    const item = fixture('commentary-final');
+    const runner = new CodexAppServerProcess(item.options);
+    const deltas: string[] = [];
+    try {
+      await expect(
+        runner.prompt('report', { onDelta: (text) => deltas.push(text) })
+      ).resolves.toMatchObject({ response: 'hello' });
+      expect(deltas).toEqual(['hello']);
+    } finally {
+      await runner.stop();
+    }
+  });
+
+  it('fails a completed turn with no final_answer instead of delivering commentary as the answer', async () => {
+    const item = fixture('missing-final');
+    const runner = new CodexAppServerProcess(item.options);
+    try {
+      await expect(runner.prompt('report')).rejects.toThrow(/final_answer/);
+    } finally {
+      await runner.stop();
+    }
+  });
+
+  it('uses an unphased terminal message without streaming text whose phase is unknown', async () => {
+    const item = fixture('unphased-final');
+    const runner = new CodexAppServerProcess(item.options);
+    const deltas: string[] = [];
+    try {
+      await expect(
+        runner.prompt('legacy provider', { onDelta: (text) => deltas.push(text) })
+      ).resolves.toMatchObject({ response: 'hello' });
+      expect(deltas).toEqual([]);
+    } finally {
+      await runner.stop();
+    }
+  });
+
+  it('initializes, starts a durable thread, streams a matching turn, and resumes it', async () => {
+    const item = fixture();
+    const first = new CodexAppServerProcess(item.options);
+    const result = await first.prompt('hi');
+    expect(result).toMatchObject({
+      response: 'hello',
+      session_id: 'thread-1',
+      // Turn usage is the SUM over the turn's model calls (cumulative-total
+      // delta), not the final call alone - a tool-loop turn's earlier calls
+      // were silently dropped before (measured ~5x undercount vs rollouts).
+      usage: { input_tokens: 8, output_tokens: 6, cache_read_input_tokens: 3 },
+    });
+    await first.stop();
+
+    const second = new CodexAppServerProcess(item.options);
+    await expect(second.prompt('again')).resolves.toMatchObject({
+      response: 'hello',
+      usage: { input_tokens: 8, output_tokens: 6 },
+    });
+    await second.stop();
+    const sent = messages(item.capture);
+    expect(sent[0]).toMatchObject({
+      argv: ['app-server', '--strict-config', '--stdio'],
+      home: item.options.isolatedHome,
+      codexHome: item.options.codexHome,
+    });
+    expect(sent).toContainEqual(
+      expect.objectContaining({
+        method: 'initialize',
+        params: expect.objectContaining({ capabilities: { experimentalApi: true } }),
+      })
+    );
+    expect(sent).toContainEqual({ jsonrpc: '2.0', method: 'initialized' });
+    expect(sent).toContainEqual(
+      expect.objectContaining({
+        method: 'thread/start',
+        params: {
+          model: 'gpt-test',
+          cwd: item.root,
+          approvalPolicy: 'never',
+          sandbox: 'workspace-write',
+          baseInstructions: 'system rules',
+          config: {},
+        },
+      })
+    );
+    expect(sent).toContainEqual(
+      expect.objectContaining({
+        method: 'thread/resume',
+        params: expect.objectContaining({ threadId: 'thread-1' }),
+      })
+    );
+    expect(sent).toContainEqual(
+      expect.objectContaining({
+        method: 'turn/start',
+        params: expect.objectContaining({
+          input: [{ type: 'text', text: 'hi', text_elements: [] }],
+        }),
+      })
+    );
+  });
+
+  it('sums per-call usage when the server omits cumulative totals', async () => {
+    const item = fixture('usage-no-total');
+    const proc = new CodexAppServerProcess(item.options);
+    await expect(proc.prompt('hi')).resolves.toMatchObject({
+      usage: { input_tokens: 8, output_tokens: 6, cache_read_input_tokens: 3 },
+    });
+    await proc.stop();
+  });
+
+  it('keeps accumulated per-call usage when a cumulative total arrives mid-turn', async () => {
+    const item = fixture('usage-mixed-total');
+    const proc = new CodexAppServerProcess(item.options);
+    await expect(proc.prompt('hi')).resolves.toMatchObject({
+      usage: { input_tokens: 8, output_tokens: 6, cache_read_input_tokens: 3 },
+    });
+    await proc.stop();
+  });
+
+  it('clamps a shrinking cumulative total to zero instead of recording negative usage', async () => {
+    const item = fixture('usage-shrinking-total');
+    const proc = new CodexAppServerProcess(item.options);
+    await expect(proc.prompt('hi')).resolves.toMatchObject({
+      usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0 },
+    });
+    await proc.stop();
+  });
+
+  it('answers every headless server request with the exact safe body', async () => {
+    const item = fixture();
+    const process = new CodexAppServerProcess(item.options);
+    await process.prompt('hi');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await process.stop();
+    const replies = messages(item.capture).filter(
+      (entry) => entry.id === 'request-900' || (typeof entry.id === 'number' && entry.id >= 901)
+    );
+    expect(replies[0].id).toBe('request-900');
+    expect(replies.map((entry) => entry.result ?? entry.error)).toEqual([
+      { answers: {} },
+      { action: 'decline', content: null, _meta: null },
+      {
+        success: false,
+        contentItems: [{ type: 'inputText', text: 'Native app-server tools are disabled by MAMA' }],
+      },
+      { decision: 'decline' },
+      { decision: 'decline' },
+      { permissions: {}, scope: 'turn', strictAutoReview: true },
+      { decision: 'denied' },
+      { decision: 'denied' },
+      { code: -32601, message: 'Unsupported app-server request: unknown/request' },
+    ]);
+  });
+
+  it('advertises the supplied dynamic tools and executes a matching native tool call', async () => {
+    const item = fixture('tool-success');
+    const calls: HostToolCall[] = [];
+    const runner = new CodexAppServerProcess(item.options);
+
+    await expect(
+      runner.prompt('hi', undefined, {
+        hostToolBridge: hostBridge(async (call) => {
+          calls.push(call);
+          return { content: 'lookup ready', isError: false };
+        }),
+      })
+    ).resolves.toMatchObject({ response: 'hello' });
+    await runner.stop();
+
+    expect(calls).toEqual([
+      expect.objectContaining({
+        callId: 'call-1',
+        name: 'synthetic_lookup',
+        input: { topic: 'status' },
+        signal: expect.any(AbortSignal),
+      }),
+    ]);
+    const sent = messages(item.capture);
+    expect(sent.find((entry) => entry.method === 'thread/start')?.params).toMatchObject({
+      dynamicTools,
+    });
+    expect(sent).toContainEqual({
+      jsonrpc: '2.0',
+      id: 710,
+      result: {
+        success: true,
+        contentItems: [{ type: 'inputText', text: 'lookup ready' }],
+      },
+    });
+  });
+
+  it('advertises a Codex-safe name while executing the original dotted action', async () => {
+    const item = fixture('tool-dotted');
+    const calls: HostToolCall[] = [];
+    const runner = new CodexAppServerProcess(item.options);
+    const dottedTool: HostToolDefinition = {
+      ...dynamicTools[0],
+      name: 'deliver.drive',
+    };
+
+    await expect(
+      runner.prompt('hi', undefined, {
+        hostToolBridge: {
+          tools: [dottedTool],
+          execute: async (call) => {
+            calls.push(call);
+            return { content: 'lookup ready', isError: false };
+          },
+        },
+      })
+    ).resolves.toMatchObject({ response: 'hello' });
+    await runner.stop();
+
+    expect(
+      (
+        messages(item.capture).find((entry) => entry.method === 'thread/start')?.params as Record<
+          string,
+          HostToolDefinition[]
+        >
+      ).dynamicTools
+    ).toEqual([expect.objectContaining({ name: 'deliver_drive' })]);
+    expect(calls).toEqual([expect.objectContaining({ name: 'deliver.drive' })]);
+  });
+
+  it('rejects product action names that collapse to the same Codex tool name', async () => {
+    const item = fixture('tool-success');
+    const runner = new CodexAppServerProcess(item.options);
+    const tools: HostToolDefinition[] = ['deliver.drive', 'deliver_drive'].map((name) => ({
+      ...dynamicTools[0],
+      name,
+    }));
+
+    await expect(
+      runner.prompt('hi', undefined, { hostToolBridge: { ...hostBridge(), tools } })
+    ).rejects.toThrow('Codex dynamic tool names collide at deliver_drive');
+    await runner.stop();
+  });
+
+  it.each([
+    ['auxiliary-write', ['Write'], 'auxiliary-output.txt'],
+    ['auxiliary-bash', ['Bash'], undefined],
+  ] as const)(
+    'runs the %s TG-06 auxiliary path through dynamic tools and the app-server boundary',
+    async (mode, allowedTools, outputFile) => {
+      const item = fixture(mode);
+      const runner = new CodexRuntimeProcess({
+        ...item.options,
+        defaultSessionKey: 'auxiliary',
+        sandbox: 'read-only',
+        auxiliaryToolPolicy: { allowedTools, roots: [item.root] },
+      });
+
+      await expect(runner.prompt('perform the auxiliary task')).resolves.toMatchObject({
+        response: 'hello',
+      });
+      await runner.stop();
+      if (outputFile) expect(readFileSync(join(item.root, outputFile), 'utf8')).toBe('written');
+      const sent = messages(item.capture);
+      expect(sent.find((entry) => entry.method === 'thread/start')?.params).toMatchObject({
+        sandbox: 'read-only',
+        dynamicTools: [expect.objectContaining({ name: allowedTools[0] })],
+      });
+      if (mode === 'auxiliary-bash') {
+        const canonicalRoot = realpathSync(item.root);
+        expect(sent.find((entry) => entry.method === 'command/exec')?.params).toMatchObject({
+          command: ['/bin/sh', '-c', 'pwd'],
+          cwd: canonicalRoot,
+          sandboxPolicy: {
+            type: 'workspaceWrite',
+            writableRoots: [canonicalRoot],
+            readOnlyAccess: {
+              type: 'restricted',
+              includePlatformDefaults: true,
+              readableRoots: [canonicalRoot],
+            },
+            networkAccess: false,
+          },
+        });
+      }
+    }
+  );
+
+  it('keeps a restricted-read turn separate from an unrestricted owner thread', async () => {
+    const item = fixture();
+    const runner = new CodexRuntimeProcess(item.options);
+    const publicRoot = join(item.root, 'public-only');
+    mkdirSync(publicRoot);
+    try {
+      await expect(
+        runner.prompt('public input', undefined, {
+          sessionKey: 'public:channel',
+          restrictedReadRoots: [publicRoot],
+          cwd: publicRoot,
+        })
+      ).resolves.toMatchObject({ response: 'hello' });
+      expect(
+        runner.getSessionPolicyStatus({
+          sessionKey: 'public:channel',
+          restrictedReadRoots: [publicRoot],
+          cwd: publicRoot,
+        })
+      ).toBe('compatible');
+      const narrowerRoot = join(publicRoot, 'narrower');
+      mkdirSync(narrowerRoot);
+      expect(
+        runner.getSessionPolicyStatus({
+          sessionKey: 'public:channel',
+          restrictedReadRoots: [narrowerRoot],
+          cwd: narrowerRoot,
+        })
+      ).toBe('mismatch');
+      await expect(
+        runner.prompt('owner input', undefined, { sessionKey: 'owner:runtime' })
+      ).resolves.toMatchObject({ response: 'hello' });
+      await expect(
+        runner.prompt('invalid public roots', undefined, {
+          sessionKey: 'public:other',
+          restrictedReadRoots: [],
+        })
+      ).rejects.toThrow('at least one real root');
+      await expect(
+        runner.prompt('outside public root', undefined, {
+          sessionKey: 'public:escape',
+          restrictedReadRoots: [publicRoot],
+          cwd: item.root,
+        })
+      ).rejects.toThrow('working directory must be inside a readable root');
+    } finally {
+      await runner.stop();
+    }
+    const sent = messages(item.capture);
+    const starts = sent.filter((entry) => entry.method === 'thread/start');
+    const turns = sent.filter((entry) => entry.method === 'turn/start');
+    expect(starts).toHaveLength(2);
+    expect(starts[0]?.params).toMatchObject({
+      sandbox: 'read-only',
+      cwd: realpathSync(publicRoot),
+      config: { features: { multi_agent: false, multi_agent_v2: false } },
+    });
+    expect(turns[0]?.params).toMatchObject({
+      sandboxPolicy: {
+        type: 'readOnly',
+        access: {
+          type: 'restricted',
+          includePlatformDefaults: true,
+          readableRoots: [realpathSync(publicRoot)],
+        },
+      },
+    });
+    expect(starts[1]?.params).toMatchObject({ sandbox: 'workspace-write', config: {} });
+    expect(turns[1]?.params).not.toHaveProperty('sandboxPolicy');
+  });
+
+  it('reapplies the restricted thread child policy on durable resume', async () => {
+    const item = fixture();
+    const publicRoot = join(item.root, 'public-only');
+    mkdirSync(publicRoot);
+    const first = new CodexRuntimeProcess(item.options);
+    await first.prompt('first public input', undefined, {
+      sessionKey: 'public:channel',
+      restrictedReadRoots: [publicRoot],
+      cwd: publicRoot,
+    });
+    await first.stop();
+
+    const resumed = new CodexRuntimeProcess(item.options);
+    await resumed.prompt('second public input', undefined, {
+      sessionKey: 'public:channel',
+      restrictedReadRoots: [publicRoot],
+      cwd: publicRoot,
+    });
+    await resumed.stop();
+
+    const sent = messages(item.capture);
+    expect(sent.filter((entry) => entry.method === 'thread/start')).toHaveLength(1);
+    expect(sent.find((entry) => entry.method === 'thread/resume')?.params).toMatchObject({
+      sandbox: 'read-only',
+      config: { features: { multi_agent: false, multi_agent_v2: false } },
+    });
+  });
+
+  it('returns a native tool failure to Codex without turning it into empty success', async () => {
+    const item = fixture('tool-failure');
+    const runner = new CodexAppServerProcess(item.options);
+    const failure: HostToolCallResult = { content: 'gateway rejected input', isError: true };
+
+    await expect(
+      runner.prompt('hi', undefined, { hostToolBridge: hostBridge(async () => failure) })
+    ).resolves.toMatchObject({ response: 'hello' });
+    await runner.stop();
+
+    expect(messages(item.capture)).toContainEqual({
+      jsonrpc: '2.0',
+      id: 710,
+      result: {
+        success: false,
+        contentItems: [{ type: 'inputText', text: 'gateway rejected input' }],
+      },
+    });
+  });
+
+  it('returns an explicit tool failure when a host bridge produces null at runtime', async () => {
+    const item = fixture('tool-null-result');
+    const runner = new CodexAppServerProcess(item.options);
+
+    await expect(
+      runner.prompt('hi', undefined, {
+        hostToolBridge: hostBridge(
+          async () => null as unknown as Awaited<ReturnType<HostToolBridge['execute']>>
+        ),
+      })
+    ).resolves.toMatchObject({ response: 'hello' });
+    await runner.stop();
+
+    expect(messages(item.capture)).toContainEqual({
+      jsonrpc: '2.0',
+      id: 710,
+      result: {
+        success: false,
+        contentItems: [{ type: 'inputText', text: 'Host tool returned a malformed result' }],
+      },
+    });
+  });
+
+  it('does not treat an errored stop result as an intentional interruption', async () => {
+    const item = fixture('tool-error-stop');
+    const runner = new CodexAppServerProcess(item.options);
+
+    await expect(
+      runner.prompt('hi', undefined, {
+        hostToolBridge: hostBridge(async () => ({
+          content: 'gateway failed',
+          isError: true,
+          stop: true,
+        })),
+      })
+    ).rejects.toThrow('interrupted');
+    await runner.stop();
+
+    const sent = messages(item.capture);
+    expect(sent).toContainEqual({
+      jsonrpc: '2.0',
+      id: 710,
+      result: {
+        success: false,
+        contentItems: [{ type: 'inputText', text: 'gateway failed' }],
+      },
+    });
+    expect(sent.some((entry) => entry.method === 'turn/interrupt')).toBe(false);
+  });
+
+  it.each([
+    ['tool-malformed', 'arguments'],
+    ['tool-malformed-turn', 'turnId'],
+    ['tool-malformed-call', 'callId'],
+    ['tool-malformed-tool', 'tool'],
+    ['tool-malformed-namespace', 'namespace'],
+    ['tool-unknown', 'not advertised'],
+  ])('rejects an active %s request loudly with a JSON-RPC error', async (mode, message) => {
+    const item = fixture(mode);
+    const runner = new CodexAppServerProcess(item.options);
+
+    await expect(runner.prompt('hi', undefined, { hostToolBridge: hostBridge() })).rejects.toThrow(
+      message
+    );
+    await runner.stop();
+
+    expect(messages(item.capture)).toContainEqual(
+      expect.objectContaining({
+        id: 710,
+        error: expect.objectContaining({ code: -32602 }),
+      })
+    );
+  });
+
+  it('restarts the connection after an active tool protocol validation failure', async () => {
+    const item = fixture('tool-malformed-once');
+    const runner = new CodexAppServerProcess(item.options);
+    const bridge = hostBridge();
+
+    await expect(runner.prompt('bad', undefined, { hostToolBridge: bridge })).rejects.toThrow(
+      'arguments'
+    );
+    await expect(
+      runner.prompt('recovered', undefined, { hostToolBridge: bridge })
+    ).resolves.toMatchObject({ response: 'hello' });
+    await runner.stop();
+
+    const launches = messages(item.capture).filter((entry) => Array.isArray(entry.argv));
+    expect(launches).toHaveLength(2);
+    expect(() => process.kill(Number(launches[0].pid), 0)).toThrow();
+  });
+
+  it('queues a tool call received before the turn/start response establishes the turn id', async () => {
+    const item = fixture('tool-early');
+    const calls: string[] = [];
+    const runner = new CodexAppServerProcess(item.options);
+
+    await expect(
+      runner.prompt('hi', undefined, {
+        hostToolBridge: hostBridge(async (call) => {
+          calls.push(call.callId);
+          return { content: 'early result', isError: false };
+        }),
+      })
+    ).resolves.toMatchObject({ response: 'hello' });
+    await runner.stop();
+
+    expect(calls).toEqual(['call-1']);
+    expect(messages(item.capture)).toContainEqual(
+      expect.objectContaining({ id: 710, result: expect.objectContaining({ success: true }) })
+    );
+  });
+
+  it('deduplicates a repeated call id before executing its handler', async () => {
+    const item = fixture('tool-duplicate');
+    let executions = 0;
+    const runner = new CodexAppServerProcess(item.options);
+
+    await runner.prompt('hi', undefined, {
+      hostToolBridge: hostBridge(async () => {
+        executions += 1;
+        return { content: 'once', isError: false };
+      }),
+    });
+    await runner.stop();
+
+    expect(executions).toBe(1);
+    const replies = messages(item.capture).filter((entry) => entry.id === 710 || entry.id === 711);
+    expect(replies).toHaveLength(2);
+    expect(replies.every((entry) => objectResult(entry)?.success === true)).toBe(true);
+  });
+
+  it('fails a conflicting duplicate call id instead of reusing another request result', async () => {
+    const item = fixture('tool-duplicate-conflict');
+    let executions = 0;
+    const runner = new CodexAppServerProcess(item.options);
+
+    await expect(
+      runner.prompt('hi', undefined, {
+        hostToolBridge: hostBridge(async () => {
+          executions += 1;
+          return { content: 'first', isError: false };
+        }),
+      })
+    ).rejects.toThrow('conflicting request');
+    await runner.stop();
+
+    expect(executions).toBeLessThanOrEqual(1);
+    expect(messages(item.capture)).toContainEqual(
+      expect.objectContaining({
+        id: 711,
+        error: expect.objectContaining({ code: -32602 }),
+      })
+    );
+  });
+
+  it('serializes native tool calls within the same turn', async () => {
+    const item = fixture('tool-serialized');
+    let active = 0;
+    let maxActive = 0;
+    let releaseFirst: (() => void) | undefined;
+    let signalFirst: (() => void) | undefined;
+    const firstStarted = new Promise<void>((resolve) => {
+      signalFirst = resolve;
+    });
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const calls: string[] = [];
+    const runner = new CodexAppServerProcess(item.options);
+    const pending = runner.prompt('hi', undefined, {
+      hostToolBridge: hostBridge(async (call) => {
+        calls.push(call.callId);
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        if (call.callId === 'call-1') {
+          signalFirst?.();
+          await firstGate;
+        }
+        active -= 1;
+        return { content: call.callId, isError: false };
+      }),
+    });
+
+    await firstStarted;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(calls).toEqual(['call-1']);
+    releaseFirst?.();
+    await expect(pending).resolves.toMatchObject({ response: 'hello' });
+    expect(calls).toEqual(['call-1', 'call-2']);
+    expect(maxActive).toBe(1);
+    await runner.stop();
+  });
+
+  it('does not execute a queued tool after its turn fails', async () => {
+    const item = fixture('tool-queue-cancel');
+    const calls: string[] = [];
+    let signalFirst: (() => void) | undefined;
+    let releaseFirst: (() => void) | undefined;
+    const firstStarted = new Promise<void>((resolve) => {
+      signalFirst = resolve;
+    });
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const runner = new CodexAppServerProcess(item.options);
+    try {
+      const pending = runner.prompt('hi', undefined, {
+        hostToolBridge: hostBridge(async (call) => {
+          calls.push(call.callId);
+          if (call.callId === 'call-1') {
+            signalFirst?.();
+            call.signal?.addEventListener('abort', () => releaseFirst?.(), { once: true });
+            await firstGate;
+          }
+          return { content: call.callId, isError: false };
+        }),
+      });
+
+      await firstStarted;
+      await expect(pending).rejects.toThrow('queue canceled');
+      releaseFirst?.();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(calls).toEqual(['call-1']);
+    } finally {
+      releaseFirst?.();
+      await runner.stop();
+    }
+  });
+
+  it('keeps concurrent threads on isolated run-local handlers while allowing concurrency', async () => {
+    const item = fixture('tool-success');
+    let started = 0;
+    let release: (() => void) | undefined;
+    let signalBoth: (() => void) | undefined;
+    const bothStarted = new Promise<void>((resolve) => {
+      signalBoth = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const calls = { one: 0, two: 0 };
+    const bridge = (name: keyof typeof calls): HostToolBridge =>
+      hostBridge(async () => {
+        calls[name] += 1;
+        started += 1;
+        if (started === 2) signalBoth?.();
+        await gate;
+        return { content: name, isError: false };
+      });
+    const runner = new CodexAppServerProcess(item.options);
+    const prompts = Promise.all([
+      runner.prompt('one', undefined, { sessionKey: 'one', hostToolBridge: bridge('one') }),
+      runner.prompt('two', undefined, { sessionKey: 'two', hostToolBridge: bridge('two') }),
+    ]);
+
+    await bothStarted;
+    expect(calls).toEqual({ one: 1, two: 1 });
+    release?.();
+    await expect(prompts).resolves.toHaveLength(2);
+    await runner.stop();
+  });
+
+  it('treats changed normalized dynamic tool definitions as a durable policy mismatch', async () => {
+    const item = fixture('tool-success');
+    const boardTool: HostToolBridge['tools'][number] = {
+      type: 'function',
+      name: 'report.read',
+      description: 'Read the board',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: true },
+    };
+    const initialBridge = { ...hostBridge(), tools: [dynamicTools[0], boardTool] };
+    const first = new CodexAppServerProcess(item.options);
+    await first.prompt('hi', undefined, { hostToolBridge: initialBridge });
+    await first.stop();
+    const reorderedBridge = { ...hostBridge(), tools: [boardTool, dynamicTools[0]] };
+    const resumed = new CodexAppServerProcess(item.options);
+    await expect(
+      resumed.prompt('same policy', undefined, { hostToolBridge: reorderedBridge })
+    ).resolves.toMatchObject({ response: 'hello' });
+    await resumed.stop();
+    const resumeRequest = messages(item.capture).find((entry) => entry.method === 'thread/resume');
+    expect(resumeRequest?.params).not.toHaveProperty('dynamicTools');
+    const changedTools: HostToolBridge = {
+      ...initialBridge,
+      tools: [{ ...dynamicTools[0], description: 'Changed report contract' }, boardTool],
+    };
+    const second = new CodexAppServerProcess(item.options);
+
+    await expect(
+      second.prompt('again', undefined, { hostToolBridge: changedTools })
+    ).rejects.toThrow('policy mismatch');
+    await second.stop();
+  });
+
+  it('snapshots dynamic tool definitions before asynchronous connection startup', async () => {
+    const item = fixture('init-delayed');
+    const mutableTool = JSON.parse(JSON.stringify(dynamicTools[0])) as HostToolDefinition;
+    const originalTools = [JSON.parse(JSON.stringify(mutableTool)) as HostToolDefinition];
+    const mutableTools: HostToolDefinition[] = [mutableTool];
+    const bridge: HostToolBridge = { ...hostBridge(), tools: mutableTools };
+    const first = new CodexAppServerProcess(item.options);
+    const pending = first.prompt('hi', undefined, { hostToolBridge: bridge });
+    await waitForFile(join(item.root, 'initialize-seen'));
+
+    mutableTool.description = 'mutated after prompt';
+    mutableTools.push({
+      type: 'function',
+      name: 'late_tool',
+      description: 'Must not enter the snapshot',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: true },
+    });
+    writeFileSync(join(item.root, 'release-initialize'), '1');
+    await expect(pending).resolves.toMatchObject({ response: 'hello' });
+    await first.stop();
+
+    const started = messages(item.capture).find((entry) => entry.method === 'thread/start');
+    expect((started?.params as Record<string, unknown>)?.dynamicTools).toEqual(originalTools);
+    const resumed = new CodexAppServerProcess(item.options);
+    await expect(
+      resumed.prompt('again', undefined, {
+        hostToolBridge: { ...hostBridge(), tools: originalTools },
+      })
+    ).resolves.toMatchObject({ response: 'hello' });
+    await resumed.stop();
+  });
+
+  it('interrupts and resolves an intentional stop tool without masking real interrupts', async () => {
+    const item = fixture('tool-stop');
+    const runner = new CodexAppServerProcess(item.options);
+
+    await expect(
+      runner.prompt('hi', undefined, {
+        hostToolBridge: hostBridge(async () => ({
+          content: 'finished',
+          isError: false,
+          stop: true,
+        })),
+      })
+    ).resolves.toMatchObject({ response: '' });
+    await runner.stop();
+
+    const sent = messages(item.capture);
+    const replyIndex = sent.findIndex((entry) => entry.id === 710 && objectResult(entry)?.success);
+    const interruptIndex = sent.findIndex((entry) => entry.method === 'turn/interrupt');
+    expect(replyIndex).toBeGreaterThan(-1);
+    expect(interruptIndex).toBeGreaterThan(replyIndex);
+  });
+
+  it('replies with a failed tool result, interrupts, and rejects a fatal host-tool abort', async () => {
+    const item = fixture('tool-stop');
+    const runner = new CodexAppServerProcess(item.options);
+
+    await expect(
+      runner.prompt('hi', undefined, {
+        hostToolBridge: hostBridge(async () => ({
+          content: 'Native tool budget exceeded',
+          isError: true,
+          abort: true,
+        })),
+      })
+    ).rejects.toThrow('Native tool budget exceeded');
+    await runner.stop();
+
+    const sent = messages(item.capture);
+    const replyIndex = sent.findIndex(
+      (entry) => entry.id === 710 && objectResult(entry)?.success === false
+    );
+    const interruptIndex = sent.findIndex((entry) => entry.method === 'turn/interrupt');
+    expect(replyIndex).toBeGreaterThan(-1);
+    expect(interruptIndex).toBeGreaterThan(replyIndex);
+  });
+
+  it('preserves a trusted terminal mutation code across the app-server interrupt', async () => {
+    const item = fixture('tool-stop');
+    const runner = new CodexAppServerProcess(item.options);
+
+    const failure = await runner
+      .prompt('hi', undefined, {
+        hostToolBridge: hostBridge(async () => ({
+          content: 'Mutation outcome is unknown',
+          isError: true,
+          abort: true,
+          terminalCode: 'MUTATION_OUTCOME_UNKNOWN',
+        })),
+      })
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(HostToolTerminalError);
+    expect(failure).toMatchObject({
+      terminalCode: 'MUTATION_OUTCOME_UNKNOWN',
+      retryable: false,
+    });
+    await runner.stop();
+  });
+
+  it('TG-03/TG-04 preserves TOOL_CONTRACT_REPEAT across the app-server interrupt', async () => {
+    const item = fixture('tool-stop');
+    const runner = new CodexAppServerProcess(item.options);
+
+    const failure = await runner
+      .prompt('hi', undefined, {
+        hostToolBridge: hostBridge(async () => ({
+          content: 'Temporal deterministic contract failure repeated',
+          isError: true,
+          abort: true,
+          terminalCode: 'TOOL_CONTRACT_REPEAT',
+        })),
+      })
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(HostToolTerminalError);
+    expect(failure).toMatchObject({
+      terminalCode: 'TOOL_CONTRACT_REPEAT',
+      retryable: false,
+    });
+    await runner.stop();
+  });
+
+  it.each(['tool-terminal-exit', 'tool-interrupt-hang'])(
+    'preserves a trusted terminal mutation code when %s disrupts settlement',
+    async (mode) => {
+      const item = fixture(mode);
+      // This timeout also covers spawning and initializing the fake Node app-server.
+      // Keep enough headroom for a loaded full-suite worker; the assertion targets
+      // terminal-result preservation after settlement disruption, not startup latency.
+      const runner = new CodexAppServerProcess({
+        hostRootDir: '/tmp/mama-test-host',
+        ...item.options,
+        requestTimeout: 2_000,
+      });
+
+      const failure = await runner
+        .prompt('hi', undefined, {
+          hostToolBridge: hostBridge(async () => ({
+            content: 'Mutation outcome is unknown',
+            isError: true,
+            abort: true,
+            terminalCode: 'MUTATION_OUTCOME_UNKNOWN',
+          })),
+        })
+        .catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(HostToolTerminalError);
+      expect(failure).toMatchObject({
+        terminalCode: 'MUTATION_OUTCOME_UNKNOWN',
+        retryable: false,
+      });
+      await runner.stop();
+    }
+  );
+
+  it('rejects a fatal host-tool abort when completed arrives before interrupt wins', async () => {
+    const item = fixture('tool-abort-completed-first');
+    const runner = new CodexAppServerProcess(item.options);
+
+    await expect(
+      runner.prompt('hi', undefined, {
+        hostToolBridge: hostBridge(async () => ({
+          content: 'Native tool budget exceeded during race',
+          isError: true,
+          abort: true,
+        })),
+      })
+    ).rejects.toThrow('Native tool budget exceeded during race');
+
+    expect(runner.getStatus()).toMatchObject({ hasActiveTurn: false });
+    await runner.stop();
+  });
+
+  it('does not send a late tool result to a replacement child after reconnect', async () => {
+    const item = fixture('tool-stale');
+    const sourceHome = join(item.root, 'source-home');
+    const authPath = join(sourceHome, '.codex', 'auth.json');
+    const previousHome = process.env.HOME;
+    process.env.HOME = sourceHome;
+    writeFileSync(authPath, '{"token":"first"}');
+    let signalHandler: (() => void) | undefined;
+    let releaseHandler: (() => void) | undefined;
+    const handlerStarted = new Promise<void>((resolve) => {
+      signalHandler = resolve;
+    });
+    const handlerGate = new Promise<void>((resolve) => {
+      releaseHandler = resolve;
+    });
+    const runner = new CodexAppServerProcess(item.options);
+    try {
+      const first = runner
+        .prompt('first', undefined, {
+          sessionKey: 'first',
+          hostToolBridge: hostBridge(async () => {
+            signalHandler?.();
+            await handlerGate;
+            return { content: 'late', isError: false };
+          }),
+        })
+        .then(
+          () => undefined,
+          (error: unknown) => error
+        );
+      await handlerStarted;
+      writeFileSync(authPath, '{"token":"second"}');
+
+      await expect(
+        runner.prompt('second', undefined, { sessionKey: 'second' })
+      ).resolves.toMatchObject({ response: 'hello' });
+      releaseHandler?.();
+      expect(await first).toBeInstanceOf(Error);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(existsSync(join(item.root, 'late-tool-reply'))).toBe(false);
+    } finally {
+      releaseHandler?.();
+      process.env.HOME = previousHome;
+      await runner.stop();
+    }
+  });
+
+  it.each(['failed', 'interrupted'])('rejects an explicitly %s turn', async (mode) => {
+    const item = fixture(mode);
+    const process = new CodexAppServerProcess(item.options);
+    await expect(process.prompt('hi')).rejects.toThrow(
+      mode === 'failed' ? 'turn boom' : 'interrupted'
+    );
+    await process.stop();
+  });
+
+  it('rejects malformed stdout and request timeouts without returning empty output', async () => {
+    const malformed = fixture('malformed');
+    const first = new CodexAppServerProcess(malformed.options);
+    await expect(first.prompt('hi')).rejects.toThrow('malformed JSON');
+    await first.stop();
+    const timeout = fixture('timeout');
+    const second = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...timeout.options,
+      requestTimeout: 40,
+    });
+    await expect(second.prompt('hi')).rejects.toThrow('timed out');
+    await second.stop();
+  });
+
+  it('applies a per-prompt timeout override while initialize is pending', async () => {
+    const item = fixture('init-timeout');
+    const runner = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      requestTimeout: 2_000,
+    });
+
+    await expect(runner.prompt('hi', undefined, { requestTimeout: 35 })).rejects.toThrow(
+      'initialize timed out after 35ms'
+    );
+    expect(runner.getStatus()).toMatchObject({ running: false, pendingRequestCount: 0 });
+  });
+
+  it.each(['timeout', 'init-timeout'])(
+    'settles a timed-out %s operation exactly once and leaves no live child',
+    async (mode) => {
+      const item = fixture(mode);
+      // The assertion covers eventual cleanup, not sub-process launch speed. Keep enough budget for
+      // a loaded CI runner to start the fixture before exercising its intentional timeout mode,
+      // but below the 2s cleanup wait: after the turn times out, the child is reaped by the
+      // reconciliation timer at max(budget, grace), so a 2s budget would race the waitFor.
+      const runner = new CodexAppServerProcess({
+        hostRootDir: '/tmp/mama-test-host',
+        ...item.options,
+        requestTimeout: 1_000,
+      });
+      let settlements = 0;
+      await runner.prompt('hi').then(
+        () => {
+          settlements += 1;
+        },
+        () => {
+          settlements += 1;
+        }
+      );
+      expect(settlements).toBe(1);
+      const pid = Number(messages(item.capture)[0].pid);
+      await vi.waitFor(
+        () => {
+          expect(() => process.kill(pid, 0)).toThrow();
+          expect(runner.getStatus()).toMatchObject({
+            running: false,
+            pendingRequestCount: 0,
+            hasActiveTurn: false,
+            stdoutListenerCount: 0,
+            stderrListenerCount: 0,
+            shutdownTimerActive: false,
+          });
+        },
+        { timeout: 2_000, interval: 10 }
+      );
+    }
+  );
+
+  it('rejects malformed protocol responses and unexpected process exits', async () => {
+    const malformed = fixture('bad-response');
+    const first = new CodexAppServerProcess(malformed.options);
+    await expect(first.prompt('hi')).rejects.toThrow('malformed protocol');
+    expect(first.getStatus().running).toBe(false);
+    const exited = fixture('exit');
+    const second = new CodexAppServerProcess(exited.options);
+    await expect(second.prompt('hi')).rejects.toThrow('exited (17)');
+    await second.stop();
+    const rpc = fixture('rpc-error');
+    const third = new CodexAppServerProcess(rpc.options);
+    await expect(third.prompt('hi')).rejects.toThrow('rpc boom');
+    expect(third.getStatus()).toMatchObject({ running: false, pendingRequestCount: 0 });
+  });
+
+  it('accepts the actual Codex 0.144 wire shape without a jsonrpc member', async () => {
+    const item = fixture('no-jsonrpc');
+    const runner = new CodexAppServerProcess(item.options);
+    await expect(runner.prompt('hi')).resolves.toMatchObject({ response: 'hello' });
+    await runner.stop();
+  });
+
+  it('accepts a canonical CODEX_HOME returned for an equivalent symlink path', async () => {
+    const item = fixture('canonical-home');
+    const realHome = join(item.root, 'real-managed-codex');
+    const aliasHome = join(item.root, 'alias-managed-codex');
+    mkdirSync(realHome);
+    symlinkSync(realHome, aliasHome, 'dir');
+    const runner = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      codexHome: aliasHome,
+    });
+    await expect(runner.prompt('hi')).resolves.toMatchObject({ response: 'hello' });
+    await runner.stop();
+  });
+
+  it.each([
+    'null-json',
+    'bad-jsonrpc',
+    'combined-shape',
+    'version-only',
+    'result-no-id',
+    'error-no-id',
+    'id-only',
+  ])('cleans up automatically for malformed protocol shape %s', async (mode) => {
+    const item = fixture(mode);
+    const runner = new CodexAppServerProcess(item.options);
+    await expect(runner.prompt('hi')).rejects.toThrow(/malformed/);
+    expect(() => process.kill(Number(messages(item.capture)[0].pid), 0)).toThrow();
+  });
+
+  it('keeps a turn pending through missing, prior, cross, wrong, and inProgress events', async () => {
+    const item = fixture('delayed');
+    const runner = new CodexAppServerProcess(item.options);
+    let settled = false;
+    const pending = runner.prompt('hi').finally(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(settled).toBe(false);
+    writeFileSync(join(item.root, 'release'), '1');
+    await expect(pending).resolves.toMatchObject({ response: 'hello', usage: { input_tokens: 8 } });
+    await runner.stop();
+  });
+
+  it('rejects instruction sources outside managed roots independently on start and resume', async () => {
+    const start = fixture();
+    writeFileSync(join(start.root, 'bad-source'), '1');
+    const first = new CodexAppServerProcess(start.options);
+    await expect(first.prompt('hi')).rejects.toThrow('outside managed roots');
+    await first.stop();
+
+    const resume = fixture();
+    const second = new CodexAppServerProcess(resume.options);
+    await second.prompt('hi');
+    await second.stop();
+    writeFileSync(join(resume.root, 'bad-source'), '1');
+    const third = new CodexAppServerProcess(resume.options);
+    await expect(third.prompt('again')).rejects.toThrow('outside managed roots');
+    await third.stop();
+  });
+
+  it('rejects instruction sources whose managed-root path resolves through a symlink', async () => {
+    const item = fixture('symlink-source');
+    const outsideRoot = mkdtempSync(join(tmpdir(), 'mama-codex-instructions-outside-'));
+    roots.push(outsideRoot);
+    const outside = join(outsideRoot, 'outside-instructions.md');
+    writeFileSync(outside, 'untrusted instructions');
+    symlinkSync(outside, join(item.root, 'AGENTS.md'));
+    const process = new CodexAppServerProcess(item.options);
+
+    await expect(process.prompt('hi')).rejects.toThrow('outside managed roots');
+    await process.stop();
+  });
+
+  it('rejects response policy metadata that differs from the requested thread policy', async () => {
+    const item = fixture('bad-policy');
+    const process = new CodexAppServerProcess(item.options);
+    await expect(process.prompt('hi')).rejects.toThrow('response model');
+    await process.stop();
+  });
+
+  it.each(['bad-thread-schema', 'bad-turn-schema'])(
+    'rejects incomplete strict 0.144 %s payloads',
+    async (mode) => {
+      const item = fixture(mode);
+      const runner = new CodexAppServerProcess(item.options);
+      await expect(runner.prompt('hi')).rejects.toThrow(/malformed/);
+      await runner.stop();
+    }
+  );
+
+  it('rejects a response id that does not match a pending client request', async () => {
+    const item = fixture('unknown-response');
+    const runner = new CodexAppServerProcess(item.options);
+    await expect(runner.prompt('hi')).rejects.toThrow('did not match');
+    expect(runner.getStatus()).toMatchObject({ running: false, pendingRequestCount: 0 });
+  });
+
+  it('resumes after a rebuilt system prompt and reuses the shared homes', async () => {
+    const item = fixture();
+    const first = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      policyFingerprint: 'stable-policy',
+    });
+    await first.prompt('hi');
+    await first.stop();
+    const changed = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      systemPrompt: 'changed',
+      policyFingerprint: 'stable-policy',
+    });
+    await expect(changed.prompt('hi')).resolves.toMatchObject({ response: 'hello' });
+    await changed.stop();
+    const launches = messages(item.capture).filter((entry) => Array.isArray(entry.argv));
+    expect(new Set(launches.map((entry) => entry.home))).toEqual(
+      new Set([item.options.isolatedHome])
+    );
+    expect(new Set(launches.map((entry) => entry.codexHome))).toEqual(
+      new Set([item.options.codexHome])
+    );
+    expect(
+      messages(item.capture).some(
+        (entry) => entry.method === 'thread/resume' && entry.params?.threadId === 'thread-1'
+      )
+    ).toBe(true);
+  });
+
+  it('rejects a stable policy fingerprint change even when dynamic prompt resume is allowed', async () => {
+    const item = fixture();
+    const first = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      policyFingerprint: 'policy-one',
+    });
+    await first.prompt('hi');
+    await first.stop();
+    const changed = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      systemPrompt: 'rebuilt with history',
+      policyFingerprint: 'policy-two',
+    });
+
+    await expect(changed.prompt('again')).rejects.toThrow('policy mismatch');
+    await changed.stop();
+  });
+
+  it.each([
+    {
+      direction: 'disabled to enabled',
+      initialFingerprint: 'tg-05-private-disabled',
+      currentFingerprint: 'tg-05-private-enabled',
+      currentPolicy: 'TG-05 enabled private policy: kagemusha_overview',
+    },
+    {
+      direction: 'enabled to disabled',
+      initialFingerprint: 'tg-05-private-enabled',
+      currentFingerprint: 'tg-05-private-disabled',
+      currentPolicy: 'TG-05 disabled private policy without connector definitions',
+    },
+  ])(
+    'TG-05 discards the old durable thread for $direction and continues the replacement minimally',
+    async ({ initialFingerprint, currentFingerprint, currentPolicy }) => {
+      const item = fixture();
+      const original = new CodexAppServerProcess({
+        hostRootDir: '/tmp/mama-test-host',
+        ...item.options,
+        systemPrompt: 'original durable private policy',
+        policyFingerprint: initialFingerprint,
+      });
+      await original.prompt('original turn');
+      await original.stop();
+
+      const replacement = new CodexAppServerProcess({
+        hostRootDir: '/tmp/mama-test-host',
+        ...item.options,
+        systemPrompt: currentPolicy,
+        policyFingerprint: currentFingerprint,
+      });
+      await expect(replacement.prompt('stale resume attempt')).rejects.toThrow('policy mismatch');
+      await expect(
+        replacement.prompt('replacement first turn', undefined, { resumeSession: false })
+      ).resolves.toMatchObject({ response: 'hello' });
+      await expect(
+        replacement.prompt('replacement unchanged turn', undefined, {
+          resumeSession: true,
+          systemPrompt: 'minimal unchanged-policy prompt',
+        })
+      ).resolves.toMatchObject({ response: 'hello' });
+      await replacement.stop();
+
+      const sent = messages(item.capture);
+      const starts = sent.filter((entry) => entry.method === 'thread/start');
+      expect(starts).toHaveLength(2);
+      expect(starts[1]?.params).toMatchObject({ baseInstructions: currentPolicy });
+      expect(
+        starts.filter(
+          (entry) =>
+            (entry.params as Record<string, unknown> | undefined)?.baseInstructions ===
+            currentPolicy
+        )
+      ).toHaveLength(1);
+      expect(sent.filter((entry) => entry.method === 'thread/resume')).toHaveLength(0);
+      expect(
+        sent
+          .filter((entry) => entry.method === 'turn/start')
+          .map(
+            (entry) =>
+              ((entry.params as Record<string, unknown>)?.input as Array<{ text?: string }>)[0]
+                ?.text
+          )
+      ).toEqual(['original turn', 'replacement first turn', 'replacement unchanged turn']);
+    }
+  );
+
+  it.each([
+    {
+      direction: 'narrowing',
+      initial: 'tools:allowed=mama_search,report.publish',
+      changed: 'tools:allowed=mama_search',
+    },
+    {
+      direction: 'widening',
+      initial: 'tools:allowed=mama_search',
+      changed: 'tools:allowed=mama_search,report.publish',
+    },
+  ])(
+    'rejects same-session tool policy $direction with an unchanged outer tool signature',
+    async ({ initial, changed }) => {
+      const item = fixture();
+      const first = new CodexAppServerProcess(item.options);
+      await first.prompt('first', undefined, {
+        policyFingerprint: initial,
+        hostToolBridge: hostBridge(),
+      });
+      await first.stop();
+      const resumed = new CodexAppServerProcess(item.options);
+
+      await expect(
+        resumed.prompt('changed', undefined, {
+          policyFingerprint: changed,
+          hostToolBridge: hostBridge(),
+        })
+      ).rejects.toThrow('policy mismatch');
+      await resumed.stop();
+    }
+  );
+
+  it('forwards accepted agent message deltas while collecting the final response', async () => {
+    const item = fixture();
+    const runner = new CodexAppServerProcess(item.options);
+    const deltas: string[] = [];
+    const result = await (
+      runner as unknown as {
+        prompt(text: string, callbacks: { onDelta(text: string): void }): Promise<PromptResult>;
+      }
+    ).prompt('hi', { onDelta: (text) => deltas.push(text) });
+
+    expect(deltas).toEqual(['hello']);
+    expect(result.response).toBe('hello');
+    await runner.stop();
+  });
+
+  it('forwards app-server deltas through the production runtime adapter', async () => {
+    const item = fixture();
+    const runtime = new CodexRuntimeProcess(item.options);
+    const deltas: string[] = [];
+
+    const result = await runtime.prompt('hi', { onDelta: (text) => deltas.push(text) });
+
+    expect(deltas).toEqual(['hello']);
+    expect(result.response).toBe('hello');
+    await runtime.stop();
+  });
+
+  it('forwards a run-local host tool bridge through the production runtime adapter', async () => {
+    const item = fixture('tool-success');
+    const runtime = new CodexRuntimeProcess(item.options);
+    const calls: string[] = [];
+
+    await expect(
+      runtime.prompt('hi', undefined, {
+        hostToolBridge: hostBridge(async (call) => {
+          calls.push(call.name);
+          return { content: 'runtime bridge result', isError: false };
+        }),
+      })
+    ).resolves.toMatchObject({ response: 'hello' });
+
+    expect(calls).toEqual(['synthetic_lookup']);
+    expect(messages(item.capture)).toContainEqual({
+      jsonrpc: '2.0',
+      id: 710,
+      result: {
+        success: true,
+        contentItems: [{ type: 'inputText', text: 'runtime bridge result' }],
+      },
+    });
+    await runtime.stop();
+  });
+
+  it('multiplexes concurrent sessions through one initialized app-server process', async () => {
+    const item = fixture();
+    const runtime = new CodexRuntimeProcess(item.options);
+
+    const [one, two] = await Promise.all([
+      runtime.prompt('one', undefined, { sessionKey: 'one' }),
+      runtime.prompt('two', undefined, { sessionKey: 'two' }),
+    ]);
+
+    const launches = messages(item.capture).filter((entry) => Array.isArray(entry.argv));
+    const sent = messages(item.capture);
+    expect(launches).toHaveLength(1);
+    expect(sent.filter((entry) => entry.method === 'initialize')).toHaveLength(1);
+    expect(sent.filter((entry) => entry.method === 'thread/start')).toHaveLength(2);
+    expect(new Set([one.session_id, two.session_id]).size).toBe(2);
+    expect(() => process.kill(Number(launches[0].pid), 0)).not.toThrow();
+    await runtime.stop();
+  });
+
+  it('keeps sibling sessions alive when one multiplexed turn times out', async () => {
+    const item = fixture('timeout-once');
+    const runtime = new CodexRuntimeProcess({ ...item.options, requestTimeout: 1_000 });
+
+    const timedOut = expect(
+      runtime.prompt('slow', undefined, {
+        sessionKey: 'slow',
+        // Also bounds the lazy spawn + initialize; 250ms timed out `initialize` on a
+        // loaded host. The fixture never answers this turn, so the timeout path is kept.
+        requestTimeout: 1_000,
+      })
+    ).rejects.toThrow('timed out');
+    await waitForFile(join(item.root, 'timed-out'));
+    await expect(
+      runtime.prompt('fast', undefined, { sessionKey: 'fast', requestTimeout: 1_000 })
+    ).resolves.toMatchObject({ response: 'hello' });
+    await timedOut;
+
+    const launches = messages(item.capture).filter((entry) => Array.isArray(entry.argv));
+    expect(launches).toHaveLength(1);
+    expect(() => process.kill(Number(launches[0].pid), 0)).not.toThrow();
+    await runtime.stop();
+  });
+
+  it('interrupts a late acknowledged turn before retrying the same durable thread', async () => {
+    const item = fixture('turn-start-late-once');
+    const runtime = new CodexRuntimeProcess({ ...item.options, requestTimeout: 1_000 });
+
+    // 600ms budget: it also bounds the lazy spawn + initialize of the fake app-server
+    // (150ms timed out `initialize` on a loaded host). The fixture acknowledges the
+    // first turn/start at 900ms, after this deadline and before the 1,200ms
+    // reconciliation timer (deadline + max(budget, grace)), so the late ack still
+    // lands inside the reconciliation window exactly as the 150/300 pairing did.
+    await expect(
+      runtime.prompt('first', undefined, { sessionKey: 'same', requestTimeout: 600 })
+    ).rejects.toThrow('timed out');
+    await expect(
+      runtime.prompt('retry', undefined, { sessionKey: 'same', requestTimeout: 1_000 })
+    ).resolves.toMatchObject({ response: 'hello' });
+
+    const sent = messages(item.capture);
+    const interruptIndex = sent.findIndex((entry) => entry.method === 'turn/interrupt');
+    const retryIndex = sent.findLastIndex((entry) => entry.method === 'turn/start');
+    expect(interruptIndex).toBeGreaterThan(-1);
+    expect(interruptIndex).toBeLessThan(retryIndex);
+    expect(sent.filter((entry) => Array.isArray(entry.argv))).toHaveLength(1);
+    await runtime.stop();
+  });
+
+  it.each([
+    { mode: 'turn-start-error-held-once', expectedLaunches: 1 },
+    { mode: 'turn-start-malformed-held-once', expectedLaunches: 2 },
+  ])(
+    'reconciles $mode received after the outer deadline before retrying',
+    async ({ mode, expectedLaunches }) => {
+      const item = fixture(mode);
+      const runner = new CodexAppServerProcess({
+        hostRootDir: '/tmp/mama-test-host',
+        ...item.options,
+        requestTimeout: 2_000,
+      });
+      const first = runner.prompt('first');
+      await waitForFile(join(item.root, 'held-turn-start'));
+      const firstStart = messages(item.capture).find((entry) => entry.method === 'turn/start');
+      const threadId = (firstStart?.params as Record<string, unknown>)?.threadId;
+      expect(typeof threadId).toBe('string');
+      (
+        runner as unknown as {
+          timeoutTurn(threadId: string, error: Error, requestTimeout: number): void;
+        }
+      ).timeoutTurn(String(threadId), new Error('manual outer deadline'), 2_000);
+      await expect(first).rejects.toThrow('manual outer deadline');
+      writeFileSync(join(item.root, 'release-turn-start'), '1');
+
+      await expect(runner.prompt('retry')).resolves.toMatchObject({ response: 'hello' });
+
+      const sent = messages(item.capture);
+      expect(sent.filter((entry) => entry.method === 'turn/start')).toHaveLength(2);
+      expect(sent.filter((entry) => Array.isArray(entry.argv))).toHaveLength(expectedLaunches);
+      await runner.stop();
+    }
+  );
+
+  it('ONE-MAMA-P3 Task 4 AC #4: interrupts a codex turn whose counted usage crosses the run budget', async () => {
+    const item = fixture('tool-success');
+    const runner = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      requestTimeout: 2_000,
+    });
+    try {
+      // The fixture's first total-bearing usage event counts 8 + 6 + 3 = 17 tokens for the turn.
+      await expect(runner.prompt('long', undefined, { runTokenBudget: 10 })).rejects.toThrow(
+        /run budget stop: \d+ >= 10 counted tokens inside one turn/
+      );
+      // The reject precedes the interrupt write; the fake child appends it to the
+      // capture file on its own tick.
+      await vi.waitFor(
+        () => {
+          const interrupts = messages(item.capture).filter((m) => m.method === 'turn/interrupt');
+          expect(interrupts.length).toBeGreaterThanOrEqual(1);
+        },
+        { timeout: 2_000 }
+      );
+      // no budget -> the same fixture completes
+      const ok = await runner.prompt('long', undefined, {});
+      expect(ok.response).toContain('hello');
+    } finally {
+      await runner.stop();
+    }
+  });
+
+  it('aborts an active host tool before reporting a turn timeout', async () => {
+    const item = fixture('tool-success');
+    const runner = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      requestTimeout: 2_000,
+    });
+    let observedAbort = false;
+    let resolveToolStarted: (() => void) | undefined;
+    const toolStarted = new Promise<void>((resolve) => {
+      resolveToolStarted = resolve;
+    });
+
+    const prompt = runner.prompt('slow tool', undefined, {
+      hostToolBridge: hostBridge(
+        (call) =>
+          new Promise((resolve) => {
+            call.signal?.addEventListener(
+              'abort',
+              () => {
+                observedAbort = true;
+                resolve({ content: 'cancelled', isError: true });
+              },
+              { once: true }
+            );
+            resolveToolStarted?.();
+          })
+      ),
+    });
+    await toolStarted;
+    const firstStart = messages(item.capture).find((entry) => entry.method === 'turn/start');
+    const threadId = (firstStart?.params as Record<string, unknown>)?.threadId;
+    expect(typeof threadId).toBe('string');
+    (
+      runner as unknown as {
+        timeoutTurn(threadId: string, error: Error, requestTimeout: number): void;
+      }
+    ).timeoutTurn(String(threadId), new Error('manual turn timed out'), 2_000);
+
+    await expect(prompt).rejects.toThrow('manual turn timed out');
+
+    expect(observedAbort).toBe(true);
+    await runner.stop();
+  });
+
+  it('promotes a terminal mutation settled after timeout over the original cancellation', async () => {
+    const item = fixture('tool-success');
+    const runner = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      requestTimeout: 2_000,
+    });
+    let resolveToolStarted: (() => void) | undefined;
+    const toolStarted = new Promise<void>((resolve) => {
+      resolveToolStarted = resolve;
+    });
+
+    const prompt = runner.prompt('ambiguous mutation', undefined, {
+      hostToolBridge: hostBridge(
+        (call) =>
+          new Promise((resolve) => {
+            call.signal?.addEventListener(
+              'abort',
+              () => {
+                setTimeout(
+                  () =>
+                    resolve({
+                      content: 'Mutation outcome is unknown',
+                      isError: true,
+                      abort: true,
+                      terminalCode: 'MUTATION_OUTCOME_UNKNOWN',
+                    }),
+                  20
+                );
+              },
+              { once: true }
+            );
+            resolveToolStarted?.();
+          })
+      ),
+    });
+    await toolStarted;
+    const firstStart = messages(item.capture).find((entry) => entry.method === 'turn/start');
+    const threadId = (firstStart?.params as Record<string, unknown>)?.threadId;
+    expect(typeof threadId).toBe('string');
+    (
+      runner as unknown as {
+        timeoutTurn(threadId: string, error: Error, requestTimeout: number): void;
+      }
+    ).timeoutTurn(String(threadId), new Error('manual turn timed out'), 2_000);
+
+    const failure = await prompt.catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(HostToolTerminalError);
+    expect(failure).toMatchObject({
+      terminalCode: 'MUTATION_OUTCOME_UNKNOWN',
+      retryable: false,
+    });
+    await runner.stop();
+  });
+
+  // Story TG-05: preserve an active durable Codex turn.
+  // AC: streamed progress refreshes the idle deadline beyond the original timeout.
+  it('treats streamed progress as activity and refreshes the turn idle timeout', async () => {
+    const item = fixture('progress-delayed');
+    const runner = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      requestTimeout: 2_000,
+    });
+    await runner.prompt('warm connection');
+    // Keep real subprocess I/O, but advance the parent's idle clock on each received delta.
+    // A 45ms wall timeout with 25ms child ticks races CI scheduling; this still proves that
+    // cumulative activity exceeds the timeout and only a refreshed idle deadline survives.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let advancedMs = 0;
+    try {
+      await expect(
+        runner.prompt(
+          'long but active',
+          {
+            onDelta: () => {
+              vi.advanceTimersByTime(30);
+              advancedMs += 30;
+            },
+          },
+          { requestTimeout: 45 }
+        )
+      ).resolves.toMatchObject({ response: 'hello' });
+      expect(advancedMs).toBeGreaterThan(45);
+    } finally {
+      vi.useRealTimers();
+      await runner.stop();
+    }
+  });
+
+  it('treats completed reasoning items as progress so a long thinking step is not cut', async () => {
+    // Live 2026-09-25: at effort max a reasoning-only phase of >5 min was aborted as
+    // "without progress" although Codex completed a reasoning item every ~10 s.
+    const item = fixture('progress-reasoning');
+    const runner = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      requestTimeout: 2_000,
+    });
+    await runner.prompt('warm connection');
+    try {
+      await expect(
+        runner.prompt('long reasoning', undefined, { requestTimeout: 150 })
+      ).resolves.toMatchObject({ response: 'hello' });
+    } finally {
+      await runner.stop();
+    }
+  });
+
+  it('serializes overlapping turns for the same session on the shared app-server', async () => {
+    const item = fixture();
+    const runtime = new CodexRuntimeProcess(item.options);
+
+    await Promise.all([
+      runtime.prompt('first', undefined, { sessionKey: 'same' }),
+      runtime.prompt('second', undefined, { sessionKey: 'same' }),
+    ]);
+
+    const sent = messages(item.capture);
+    expect(sent.filter((entry) => Array.isArray(entry.argv))).toHaveLength(1);
+    expect(sent.filter((entry) => entry.method === 'thread/start')).toHaveLength(1);
+    expect(sent.filter((entry) => entry.method === 'turn/start')).toHaveLength(2);
+    await runtime.stop();
+  });
+
+  it('retries the official overloaded response without restarting the app-server', async () => {
+    const item = fixture('overloaded-once');
+    const runtime = new CodexRuntimeProcess(item.options);
+
+    await expect(runtime.prompt('retry me')).resolves.toMatchObject({ response: 'hello' });
+
+    const sent = messages(item.capture);
+    expect(sent.filter((entry) => Array.isArray(entry.argv))).toHaveLength(1);
+    expect(sent.filter((entry) => entry.method === 'turn/start')).toHaveLength(2);
+    await runtime.stop();
+  });
+
+  it('awaits app-server child termination before runtime stop resolves', async () => {
+    const item = fixture('ignore-term');
+    const runtime = new CodexRuntimeProcess(item.options);
+    await runtime.prompt('hi');
+    const launch = messages(item.capture).find((entry) => Array.isArray(entry.argv));
+
+    await runtime.stop();
+
+    expect(() => process.kill(Number(launch?.pid), 0)).toThrow();
+  });
+
+  it.each(['model', 'cwd', 'mcp'] as const)(
+    'rejects a persisted %s policy mismatch',
+    async (field) => {
+      const item = fixture();
+      const first = new CodexAppServerProcess(item.options);
+      await first.prompt('hi');
+      await first.stop();
+      const changed = { ...item.options };
+      if (field === 'model') {
+        changed.model = 'different-model';
+      }
+      if (field === 'cwd') {
+        changed.cwd = join(item.root, 'different-cwd');
+        mkdirSync(changed.cwd);
+      }
+      if (field === 'mcp') {
+        changed.mcpConfigPath = join(item.root, 'changed-mcp.json');
+        writeFileSync(
+          changed.mcpConfigPath,
+          JSON.stringify({ mcpServers: { remote: { command: 'node' } } })
+        );
+      }
+      const second = new CodexAppServerProcess(changed);
+      await expect(second.prompt('again')).rejects.toThrow('policy mismatch');
+      await second.stop();
+    }
+  );
+
+  it('reports durable policy compatibility without attempting a model request', async () => {
+    const item = fixture();
+    const first = new CodexAppServerProcess(item.options);
+    expect(first.getSessionPolicyStatus()).toBe('missing');
+    await first.prompt('hi');
+    expect(first.getSessionPolicyStatus()).toBe('compatible');
+    await first.stop();
+
+    const changed = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      policyFingerprint: 'changed-policy',
+    });
+    expect(changed.getSessionPolicyStatus()).toBe('mismatch');
+    expect(messages(item.capture).filter((entry) => entry.method === 'turn/start')).toHaveLength(1);
+    await changed.stop();
+  });
+
+  it('keeps MCP secrets out of argv and redacts echoed stderr from errors', async () => {
+    const secret = 'super-secret-token';
+    const item = fixture('exit', secret);
+    const mcpConfigPath = join(item.root, 'mcp.json');
+    const previousSecret = globalThis.process.env.TEST_SECRET;
+    globalThis.process.env.TEST_SECRET = secret;
+    writeFileSync(
+      mcpConfigPath,
+      JSON.stringify({ mcpServers: { remote: { command: 'node', env_vars: ['TEST_SECRET'] } } })
+    );
+    const process = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      mcpConfigPath,
+    });
+    let message = '';
+    try {
+      await process.prompt('hi');
+    } catch (error: unknown) {
+      message = error instanceof Error ? error.message : String(error);
+    } finally {
+      if (previousSecret === undefined) {
+        delete globalThis.process.env.TEST_SECRET;
+      } else {
+        globalThis.process.env.TEST_SECRET = previousSecret;
+      }
+    }
+    await process.stop();
+    expect(message).toContain('[REDACTED]');
+    expect(message).not.toContain(secret);
+    expect(JSON.stringify(messages(item.capture)[0].argv)).not.toContain(secret);
+  });
+
+  it('restarts and refreshes redaction when an MCP secret binding changes', async () => {
+    const item = fixture();
+    const mcpConfigPath = join(item.root, 'secret-refresh-mcp.json');
+    writeFileSync(
+      mcpConfigPath,
+      JSON.stringify({ mcpServers: { remote: { command: 'node', env_vars: ['TEST_SECRET'] } } })
+    );
+    const previousSecret = globalThis.process.env.TEST_SECRET;
+    try {
+      globalThis.process.env.TEST_SECRET = 'first-secret';
+      const runner = new CodexAppServerProcess({
+        hostRootDir: '/tmp/mama-test-host',
+        ...item.options,
+        mcpConfigPath,
+      });
+      await runner.prompt('first');
+      globalThis.process.env.TEST_SECRET = 'second-secret';
+      await runner.prompt('second');
+      await runner.stop();
+
+      const launches = messages(item.capture).filter((entry) => Array.isArray(entry.argv));
+      expect(launches).toHaveLength(2);
+      expect(launches.map((entry) => entry.secret)).toEqual(['first-secret', 'second-secret']);
+    } finally {
+      if (previousSecret === undefined) {
+        delete globalThis.process.env.TEST_SECRET;
+      } else {
+        globalThis.process.env.TEST_SECRET = previousSecret;
+      }
+    }
+  });
+
+  it('redacts generated HTTP-header environment values without redacting arbitrary env', async () => {
+    const secret = 'generated-header-secret';
+    const item = fixture('exit', secret);
+    const mcpConfigPath = join(item.root, 'http-mcp.json');
+    writeFileSync(
+      mcpConfigPath,
+      JSON.stringify({
+        mcpServers: {
+          remote: {
+            url: 'https://mcp.example.test',
+            http_headers: { Authorization: secret },
+          },
+        },
+      })
+    );
+    const runner = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      mcpConfigPath,
+    });
+    let message = '';
+    try {
+      await runner.prompt('hi');
+    } catch (error: unknown) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    await runner.stop();
+    expect(message).toContain('[REDACTED]');
+    expect(message).not.toContain(secret);
+    expect(JSON.stringify(messages(item.capture)[0].argv)).not.toContain(secret);
+  });
+
+  it('writes stable private shared config and non-empty auth atomically', async () => {
+    const item = fixture();
+    const sourceHome = join(item.root, 'source-home');
+    writeFileSync(join(sourceHome, '.codex', 'auth.json'), '{"token":"abc"}');
+    const previousHome = process.env.HOME;
+    process.env.HOME = sourceHome;
+    try {
+      const one = new CodexAppServerProcess({
+        hostRootDir: '/tmp/mama-test-host',
+        ...item.options,
+        sessionKey: 'one',
+      });
+      const two = new CodexAppServerProcess({
+        hostRootDir: '/tmp/mama-test-host',
+        ...item.options,
+        sessionKey: 'two',
+      });
+      await Promise.all([one.prompt('a'), two.prompt('b')]);
+      await Promise.all([one.stop(), two.stop()]);
+      expect(readFileSync(join(item.options.codexHome!, 'auth.json'), 'utf8')).toContain('abc');
+      expect(readFileSync(join(item.options.codexHome!, 'config.toml'), 'utf8')).toContain(
+        '[features]'
+      );
+      expect(statSync(item.options.codexHome!).mode & 0o777).toBe(0o700);
+      expect(statSync(item.options.isolatedHome!).mode & 0o777).toBe(0o700);
+      expect(statSync(join(item.options.codexHome!, 'config.toml')).mode & 0o777).toBe(0o600);
+      expect(statSync(join(item.options.codexHome!, 'auth.json')).mode & 0o777).toBe(0o600);
+    } finally {
+      process.env.HOME = previousHome;
+    }
+  });
+
+  it('force-kills a child that ignores SIGTERM within a bounded grace period', async () => {
+    const item = fixture('ignore-term');
+    const process = new CodexAppServerProcess(item.options);
+    await process.prompt('hi');
+    const started = Date.now();
+    await process.stop();
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(() => globalThis.process.kill(Number(messages(item.capture)[0].pid), 0)).toThrow();
+    expect(process.getStatus()).toMatchObject({
+      running: false,
+      pendingRequestCount: 0,
+      hasActiveTurn: false,
+      stdoutListenerCount: 0,
+      stderrListenerCount: 0,
+      shutdownTimerActive: false,
+    });
+  });
+
+  it('restarts before the next turn when source authentication changes', async () => {
+    const item = fixture();
+    const sourceHome = join(item.root, 'source-home');
+    const authPath = join(sourceHome, '.codex', 'auth.json');
+    const previousHome = process.env.HOME;
+    process.env.HOME = sourceHome;
+    try {
+      writeFileSync(authPath, '{"token":"first-auth-token"}');
+      const runner = new CodexAppServerProcess(item.options);
+      await runner.prompt('first');
+      writeFileSync(authPath, '{"token":"second-auth-token"}');
+      await runner.prompt('second');
+      await runner.stop();
+      const launches = messages(item.capture).filter((entry) => Array.isArray(entry.argv));
+      expect(launches).toHaveLength(2);
+      expect(readFileSync(join(item.options.codexHome!, 'auth.json'), 'utf8')).toContain(
+        'second-auth-token'
+      );
+    } finally {
+      process.env.HOME = previousHome;
+    }
+  });
+
+  it.each(['absent', 'empty'])(
+    'restarts when authentication changes from %s to present',
+    async (state) => {
+      const item = fixture();
+      const sourceHome = join(item.root, 'source-home');
+      const authPath = join(sourceHome, '.codex', 'auth.json');
+      if (state === 'empty') {
+        writeFileSync(authPath, '');
+      }
+      const previousHome = process.env.HOME;
+      process.env.HOME = sourceHome;
+      try {
+        const runner = new CodexAppServerProcess(item.options);
+        await runner.prompt('first');
+        writeFileSync(authPath, '{"token":"now-present"}');
+        await runner.prompt('second');
+        await runner.stop();
+        expect(messages(item.capture).filter((entry) => Array.isArray(entry.argv))).toHaveLength(2);
+      } finally {
+        process.env.HOME = previousHome;
+      }
+    }
+  );
+
+  it.each(['exit-after-turn', 'timeout-once'])(
+    'continues the persisted thread after %s before starting the next turn',
+    async (mode) => {
+      const item = fixture(mode);
+      // The first prompt lazily spawns the fake Node app-server, and the same
+      // requestTimeout bounds its initialize handshake (start -> request('initialize',
+      // ..., requestTimeout)). 200ms is below cold-spawn latency on a loaded machine
+      // and failed with "initialize timed out after 200ms"; 500ms is the value the
+      // rest of this file uses for spawn-covering timeouts.
+      const runner = new CodexAppServerProcess({
+        hostRootDir: '/tmp/mama-test-host',
+        ...item.options,
+        requestTimeout: 2_000,
+      });
+      if (mode === 'exit-after-turn') {
+        await runner.prompt('first');
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      } else {
+        await expect(runner.prompt('first')).rejects.toThrow('timed out');
+      }
+      await expect(runner.prompt('second')).resolves.toMatchObject({ response: 'hello' });
+      await runner.stop();
+      const sent = messages(item.capture);
+      const resumeIndex = sent.findIndex((entry) => entry.method === 'thread/resume');
+      const secondTurnIndex = sent.findLastIndex((entry) => entry.method === 'turn/start');
+      expect(resumeIndex).toBeGreaterThan(-1);
+      expect(resumeIndex).toBeLessThan(secondTurnIndex);
+      if (mode === 'timeout-once') {
+        expect(sent.filter((entry) => entry.method === 'turn/start')).toHaveLength(2);
+        expect(sent.filter((entry) => Array.isArray(entry.argv))).toHaveLength(2);
+      }
+    }
+  );
+
+  it('delivers fresh runtime bootstrap context when resuming a durable thread', async () => {
+    const item = fixture();
+    const first = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      systemPrompt: 'initial runtime bootstrap',
+      policyFingerprint: 'stable-policy',
+    });
+    await first.prompt('first message');
+    await first.stop();
+
+    const resumed = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      systemPrompt: 'fresh runtime bootstrap after restart',
+      policyFingerprint: 'stable-policy',
+    });
+    await resumed.prompt('second message');
+    await resumed.stop();
+
+    const sent = messages(item.capture);
+    const resumeIndex = sent.findIndex((entry) => entry.method === 'thread/resume');
+    const resumedTurn = sent.slice(resumeIndex + 1).find((entry) => entry.method === 'turn/start');
+    const input = (
+      (resumedTurn?.params as Record<string, unknown>)?.input as Array<{
+        text?: string;
+      }>
+    )?.[0]?.text;
+    expect(resumeIndex).toBeGreaterThan(-1);
+    expect(input).toContain('fresh runtime bootstrap after restart');
+    expect(input).toContain('second message');
+  });
+
+  it('omits baseInstructions on thread/resume when no resume instructions are supplied', async () => {
+    const item = fixture();
+    const first = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      systemPrompt: 'initial runtime bootstrap',
+      policyFingerprint: 'stable-policy',
+    });
+    await first.prompt('first message');
+    await first.stop();
+
+    const resumed = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      systemPrompt: 'minimal per-call prompt',
+      policyFingerprint: 'stable-policy',
+    });
+    await resumed.prompt('second message');
+    await resumed.stop();
+
+    const resume = messages(item.capture).find((entry) => entry.method === 'thread/resume');
+    expect(resume).toBeDefined();
+    expect(resume?.params).not.toHaveProperty('baseInstructions');
+  });
+
+  it('carries resume instructions on thread/resume instead of the turn-text bootstrap', async () => {
+    const item = fixture();
+    const first = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      systemPrompt: 'initial runtime bootstrap',
+      policyFingerprint: 'stable-policy',
+    });
+    await first.prompt('first message');
+    await first.stop();
+
+    const resumed = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      systemPrompt: 'minimal per-call prompt',
+      policyFingerprint: 'stable-policy',
+    });
+    const resumeInstructions = vi.fn().mockResolvedValue('full operator instructions');
+    await resumed.prompt('second message', undefined, { resumeInstructions });
+    await resumed.stop();
+
+    const sent = messages(item.capture);
+    const resumeIndex = sent.findIndex((entry) => entry.method === 'thread/resume');
+    const resumedTurn = sent.slice(resumeIndex + 1).find((entry) => entry.method === 'turn/start');
+    const input = (
+      (resumedTurn?.params as Record<string, unknown>)?.input as Array<{ text?: string }>
+    )?.[0]?.text;
+
+    expect(resumeIndex).toBeGreaterThan(-1);
+    expect((sent[resumeIndex]?.params as Record<string, unknown>)?.baseInstructions).toBe(
+      'full operator instructions'
+    );
+    expect(resumeInstructions).toHaveBeenCalledTimes(1);
+    // The protocol channel replaces the user-text workaround: no reminder wrapper, no
+    // minimal per-call prompt leaking into the turn.
+    expect(input).toBe('second message');
+    expect(input).not.toContain('system-reminder');
+    expect(input).not.toContain('minimal per-call prompt');
+  });
+
+  it('logs one measurable [prompt] line per turn, with reminder state', async () => {
+    const lines: string[] = [];
+    const logSpy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      lines.push(args.map((arg) => String(arg)).join(' '));
+    });
+    try {
+      const item = fixture();
+      const first = new CodexAppServerProcess({
+        hostRootDir: '/tmp/mama-test-host',
+        ...item.options,
+        systemPrompt: 'initial runtime bootstrap',
+        policyFingerprint: 'stable-policy',
+      });
+      await first.prompt('first message', undefined, {
+        promptTelemetry: { kind: 'owner-event', brief: 'sent' },
+      });
+      await first.stop();
+
+      const resumed = new CodexAppServerProcess({
+        hostRootDir: '/tmp/mama-test-host',
+        ...item.options,
+        systemPrompt: 'minimal per-call prompt',
+        policyFingerprint: 'stable-policy',
+      });
+      await resumed.prompt('second message', undefined, {
+        promptTelemetry: { kind: 'scheduled:wiki', brief: 'omitted' },
+        resumeInstructions: async () => 'full operator instructions',
+      });
+      await resumed.stop();
+
+      const promptLines = lines.filter((line) => line.startsWith('[prompt] '));
+      expect(promptLines).toHaveLength(2);
+      expect(promptLines[0]).toMatch(
+        /^\[prompt\] thread=\S+ kind=owner-event chars=\d+ brief=sent reminder=omitted$/
+      );
+      expect(promptLines[1]).toMatch(
+        /^\[prompt\] thread=\S+ kind=scheduled:wiki chars=\d+ brief=omitted reminder=omitted$/
+      );
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('reports reminder=sent on the legacy replay path, where the turn text still carries it', async () => {
+    const lines: string[] = [];
+    const logSpy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      lines.push(args.map((arg) => String(arg)).join(' '));
+    });
+    try {
+      const item = fixture();
+      const first = new CodexAppServerProcess({
+        hostRootDir: '/tmp/mama-test-host',
+        ...item.options,
+        systemPrompt: 'initial runtime bootstrap',
+        policyFingerprint: 'stable-policy',
+      });
+      await first.prompt('first message');
+      await first.stop();
+
+      const resumed = new CodexAppServerProcess({
+        hostRootDir: '/tmp/mama-test-host',
+        ...item.options,
+        systemPrompt: 'fresh runtime bootstrap after restart',
+        policyFingerprint: 'stable-policy',
+      });
+      // No resumeInstructions: the caller cannot re-anchor, so the reminder still applies
+      // and the log must say so rather than reporting a saving that did not happen.
+      await resumed.prompt('second message');
+      await resumed.stop();
+
+      const promptLines = lines.filter((line) => line.startsWith('[prompt] '));
+      expect(promptLines[promptLines.length - 1]).toContain('reminder=sent');
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('does not build resume instructions while the durable thread stays live', async () => {
+    const item = fixture();
+    const runner = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      systemPrompt: 'initial durable policy',
+      policyFingerprint: 'stable-policy',
+    });
+    const resumeInstructions = vi.fn().mockResolvedValue('full operator instructions');
+
+    await runner.prompt('first message', undefined, { resumeInstructions });
+    await runner.prompt('second message', undefined, { resumeInstructions });
+    await runner.stop();
+
+    // thread/start opened the thread; neither turn resumed, so the expensive rebuild
+    // must never run on the hot path.
+    expect(resumeInstructions).not.toHaveBeenCalled();
+  });
+
+  it('does not re-inject a per-call system prompt while the same durable thread stays live', async () => {
+    const item = fixture();
+    const runner = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      systemPrompt: 'initial durable policy',
+      policyFingerprint: 'stable-policy',
+    });
+
+    await runner.prompt('first message');
+    await runner.prompt('second message', undefined, {
+      systemPrompt: 'per-call context that must not be replayed',
+      policyFingerprint: 'stable-policy',
+    });
+    await runner.stop();
+
+    const turns = messages(item.capture).filter((entry) => entry.method === 'turn/start');
+    const secondInput = (
+      (turns[1]?.params as Record<string, unknown>)?.input as Array<{ text?: string }>
+    )?.[0]?.text;
+    expect(turns).toHaveLength(2);
+    expect(secondInput).toBe('second message');
+    expect(secondInput).not.toContain('per-call context');
+    expect(messages(item.capture).filter((entry) => entry.method === 'thread/start')).toHaveLength(
+      1
+    );
+  });
+
+  it('does not overwrite managed authentication when the source is missing', async () => {
+    const item = fixture();
+    mkdirSync(item.options.codexHome!, { recursive: true });
+    writeFileSync(join(item.options.codexHome!, 'auth.json'), '{"token":"keep-me"}');
+    const emptyHome = join(item.root, 'empty-source-home');
+    mkdirSync(emptyHome);
+    const previousHome = process.env.HOME;
+    process.env.HOME = emptyHome;
+    try {
+      const runner = new CodexAppServerProcess(item.options);
+      await runner.prompt('hi');
+      await runner.stop();
+      expect(readFileSync(join(item.options.codexHome!, 'auth.json'), 'utf8')).toContain('keep-me');
+    } finally {
+      process.env.HOME = previousHome;
+    }
+  });
+
+  it('does not rewrite unchanged managed config and authentication on every prompt', async () => {
+    const item = fixture();
+    const sourceHome = join(item.root, 'source-home');
+    writeFileSync(join(sourceHome, '.codex', 'auth.json'), '{"token":"stable"}');
+    const previousHome = process.env.HOME;
+    process.env.HOME = sourceHome;
+    try {
+      const runner = new CodexAppServerProcess(item.options);
+      await runner.prompt('first');
+      const configPath = join(item.options.codexHome!, 'config.toml');
+      const authPath = join(item.options.codexHome!, 'auth.json');
+      const firstConfigMtime = statSync(configPath).mtimeMs;
+      const firstAuthMtime = statSync(authPath).mtimeMs;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+
+      await runner.prompt('second');
+
+      expect(statSync(configPath).mtimeMs).toBe(firstConfigMtime);
+      expect(statSync(authPath).mtimeMs).toBe(firstAuthMtime);
+      await runner.stop();
+    } finally {
+      process.env.HOME = previousHome;
+    }
+  });
+
+  it('repairs externally modified managed config before the next prompt', async () => {
+    const item = fixture();
+    const runner = new CodexAppServerProcess(item.options);
+    await runner.prompt('first');
+    const configPath = join(item.options.codexHome!, 'config.toml');
+    writeFileSync(configPath, 'approval_policy = "on-request"\n[features]\nshell_tool = true\n');
+
+    await runner.prompt('second');
+
+    const repaired = readFileSync(configPath, 'utf8');
+    expect(repaired).toContain('shell_tool = false');
+    expect(repaired).not.toContain('shell_tool = true');
+    expect(statSync(configPath).mode & 0o777).toBe(0o600);
+    await runner.stop();
+  });
+
+  it('writes the configured reasoning effort into the managed config', async () => {
+    const item = fixture();
+    const runner = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      effort: 'xhigh',
+    });
+    await runner.prompt('first');
+
+    const config = readFileSync(join(item.options.codexHome!, 'config.toml'), 'utf8');
+    expect(config).toContain('model_reasoning_effort = "xhigh"');
+    await runner.stop();
+  });
+
+  it('defaults the managed reasoning effort to high when unconfigured', async () => {
+    const item = fixture();
+    const runner = new CodexAppServerProcess(item.options);
+    await runner.prompt('first');
+
+    expect(readFileSync(join(item.options.codexHome!, 'config.toml'), 'utf8')).toContain(
+      'model_reasoning_effort = "high"'
+    );
+    await runner.stop();
+  });
+
+  it('rewrites the managed config when the configured reasoning effort changes', async () => {
+    const item = fixture();
+    const configPath = join(item.options.codexHome!, 'config.toml');
+    const first = new CodexAppServerProcess(item.options);
+    await first.prompt('first');
+    await first.stop();
+    expect(readFileSync(configPath, 'utf8')).toContain('model_reasoning_effort = "high"');
+
+    const changed = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      effort: 'low',
+    });
+    await changed.prompt('second');
+
+    expect(readFileSync(configPath, 'utf8')).toContain('model_reasoning_effort = "low"');
+    expect(statSync(configPath).mode & 0o777).toBe(0o600);
+    await changed.stop();
+  });
+
+  it('threads the runtime-process reasoning effort into the managed config', async () => {
+    const item = fixture();
+    const runner = new CodexRuntimeProcess({ ...item.options, effort: 'xhigh' });
+    await runner.prompt('first');
+
+    expect(readFileSync(join(item.options.codexHome!, 'config.toml'), 'utf8')).toContain(
+      'model_reasoning_effort = "xhigh"'
+    );
+    await runner.stop();
+  });
+
+  it('fails loud on an unsupported configured reasoning effort', async () => {
+    const item = fixture();
+    const runner = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      effort: 'ultra',
+    });
+
+    await expect(runner.prompt('first')).rejects.toThrow(/reasoning effort/i);
+    await runner.stop();
+  });
+});
+
+it('TG-03/04/05/06 observes exact-turn native effects once without duplicating MCP calls', async () => {
+  const testFixture = fixture('native-effects');
+  const runtime = new CodexAppServerProcess(testFixture.options);
+  const events: string[] = [];
+  try {
+    await runtime.prompt('test', {
+      onToolUse: (name, input) => events.push(`start:${name}:${input.nativeToolUseId}`),
+      onToolComplete: (name, id, isError) => events.push(`end:${name}:${id}:${isError}`),
+    });
+    expect(events).toEqual([
+      'start:commandExecution:native-1',
+      'end:commandExecution:native-1:false',
+      'start:fileChange:native-2',
+      'end:fileChange:native-2:false',
+    ]);
+  } finally {
+    await runtime.stop();
+  }
+});
+
+it.each(['native-effects-failed', 'native-effects-pending'])(
+  'TG-05/06 promotes %s transport failure to non-replayable native outcome',
+  async (mode) => {
+    const testFixture = fixture(mode);
+    const runtime = new CodexRuntimeProcess(testFixture.options);
+    const boundary = new NativeEffectReplayBoundary();
+    try {
+      const execution = runtime
+        .prompt('test', {
+          onToolUse: (name, input) => boundary.started(name, input),
+          onToolComplete: (name, id, isError) => boundary.settled(name, id, isError),
+        })
+        .catch((error: unknown) => {
+          throw boundary.failure(error);
+        });
+      await expect(execution).rejects.toMatchObject({
+        code: 'MUTATION_OUTCOME_UNKNOWN',
+        retryable: false,
+      });
+      expect(
+        messages(testFixture.capture).filter((message) => message.method === 'turn/start')
+      ).toHaveLength(1);
+    } finally {
+      await runtime.stop();
+    }
+  }
+);

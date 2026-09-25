@@ -1634,6 +1634,12 @@ export class CodexAppServerProcess {
         }
         return;
       }
+      if (item.type === 'reasoning') {
+        // A completed reasoning item is the model making progress; at high effort a
+        // thinking phase can outlast the idle timeout between tool calls.
+        this.refreshTurnIdleTimeout(turn);
+        return;
+      }
       if (!['commandExecution', 'fileChange', 'collabAgentToolCall'].includes(item.type)) {
         return;
       }
