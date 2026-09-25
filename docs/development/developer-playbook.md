@@ -73,7 +73,7 @@ In November 2025, we made a critical decision: **stop the rewrite, embrace migra
 - **When fixing bugs**: Look at migration history to understand code provenance
 - **When designing**: Prefer extracting proven patterns over inventing new ones
 
-**Reference:** [docs/epics.md](./epics.md), [docs/MAMA-CODE-REUSE-ANALYSIS.md](./MAMA-CODE-REUSE-ANALYSIS.md)
+**Reference:** docs/epics.md, docs/MAMA-CODE-REUSE-ANALYSIS.md
 
 ---
 
@@ -198,7 +198,7 @@ The four named in `.claude-plugin/plugin.json`. UserPromptSubmit is NOT wired.
 
 - Vitest ^1.0.0 (unit + integration tests)
 
-**Reference:** [docs/MAMA-ARCHITECTURE.md](./MAMA-ARCHITECTURE.md), [docs/MAMA-PRD.md](./MAMA-PRD.md)
+**Reference:** docs/MAMA-ARCHITECTURE.md, docs/MAMA-PRD.md
 
 ---
 
@@ -422,7 +422,7 @@ Understanding the migration history helps avoid repeating past mistakes and expl
 - Established "reuse-first" principle
 - Created migration epics (M1-M5)
 
-**Reference:** [docs/epics.md](./epics.md), [docs/MAMA-CODE-REUSE-ANALYSIS.md](./MAMA-CODE-REUSE-ANALYSIS.md)
+**Reference:** docs/epics.md, docs/MAMA-CODE-REUSE-ANALYSIS.md
 
 ---
 
@@ -518,7 +518,7 @@ Understanding the migration history helps avoid repeating past mistakes and expl
 
 **Tests:** 14/14 passing
 
-**Reference:** [docs/MAMA-CODE-REUSE-ANALYSIS.md § Migration Log](./MAMA-CODE-REUSE-ANALYSIS.md#migration-log)
+**Reference:** docs/MAMA-CODE-REUSE-ANALYSIS.md § Migration Log
 
 ---
 
@@ -993,7 +993,7 @@ Fixes #52
    ```markdown
    ## Story
 
-   [Story M4.5](../docs/stories/story-M4.5.md)
+   Story M4.5
 
    ## Changes
 
@@ -1134,14 +1134,14 @@ echo '{"topic":"test","decision":"X","reasoning":"Y"}' | node src/tools/save-dec
 
 **Documentation:**
 
-- [docs/MAMA-ARCHITECTURE.md](./MAMA-ARCHITECTURE.md) - Architecture decisions
-- [docs/MAMA-PRD.md](./MAMA-PRD.md) - Product requirements
-- [docs/epics.md](./epics.md) - Epic overview
-- [mama-plugin/README.md](../mama-plugin/README.md) - User guide
+- docs/MAMA-ARCHITECTURE.md - Architecture decisions
+- docs/MAMA-PRD.md - Product requirements
+- docs/epics.md - Epic overview
+- mama-plugin/README.md - User guide
 
 **Code References:**
 
-- [docs/MAMA-CODE-REUSE-ANALYSIS.md](./MAMA-CODE-REUSE-ANALYSIS.md) - Migration history
+- docs/MAMA-CODE-REUSE-ANALYSIS.md - Migration history
 
 **Community:**
 

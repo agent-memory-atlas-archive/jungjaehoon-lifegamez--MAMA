@@ -137,34 +137,34 @@ semantic request (~1s); later requests reuse it (~89ms).
 
 ### For New Users
 
-- **[Getting Started Tutorial](docs/tutorials/getting-started.md)** - 10-minute quickstart
-- **[First Decision Tutorial](docs/tutorials/first-decision.md)** - Best practices
+- **[Getting Started Tutorial](../../docs/tutorials/getting-started.md)** - 10-minute quickstart
+- **[First Decision Tutorial](../../docs/tutorials/first-decision.md)** - Best practices
 
 ### Task-Oriented Guides
 
-- **[Installation Guide](docs/guides/installation.md)** - Complete installation
-- **[Troubleshooting Guide](docs/guides/troubleshooting.md)** - Common issues and fixes
-- **[Configuration Guide](docs/guides/configuration.md)** - All settings
+- **[Installation Guide](../../docs/guides/installation.md)** - Complete installation
+- **[Troubleshooting Guide](../../docs/guides/troubleshooting.md)** - Common issues and fixes
+- **[Configuration Guide](../../docs/guides/configuration.md)** - All settings
 
 ### Technical Reference
 
-- **[Commands Reference](docs/reference/commands.md)** - All `/mama:*` commands
-- **[MCP Tool API](docs/reference/api.md)** - Tool interfaces
-- **[Hooks Reference](docs/reference/hooks.md)** - Hook configuration
+- **[Commands Reference](../../docs/reference/commands.md)** - All `/mama:*` commands
+- **[MCP Tool API](../../docs/reference/api.md)** - Tool interfaces
+- **[Hooks Reference](../../docs/reference/hooks.md)** - Hook configuration
 
 ### Understanding MAMA
 
-- **[Architecture](docs/explanation/architecture.md)** - System architecture
-- **[Decision Graph](docs/explanation/decision-graph.md)** - Decision evolution
-- **[Data Privacy](docs/explanation/data-privacy.md)** - Privacy-first design
+- **[Architecture](../../docs/explanation/architecture.md)** - System architecture
+- **[Decision Graph](../../docs/explanation/decision-graph.md)** - Decision evolution
+- **[Data Privacy](../../docs/explanation/data-privacy.md)** - Privacy-first design
 
 ### For Contributors
 
-- **[Developer Playbook](docs/development/developer-playbook.md)** - Architecture & standards
-- **[Contributing Guide](docs/development/contributing.md)** - How to contribute
-- **[Testing Guide](docs/development/testing.md)** - Test suite
+- **[Developer Playbook](../../docs/development/developer-playbook.md)** - Architecture & standards
+- **[Contributing Guide](../../docs/development/contributing.md)** - How to contribute
+- **[Testing Guide](../../docs/development/testing.md)** - Test suite
 
-**Full navigation:** [Documentation Index](docs/index.md)
+**Full navigation:** [Documentation Index](../../docs/index.md)
 
 ---
 
@@ -184,7 +184,7 @@ export MAMA_DISABLE_HOOKS=true
 /mama:configure --model Xenova/multilingual-e5-large
 ```
 
-**Full guide:** [Configuration Guide](docs/guides/configuration.md)
+**Full guide:** [Configuration Guide](../../docs/guides/configuration.md)
 
 ---
 
@@ -192,11 +192,11 @@ export MAMA_DISABLE_HOOKS=true
 
 **Common issues:**
 
-- **Commands not appearing:** Restart Claude Code, check [Plugin Not Loading](docs/guides/troubleshooting.md#1-plugin-not-loading)
-- **Runtime dependency issues:** Check Node 22.13+ and optional image runtime notes in [Troubleshooting Guide](docs/guides/troubleshooting.md#2-nodejs-runtime-and-optional-dependency-issues)
-- **Hooks not firing:** Check permissions, see [Hooks Not Firing](docs/guides/troubleshooting.md#4-hooks-not-firing)
+- **Commands not appearing:** Restart Claude Code, check [Plugin Not Loading](../../docs/guides/troubleshooting.md#1-plugin-not-loading)
+- **Runtime dependency issues:** Check Node 22.13+ and optional image runtime notes in [Troubleshooting Guide](../../docs/guides/troubleshooting.md#2-nodejs-runtime-and-optional-dependency-issues)
+- **Hooks not firing:** Check permissions, see [Hooks Not Firing](../../docs/guides/troubleshooting.md#4-hooks-not-firing)
 
-**Full guide:** [Troubleshooting Guide](docs/guides/troubleshooting.md)
+**Full guide:** [Troubleshooting Guide](../../docs/guides/troubleshooting.md)
 
 ---
 
@@ -222,20 +222,20 @@ npm run test:coverage
 - Manifests: 28
 - Commands: 19
 
-**Guide:** [Testing Guide](docs/development/testing.md)
+**Guide:** [Testing Guide](../../docs/development/testing.md)
 
 ---
 
 ## 🛡️ Privacy & Security
 
-**FR Reference:** [FR45-49 (Privacy & Security)](docs/reference/fr-mapping.md)
+**FR Reference:** [FR45-49 (Privacy & Security)](../../docs/archive/fr-mapping-v1.0.md)
 
 - ✅ 100% local processing (no network calls)
 - ✅ All data in `~/.claude/mama-memory.db`
 - ✅ No telemetry, no tracking
 - ✅ Hooks can be disabled anytime
 
-**Learn more:** [Data Privacy Explanation](docs/explanation/data-privacy.md)
+**Learn more:** [Data Privacy Explanation](../../docs/explanation/data-privacy.md)
 
 ---
 
@@ -250,7 +250,7 @@ npm run test:coverage
 
 - All queries: ~12ms (no embeddings)
 
-**Learn more:** [Performance Characteristics](docs/explanation/performance.md)
+**Learn more:** [Performance Characteristics](../../docs/explanation/performance.md)
 
 ---
 
@@ -301,7 +301,7 @@ Lightweight plugin referencing the MCP server. Embedding generation remains loca
 - ✅ Local embedding generation keeps memory search on device
 - ✅ Shared decision database across all tools
 
-**Guide:** [Developer Playbook](docs/development/developer-playbook.md)
+**Guide:** [Developer Playbook](../../docs/development/developer-playbook.md)
 
 ---
 
@@ -317,9 +317,9 @@ Lightweight plugin referencing the MCP server. Embedding generation remains loca
 
 We welcome contributions! Please see:
 
-- [Contributing Guide](docs/development/contributing.md)
-- [Developer Playbook](docs/development/developer-playbook.md)
-- [Code Standards](docs/development/code-standards.md)
+- [Contributing Guide](../../docs/development/contributing.md)
+- [Developer Playbook](../../docs/development/developer-playbook.md)
+- [Code Standards](../../docs/development/code-standards.md)
 
 ---
 
@@ -331,10 +331,10 @@ MIT License - see LICENSE file for details
 
 ## 🔗 Links
 
-- **Documentation:** [docs/index.md](docs/index.md)
+- **Documentation:** [docs/index.md](../../docs/index.md)
 - **GitHub:** [github.com/jungjaehoon-lifegamez/MAMA](https://github.com/jungjaehoon-lifegamez/MAMA)
 - **Issues:** [github.com/jungjaehoon-lifegamez/MAMA/issues](https://github.com/jungjaehoon-lifegamez/MAMA/issues)
-- **PRD:** [docs/project/prd.md](docs/project/prd.md)
+- **PRD:** docs/project/prd.md
 
 ---
 

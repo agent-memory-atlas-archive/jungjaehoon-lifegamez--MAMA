@@ -401,7 +401,7 @@ pnpm vitest run tests/hooks/pretooluse-hook.test.js
 - [Troubleshooting](./troubleshooting.md)
 - [v0 to v1.1 Migration](./migration-v0-to-v1.1.md)
 - [API Reference](../reference/api.md)
-- [MCP Protocol Specification](../reference/mcp-protocol-spec.md)
+- MCP Protocol Specification
 
 ---
 

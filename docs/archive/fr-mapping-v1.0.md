@@ -2,7 +2,7 @@
 
 > **ARCHIVED:** historical requirement mapping for v1.0. It does not describe the current runtime.
 
-**Document Purpose:** This document maps all features in MAMA to their corresponding Functional Requirements (FRs) defined in the [Product Requirements Document (PRD)](../project/prd.md).
+**Document Purpose:** This document maps all features in MAMA to their corresponding Functional Requirements (FRs) defined in the Product Requirements Document (PRD).
 
 ---
 
@@ -32,28 +32,28 @@
 - **Command:** `/mama-save`
 - **Implementation:** `src/commands/mama-save.js`
 - **Fields:** topic, decision, reasoning, confidence, outcome
-- **Reference:** [Commands Reference](commands.md#mama-save)
+- **Reference:** [Commands Reference](../reference/commands.md#mama-save)
 
 ### FR2: Recall Decision History
 
 - **Command:** `/mama-recall <topic>`
 - **Implementation:** `src/commands/mama-recall.js`
 - **Output:** Full evolution history in chronological order
-- **Reference:** [Commands Reference](commands.md#mama-recall)
+- **Reference:** [Commands Reference](../reference/commands.md#mama-recall)
 
 ### FR3: List Recent Decisions
 
 - **Command:** `/mama-list [--limit N]`
 - **Implementation:** `src/commands/mama-list.js`
 - **Output:** Markdown table with recency info
-- **Reference:** [Commands Reference](commands.md#mama-list)
+- **Reference:** [Commands Reference](../reference/commands.md#mama-list)
 
 ### FR4-7: Update, Delete, Export, Import
 
 - **Status:** Not implemented in v1.0 (planned for v1.1)
 - **Workaround:** Direct SQLite manipulation
 
-**See also:** [Commands Reference](commands.md)
+**See also:** [Commands Reference](../reference/commands.md)
 
 ---
 
@@ -142,14 +142,14 @@
 - **Trigger:** User sends message to Claude
 - **Timeout:** 10s
 - **Implementation:** `scripts/userpromptsubmit-hook.js`
-- **Reference:** [Hooks Reference](hooks.md#userpromptsubmit)
+- **Reference:** [Hooks Reference](../reference/hooks.md#userpromptsubmit)
 
 ### FR20: PreToolUse Hook
 
 - **Trigger:** Before Read/Grep tools
 - **Implementation:** `scripts/pretooluse-hook.js`
 - **Output:** Context injection (file-specific)
-- **Reference:** [Hooks Reference](hooks.md#pretooluse-hook)
+- **Reference:** [Hooks Reference](../reference/hooks.md#pretooluse-hook)
 
 ### FR21: PostToolUse Hook
 
@@ -179,14 +179,14 @@
 - **Features:** Semantic search + Graph + Recency
 - **Accuracy:** 80%
 - **Latency:** ~89ms (after model load)
-- **Reference:** [Understanding Tiers](../tutorials/understanding-tiers.md)
+- **Reference:** Understanding Tiers
 
 ### FR26: Tier 2 (Exact Match)
 
 - **Features:** SQL LIKE matching only
 - **Accuracy:** 40%
 - **Latency:** ~12ms
-- **Reference:** [Understanding Tiers](../tutorials/understanding-tiers.md)
+- **Reference:** Understanding Tiers
 
 ### FR27: Transparent Fallback
 
@@ -196,7 +196,7 @@
 
 ### FR28: Tier 2 Remediation
 
-- **Guide:** [Tier 2 Remediation Guide](../guides/tier-2-remediation.md)
+- **Guide:** Tier 2 Remediation Guide
 - **Common causes:** Node.js version, native module build, SQLite issues
 
 ### FR29: Graceful Degradation
@@ -362,10 +362,10 @@
 
 | FR Range | Implementation Status                                         | Reference                                            |
 | -------- | ------------------------------------------------------------- | ---------------------------------------------------- |
-| FR1-7    | 43% (Save, Recall, List; Update/Delete/Export/Import pending) | [Commands](commands.md)                              |
+| FR1-7    | 43% (Save, Recall, List; Update/Delete/Export/Import pending) | [Commands](../reference/commands.md)                 |
 | FR8-12   | 100% (Semantic search fully implemented)                      | [Semantic Search](../explanation/semantic-search.md) |
 | FR13-18  | 100% (Decision evolution complete)                            | [Decision Graph](../explanation/decision-graph.md)   |
-| FR19-24  | 100% (PreToolUse and PostToolUse implemented)                 | [Hooks](hooks.md)                                    |
+| FR19-24  | 100% (PreToolUse and PostToolUse implemented)                 | [Hooks](../reference/hooks.md)                       |
 | FR25-29  | 100% (Tier system complete)                                   | [Tier System](../explanation/tier-system.md)         |
 | FR30-35  | 100% (Korean + English supported)                             | [Multilingual](../explanation/semantic-search.md)    |
 | FR36-40  | 100% (All targets exceeded)                                   | [Performance](../explanation/performance.md)         |
@@ -379,7 +379,7 @@
 
 ## See Also
 
-- [Product Requirements Document (PRD)](../project/prd.md) - Full FR definitions
+- Product Requirements Document (PRD) - Full FR definitions
 - [Architecture](../explanation/architecture.md) - System design
-- [Commands Reference](commands.md) - All `/mama-*` commands
+- [Commands Reference](../reference/commands.md) - All `/mama-*` commands
 - [Configuration Guide](../guides/configuration.md) - All settings

@@ -227,7 +227,7 @@ Now that you've verified MAMA is working:
 
 1. **Learn the commands:** [Commands Reference](../reference/commands.md)
 2. **Save more decisions:** [First Decision Tutorial](first-decision.md)
-3. **Understand tiers:** [Understanding Tiers Tutorial](understanding-tiers.md)
+3. **Understand tiers:** Understanding Tiers Tutorial
 4. **Configure hooks:** [Hook Setup Tutorial](hook-setup.md)
 
 ---
@@ -242,7 +242,7 @@ Now that you've verified MAMA is working:
 
 **Tier 2 detected:**
 
-- Follow [Tier 2 Remediation Guide](../guides/tier-2-remediation.md)
+- Follow Tier 2 Remediation Guide
 
 **Database errors:**
 

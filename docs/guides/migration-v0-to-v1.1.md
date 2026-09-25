@@ -504,8 +504,8 @@ Verify the following after successful migration:
 
 - [Deployment Guide](./deployment.md)
 - [Troubleshooting](./troubleshooting.md)
-- [Epic 5 Technical Specification](../../.docs/sprint-artifacts/tech-spec-epic-5.md)
-- [Link Governance Policy](../reference/mcp-protocol-spec.md)
+- Epic 5 Technical Specification
+- Link Governance Policy
 
 ---
 
