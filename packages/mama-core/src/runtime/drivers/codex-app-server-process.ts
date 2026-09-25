@@ -270,6 +270,8 @@ interface SessionPolicy {
 interface SessionState {
   threadId: string;
   bootstrapPending: boolean;
+  /** True until the first turn on a thread started (not resumed) by this process completes. */
+  unproven?: boolean;
 }
 
 /**
@@ -330,6 +332,14 @@ const SUBAGENT_AUTHORITY_UNAVAILABLE = 'subagent authority unavailable';
 // a refusal the envelope enforcer emitted once a grant passed its wall; a
 // principal's access has no wall, so nothing emits it and nothing may pretend
 // to detect it.
+
+/** turn/start was explicitly rejected by the app-server, so no turn exists on the thread. */
+class CodexTurnRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CodexTurnRejectedError';
+  }
+}
 
 class CodexAppServerRpcError extends Error {
   readonly code: number;
@@ -755,8 +765,21 @@ export class CodexAppServerProcess {
           session.restrictedReadRoots
         );
         state.bootstrapPending = false;
+        state.unproven = false;
         return result;
       } catch (error: unknown) {
+        const opened = this.sessions.get(session.sessionKey);
+        if (opened?.unproven && error instanceof CodexTurnRejectedError) {
+          // Live 2026-09-25: a first turn rejected for input length left the thread saved
+          // although Codex kept no rollout for it, and every later turn failed with "no
+          // rollout found". Only an explicit rejection proves no turn exists; a timeout or a
+          // late acknowledgement may have started one, and that retry keeps the thread.
+          console.warn(
+            `[CodexAppServer] forgetting thread ${opened.threadId}: its first turn was rejected`
+          );
+          this.registry.remove(session.sessionKey);
+          this.sessions.delete(session.sessionKey);
+        }
         if (
           error instanceof CodexAppServerRpcError &&
           error.code !== OVERLOADED_ERROR_CODE &&
@@ -1212,7 +1235,7 @@ export class CodexAppServerProcess {
       systemPromptFingerprint: this.policyFingerprint(session),
       mcpConfigFingerprint: launch.fingerprint,
     });
-    return { threadId: thread.id, bootstrapPending: false };
+    return { threadId: thread.id, bootstrapPending: false, unproven: true };
   }
 
   private policyFingerprint(session: SessionPolicy): string {
@@ -1408,7 +1431,12 @@ export class CodexAppServerProcess {
         })
         .catch((error: unknown) => {
           if (this.turns.get(threadId) === pendingTurn) {
-            this.failTurn(threadId, this.toError(error));
+            this.failTurn(
+              threadId,
+              error instanceof CodexAppServerRpcError && error.code !== OVERLOADED_ERROR_CODE
+                ? new CodexTurnRejectedError(this.redact(error.message))
+                : this.toError(error)
+            );
             return;
           }
           const reconciliation = this.turnStartReconciliations.get(threadId);
@@ -2664,6 +2692,9 @@ export class CodexAppServerProcess {
   private toError(error: unknown): Error {
     if (error instanceof HostToolTerminalError) {
       return new HostToolTerminalError(error.terminalCode, this.redact(error.message));
+    }
+    if (error instanceof CodexTurnRejectedError) {
+      return new CodexTurnRejectedError(this.redact(error.message));
     }
     return error instanceof Error
       ? new Error(this.redact(error.message))

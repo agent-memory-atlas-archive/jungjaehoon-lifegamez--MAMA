@@ -237,6 +237,7 @@ rl.on('line', line => {
     if (mode === 'timeout') return;
     if (mode === 'timeout-once' && !fs.existsSync(${JSON.stringify(join(root, 'timed-out'))})) { fs.writeFileSync(${JSON.stringify(join(root, 'timed-out'))},'1'); return; }
     if (mode === 'exit') return process.exit(17);
+    if (mode === 'first-turn-rejected-once' && !fs.existsSync(${JSON.stringify(join(root, 'first-turn-rejected'))})) { fs.writeFileSync(${JSON.stringify(join(root, 'first-turn-rejected'))},'1'); return send({jsonrpc:'2.0',id:message.id,error:{code:-32602,message:'Input exceeds the maximum length'}}); }
     const id = 'turn-'+(++turn);
     if (['turn-start-error-held-once','turn-start-malformed-held-once'].includes(mode) && !fs.existsSync(${JSON.stringify(join(root, 'held-turn-start'))})) {
       fs.writeFileSync(${JSON.stringify(join(root, 'held-turn-start'))},'1');
@@ -2247,6 +2248,25 @@ describe('Story: Codex app-server process', () => {
       expect(advancedMs).toBeGreaterThan(45);
     } finally {
       vi.useRealTimers();
+      await runner.stop();
+    }
+  });
+
+  it('forgets a thread whose first turn was rejected so the next turn opens a new one', async () => {
+    // Live 2026-09-25: an input-length rejection left the new thread saved without a rollout,
+    // and every later turn failed resuming it ("no rollout found").
+    const item = fixture('first-turn-rejected-once');
+    const runner = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+    });
+    try {
+      await expect(runner.prompt('too long')).rejects.toThrow(/maximum length/);
+      await expect(runner.prompt('next')).resolves.toMatchObject({ response: 'hello' });
+      const sent = messages(item.capture);
+      expect(sent.filter((entry) => entry.method === 'thread/start')).toHaveLength(2);
+      expect(sent.filter((entry) => entry.method === 'thread/resume')).toHaveLength(0);
+    } finally {
       await runner.stop();
     }
   });
