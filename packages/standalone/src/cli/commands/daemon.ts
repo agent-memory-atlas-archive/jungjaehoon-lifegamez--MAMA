@@ -21,6 +21,7 @@ import {
 import { defaultConfigPath, loadConfig, type W1Config } from '../../runtime/config.js';
 import { ensureMamaMcpConfig, resolveActionServerPath } from '../runtime/action-mcp-config.js';
 import type { SourceDelta } from '../../connectors/framework/polling-scheduler.js';
+import { createOwnerPolicyProvider } from '../../runtime/owner-policy.js';
 
 const OWNER_PRINCIPAL_ID = 'owner';
 const OWNER_AGENT_ID = 'owner-agent';
@@ -235,6 +236,9 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
     stage(logger, 'isolation');
 
     currentStage = 'owner_runtime';
+    const ownerPolicyProvider = createOwnerPolicyProvider(paths.mamaRoot);
+    const ownerPolicy = ownerPolicyProvider();
+    logger.info(`owner policy: ${ownerPolicy.loaded ? 'loaded' : 'none'}`);
     const deliverOwnerResponse = async (
       row: MailboxRow,
       result: NativeTurnResult
@@ -265,6 +269,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
       codexSandbox: config.agent.codex_sandbox ?? 'workspace-write',
       ...(config.agent.backend === 'claude' ? { mcpConfigPath: paths.mcpConfigPath } : {}),
       pluginDir: paths.pluginDir,
+      ownerPolicyProvider,
       onOwnerResult: deliverOwnerResponse,
       onStimulusDelivered: (row) => stimulusDelivered(logger, row),
       onStimulusFailed: (row) => stimulusFailed(logger, row.kind ?? 'unknown', row.stimulusId),

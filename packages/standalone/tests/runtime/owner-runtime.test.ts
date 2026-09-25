@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { NativeSessionHandle } from '@jungjaehoon/mama-core/runtime/runtime';
 import { createOwnerRuntime } from '../../src/runtime/owner-runtime.js';
+import { createOwnerPolicyProvider } from '../../src/runtime/owner-policy.js';
 
 const homes: string[] = [];
 
@@ -12,6 +13,23 @@ afterEach(() => {
 });
 
 describe('owner runtime assembly', () => {
+  it('reloads an external owner policy and fingerprints exact file bytes', () => {
+    const home = mkdtempSync(join(tmpdir(), 'mama-owner-policy-'));
+    homes.push(home);
+    const provider = createOwnerPolicyProvider(home);
+
+    expect(provider()).toMatchObject({ content: null, loaded: false });
+
+    writeFileSync(join(home, 'owner-policy.md'), 'title format: owner policy\n', 'utf8');
+    const first = provider();
+    writeFileSync(join(home, 'owner-policy.md'), 'title format: updated policy\n', 'utf8');
+    const second = provider();
+
+    expect(first).toMatchObject({ content: 'title format: owner policy\n', loaded: true });
+    expect(second).toMatchObject({ content: 'title format: updated policy\n', loaded: true });
+    expect(second.fingerprint).not.toBe(first.fingerprint);
+  });
+
   it('passes the embedder into real knowledge so work.create stores a vector', async () => {
     const home = mkdtempSync(join(tmpdir(), 'mama-owner-runtime-'));
     homes.push(home);

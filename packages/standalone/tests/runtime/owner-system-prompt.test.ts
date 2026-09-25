@@ -22,4 +22,31 @@ describe('owner standing prompt', () => {
       'If the owner should know about the delta, say so in the final answer.'
     );
   });
+
+  it('requires stable work and observation citations and leaves language to owner policy', () => {
+    const prompt = ownerSystemPrompt('codex');
+
+    expect(prompt).toContain('commitmentId');
+    expect(prompt).toContain('observationRef');
+    expect(prompt).toContain('list positions are not citations');
+    expect(prompt).toContain('eventDatetime');
+    expect(prompt).toContain('source event time');
+    expect(prompt).toContain('work.list');
+    expect(prompt).toContain('history');
+    expect(prompt).not.toContain(
+      'Preserve source language in titles and summaries unless the owner asks for translation.'
+    );
+    expect(prompt).not.toMatch(/cite\s+item 1/i);
+  });
+
+  it('places external owner policy after the standing text', () => {
+    const prompt = ownerSystemPrompt(
+      'codex',
+      'Owner policy decides the language and title format.'
+    );
+
+    expect(prompt.indexOf('## Owner runtime')).toBeLessThan(
+      prompt.indexOf('Owner policy decides the language and title format.')
+    );
+  });
 });

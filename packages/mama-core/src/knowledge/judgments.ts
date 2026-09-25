@@ -795,8 +795,8 @@ async function appendJudgmentOnAdapter(
         adapter
           .prepare(
             `INSERT INTO commitment_assignments
-             (commitment_id, revision, record_id, operation, set_json, clear_json, created_at, agent_id, model_run_id)
-            VALUES (?, ?, ?, 'create', ?, ?, ?, ?, ?)`
+             (commitment_id, revision, record_id, operation, set_json, clear_json, applies_from, applies_until, created_at, agent_id, model_run_id)
+            VALUES (?, ?, ?, 'create', ?, ?, ?, ?, ?, ?, ?)`
           )
           .run(
             commitmentId,
@@ -804,6 +804,8 @@ async function appendJudgmentOnAdapter(
             recordId,
             canonicalizeJSON(workPatch(work)),
             canonicalizeJSON(work.clear ?? []),
+            command.eventDatetime ?? null,
+            command.appliesUntil ?? null,
             domainNow,
             access.agentId,
             command.modelRunId ?? null
@@ -829,8 +831,8 @@ async function appendJudgmentOnAdapter(
         adapter
           .prepare(
             `INSERT INTO commitment_assignments
-             (commitment_id, revision, record_id, operation, set_json, clear_json, created_at, agent_id, model_run_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             (commitment_id, revision, record_id, operation, set_json, clear_json, applies_from, applies_until, created_at, agent_id, model_run_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           )
           .run(
             work.commitmentId,
@@ -839,6 +841,8 @@ async function appendJudgmentOnAdapter(
             work.operation,
             canonicalizeJSON(workPatch(work)),
             canonicalizeJSON(work.clear ?? []),
+            command.eventDatetime ?? null,
+            command.appliesUntil ?? null,
             domainNow,
             access.agentId,
             command.modelRunId ?? null

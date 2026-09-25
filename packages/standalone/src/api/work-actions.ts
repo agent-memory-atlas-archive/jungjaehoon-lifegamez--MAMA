@@ -17,6 +17,36 @@ const nullableText: ActionSchemaObject = {
   oneOf: [{ type: 'string' }, { type: 'null' }],
 };
 
+const workFileSchema: ActionSchemaObject = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    locator: { type: 'string', minLength: 1, description: 'Relevant file locator.' },
+    version: { type: 'string', minLength: 1, description: 'Relevant file version.' },
+    hash: { type: 'string', minLength: 1, description: 'Relevant file content hash.' },
+  },
+  required: ['locator', 'version', 'hash'],
+};
+
+const workRoleSchema: ActionSchemaObject = {
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    personRef: { type: 'string', minLength: 1, description: 'Person reference for the role.' },
+    role: { type: 'string', minLength: 1, description: 'Role judged from evidence.' },
+    evidenceRefs: {
+      type: 'array',
+      description: 'Stable observationRef handles supporting the role.',
+      items: { type: 'string', minLength: 1 },
+    },
+    confirmed: {
+      type: 'boolean',
+      description:
+        'True when evidence confirms the role; false is the explicit unconfirmed status.',
+    },
+  },
+};
+
 const workPatchSchema: ActionSchemaObject = {
   type: 'object',
   additionalProperties: false,
@@ -33,6 +63,20 @@ const workPatchSchema: ActionSchemaObject = {
     deadlineOffsetMinutes: {
       description: 'Deadline offset from the stated event, e.g. 60 or null.',
       oneOf: [{ type: 'integer', minimum: -840, maximum: 840 }, { type: 'null' }],
+    },
+    stage: { ...nullableText, description: 'Current work stage, or null to clear it.' },
+    project: {
+      ...nullableText,
+      description: 'project associated with the work, or null to clear it.',
+    },
+    lastEventTime: {
+      ...nullableText,
+      description:
+        'Timezone-qualified ISO timestamp for the source event time, not replay time, or null.',
+    },
+    files: {
+      description: 'Relevant file locator/version/hash entries preserved with the work, or null.',
+      oneOf: [{ type: 'array', items: workFileSchema }, { type: 'null' }],
     },
     completionCriteria: {
       type: 'string',
@@ -53,8 +97,9 @@ const workPatchSchema: ActionSchemaObject = {
       oneOf: [{ type: 'boolean' }, { type: 'null' }],
     },
     roles: {
-      description: 'Role entries for the work, e.g. [] or null.',
-      oneOf: [{ type: 'array', items: {} }, { type: 'null' }],
+      description:
+        'Evidence-backed role entries with personRef, role, evidenceRefs and confirmed; use false for an explicit unconfirmed status, or null.',
+      oneOf: [{ type: 'array', items: workRoleSchema }, { type: 'null' }],
     },
     data: {
       description: 'Product-specific structured fields, e.g. {"stage":"review"} or null.',
@@ -82,7 +127,7 @@ const commandFields: Record<string, ActionSchemaObject> = {
   },
   sourceRefs: {
     type: 'array',
-    description: 'Source observation handles, e.g. ["obs_123"].',
+    description: 'Stable observationRef citation handles, e.g. ["obs_123"].',
     items: { type: 'string', minLength: 1 },
   },
   links: {
@@ -92,7 +137,8 @@ const commandFields: Record<string, ActionSchemaObject> = {
     items: recordLinkSchema,
   },
   eventDatetime: {
-    description: 'Event time as epoch milliseconds or null, e.g. 1760000000000.',
+    description:
+      'Source event time as epoch milliseconds, not replay time, or null, e.g. 1760000000000.',
     oneOf: [{ type: 'number' }, { type: 'null' }],
   },
   recordedAt: {
@@ -124,7 +170,7 @@ const reviseSchema: ActionSchemaObject = {
     commitmentId: {
       type: 'string',
       minLength: 1,
-      description: 'Commitment handle to revise, e.g. "commitment_123".',
+      description: 'stable commitmentId citation handle to revise, e.g. "commitment_123".',
     },
     expectedRevision: {
       type: 'integer',
@@ -155,6 +201,38 @@ function commandFieldsFrom(body: Record<string, unknown>): Record<string, unknow
   return fields;
 }
 
+export function assertReplayEventDatetime(
+  body: Record<string, unknown>,
+  context: ActionContext,
+  action: 'work.create' | 'work.revise'
+): void {
+  const ceiling = context.session?.replaySourceEndMs;
+  if (ceiling === undefined) return;
+  if (!Number.isSafeInteger(ceiling) || ceiling < 0) {
+    throw new JudgmentError(
+      'REPLAY_SOURCE_CEILING_INVALID',
+      'Replay source ceiling must be a nonnegative epoch millisecond integer'
+    );
+  }
+  const eventDatetime = body.eventDatetime;
+  if (
+    typeof eventDatetime !== 'number' ||
+    !Number.isSafeInteger(eventDatetime) ||
+    eventDatetime <= 0
+  ) {
+    throw new JudgmentError(
+      'REPLAY_EVENT_TIME_REQUIRED',
+      `${action} requires eventDatetime during replay`
+    );
+  }
+  if (eventDatetime > ceiling) {
+    throw new JudgmentError(
+      'REPLAY_EVENT_TIME_AFTER_CEILING',
+      `${action} eventDatetime is later than the active replay source ceiling`
+    );
+  }
+}
+
 export function minimalWorkActionRegistrations(ports: WorkPorts): ActionRegistration[] {
   return [
     {
@@ -177,6 +255,7 @@ export function minimalWorkActionRegistrations(ports: WorkPorts): ActionRegistra
       },
       exec: (input, context) => {
         const body = input as Record<string, unknown>;
+        assertReplayEventDatetime(body, context, 'work.create');
         return ports.knowledge.createWork(
           {
             ...body,
@@ -210,6 +289,7 @@ export function minimalWorkActionRegistrations(ports: WorkPorts): ActionRegistra
       },
       exec: (input, context) => {
         const body = input as Record<string, unknown>;
+        assertReplayEventDatetime(body, context, 'work.revise');
         const commitmentId = body.commitmentId;
         return ports.knowledge.reviseWork(
           {

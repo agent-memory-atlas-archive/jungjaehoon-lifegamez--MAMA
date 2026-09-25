@@ -116,3 +116,15 @@ jq -c '.entries[] | {key, state, updatedAt, nextChunkIndex, deliveryUncertain}' 
 
 - `mama-core tests/knowledge/graph-roundtrip.test.ts` "browses visible edges in bounded pages" failed
   once in a full parallel run (cursor expected null) and passed 3/3 alone; no knowledge code changed.
+
+## Replay Task 1 — 2026-09-25
+
+- Result: external owner policy loading, stable citation standing text, and the owner work contract fields are implemented; no C1 owner-check claim.
+- Evidence: absent/present boot logging, exact-byte fingerprint reload, policy-layer ordering, changed-policy thread rotation, and contract traversal pass; root full suite passes 41 standalone files / 96 tests.
+- Still open: replay collection, source-time read ceilings, ordered delivery, live connector fence, and real provider/model owner evidence remain in later tasks.
+
+## Replay Task 2 — 2026-09-25
+
+- Result: source event time now reaches decision and assignment projections, history exposes it, readWork filters by it, and replay writes reject missing/future event times with named errors.
+- Evidence: commitment read/write focused suites pass 27/27; root full suite passes 113 core files / 833 tests and the standalone replay gate passes before any knowledge write.
+- Still open: the active replay ceiling is only exposed as a session fact here; Task 4 must populate it through the replay runtime, and C1/C2 live verification remains open.

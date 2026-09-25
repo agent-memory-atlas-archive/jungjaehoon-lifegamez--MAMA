@@ -121,6 +121,45 @@ describe('daemon bootstrap', () => {
     expect(logs.some((line) => line.includes('boot stage=owner_runtime'))).toBe(true);
     expect(logs.some((line) => line.includes('boot stage=connectors'))).toBe(true);
     expect(logs.some((line) => line.includes('boot stage=telegram'))).toBe(true);
+    expect(logs.filter((line) => line === 'info:owner policy: none')).toHaveLength(1);
+  });
+
+  it('logs a loaded owner policy once and passes its provider to the owner runtime', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'mama-daemon-owner-policy-'));
+    roots.push(root);
+    const mamaRoot = join(root, 'mama');
+    mkdirSync(mamaRoot, { recursive: true });
+    writeFileSync(join(mamaRoot, 'owner-policy.md'), 'owner policy fixture\n', 'utf8');
+    const logs: string[] = [];
+    const logger: DaemonLogger = {
+      info: (line) => logs.push(`info:${line}`),
+      error: (line) => logs.push(`error:${line}`),
+    };
+    const owner = ownerDouble([]);
+    const gateway: DaemonGateway = {
+      start: vi.fn(async () => {}),
+      stop: vi.fn(async () => {}),
+      deliverResponse: vi.fn(async () => {}),
+    };
+    let policyContent: string | null | undefined;
+    const daemon = await bootDaemon({
+      home: root,
+      configPath: join(mamaRoot, 'config.yaml'),
+      config: config(mamaRoot),
+      logger,
+      dependencies: {
+        createOwnerRuntime: vi.fn(async (options) => {
+          policyContent = options.ownerPolicyProvider?.().content;
+          return owner as never;
+        }),
+        startConnectorRuntime: vi.fn(async () => ({ stop: vi.fn(async () => {}) }) as never),
+        createTelegramGateway: vi.fn(() => gateway),
+      },
+    });
+
+    expect(logs.filter((line) => line === 'info:owner policy: loaded')).toHaveLength(1);
+    expect(policyContent).toBe('owner policy fixture\n');
+    await daemon.stop();
   });
 
   it('does not remove preserved W5 sources while creating Claude isolation files', async () => {

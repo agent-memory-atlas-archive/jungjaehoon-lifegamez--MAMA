@@ -37,6 +37,8 @@ export interface CommitmentRevision {
   recordRef: WorkReference;
   set: OwnerWorkPatch;
   clear: Array<keyof OwnerWorkPatch>;
+  /** Source event time; null means this legacy revision had no event time. */
+  eventDatetime: number | null;
   createdAt: number;
 }
 
@@ -102,6 +104,9 @@ interface AssignmentRow {
   operation: 'create' | 'revise' | 'withdraw';
   set_json: string;
   clear_json: string;
+  applies_from: number | null;
+  applies_until: number | null;
+  judgment_event_datetime: number | null;
   created_at: number;
 }
 
@@ -255,11 +260,14 @@ export function readWork(
     const assignments = adapter
       .prepare(
         asOf === null
-          ? `SELECT * FROM commitment_assignments WHERE commitment_id = ? ORDER BY revision ASC`
-          : `SELECT assignment.* FROM commitment_assignments assignment
+          ? `SELECT assignment.*, judgment.event_datetime AS judgment_event_datetime
+             FROM commitment_assignments assignment
+             JOIN decisions judgment ON judgment.id = assignment.record_id
+             WHERE assignment.commitment_id = ? ORDER BY assignment.revision ASC`
+          : `SELECT assignment.*, judgment.event_datetime AS judgment_event_datetime FROM commitment_assignments assignment
               JOIN decisions judgment ON judgment.id = assignment.record_id
               WHERE assignment.commitment_id = ?
-                AND COALESCE(judgment.event_datetime, assignment.created_at) <= ?
+                AND COALESCE(assignment.applies_from, judgment.event_datetime, assignment.created_at) <= ?
               ORDER BY assignment.revision ASC`
       )
       .all(...(asOf === null ? [row.commitment_id] : [row.commitment_id, asOf])) as AssignmentRow[];
@@ -273,6 +281,7 @@ export function readWork(
       recordRef: { kind: 'memory', id: assignment.record_id },
       set: parsePatch(assignment.set_json, 'set_json'),
       clear: parseClear(assignment.clear_json),
+      eventDatetime: assignment.applies_from ?? assignment.judgment_event_datetime ?? null,
       createdAt: assignment.created_at,
     }));
     const head = revisions[revisions.length - 1];
@@ -285,7 +294,7 @@ export function readWork(
       withdrawn: revisions.some((revision) => revision.operation === 'withdraw'),
       basis: revisions.map((revision) => revision.recordRef),
       createdAt: row.created_at,
-      updatedAt: asOf === null ? row.updated_at : head.createdAt,
+      updatedAt: asOf === null ? row.updated_at : (head.eventDatetime ?? head.createdAt),
       ...(wantsHistory ? { history: revisions } : {}),
     });
   }

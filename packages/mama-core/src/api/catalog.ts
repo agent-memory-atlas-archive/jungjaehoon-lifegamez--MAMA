@@ -392,7 +392,7 @@ const workShowSchema: ActionSchemaObject = {
     commitmentId: {
       type: 'string',
       minLength: 1,
-      description: 'Commitment handle, e.g. "commitment_123".',
+      description: 'Stable commitmentId citation handle, e.g. "commitment_123".',
     },
     rowId: {
       type: 'integer',
@@ -408,7 +408,11 @@ const observationEvidenceSchema: ActionSchemaObject = {
   additionalProperties: false,
   properties: {
     kind: { const: 'observation', description: 'Evidence kind; use "observation".' },
-    id: { type: 'string', minLength: 1, description: 'Observation handle, e.g. "obs_123".' },
+    id: {
+      type: 'string',
+      minLength: 1,
+      description: 'Stable observationRef citation handle, e.g. "obs_123".',
+    },
   },
 };
 

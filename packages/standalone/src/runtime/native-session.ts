@@ -30,6 +30,7 @@ import {
 import { ensureMamaMcpConfig } from '../cli/runtime/action-mcp-config.js';
 import type { RuntimeBackend, RuntimeEffort, RuntimeSandbox } from './config.js';
 import type { ActionSurface } from './action-surface.js';
+import type { OwnerPolicyProvider, OwnerPolicySnapshot } from './owner-policy.js';
 
 export const OWNER_RUNTIME_SESSION_KEY = 'owner:runtime';
 
@@ -63,6 +64,7 @@ export interface NativeSessionOptions {
   runtimeRoot: string;
   actionSurface: ActionSurface;
   ownerSystemPrompt?: string;
+  ownerPolicyProvider?: OwnerPolicyProvider;
   effort?: RuntimeEffort;
   timeout: number;
   maxTurns: number;
@@ -229,6 +231,12 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
     createDriver(configuredMcpOptions, nativeOptions, bridge);
   const sessionPool = options.sessionPool ?? getSessionPool();
   const standingPrompt = options.ownerSystemPrompt ?? '';
+  const ownerPolicyProvider = options.ownerPolicyProvider;
+  const emptyOwnerPolicy: OwnerPolicySnapshot = {
+    content: null,
+    fingerprint: '',
+    loaded: false,
+  };
   const defaultRole: ClaudeToolRole = { allowedTools: ['*'] };
 
   const host: NativeSessionHost<HostExecutionContext> = {
@@ -243,21 +251,35 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
     turnPolicy: (request) => {
       const current = request as NativeSessionRequest | undefined;
       const systemPrompt = current?.systemPrompt ?? standingPrompt;
+      const ownerPolicy = ownerPolicyProvider?.() ?? emptyOwnerPolicy;
       const role = current?.nativeRole ?? defaultRole;
       const nativeTools = options.backend === 'claude' ? projectClaudeNativeTools(role) : undefined;
-      const systemLayers = systemPrompt
-        ? [{ name: 'owner', content: systemPrompt, priority: 1 }]
-        : [];
+      const systemLayers = [
+        ...(systemPrompt ? [{ name: 'owner-standing', content: systemPrompt, priority: 1 }] : []),
+        ...(ownerPolicy.content
+          ? [{ name: 'owner-policy', content: ownerPolicy.content, priority: 2 }]
+          : []),
+      ];
+      const buildSystemLayers = async () => {
+        const currentOwnerPolicy = ownerPolicyProvider?.() ?? emptyOwnerPolicy;
+        return [
+          ...(systemPrompt ? [{ name: 'owner-standing', content: systemPrompt, priority: 1 }] : []),
+          ...(currentOwnerPolicy.content
+            ? [{ name: 'owner-policy', content: currentOwnerPolicy.content, priority: 2 }]
+            : []),
+        ];
+      };
       return {
         channelKey: current?.sessionKey ?? OWNER_RUNTIME_SESSION_KEY,
         systemLayers,
-        reanchorLayers: async () => systemLayers,
-        resumeLayers: async () => systemLayers,
+        reanchorLayers: buildSystemLayers,
+        resumeLayers: buildSystemLayers,
         sessionPolicyFingerprint: JSON.stringify({
           backend: options.backend,
           model: options.model,
           nativeTools: nativeTools ?? null,
           systemPrompt,
+          ownerPolicyFingerprint: ownerPolicy.fingerprint,
         }),
         ...(options.backend === 'codex' ? { nativeCwd: options.workspaceDir } : {}),
         ...(nativeTools === undefined ? {} : { nativeTools }),

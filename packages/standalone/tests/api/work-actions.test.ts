@@ -163,4 +163,84 @@ describe('minimal work actions', () => {
     expect(result).toMatchObject({ status: 'failed', error: { code: 'INVALID_COMMAND' } });
     expect(knowledge.createWork).not.toHaveBeenCalled();
   });
+
+  it('rejects a replay work create without source event time before writing', async () => {
+    const knowledge = {
+      createWork: vi.fn(),
+      reviseWork: vi.fn(),
+    };
+    const dispatch = createDispatcher(
+      createCatalog(minimalWorkActionRegistrations({ knowledge: knowledge as never }))
+    );
+
+    const result = await dispatch(
+      {
+        action: 'work.create',
+        operationId: 'operation-replay-missing-time',
+        input: { topic: 'topic', summary: 'summary', set: { title: 'work' } },
+      },
+      { access, session: { replaySourceEndMs: 1_000 } }
+    );
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      error: { code: 'REPLAY_EVENT_TIME_REQUIRED' },
+    });
+    expect(knowledge.createWork).not.toHaveBeenCalled();
+  });
+
+  it('rejects a replay work revise beyond the source ceiling before writing', async () => {
+    const knowledge = {
+      createWork: vi.fn(),
+      reviseWork: vi.fn(),
+    };
+    const dispatch = createDispatcher(
+      createCatalog(minimalWorkActionRegistrations({ knowledge: knowledge as never }))
+    );
+
+    const result = await dispatch(
+      {
+        action: 'work.revise',
+        operationId: 'operation-replay-future-time',
+        input: {
+          commitmentId: 'commitment-test',
+          expectedRevision: 1,
+          topic: 'topic',
+          summary: 'summary',
+          eventDatetime: 1_001,
+          set: { title: 'work' },
+        },
+      },
+      { access, session: { replaySourceEndMs: 1_000 } }
+    );
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      error: { code: 'REPLAY_EVENT_TIME_AFTER_CEILING' },
+    });
+    expect(knowledge.reviseWork).not.toHaveBeenCalled();
+  });
+
+  it('describes the owner work contract fields and stable citation handles', () => {
+    const knowledge = { createWork: vi.fn(), reviseWork: vi.fn() };
+    const contracts = minimalWorkActionRegistrations({ knowledge: knowledge as never }).map(
+      ({ contract }) => contract
+    );
+    const create = contracts.find((contract) => contract.name === 'work.create')!;
+    const revise = contracts.find((contract) => contract.name === 'work.revise')!;
+    const set = create.inputSchema.properties?.set;
+    const roles = set?.properties?.roles;
+    const role = roles?.oneOf?.find((variant) => variant.type === 'array')?.items;
+    const files = set?.properties?.files;
+    const file = files?.oneOf?.find((variant) => variant.type === 'array')?.items;
+
+    expect(set?.properties?.stage?.description).toContain('stage');
+    expect(set?.properties?.project?.description).toContain('project');
+    expect(set?.properties?.lastEventTime?.description).toContain('source event time');
+    expect(set?.properties?.files?.description).toContain('locator');
+    expect(file?.properties?.hash?.description).toContain('hash');
+    expect(role?.properties?.confirmed?.description).toContain('unconfirmed');
+    expect(revise.inputSchema.properties?.commitmentId?.description).toContain('stable');
+    expect(create.inputSchema.properties?.sourceRefs?.description).toContain('observationRef');
+  });
 });

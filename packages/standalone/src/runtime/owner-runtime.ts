@@ -20,6 +20,7 @@ import { openCoreDatabase, type CoreDatabase } from './core-db.js';
 import { createActionSurface, type ActionSurface } from './action-surface.js';
 import { createNativeSession } from './native-session.js';
 import { ownerSystemPrompt } from './owner-system-prompt.js';
+import { createOwnerPolicyProvider, type OwnerPolicyProvider } from './owner-policy.js';
 import {
   createStimulusDelivery,
   createStimulusIntake,
@@ -51,6 +52,7 @@ export interface OwnerRuntimeOptions {
   mcpConfigPath?: string;
   mcpServerPath?: string;
   pluginDir?: string;
+  ownerPolicyProvider?: OwnerPolicyProvider;
   onOwnerResult?: StimulusDeliveryOptions['onOwnerResult'];
   onSourceResult?: StimulusDeliveryOptions['onSourceResult'];
   onScheduledNoop?: StimulusDeliveryOptions['onScheduledNoop'];
@@ -144,6 +146,8 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
     });
     const access: JudgmentAccess = surface.ownerAccess;
     const standingText = ownerSystemPrompt(options.backend);
+    const ownerPolicyProvider =
+      options.ownerPolicyProvider ?? createOwnerPolicyProvider(options.runtimeRoot);
     if (nativeSession === undefined) {
       nativeSession = createNativeSession({
         backend: options.backend,
@@ -154,6 +158,7 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
         // The standing text is the session's system prompt: sent on a new thread and
         // re-supplied when a durable thread resumes after a restart.
         ownerSystemPrompt: standingText,
+        ownerPolicyProvider,
         ...(options.effort === undefined ? {} : { effort: options.effort }),
         timeout: options.timeout,
         maxTurns: options.maxTurns,

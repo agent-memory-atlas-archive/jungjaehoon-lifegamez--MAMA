@@ -69,6 +69,36 @@ describe('knowledge/commitments: committing owner work', () => {
     expect(view.latestJudgmentRef).toEqual(written.recordRef);
   });
 
+  it('writes eventDatetime to both the decision and assignment event columns', async () => {
+    const eventDatetime = 1_757_000_000_000;
+    const written = await createWork(
+      {
+        commandId: 'work-event-time',
+        topic: 'event-time',
+        summary: 'source-timed work',
+        eventDatetime,
+        recordedAt: 1_758_000_000_000,
+        set: { title: 'Source-timed work' },
+        scopes: access.scopes,
+      },
+      access,
+      { adapter: getAdapter() }
+    );
+
+    expect(
+      getAdapter()
+        .prepare('SELECT event_datetime FROM decisions WHERE id = ?')
+        .get(written.recordRef.id)
+    ).toEqual({ event_datetime: eventDatetime });
+    expect(
+      getAdapter()
+        .prepare(
+          'SELECT applies_from, created_at FROM commitment_assignments WHERE commitment_id = ? AND revision = 1'
+        )
+        .get(written.commitmentId)
+    ).toEqual({ applies_from: eventDatetime, created_at: 1_758_000_000_000 });
+  });
+
   it('the work and its record commit together or not at all', async () => {
     const adapter = getAdapter();
     await createWork(

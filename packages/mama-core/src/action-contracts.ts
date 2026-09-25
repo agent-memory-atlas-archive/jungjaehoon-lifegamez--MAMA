@@ -124,6 +124,11 @@ export interface ActionSessionFacts {
   /** The channel this call runs on, if the host bound one. */
   channelId?: string;
   /**
+   * Inclusive source-event ceiling for a replay turn. The feeder states this
+   * fact; callers cannot widen it through action input. Absent means live time.
+   */
+  replaySourceEndMs?: number;
+  /**
    * The turn's recent conversation, for a checkpoint that hands work over.
    *
    * A host fact and only a host fact: the model does not hold the transcript,

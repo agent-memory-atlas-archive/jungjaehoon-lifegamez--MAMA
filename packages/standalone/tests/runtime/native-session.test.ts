@@ -8,6 +8,7 @@ import type {
   PromptResult,
   RunnerMetrics,
 } from '@jungjaehoon/mama-core/runtime/drivers/types';
+import { SessionPool } from '@jungjaehoon/mama-core/runtime/session-pool';
 import { createActionSurface } from '../../src/runtime/action-surface.js';
 import { createNativeSession, type NativeDriverOptions } from '../../src/runtime/native-session.js';
 
@@ -223,5 +224,64 @@ describe('one owner native session', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it('reloads owner policy layers and rotates the native thread when its fingerprint changes', async () => {
+    const model = runner('codex');
+    let policy = {
+      content: 'policy one',
+      fingerprint: 'fingerprint-one',
+      loaded: true,
+    };
+    let activeFingerprint: string | undefined;
+    const getSessionPolicyStatus = vi.fn(
+      ({ sessionPolicyFingerprint }: { sessionPolicyFingerprint?: string }) => {
+        if (activeFingerprint === undefined) {
+          activeFingerprint = sessionPolicyFingerprint;
+          return 'missing' as const;
+        }
+        if (activeFingerprint !== sessionPolicyFingerprint) {
+          activeFingerprint = sessionPolicyFingerprint;
+          return 'mismatch' as const;
+        }
+        return 'compatible' as const;
+      }
+    );
+    model.getSessionPolicyStatus = getSessionPolicyStatus;
+    model.resetSession = vi.fn();
+    const sessionPool = new SessionPool({ cleanupIntervalMs: 60_000 });
+    const session = createNativeSession({
+      backend: 'codex',
+      model: 'test-model',
+      workspaceDir: '/tmp/mama-native-workspace',
+      runtimeRoot: '/tmp/mama-native-runtime',
+      actionSurface: surface(),
+      agent: model,
+      ownerSystemPrompt: 'standing policy',
+      ownerPolicyProvider: () => policy,
+      sessionPool,
+      maxTurns: 20,
+      timeout: 1_000,
+    });
+
+    await session.runTurn([{ type: 'text', text: 'first' }], { sessionKey: 'owner:policy-test' });
+    const firstCall = (model.prompt as ReturnType<typeof vi.fn>).mock.calls[0];
+    policy = { content: 'policy two', fingerprint: 'fingerprint-two', loaded: true };
+    await session.runTurn([{ type: 'text', text: 'second' }], { sessionKey: 'owner:policy-test' });
+    const secondCall = (model.prompt as ReturnType<typeof vi.fn>).mock.calls[1];
+
+    expect(firstCall?.[2]).toMatchObject({
+      systemPrompt: expect.stringContaining('policy one'),
+      sessionPolicyFingerprint: expect.not.stringContaining('policy one'),
+    });
+    expect(secondCall?.[2]).toMatchObject({
+      systemPrompt: expect.stringContaining('policy two'),
+      sessionPolicyFingerprint: expect.not.stringContaining('policy two'),
+    });
+    expect(secondCall?.[2]?.sessionId).not.toBe(firstCall?.[2]?.sessionId);
+    expect(getSessionPolicyStatus).toHaveBeenCalledTimes(2);
+
+    await session.stop();
+    sessionPool.dispose();
   });
 });

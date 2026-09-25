@@ -282,6 +282,69 @@ describe('knowledge/commitments: reading owner work back', () => {
     expect(after.items[0]).toMatchObject({ revision: 2, values: { status: 'done' } });
   });
 
+  it('exposes source event time in commitment history and assignment validity', async () => {
+    const firstEventAt = 1_757_000_000_000;
+    const secondEventAt = firstEventAt + 60_000;
+    const importAt = 1_758_000_000_000;
+    const created = await appendJudgment(
+      {
+        commandId: 'cmd-event-history-create',
+        topic: 'topic-event-history',
+        summary: 'historical create',
+        recordKind: 'commitment',
+        work: { operation: 'create', set: { title: 'Initial' } },
+        eventDatetime: firstEventAt,
+        recordedAt: importAt,
+        scopes: access.scopes,
+      },
+      access,
+      { adapter: getAdapter() }
+    );
+    await appendJudgment(
+      {
+        commandId: 'cmd-event-history-revise',
+        topic: 'topic-event-history',
+        summary: 'historical revise',
+        recordKind: 'commitment',
+        work: {
+          operation: 'revise',
+          commitmentId: created.work!.commitmentId,
+          expectedRevision: 1,
+          set: { title: 'Updated' },
+        },
+        eventDatetime: secondEventAt,
+        recordedAt: importAt,
+        scopes: access.scopes,
+      },
+      access,
+      { adapter: getAdapter() }
+    );
+
+    const assignments = getAdapter()
+      .prepare(
+        'SELECT revision, applies_from, created_at FROM commitment_assignments WHERE commitment_id = ? ORDER BY revision'
+      )
+      .all(created.work!.commitmentId) as Array<{
+      revision: number;
+      applies_from: number | null;
+      created_at: number;
+    }>;
+    expect(assignments).toEqual([
+      { revision: 1, applies_from: firstEventAt, created_at: importAt },
+      { revision: 2, applies_from: secondEventAt, created_at: importAt },
+    ]);
+
+    const history = readWork(
+      getAdapter(),
+      { commitmentId: created.work!.commitmentId, history: 'all' },
+      access
+    ).items[0].history!;
+    expect(history.map((revision) => revision.eventDatetime)).toEqual([
+      firstEventAt,
+      secondEventAt,
+    ]);
+  });
+
   it('a commitment that did not exist at asOf is absent, not empty', async () => {
     const commitmentId = await createCommitment('cmd-future', { title: 'Later work' });
 
