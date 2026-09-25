@@ -52,6 +52,8 @@ function parseArgs(argv) {
     ),
     mamaDb: resolve(values.get('mama-db') ?? join(home, 'memory.db')),
     rawRoot: resolve(values.get('raw-root') ?? join(home, 'connectors')),
+    reportSlots: resolve(values.get('report-slots') ?? join(home, 'runtime', 'report-slots.json')),
+    wikiRoot: resolve(values.get('wiki-root') ?? join(home, 'wiki', 'pages')),
     manifest: resolve(
       values.get('manifest') ?? join(home, 'runtime', 'september-import-manifest.json')
     ),
@@ -160,6 +162,7 @@ function metadata(value) {
 
 function readRaw(rawRoot, fromMs, untilMs) {
   const counts = new Map();
+  const feedbackCounts = new Map();
   const stableIds = new Map();
   const trelloCounts = new Map();
   for (const path of rawDatabases(rawRoot)) {
@@ -177,7 +180,7 @@ function readRaw(rawRoot, fromMs, untilMs) {
         const origin = typeof data.originalPlatform === 'string' ? data.originalPlatform : null;
         if (row.type === 'message' && origin) {
           const date = day(Number(row.timestamp));
-          addCount(counts, countKey(origin, date));
+          addCount(origin === 'feedback' ? feedbackCounts : counts, countKey(origin, date));
           const ids = stableIds.get(origin) ?? new Set();
           ids.add(String(data.kagemushaMessageId ?? row.source_id));
           stableIds.set(origin, ids);
@@ -193,7 +196,49 @@ function readRaw(rawRoot, fromMs, untilMs) {
       db.close();
     }
   }
-  return { counts, stableIds, trelloCounts };
+  return { counts, feedbackCounts, stableIds, trelloCounts };
+}
+
+function readBoard(path) {
+  const snapshot = readJson(path, 'report slot snapshot');
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+    fail('report slot snapshot is invalid');
+  }
+  const updates = {};
+  let slotCount = 0;
+  for (const slot of Object.values(snapshot)) {
+    if (!slot || typeof slot !== 'object' || Array.isArray(slot)) {
+      continue;
+    }
+    slotCount += 1;
+    if (typeof slot.updatedAt === 'number' && Number.isSafeInteger(slot.updatedAt)) {
+      const date = slot.updatedAt < 0 ? 'invalid' : day(slot.updatedAt);
+      updates[date] = (updates[date] ?? 0) + 1;
+    }
+  }
+  return { slotCount, updatesByDay: updates };
+}
+
+function readWikiRoot(root) {
+  if (!existsSync(root)) {
+    fail('wiki root does not exist');
+  }
+  let pageCount = 0;
+  const visit = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.name.startsWith('.')) {
+        continue;
+      }
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        visit(path);
+      } else if (entry.isFile() && entry.name.endsWith('.md')) {
+        pageCount += 1;
+      }
+    }
+  };
+  visit(root);
+  return { pageCount };
 }
 
 function compareCountMaps(left, right) {
@@ -455,9 +500,25 @@ function readDatabaseChecks(path) {
         }
       }
     }
+    const lessons = {
+      count: Number(
+        db.prepare("SELECT COUNT(*) AS count FROM decisions WHERE kind = 'lesson'").get().count
+      ),
+      withDerivedFrom: Number(
+        db
+          .prepare(
+            `SELECT COUNT(DISTINCT e.subject_id) AS count
+               FROM twin_edges e
+               JOIN decisions d ON d.id = e.subject_id
+              WHERE d.kind = 'lesson' AND e.edge_type = 'derived_from'`
+          )
+          .get().count
+      ),
+    };
     return {
       revisionEventTimes: { byDay, nullEventDatetime, nullAssignmentAppliesFrom },
       taskShape: shape,
+      lessons,
       unresolvableCitations: unresolvedCitations(db),
     };
   } finally {
@@ -475,12 +536,20 @@ export function verifySeptember(input) {
   const source = readKagemusha(input.kagemushaDb, fromMs, untilMs);
   const raw = readRaw(input.rawRoot, fromMs, untilMs);
   const importDifference = compareCountMaps(source.counts, raw.counts);
+  const feedbackManifest = compareManifestCounts(
+    manifest.countsByOriginDay === undefined
+      ? undefined
+      : { feedback: manifest.countsByOriginDay.feedback ?? {} },
+    raw.feedbackCounts
+  );
   const missingStableIds = missingStableIdsCount(source.stableIds, raw.stableIds);
   const trelloManifest = compareManifestCounts(manifest.trelloCountsByBoardDay, raw.trelloCounts);
   const ledger = readLedger(input.ledger);
   const cursor = readJson(input.cursor, 'replay cursor');
   const cursorViolations = cursor.version !== 1 || cursor.nextWindowStartMs !== untilMs ? 1 : 0;
   const database = readDatabaseChecks(input.mamaDb);
+  const board = readBoard(input.reportSlots);
+  const wiki = readWikiRoot(input.wikiRoot);
   const result = {
     importCoverage: {
       byOriginDay: mapCounts(raw.counts),
@@ -488,6 +557,8 @@ export function verifySeptember(input) {
       importedRows: [...raw.counts.values()].reduce((sum, count) => sum + count, 0),
       differences: importDifference,
       missingStableIds,
+      feedbackDifferences: feedbackManifest.differences,
+      feedbackRows: [...raw.feedbackCounts.values()].reduce((sum, count) => sum + count, 0),
     },
     trelloCoverage: {
       byBoardDay: mapCounts(raw.trelloCounts),
@@ -508,11 +579,15 @@ export function verifySeptember(input) {
     },
     revisionEventTimes: database.revisionEventTimes,
     taskShape: database.taskShape,
+    board,
+    wiki,
+    lessons: database.lessons,
     unresolvableCitations: database.unresolvableCitations,
   };
   const failures =
     result.importCoverage.differences +
     result.importCoverage.missingStableIds +
+    result.importCoverage.feedbackDifferences +
     result.trelloCoverage.differences +
     result.replayOrder.sequenceViolations +
     result.replayOrder.orderViolations +
@@ -524,6 +599,7 @@ export function verifySeptember(input) {
     result.replayOrder.cursorViolations +
     result.revisionEventTimes.nullEventDatetime +
     result.revisionEventTimes.nullAssignmentAppliesFrom +
+    (result.lessons.count - result.lessons.withDerivedFrom) +
     result.unresolvableCitations;
   return { result, failures };
 }

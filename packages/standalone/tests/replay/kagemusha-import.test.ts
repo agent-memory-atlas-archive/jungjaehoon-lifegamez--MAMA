@@ -5,7 +5,11 @@ import { tmpdir } from 'node:os';
 
 import Database from '../../src/sqlite.js';
 import { RawStore } from '../../src/storage/source-archive.js';
-import { importKagemushaRows, openKagemushaReadOnly } from '../../src/replay/kagemusha-import.js';
+import {
+  importKagemushaRows,
+  openKagemushaReadOnly,
+  parseFeedbackAuditCode,
+} from '../../src/replay/kagemusha-import.js';
 import { readImportManifest, writeImportManifest } from '../../src/replay/import-manifest.js';
 
 const roots: string[] = [];
@@ -67,6 +71,11 @@ function createSourceDb(path: string): Database {
       role TEXT NOT NULL,
       content TEXT NOT NULL,
       created_at INTEGER NOT NULL
+    );
+    CREATE TABLE code_act_audit (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      code TEXT NOT NULL,
+      created_at INTEGER NOT NULL
     )
   `);
   return db;
@@ -81,6 +90,75 @@ function indexSink() {
 }
 
 describe('collect-only Kagemusha replay import', () => {
+  it('extracts feedback text and attachment placeholders without executing audit code', () => {
+    expect(
+      parseFeedbackAuditCode(`
+        const translatedText = "translated feedback";
+        const rawBody = "raw feedback";
+        return await forward_feedback({ translatedText, rawBody, chatworkRoomId: 17 });
+      `)
+    ).toEqual({
+      translatedText: 'translated feedback',
+      rawBody: 'raw feedback',
+      chatworkRoomId: '17',
+    });
+    expect(
+      parseFeedbackAuditCode(
+        'return await forward_feedback({translatedText: "translated", slackFileIds: ["file-a", "file-b"]});'
+      )
+    ).toEqual({ translatedText: 'translated', slackFileIds: ['file-a', 'file-b'] });
+    expect(
+      parseFeedbackAuditCode(
+        'return await forward_feedback({"translatedText":"translated JSON key","rawBody":"raw JSON key"});'
+      )
+    ).toEqual({ translatedText: 'translated JSON key', rawBody: 'raw JSON key' });
+    expect(
+      parseFeedbackAuditCode('return await contract_no_update({ reason: "no feedback" });')
+    ).toBe(null);
+  });
+
+  it('imports feedback audit rows into the Kagemusha raw store as observations', async () => {
+    const root = fixtureRoot();
+    const sourcePath = join(root, 'kagemusha.db');
+    const configPath = join(root, 'connectors.json');
+    writeConnectors(configPath);
+    const db = createSourceDb(sourcePath);
+    db.prepare('INSERT INTO code_act_audit (code, created_at) VALUES (?, ?)').run(
+      'return await forward_feedback({translatedText: "translated", rawBody: "raw", slackFileIds: ["file-a"]});',
+      10_000
+    );
+    db.close();
+
+    const raw = new RawStore(join(root, 'raw'));
+    try {
+      const result = await importKagemushaRows({
+        sourceDbPath: sourcePath,
+        connectorsConfigPath: configPath,
+        rawStore: raw,
+        rawIndexSink: indexSink(),
+        fromMs: 0,
+        observedAtMs: 20_000,
+      });
+      expect(result.importedCount).toBe(1);
+      expect(result.importedByOrigin).toEqual({ feedback: 1 });
+      expect(result.countsByOriginDay.feedback).toEqual({ '1970-01-01': 1 });
+      expect(result.untilMs).toBe(10_001);
+      expect(raw.query('kagemusha', new Date(0))).toEqual([
+        expect.objectContaining({
+          sourceId: 'kagemusha:feedback:1',
+          channel: 'kagemusha:feedback:slack:file-a',
+          content: 'translated\n\nraw',
+          metadata: expect.objectContaining({
+            originalPlatform: 'feedback',
+            slackFileIds: ['file-a'],
+          }),
+        }),
+      ]);
+    } finally {
+      raw.close();
+    }
+  });
+
   it('uses read-only keyset paging, R2 channel continuity, and reports unmapped rows', async () => {
     const root = fixtureRoot();
     const sourcePath = join(root, 'kagemusha.db');

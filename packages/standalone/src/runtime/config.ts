@@ -28,12 +28,19 @@ export interface W1TelegramConfig {
   polling: boolean;
 }
 
+export interface W1WikiConfig {
+  enabled: boolean;
+  vaultPath?: string;
+  wikiDir?: string;
+}
+
 export interface W1Config {
   version: 1;
   agent: W1AgentConfig;
   database: { path: string };
   logging: { level: 'debug' | 'info' | 'warn' | 'error'; file: string };
   telegram: W1TelegramConfig;
+  wiki?: W1WikiConfig;
 }
 
 export interface LoadConfigOptions {
@@ -57,7 +64,7 @@ export class ConfigError extends Error {
   }
 }
 
-const CONFIG_KEYS = ['version', 'agent', 'database', 'logging', 'telegram'] as const;
+const CONFIG_KEYS = ['version', 'agent', 'database', 'logging', 'telegram', 'wiki'] as const;
 const AGENT_KEYS = [
   'backend',
   'model',
@@ -115,6 +122,16 @@ function stringList(value: unknown, path: string): string[] {
 
 function optionalText(value: unknown, path: string): string | undefined {
   return value === undefined ? undefined : text(value, path);
+}
+
+function wikiPath(value: string, home: string): string {
+  const expanded =
+    value === '~'
+      ? home
+      : value.startsWith('~/')
+        ? join(home, value.slice(2))
+        : value.replace(/^\$\{HOME\}(?=\/|$)/, home);
+  return isAbsolute(expanded) ? expanded : value;
 }
 
 function configPath(value: string, home: string): string {
@@ -222,6 +239,26 @@ function parseConfigValue(
     throw new ConfigError('telegram.polling must be boolean');
   }
   const allowedChats = stringList(telegramRaw.allowed_chats, 'telegram.allowed_chats');
+  const wikiRaw = raw.wiki === undefined ? undefined : object(raw.wiki, 'wiki');
+  if (wikiRaw !== undefined)
+    collectIgnoredKeys(wikiRaw, ['enabled', 'vaultPath', 'wikiDir'], 'wiki', state);
+  let wiki: W1WikiConfig | undefined;
+  if (wikiRaw !== undefined) {
+    if (typeof (wikiRaw.enabled ?? false) !== 'boolean') {
+      throw new ConfigError('wiki.enabled must be boolean');
+    }
+    const enabled = (wikiRaw.enabled ?? false) as boolean;
+    const vaultPath = optionalText(wikiRaw.vaultPath, 'wiki.vaultPath');
+    const rawWikiDir = optionalText(wikiRaw.wikiDir, 'wiki.wikiDir');
+    if (enabled && (vaultPath === undefined || rawWikiDir === undefined)) {
+      throw new ConfigError('enabled wiki requires wiki.vaultPath and wiki.wikiDir');
+    }
+    wiki = {
+      enabled,
+      ...(vaultPath === undefined ? {} : { vaultPath: configPath(vaultPath, home) }),
+      ...(rawWikiDir === undefined ? {} : { wikiDir: wikiPath(rawWikiDir, home) }),
+    };
+  }
   return {
     config: {
       version: 1,
@@ -242,6 +279,7 @@ function parseConfigValue(
         // only an explicit `false` hands inbound polling to another instance.
         polling: (telegramRaw.polling ?? true) as boolean,
       },
+      ...(wiki === undefined ? {} : { wiki }),
     },
     ignored: Object.freeze(state.ignored),
   };

@@ -27,12 +27,14 @@ function event(overrides: Partial<ReplaySourceEvent> = {}): ReplaySourceEvent {
     sourceAtMs: start + HOUR,
     observedAtMs: start + 100 * HOUR,
     rawRowId: 1,
+    author: 'sender',
+    contentPreview: 'message content',
     ...overrides,
   };
 }
 
 describe('ReplaySourceCatalog', () => {
-  it('sorts source events globally, then emits one delta per connector channel', () => {
+  it('sorts source events globally into one cross-channel daily delta', () => {
     const catalog = new ReplaySourceCatalog([
       event({
         connector: 'trello',
@@ -62,15 +64,17 @@ describe('ReplaySourceCatalog', () => {
 
     const deltas = catalog.deltasForWindow('run-1', start, start + 12 * HOUR);
 
-    expect(deltas.map((delta) => `${delta.collector}:${delta.channel}`)).toEqual([
-      'slack:channel-a',
-      'slack:channel-b',
-      'trello:board-a',
+    expect(deltas).toHaveLength(1);
+    expect(deltas[0]?.collector).toBe('replay');
+    expect(deltas[0]?.refs.map((ref) => ref.sourceId)).toEqual([
+      'source-a',
+      'source-d',
+      'source-b',
+      'source-c',
     ]);
-    expect(deltas[0]?.refs.map((ref) => ref.sourceId)).toEqual(['source-a', 'source-b']);
     expect(deltas[0]).toMatchObject({
       kind: 'source_delta',
-      occurredAt: start + 2 * HOUR,
+      occurredAt: start + 3 * HOUR,
       replay: {
         runId: 'run-1',
         windowId: `window:${start}:${start + 12 * HOUR}`,
@@ -78,7 +82,25 @@ describe('ReplaySourceCatalog', () => {
         windowEndMs: start + 12 * HOUR,
       },
     });
+    expect(deltas[0]?.refs[0]).toMatchObject({
+      channel: 'channel-a',
+      author: 'sender',
+      contentPreview: 'message content',
+    });
     expect(deltas[0]?.refs[0]?.observedAt).toBe(new Date(start + 100 * HOUR).toISOString());
+
+    const withLedger = catalog.deltasForWindow('run-1', start, start + 12 * HOUR, {
+      ledgerDigest: [
+        {
+          commitmentId: 'commitment-1',
+          title: 'Current item',
+          stage: 'active',
+          assignee: 'worker',
+          lastEventTime: new Date(start).toISOString(),
+        },
+      ],
+    });
+    expect(withLedger[0]?.replay?.ledgerDigest).toHaveLength(1);
   });
 
   it('keeps descriptors immutable and rejects an event outside its declared range', () => {
@@ -88,16 +110,15 @@ describe('ReplaySourceCatalog', () => {
 
     expect(catalog.eventsForWindow(start, start + 12 * HOUR)[0]?.sourceId).toBe('source-a');
     expect(catalog.eventsForWindow(start + 12 * HOUR, start + 24 * HOUR)).toEqual([]);
-    expect(REPLAY_WINDOW_SIZE_MS).toBe(12 * HOUR);
+    expect(REPLAY_WINDOW_SIZE_MS).toBe(24 * HOUR);
   });
 
-  it('creates KST-aligned half-day windows through the frozen fence', () => {
+  it('creates KST-aligned daily windows through the frozen fence', () => {
     const catalog = new ReplaySourceCatalog([]);
     const windows = catalog.windows(start, start + 25 * HOUR);
 
     expect(windows).toEqual([
-      { startMs: start, endMs: start + 12 * HOUR },
-      { startMs: start + 12 * HOUR, endMs: start + 24 * HOUR },
+      { startMs: start, endMs: start + 24 * HOUR },
       { startMs: start + 24 * HOUR, endMs: start + 25 * HOUR },
     ]);
   });
@@ -128,6 +149,8 @@ describe('ReplaySourceCatalog', () => {
             channel_key: 'channel-a',
             source_at_ms: start + HOUR,
             raw_row_id: 1,
+            author: 'sender',
+            content: 'content-a',
             observed_at_ms: start + 2 * HOUR,
             source_entity_id: 'source-a',
             metadata_json: null,

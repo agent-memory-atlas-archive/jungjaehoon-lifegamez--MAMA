@@ -5,7 +5,10 @@ import { setLiveConnectorPollCursors } from '../../runtime/connectors.js';
 import { createOwnerPolicyProvider } from '../../runtime/owner-policy.js';
 import { readImportManifest } from '../../replay/import-manifest.js';
 import { ReplayFeeder, type ReplayFeederResult } from '../../replay/replay-feeder.js';
-import { createReplaySourceCatalog } from '../../replay/replay-source-catalog.js';
+import {
+  createReplaySourceCatalog,
+  type ReplayLedgerDigestItem,
+} from '../../replay/replay-source-catalog.js';
 
 export interface ReplayCommandOptions {
   daemon?: Omit<DaemonBootOptions, 'mode' | 'replay'>;
@@ -19,6 +22,43 @@ function requireMailbox(context: DaemonReplayContext) {
   const mailbox = context.owner.runtime.mailbox;
   if (!mailbox) throw new Error('Replay owner runtime did not open its mailbox');
   return mailbox;
+}
+
+function replayLedgerDigest(context: DaemonReplayContext): readonly ReplayLedgerDigestItem[] {
+  const result: ReplayLedgerDigestItem[] = [];
+  let cursor: string | undefined;
+  for (;;) {
+    const page = context.owner.knowledge.readWork(
+      {
+        history: 'current',
+        limit: 100,
+        ...(cursor === undefined ? {} : { cursor }),
+      },
+      context.owner.surface.ownerAccess
+    );
+    for (const item of page.items) {
+      if (item.withdrawn) continue;
+      const values = item.values as Record<string, unknown>;
+      const text = (value: unknown): string | null => (typeof value === 'string' ? value : null);
+      result.push({
+        commitmentId: item.commitmentId,
+        title: text(values.title),
+        stage: text(values.stage),
+        assignee: text(values.assignee) ?? text(values.assigneeText),
+        lastEventTime: text(values.lastEventTime),
+      });
+    }
+    if (page.nextCursor === null) {
+      if (!page.coverage.complete) {
+        throw new Error(
+          `Replay work ledger digest is incomplete: ${page.coverage.reasons.join('; ')}`
+        );
+      }
+      break;
+    }
+    cursor = page.nextCursor;
+  }
+  return Object.freeze(result);
 }
 
 /** Run the owner-only replay and fence the unchanged live connector set at T. */
@@ -53,6 +93,7 @@ export async function runReplay(options: ReplayCommandOptions = {}): Promise<Rep
         cursorPath,
         ledgerPath,
         setReplaySourceEndMs: context.owner.setReplaySourceEndMs,
+        readLedgerDigest: () => replayLedgerDigest(context),
       });
       const preflight = feeder.preflight();
       context.logger.info(

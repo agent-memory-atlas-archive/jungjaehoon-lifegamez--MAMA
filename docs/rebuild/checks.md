@@ -166,7 +166,7 @@ jq -c '.entries[] | {key, state, updatedAt, nextChunkIndex, deliveryUncertain}' 
 
 ## September replay — supervisor runbook (R1–R5)
 
-The implementation writes raw/index data during import only. Replay is the owner runtime plus feeder; it does not start live connectors or Telegram. The current read-only dry run predicts 50 windows and 326 Kagemusha/direct-message deltas at T=`1790313098001`; Trello action history was not fetched, so use the replay preflight line for the final delta count.
+The implementation writes raw/index data during import only. Replay is the owner runtime plus feeder; it does not start live connectors or Telegram. The current read-only dry run predicts 25 KST daily turns through T=`1790327903001`, 5,670 source observations (4,341 mapped messages, 74 parsed feedback calls, 1,255 Trello rows), and a maximum daily stimulus of 451 refs; the 500-ref ceiling remains sufficient.
 
 1. Stop the launchd daemon before touching the disposable testbed:
 
@@ -198,7 +198,7 @@ The implementation writes raw/index data during import only. Replay is the owner
        --manifest ~/.mama/runtime/september-import-manifest.json
    ```
 
-   The output is counts only. Import must leave mailbox, model-run, commitment, tool-trace, and source-delta counts unchanged; it drains raw projection queues and records the exclusive fence T in the manifest.
+   The output is counts only, including feedbackRows and unmappedFeedbackRows. Import must leave mailbox, model-run, commitment, tool-trace, and source-delta counts unchanged; it drains raw projection queues and records the exclusive fence T in the manifest.
 
 4. Run replay. This is the only command that opens the owner runtime and feeder; it does not start live connectors or Telegram:
 
@@ -233,10 +233,21 @@ The implementation writes raw/index data during import only. Replay is the owner
      --raw-root ~/.mama/connectors \
      --manifest ~/.mama/runtime/september-import-manifest.json \
      --ledger ~/.mama/runtime/september-replay-ledger.jsonl \
-     --cursor ~/.mama/runtime/september-replay-cursor.json
+     --cursor ~/.mama/runtime/september-replay-cursor.json \
+     --report-slots ~/.mama/runtime/report-slots.json \
+     --wiki-root "$WIKI_ROOT"
    ```
 
+   Set `WIKI_ROOT` to the configured `vaultPath/wikiDir` root without printing the owner config. The counts-only result now includes board slot count and latest-update days, wiki page count, lesson count, and lesson provenance count.
+
    A nonzero exit means at least one count or invariant differs. Finally send the real owner Telegram C1/C2 questions, retain the native receipt/daemon log/DB read-back, restart the daemon, and ask both questions again; those live owner checks are not claimed by the automated script.
+
+## Replay Task 8 — 2026-09-25
+
+- Result: carried agent-written board/wiki stores are wired into the owner catalog and viewer; replay now admits one cross-channel KST daily stimulus with bounded message text, current-work digest, feedback observations, and an end-of-window four-record instruction.
+- Evidence: the carried report/wiki assertions pass (a one-slot update is `report.publish` with one slot; the new `report.update` duplicate and the unused Obsidian CLI action were removed at review); replay, importer, verification, viewer-record, and native stimulus tests pass; read-only dry run is 25 windows/turns, 5,670 observations, max 451 refs, and 50 accepted/settled ledger entries.
+- Verification: `verify-september.mjs` checks message/feedback/Trello coverage, cursor/order/dead/uncertain state, board snapshot/update days, wiki page count, lesson count/provenance, event-time task shape, and citations.
+- Still open: the collect-only import/replay and real owner/provider/Telegram receipt run remain supervisor work; no `~/.mama`, `~/.claude`, or `~/.kagemusha` state was written here.
 
 ## September replay run log
 

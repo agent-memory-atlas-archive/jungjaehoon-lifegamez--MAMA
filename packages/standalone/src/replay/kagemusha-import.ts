@@ -23,6 +23,19 @@ interface KagemushaMessageRow {
   created_at: number | string;
 }
 
+interface FeedbackAuditRow {
+  id: number | string;
+  code: string;
+  created_at: number | string;
+}
+
+export interface FeedbackObservationFields {
+  translatedText: string;
+  rawBody?: string;
+  chatworkRoomId?: string;
+  slackFileIds?: string[];
+}
+
 interface DirectMapping {
   connector: 'slack' | 'chatwork';
   canonicalChannel: string;
@@ -140,6 +153,245 @@ function messageIdentity(row: KagemushaMessageRow): string {
   return `kagemusha:${row.channel}:${row.channel_id}:${String(row.id)}`;
 }
 
+function matchingClose(source: string, openIndex: number, open: string, close: string): number {
+  let depth = 0;
+  let quote: string | null = null;
+  let escaped = false;
+  for (let index = openIndex; index < source.length; index += 1) {
+    const char = source[index]!;
+    if (quote !== null) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === open) depth += 1;
+    if (char === close) {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  throw new Error(`Feedback code has an unterminated ${open}${close} expression`);
+}
+
+function splitTopLevel(source: string): string[] {
+  const parts: string[] = [];
+  let start = 0;
+  let quote: string | null = null;
+  let escaped = false;
+  let depth = 0;
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index]!;
+    if (quote !== null) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char;
+      continue;
+    }
+    if ('([{'.includes(char)) depth += 1;
+    if (')]}'.includes(char)) depth -= 1;
+    if (char === ',' && depth === 0) {
+      parts.push(source.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  const tail = source.slice(start).trim();
+  if (tail !== '') parts.push(tail);
+  return parts;
+}
+
+function objectProperties(source: string): Map<string, string> {
+  const properties = new Map<string, string>();
+  for (const part of splitTopLevel(source)) {
+    const colon = part.indexOf(':');
+    if (colon > 0) {
+      const key = part
+        .slice(0, colon)
+        .trim()
+        .replace(/^["']|["']$/g, '');
+      if (/^[A-Za-z_$][\w$]*$/.test(key)) properties.set(key, part.slice(colon + 1).trim());
+      continue;
+    }
+    if (/^[A-Za-z_$][\w$]*$/.test(part)) properties.set(part, part);
+  }
+  return properties;
+}
+
+function assignmentExpressions(source: string): Map<string, string> {
+  const assignments = new Map<string, string>();
+  const pattern = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*/g;
+  for (const match of source.matchAll(pattern)) {
+    const name = match[1]!;
+    const start = (match.index ?? 0) + match[0].length;
+    let quote: string | null = null;
+    let escaped = false;
+    let depth = 0;
+    let end = source.length;
+    for (let index = start; index < source.length; index += 1) {
+      const char = source[index]!;
+      if (quote !== null) {
+        if (escaped) escaped = false;
+        else if (char === '\\') escaped = true;
+        else if (char === quote) quote = null;
+        continue;
+      }
+      if (char === '"' || char === "'" || char === '`') {
+        quote = char;
+        continue;
+      }
+      if ('([{'.includes(char)) depth += 1;
+      if (')]}'.includes(char)) depth -= 1;
+      if (depth === 0 && (char === ';' || char === '\n')) {
+        end = index;
+        break;
+      }
+    }
+    assignments.set(name, source.slice(start, end).trim());
+  }
+  return assignments;
+}
+
+function decodeString(
+  expression: string,
+  assignments: Map<string, string>,
+  depth = 0
+): string | null {
+  if (depth > 8) throw new Error('Feedback code variable indirection is too deep');
+  const value = expression.trim();
+  if (value.length < 2) {
+    const assigned = assignments.get(value);
+    return assigned === undefined ? null : decodeString(assigned, assignments, depth + 1);
+  }
+  const quote = value[0];
+  if (quote !== value[value.length - 1] || !['"', "'", '`'].includes(quote)) {
+    const assigned = assignments.get(value);
+    return assigned === undefined ? null : decodeString(assigned, assignments, depth + 1);
+  }
+  const body = value
+    .slice(1, -1)
+    .replace(
+      /\\(u\{([0-9a-fA-F]+)\}|u([0-9a-fA-F]{4})|x([0-9a-fA-F]{2})|.)/g,
+      (_match, unicodePoint: string, unicodeBraced?: string, unicode?: string, hex?: string) => {
+        if (unicodeBraced) return String.fromCodePoint(Number.parseInt(unicodeBraced, 16));
+        if (unicode) return String.fromCharCode(Number.parseInt(unicode, 16));
+        if (hex) return String.fromCharCode(Number.parseInt(hex, 16));
+        return (
+          ({ n: '\n', r: '\r', t: '\t', b: '\b', f: '\f', v: '\v' } as Record<string, string>)[
+            unicodePoint
+          ] ?? unicodePoint
+        );
+      }
+    );
+  return body.replace(/\$\{([A-Za-z_$][\w$]*)\}/g, (_match, name: string) => {
+    return decodeString(assignments.get(name) ?? name, assignments, depth + 1) ?? `\${${name}}`;
+  });
+}
+
+function valueExpression(
+  properties: Map<string, string>,
+  name: string,
+  assignments: Map<string, string>
+): string | undefined {
+  return properties.get(name) ?? assignments.get(name);
+}
+
+function extractForwardFeedbackObject(code: string): Map<string, string> | null {
+  const calls = /\bforward_feedback\s*\(/g;
+  for (const match of code.matchAll(calls)) {
+    const start = (match.index ?? 0) + match[0].length;
+    const open = code.slice(start).search(/\S/);
+    if (open < 0 || code[start + open] !== '{') continue;
+    const objectStart = start + open;
+    const objectEnd = matchingClose(code, objectStart, '{', '}');
+    const properties = objectProperties(code.slice(objectStart + 1, objectEnd));
+    if (properties.has('translatedText') || properties.has('text')) return properties;
+  }
+  return null;
+}
+
+export function parseFeedbackAuditCode(code: string): FeedbackObservationFields | null {
+  const assignments = assignmentExpressions(code);
+  const properties = extractForwardFeedbackObject(code);
+  if (!properties) return null;
+  const translatedExpression =
+    valueExpression(properties, 'translatedText', assignments) ??
+    valueExpression(properties, 'text', assignments);
+  const translatedText =
+    translatedExpression === undefined ? null : decodeString(translatedExpression, assignments);
+  if (translatedText === null || translatedText.trim() === '') return null;
+  const rawExpression = valueExpression(properties, 'rawBody', assignments);
+  const rawBody =
+    rawExpression === undefined
+      ? undefined
+      : (decodeString(rawExpression, assignments) ?? undefined);
+  const chatworkExpression = valueExpression(properties, 'chatworkRoomId', assignments);
+  const chatworkRoomId =
+    chatworkExpression === undefined
+      ? undefined
+      : /^\d+$/.test(chatworkExpression.trim())
+        ? chatworkExpression.trim()
+        : (decodeString(chatworkExpression, assignments) ?? undefined);
+  const slackExpression = valueExpression(properties, 'slackFileIds', assignments);
+  let slackFileIds: string[] | undefined;
+  if (slackExpression !== undefined) {
+    const array = slackExpression.trim();
+    if (array.startsWith('[') && array.endsWith(']')) {
+      slackFileIds = splitTopLevel(array.slice(1, -1))
+        .map((item) => decodeString(item, assignments))
+        .filter((item): item is string => item !== null && item.trim() !== '');
+    }
+  }
+  return {
+    translatedText,
+    ...(rawBody === undefined ? {} : { rawBody }),
+    ...(chatworkRoomId === undefined ? {} : { chatworkRoomId }),
+    ...(slackFileIds === undefined || slackFileIds.length === 0 ? {} : { slackFileIds }),
+  };
+}
+
+function feedbackItem(row: FeedbackAuditRow, fields: FeedbackObservationFields): NormalizedItem {
+  const sourceId = `kagemusha:feedback:${String(row.id)}`;
+  const attachmentChannel =
+    fields.chatworkRoomId === undefined && fields.slackFileIds === undefined
+      ? 'kagemusha:feedback'
+      : fields.chatworkRoomId === undefined
+        ? `kagemusha:feedback:slack:${fields.slackFileIds!.join(',')}`
+        : `kagemusha:feedback:chatwork:${fields.chatworkRoomId}`;
+  const content =
+    fields.rawBody === undefined
+      ? fields.translatedText
+      : `${fields.translatedText}\n\n${fields.rawBody}`;
+  return {
+    source: 'kagemusha',
+    sourceId,
+    sourceEntityId: sourceId,
+    channel: attachmentChannel,
+    author: 'feedback',
+    content,
+    timestamp: new Date(epochMs(row.created_at, 'feedback.created_at')),
+    type: 'message',
+    metadata: {
+      originalPlatform: 'feedback',
+      sourceType: 'feedback',
+      codeActAuditId: String(row.id),
+      ...(fields.chatworkRoomId === undefined ? {} : { chatworkRoomId: fields.chatworkRoomId }),
+      ...(fields.slackFileIds === undefined ? {} : { slackFileIds: fields.slackFileIds }),
+    },
+  };
+}
+
 function itemForRow(
   row: KagemushaMessageRow,
   mapping: DirectMapping | undefined
@@ -192,20 +444,28 @@ function importFence(
     }
     const row = db
       .prepare(
-        `SELECT MAX(created_at) AS max_created_at
-           FROM channel_messages
-          WHERE role = 'user' AND created_at >= ? AND created_at < ?`
+        `SELECT MAX(created_at) AS max_created_at FROM (
+           SELECT created_at FROM channel_messages
+            WHERE role = 'user' AND created_at >= ? AND created_at < ?
+           UNION ALL
+           SELECT created_at FROM code_act_audit
+            WHERE code LIKE '%forward_feedback(%' AND created_at >= ? AND created_at < ?
+         )`
       )
-      .get(fromMs, requestedUntilMs) as { max_created_at: number | null };
+      .get(fromMs, requestedUntilMs, fromMs, requestedUntilMs) as { max_created_at: number | null };
     return { untilMs: requestedUntilMs, maxSourceAtMs: row.max_created_at ?? null };
   }
   const row = db
     .prepare(
-      `SELECT MAX(created_at) AS max_created_at
-         FROM channel_messages
-        WHERE role = 'user' AND created_at >= ?`
+      `SELECT MAX(created_at) AS max_created_at FROM (
+         SELECT created_at FROM channel_messages
+          WHERE role = 'user' AND created_at >= ?
+         UNION ALL
+         SELECT created_at FROM code_act_audit
+          WHERE code LIKE '%forward_feedback(%' AND created_at >= ?
+       )`
     )
-    .get(fromMs) as { max_created_at: number | null };
+    .get(fromMs, fromMs) as { max_created_at: number | null };
   const maxSourceAtMs = row.max_created_at === null ? null : epochMs(row.max_created_at, 'fence');
   return {
     untilMs: maxSourceAtMs === null ? fromMs : maxSourceAtMs + 1,
@@ -241,6 +501,8 @@ export async function importKagemushaRows(
   const unmappedByOrigin: Record<string, number> = {};
   let afterCreatedAt = fromMs - 1;
   let afterId = 0;
+  let afterFeedbackCreatedAt = fromMs - 1;
+  let afterFeedbackId = 0;
   const fence = importFence(db, fromMs, options.untilMs);
   try {
     let keepPaging = true;
@@ -292,6 +554,52 @@ export async function importKagemushaRows(
       afterId = Number(last.id);
       if (!Number.isSafeInteger(afterId) || afterId < 0)
         throw new Error('Kagemusha row id is invalid');
+    }
+    let keepFeedbackPaging = true;
+    while (keepFeedbackPaging) {
+      const rows = db
+        .prepare(
+          `SELECT id, code, created_at
+             FROM code_act_audit
+            WHERE code LIKE '%forward_feedback(%'
+              AND created_at >= ?
+              AND created_at < ?
+              AND (created_at > ? OR (created_at = ? AND id > ?))
+            ORDER BY created_at ASC, id ASC
+            LIMIT ?`
+        )
+        .all(
+          fromMs,
+          fence.untilMs,
+          afterFeedbackCreatedAt,
+          afterFeedbackCreatedAt,
+          afterFeedbackId,
+          pageSize
+        ) as FeedbackAuditRow[];
+      if (rows.length === 0) {
+        keepFeedbackPaging = false;
+        continue;
+      }
+      const items: NormalizedItem[] = [];
+      for (const row of rows) {
+        const fields = parseFeedbackAuditCode(row.code);
+        if (fields === null) {
+          countUp(unmappedByOrigin, 'feedback');
+          continue;
+        }
+        const item = feedbackItem(row, fields);
+        item.observedAt = observedAtMs;
+        items.push(item);
+        countUp(importedByOrigin, 'feedback');
+        addOriginDay(countsByOriginDay, 'feedback', item.timestamp.getTime());
+      }
+      if (items.length > 0) options.rawStore.save('kagemusha', items);
+      const last = rows[rows.length - 1]!;
+      afterFeedbackCreatedAt = epochMs(last.created_at, 'feedback.created_at');
+      afterFeedbackId = Number(last.id);
+      if (!Number.isSafeInteger(afterFeedbackId) || afterFeedbackId < 0) {
+        throw new Error('Feedback audit row id is invalid');
+      }
     }
   } finally {
     db.close();

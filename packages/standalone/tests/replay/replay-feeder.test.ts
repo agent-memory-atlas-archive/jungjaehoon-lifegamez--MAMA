@@ -104,6 +104,21 @@ function harness(
 }
 
 describe('ReplayFeeder', () => {
+  it('delivers an empty KST window so its end-of-window work update still runs', async () => {
+    let acceptedRefs = -1;
+    const { feeder, intake } = harness([], {
+      onAccept: (_id, delta) => {
+        acceptedRefs = delta.refs.length;
+      },
+    });
+
+    const result = await feeder.run();
+
+    expect(result).toMatchObject({ windows: 1, deltas: 1, settled: 1 });
+    expect(intake.acceptSourceDelta).toHaveBeenCalledOnce();
+    expect(acceptedRefs).toBe(0);
+  });
+
   it('accepts and settles deltas sequentially with a source-time ceiling', async () => {
     const order: string[] = [];
     const { feeder, ceilings, root } = harness(
@@ -130,8 +145,8 @@ describe('ReplayFeeder', () => {
 
     const result = await feeder.run();
 
-    expect(result).toMatchObject({ windows: 1, deltas: 2, settled: 2 });
-    expect(order).toHaveLength(2);
+    expect(result).toMatchObject({ windows: 1, deltas: 1, settled: 1 });
+    expect(order).toHaveLength(1);
     expect(ceilings).toContain(start + 12 * HOUR - 1);
     const cursor = JSON.parse(readFileSync(join(root, 'cursor.json'), 'utf8')) as {
       nextWindowStartMs: number;
@@ -139,7 +154,7 @@ describe('ReplayFeeder', () => {
     };
     expect(cursor.nextWindowStartMs).toBe(start + 12 * HOUR);
     expect(Object.values(cursor.currentWindow.deltas)).toEqual([]);
-    expect(readFileSync(join(root, 'ledger.jsonl'), 'utf8').trim().split('\n')).toHaveLength(4);
+    expect(readFileSync(join(root, 'ledger.jsonl'), 'utf8').trim().split('\n')).toHaveLength(2);
   });
 
   it('fails the preflight before accepting a channel with more than 500 refs', async () => {

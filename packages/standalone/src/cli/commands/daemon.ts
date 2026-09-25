@@ -292,6 +292,15 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
       codexSandbox: config.agent.codex_sandbox ?? 'workspace-write',
       ...(config.agent.backend === 'claude' ? { mcpConfigPath: paths.mcpConfigPath } : {}),
       pluginDir: paths.pluginDir,
+      ...(config.wiki?.enabled
+        ? {
+            wiki: {
+              enabled: true,
+              vaultPath: config.wiki.vaultPath!,
+              wikiDir: config.wiki.wikiDir!,
+            },
+          }
+        : {}),
       ownerPolicyProvider,
       ...(options.mode === 'replay' ? {} : { onOwnerResult: deliverOwnerResponse }),
       onStimulusDelivered: (row) => stimulusDelivered(logger, row),
@@ -321,6 +330,9 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
     viewer = viewerFactory({
       dispatch: owner.surface.dispatch,
       ownerAccess: owner.surface.ownerAccess,
+      reportStore: owner.reportStore,
+      reportSseClients: owner.reportSseClients,
+      wikiRoot: owner.wikiRoot,
       logPath: config.logging.file,
       getRuntimeStatus: () => ({
         running: true,

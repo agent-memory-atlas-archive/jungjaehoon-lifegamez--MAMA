@@ -10,9 +10,13 @@ export interface SourceObservationRef {
   observationRef: string;
   sourceId: string;
   sourceEntityId: string;
+  channel?: string;
   sourceAt: string;
   observedAt: string;
   contentHash: string | null;
+  author?: string;
+  /** Bounded source text for replay orientation; source.read remains canonical. */
+  contentPreview?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -30,6 +34,14 @@ export interface SourceDelta {
     windowId: string;
     windowStartMs: number;
     windowEndMs: number;
+    ledgerDigest?: readonly {
+      commitmentId: string;
+      title: string | null;
+      stage: string | null;
+      assignee: string | null;
+      lastEventTime: string | null;
+    }[];
+    endInstructions?: string;
   };
 }
 

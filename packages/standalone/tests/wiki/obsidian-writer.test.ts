@@ -1,0 +1,413 @@
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import { ObsidianWriter } from '../../src/wiki/obsidian-writer.js';
+import { readWikiPageVersion } from '../../src/wiki/wiki-read.js';
+import type { WikiPage } from '../../src/wiki/types.js';
+
+let tempDir: string;
+let wikiDir: string;
+
+describe('ObsidianWriter', () => {
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'obsidian-writer-test-'));
+    wikiDir = join(tempDir, 'wiki');
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('creates the v5 wiki layout without bootstrapping root index/log files', () => {
+    const writer = new ObsidianWriter(tempDir, 'wiki');
+    writer.ensureDirectories();
+    for (const sub of ['daily', 'lessons/clients', 'lessons/process', 'lessons/system']) {
+      expect(existsSync(join(wikiDir, sub))).toBe(true);
+    }
+    // The agent owns the vault root (Home.md); index.md/log.md appear on demand
+    // only when the manage.wiki.publish fallback writes them.
+    expect(existsSync(join(wikiDir, 'index.md'))).toBe(false);
+    expect(existsSync(join(wikiDir, 'log.md'))).toBe(false);
+  });
+
+  it('writes a page with frontmatter', () => {
+    const writer = new ObsidianWriter(tempDir, 'wiki');
+    writer.ensureDirectories();
+    const page: WikiPage = {
+      path: 'projects/ProjectAlpha.md',
+      title: 'ProjectAlpha',
+      type: 'entity',
+      content: '## Current Status\n\nIn progress.',
+      sourceIds: ['d_123', 'd_456'],
+      compiledAt: '2026-04-08T12:00:00Z',
+      confidence: 'high',
+    };
+    writer.writePage(page);
+
+    const content = readFileSync(join(wikiDir, 'projects', 'ProjectAlpha.md'), 'utf8');
+    expect(content).toContain('---');
+    expect(content).toContain('title: "ProjectAlpha"');
+    expect(content).toContain('type: "entity"');
+    expect(content).toContain('confidence: "high"');
+    expect(content).toContain('source_ids:');
+    expect(content).toContain('  - "d_123"');
+    expect(content).toContain('## Current Status');
+  });
+
+  it('quotes frontmatter scalars that YAML could otherwise reinterpret', () => {
+    const writer = new ObsidianWriter(tempDir, 'wiki');
+    writer.ensureDirectories();
+    const page: WikiPage = {
+      path: 'projects/ProjectAlpha.md',
+      title: 'ProjectAlpha: true # comment',
+      type: 'entity',
+      content: 'Content.',
+      sourceIds: ['d_123: # comment'],
+      sourceRefs: ['raw:slack:event-1'],
+      compiledAt: '2026-04-08T12:00:00Z',
+      confidence: 'high',
+    };
+
+    writer.writePage(page);
+
+    const content = readFileSync(join(wikiDir, 'projects', 'ProjectAlpha.md'), 'utf8');
+    expect(content).toContain('title: "ProjectAlpha: true # comment"');
+    expect(content).toContain('  - "d_123: # comment"');
+    expect(content).toContain('  - "raw:slack:event-1"');
+  });
+
+  it('rejects source refs that would inject frontmatter keys', () => {
+    const writer = new ObsidianWriter(tempDir, 'wiki');
+    writer.ensureDirectories();
+    const page: WikiPage = {
+      path: 'projects/ProjectAlpha.md',
+      title: 'ProjectAlpha',
+      type: 'entity',
+      content: 'Content.',
+      sourceIds: ['d_123'],
+      sourceRefs: ['decision:d_123\ninjected: true'],
+      compiledAt: '2026-04-08T12:00:00Z',
+      confidence: 'high',
+    };
+
+    expect(() => writer.writePage(page)).toThrow(/frontmatter/i);
+  });
+
+  it('rejects page paths that would escape the wiki directory', () => {
+    const writer = new ObsidianWriter(tempDir, 'wiki');
+    writer.ensureDirectories();
+    const page: WikiPage = {
+      path: '../outside.md',
+      title: 'ProjectAlpha',
+      type: 'entity',
+      content: 'Content.',
+      sourceIds: ['d_123'],
+      compiledAt: '2026-04-08T12:00:00Z',
+      confidence: 'high',
+    };
+
+    expect(() => writer.writePage(page)).toThrow(/parent-directory/i);
+  });
+
+  it('rejects generated pages that would overwrite reserved wiki files', () => {
+    const writer = new ObsidianWriter(tempDir, 'wiki');
+    writer.ensureDirectories();
+    const page: WikiPage = {
+      path: 'index.md',
+      title: 'ProjectAlpha',
+      type: 'entity',
+      content: 'Content.',
+      sourceIds: ['d_123'],
+      compiledAt: '2026-04-08T12:00:00Z',
+      confidence: 'high',
+    };
+
+    expect(() => writer.writePage(page)).toThrow(/reserved wiki files/i);
+  });
+
+  it('rejects generated pages that target reserved wiki directories', () => {
+    const writer = new ObsidianWriter(tempDir, 'wiki');
+    writer.ensureDirectories();
+    const page: WikiPage = {
+      path: 'projects',
+      title: 'ProjectAlpha',
+      type: 'entity',
+      content: 'Content.',
+      sourceIds: ['d_123'],
+      compiledAt: '2026-04-08T12:00:00Z',
+      confidence: 'high',
+    };
+
+    expect(() => writer.writePage(page)).toThrow(/reserved wiki directories/i);
+  });
+
+  it('updates existing page preserving human sections', () => {
+    const writer = new ObsidianWriter(tempDir, 'wiki');
+    writer.ensureDirectories();
+    const page: WikiPage = {
+      path: 'projects/ProjectAlpha.md',
+      title: 'ProjectAlpha',
+      type: 'entity',
+      content: '## Status\n\nDraft.',
+      sourceIds: ['d_123'],
+      compiledAt: '2026-04-08T12:00:00Z',
+      confidence: 'medium',
+    };
+    writer.writePage(page);
+
+    const filePath = join(wikiDir, 'projects', 'ProjectAlpha.md');
+    const existing = readFileSync(filePath, 'utf8');
+    writeFileSync(
+      filePath,
+      existing + '\n\n<!-- human -->\n## My Notes\n\nImportant context.\n',
+      'utf8'
+    );
+
+    const updated: WikiPage = {
+      ...page,
+      content: '## Status\n\nCompleted!',
+      compiledAt: '2026-04-08T14:00:00Z',
+      confidence: 'high',
+    };
+    writer.writePage(updated);
+
+    const result = readFileSync(filePath, 'utf8');
+    expect(result).toContain('## Status\n\nCompleted!');
+    expect(result).toContain('## My Notes');
+    expect(result).toContain('Important context.');
+  });
+
+  it('appends to log.md', () => {
+    const writer = new ObsidianWriter(tempDir, 'wiki');
+    writer.ensureDirectories();
+    writer.appendLog('compile', 'Compiled 3 entity pages for ProjectAlpha');
+
+    const log = readFileSync(join(wikiDir, 'log.md'), 'utf8');
+    expect(log).toContain('compile');
+    expect(log).toContain('Compiled 3 entity pages');
+  });
+
+  it('never fuzzy-dedups a daily page against a different date', () => {
+    // Regression: date tokens overlap above the 60% title threshold, so the
+    // 2026-09-04 daily note was stored into daily/2026-08-09.md.
+    const writer = new ObsidianWriter(tempDir, 'wiki');
+    writer.ensureDirectories();
+    const aug: WikiPage = {
+      path: 'daily/2026-08-09.md',
+      title: '2026-08-09',
+      type: 'daily',
+      content: '## Log\n\nAugust movement.',
+      sourceIds: ['d_aug'],
+      compiledAt: '2026-08-09T12:00:00Z',
+      confidence: 'high',
+    };
+    writer.writePage(aug);
+    const augFile = join(wikiDir, 'daily', '2026-08-09.md');
+    const augBefore = readFileSync(augFile, 'utf8');
+
+    const sep: WikiPage = {
+      path: 'daily/2026-09-04.md',
+      title: '2026-09-04',
+      type: 'daily',
+      content: '## Log\n\nSeptember movement.',
+      sourceIds: ['d_sep'],
+      compiledAt: '2026-09-04T12:00:00Z',
+      confidence: 'high',
+    };
+    const written = writer.writePage(sep);
+
+    // Identity is the exact normalized path, not a fuzzy title match.
+    expect(written).toBe('daily/2026-09-04.md');
+    expect(existsSync(join(wikiDir, 'daily', '2026-09-04.md'))).toBe(true);
+    // The earlier daily page is byte-for-byte untouched.
+    expect(readFileSync(augFile, 'utf8')).toBe(augBefore);
+    const sepContent = readFileSync(join(wikiDir, 'daily', '2026-09-04.md'), 'utf8');
+    expect(sepContent).toContain('September movement.');
+  });
+
+  it('still fuzzy-dedups non-daily pages that share most of their title words', () => {
+    const writer = new ObsidianWriter(tempDir, 'wiki');
+    writer.ensureDirectories();
+    const first: WikiPage = {
+      path: 'clients/acme-alpha.md',
+      title: 'Acme Alpha Project',
+      type: 'entity',
+      content: 'First.',
+      sourceIds: ['d_1'],
+      compiledAt: '2026-04-08T12:00:00Z',
+      confidence: 'high',
+    };
+    writer.writePage(first);
+
+    const second: WikiPage = {
+      path: 'clients/acme-beta.md',
+      title: 'Acme Alpha Rollout',
+      type: 'entity',
+      content: 'Second.',
+      sourceIds: ['d_2'],
+      compiledAt: '2026-04-08T13:00:00Z',
+      confidence: 'high',
+    };
+    const written = writer.writePage(second);
+    // >60% word overlap folds the second write onto the first file.
+    expect(written).toBe('clients/acme-alpha.md');
+    expect(existsSync(join(wikiDir, 'clients', 'acme-beta.md'))).toBe(false);
+  });
+
+  it('keeps a CAS-validated scheduled page on its exact path', () => {
+    const writer = new ObsidianWriter(tempDir, 'wiki');
+    writer.ensureDirectories();
+    const page = (path: string, content: string): WikiPage => ({
+      path,
+      title: '검수 프로세스 규칙', // Korean: a non-ASCII title must not move the CAS-validated path
+      type: 'lesson',
+      content,
+      sourceIds: [],
+      compiledAt: '2026-09-06T00:00:00Z',
+      confidence: 'high',
+    });
+    writer.writePage(page('lessons/process/original.md', 'original'));
+
+    const written = writer.writePagesAtomically([
+      { ...page('lessons/process/new-path.md', 'new'), expectedContentVersion: null },
+    ]);
+
+    expect(written).toEqual(['lessons/process/new-path.md']);
+    expect(readFileSync(join(wikiDir, 'lessons/process/original.md'), 'utf8')).toContain(
+      'original'
+    );
+    expect(readFileSync(join(wikiDir, 'lessons/process/new-path.md'), 'utf8')).toContain('new');
+  });
+
+  it('adds a versioned page to the index without dropping or duplicating existing links', () => {
+    const writer = new ObsidianWriter(tempDir, 'wiki');
+    writer.ensureDirectories();
+    const originalIndex =
+      '# Wiki Index\n\nAuto-compiled by MAMA.\n\n## Pages\n\n### Entity\n\n' +
+      '- [[work/existing|Existing]] — entity, confidence: high\n';
+    writeFileSync(join(wikiDir, 'index.md'), originalIndex, 'utf8');
+    const page: WikiPage = {
+      path: 'work/current.md',
+      title: 'Current work',
+      type: 'synthesis',
+      content: 'A dated account with exact evidence.',
+      sourceIds: ['raw:chatwork:obs_test'],
+      sourceRefs: ['raw:chatwork:obs_test'],
+      compiledAt: '2026-09-24T00:00:00Z',
+      confidence: 'medium',
+    };
+    expect(writer.writePagesAtomically([{ ...page, expectedContentVersion: null }])).toEqual([
+      page.path,
+    ]);
+    const indexPath = join(wikiDir, 'index.md');
+    const firstIndex = readFileSync(indexPath, 'utf8');
+    expect(firstIndex).toContain('[[work/existing|Existing]]');
+    expect(firstIndex).toContain('[[work/current|Current work]]');
+
+    const version = readWikiPageVersion(wikiDir, page.path);
+    writer.writePagesAtomically([
+      { ...page, content: 'Updated dated account.', expectedContentVersion: version },
+    ]);
+    const updatedIndex = readFileSync(indexPath, 'utf8');
+    expect(updatedIndex.match(/\[\[work\/current\|Current work\]\]/g)).toHaveLength(1);
+    expect(updatedIndex).toContain('[[work/existing|Existing]]');
+    expect(() =>
+      writer.writePagesAtomically([
+        { ...page, content: 'Stale update.', expectedContentVersion: version },
+      ])
+    ).toThrow(/changed before activation/);
+    expect(readFileSync(indexPath, 'utf8')).toBe(updatedIndex);
+    expect(readFileSync(join(wikiDir, page.path), 'utf8')).toContain('Updated dated account.');
+  });
+
+  it('preserves one human section when read content is published back', () => {
+    const writer = new ObsidianWriter(tempDir, 'wiki');
+    writer.ensureDirectories();
+    const path = 'lessons/process/human.md';
+    const base: WikiPage = {
+      path,
+      title: 'Human notes',
+      type: 'lesson',
+      content: 'Generated',
+      sourceIds: [],
+      compiledAt: '2026-09-06T00:00:00Z',
+      confidence: 'high',
+    };
+    writer.writePage(base, { exactPath: true });
+    const file = join(wikiDir, path);
+    writeFileSync(file, `${readFileSync(file, 'utf8')}\n\n<!-- human -->\nKeep me\n`, 'utf8');
+    const roundTrip = readFileSync(file, 'utf8');
+
+    writer.writePage({ ...base, content: `${roundTrip}\nNew generated line` }, { exactPath: true });
+
+    const written = readFileSync(file, 'utf8');
+    expect(written.match(/<!-- human -->/g)).toHaveLength(1);
+    expect(written).toContain('Keep me');
+  });
+
+  it('does not let generated content create an owner-authored human section', () => {
+    const writer = new ObsidianWriter(tempDir, 'wiki');
+    writer.ensureDirectories();
+    const path = 'lessons/process/untrusted-marker.md';
+    writer.writePage(
+      {
+        path,
+        title: 'Untrusted marker',
+        type: 'lesson',
+        content: 'Generated\n\n<!-- human -->\nInjected owner note',
+        sourceIds: [],
+        compiledAt: '2026-09-06T00:00:00Z',
+        confidence: 'high',
+      },
+      { exactPath: true }
+    );
+
+    const written = readFileSync(join(wikiDir, path), 'utf8');
+    expect(written).not.toContain('<!-- human -->');
+    expect(written).not.toContain('Injected owner note');
+  });
+
+  it('updates index.md', () => {
+    const writer = new ObsidianWriter(tempDir, 'wiki');
+    writer.ensureDirectories();
+    const page: WikiPage = {
+      path: 'projects/ProjectAlpha.md',
+      title: 'ProjectAlpha',
+      type: 'entity',
+      content: 'Content.',
+      sourceIds: ['d_1'],
+      compiledAt: '2026-04-08T12:00:00Z',
+      confidence: 'high',
+    };
+    writer.writePage(page);
+    writer.updateIndex([page]);
+
+    const index = readFileSync(join(wikiDir, 'index.md'), 'utf8');
+    expect(index).toContain('[[projects/ProjectAlpha|ProjectAlpha]]');
+    expect(index).toContain('entity');
+  });
+
+  it('merges a partial non-versioned publish without erasing another index entry', () => {
+    const writer = new ObsidianWriter(tempDir, 'wiki');
+    writer.ensureDirectories();
+    const indexPath = join(wikiDir, 'index.md');
+    writeFileSync(indexPath, '# Wiki Index\n\n## Pages\n\n- [[work/existing|Existing]]\n');
+    const page: WikiPage = {
+      path: 'work/current.md',
+      title: 'Current',
+      type: 'synthesis',
+      content: 'One current state.',
+      sourceIds: [],
+      compiledAt: '2026-09-24T00:00:00Z',
+      confidence: 'medium',
+    };
+    writer.updateIndexIncrementally([page]);
+    writer.updateIndexIncrementally([{ ...page, title: 'Current revised' }]);
+    const index = readFileSync(indexPath, 'utf8');
+    expect(index).toContain('[[work/existing|Existing]]');
+    expect(index).toContain('[[work/current|Current revised]]');
+    expect(index.match(/\[\[work\/current\|/g)).toHaveLength(1);
+  });
+});

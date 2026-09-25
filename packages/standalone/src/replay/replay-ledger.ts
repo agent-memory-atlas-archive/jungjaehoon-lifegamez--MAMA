@@ -55,7 +55,7 @@ function assertEntry(entry: ReplayLedgerEntry): void {
     throw new Error('Replay ledger identity is invalid');
   if (!/^[a-f0-9]{64}$/.test(entry.channelFingerprint))
     throw new Error('Replay ledger channel fingerprint is invalid');
-  if (!Number.isSafeInteger(entry.refCount) || entry.refCount < 1)
+  if (!Number.isSafeInteger(entry.refCount) || entry.refCount < 0)
     throw new Error('Replay ledger refCount is invalid');
   if (!['accepted', 'settled', 'dead', 'uncertain'].includes(entry.status)) {
     throw new Error('Replay ledger status is invalid');

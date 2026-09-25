@@ -91,6 +91,8 @@ async function main(argv) {
     console.log(
       JSON.stringify({
         kagemushaRows: kagemusha.importedCount,
+        feedbackRows: kagemusha.importedByOrigin.feedback ?? 0,
+        unmappedFeedbackRows: kagemusha.unmappedByOrigin.feedback ?? 0,
         projectedRows: kagemusha.projectedCount + trello.projectedCount,
         trelloRows: trello.importedCount,
         unmappedRows: Object.values(kagemusha.unmappedByOrigin).reduce(

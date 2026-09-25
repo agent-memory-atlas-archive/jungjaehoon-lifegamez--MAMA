@@ -257,7 +257,7 @@ describe('archive-compatible viewer routes', () => {
     );
   });
 
-  it('uses the catalog dispatcher for memory search and exposes empty archive shapes', async () => {
+  it('uses the catalog dispatcher for memory search and reports unbound record stores', async () => {
     await withServer(
       async (call) => {
         if (call.action === 'memory.search') {
@@ -272,17 +272,19 @@ describe('archive-compatible viewer routes', () => {
         expect(JSON.parse(search.body)).toEqual({ count: 1, results: [{ id: 'memory-1' }] });
 
         const report = await makeRequest(server, '/api/report');
-        expect(report.status).toBe(200);
+        expect(report.status).toBe(503);
         expect(JSON.parse(report.body)).toEqual({
-          slots: [],
-          reason: 'not available in this build',
+          error: true,
+          code: 'NOT_AVAILABLE',
+          message: 'Report store is not wired',
         });
 
         const wiki = await makeRequest(server, '/api/wiki/tree');
-        expect(wiki.status).toBe(200);
+        expect(wiki.status).toBe(503);
         expect(JSON.parse(wiki.body)).toEqual({
-          tree: [],
-          reason: 'not available in this build',
+          error: true,
+          code: 'NOT_AVAILABLE',
+          message: 'Wiki root is not configured',
         });
         expect(calls.map((call) => call.action)).toEqual(['memory.search']);
       }

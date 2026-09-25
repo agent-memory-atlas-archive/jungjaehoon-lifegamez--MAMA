@@ -9,7 +9,7 @@ const roots: string[] = [];
 const script = join(__dirname, '../../../../scripts/replay/verify-september.mjs');
 
 interface VerificationResult {
-  importCoverage: { differences: number; missingStableIds: number };
+  importCoverage: { differences: number; missingStableIds: number; feedbackDifferences: number };
   trelloCoverage: { differences: number };
   replayOrder: {
     sequenceViolations: number;
@@ -25,6 +25,9 @@ interface VerificationResult {
     withRoles: number;
   };
   unresolvableCitations: number;
+  board: { slotCount: number };
+  wiki: { pageCount: number };
+  lessons: { count: number; withDerivedFrom: number };
 }
 
 afterEach(() => {
@@ -46,6 +49,11 @@ describe('September replay verification', () => {
         role TEXT NOT NULL,
         content TEXT NOT NULL,
         created_at INTEGER NOT NULL
+      );
+      CREATE TABLE code_act_audit (
+        id INTEGER PRIMARY KEY,
+        code TEXT NOT NULL,
+        created_at INTEGER NOT NULL
       )
     `);
     const sourceAt = Date.parse('2026-09-01T00:00:00.000+09:00');
@@ -59,6 +67,9 @@ describe('September replay verification', () => {
         'INSERT INTO channel_messages (id, channel, channel_id, user_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
       )
       .run(2, 'kakao', 'room', 'actor', 'user', 'content-b', sourceAt + 1);
+    source
+      .prepare('INSERT INTO code_act_audit (id, code, created_at) VALUES (?, ?, ?)')
+      .run(1, 'return await forward_feedback({translatedText: "feedback"});', sourceAt + 2);
     source.close();
 
     mkdirSync(join(root, 'raw', 'kagemusha'), { recursive: true });
@@ -102,6 +113,17 @@ describe('September replay verification', () => {
       'message',
       JSON.stringify({ originalPlatform: 'kakao', kagemushaMessageId: '2' })
     );
+    rawInsert.run(
+      3,
+      'kagemusha:feedback:1',
+      'kagemusha',
+      'kagemusha:feedback',
+      'feedback',
+      'feedback',
+      sourceAt + 2,
+      'message',
+      JSON.stringify({ originalPlatform: 'feedback', codeActAuditId: '1' })
+    );
     raw.close();
 
     mkdirSync(join(root, 'raw', 'trello'), { recursive: true });
@@ -142,6 +164,7 @@ describe('September replay verification', () => {
     mama.exec(`
       CREATE TABLE decisions (
         id TEXT PRIMARY KEY,
+        kind TEXT,
         record_kind TEXT,
         event_datetime INTEGER,
         source_refs_json TEXT,
@@ -157,6 +180,11 @@ describe('September replay verification', () => {
       );
       CREATE TABLE observation_versions (observation_id TEXT PRIMARY KEY);
       CREATE TABLE commitments (commitment_id TEXT PRIMARY KEY)
+      ;
+      CREATE TABLE twin_edges (
+        subject_id TEXT NOT NULL,
+        edge_type TEXT NOT NULL
+      )
     `);
     mama.prepare('INSERT INTO observation_versions (observation_id) VALUES (?)').run('obs-1');
     mama.prepare('INSERT INTO commitments (commitment_id) VALUES (?)').run('commitment-1');
@@ -201,10 +229,10 @@ describe('September replay verification', () => {
         fromMs: sourceAt,
         untilMs,
         maxSourceAtMs: sourceAt + 1,
-        countsByOriginDay: { kakao: { '2026-09-01': 2 } },
+        countsByOriginDay: { kakao: { '2026-09-01': 2 }, feedback: { '2026-09-01': 1 } },
         trelloCountsByBoardDay: { 'board-a': { '2026-09-01': 1 } },
-        rawObservationCount: 3,
-        indexCount: 3,
+        rawObservationCount: 4,
+        indexCount: 4,
         pendingProjectionCount: 0,
       })}\n`,
       'utf8'
@@ -214,6 +242,17 @@ describe('September replay verification', () => {
       `${JSON.stringify({ sequence: 1, windowStartMs: sourceAt, windowEndMs: untilMs, stimulusId: 'stimulus-1', origin: 'kagemusha', channelFingerprint: '0'.repeat(64), refCount: 2, firstSourceAtMs: sourceAt, lastSourceAtMs: sourceAt + 1, status: 'accepted' })}\n${JSON.stringify({ sequence: 2, windowStartMs: sourceAt, windowEndMs: untilMs, stimulusId: 'stimulus-1', origin: 'kagemusha', channelFingerprint: '0'.repeat(64), refCount: 2, firstSourceAtMs: sourceAt, lastSourceAtMs: sourceAt + 1, status: 'settled' })}\n`,
       'utf8'
     );
+    const reportPath = join(root, 'report-slots.json');
+    writeFileSync(
+      reportPath,
+      JSON.stringify({
+        briefing: { slotId: 'briefing', html: '<p>x</p>', priority: 0, updatedAt: sourceAt },
+      }),
+      'utf8'
+    );
+    const wikiRoot = join(root, 'wiki');
+    mkdirSync(wikiRoot);
+    writeFileSync(join(wikiRoot, 'case.md'), '# Case\n', 'utf8');
     writeFileSync(
       join(root, 'cursor.json'),
       `${JSON.stringify({ version: 1, runId: 'run-1', policyFingerprint: 'policy-1', fromMs: sourceAt, untilMs, windowSizeMs: 12 * 60 * 60 * 1_000, nextWindowStartMs: untilMs, currentWindow: { startMs: untilMs, endMs: untilMs, deltas: {} } })}\n`,
@@ -236,12 +275,17 @@ describe('September replay verification', () => {
         join(root, 'ledger.jsonl'),
         '--cursor',
         join(root, 'cursor.json'),
+        '--report-slots',
+        reportPath,
+        '--wiki-root',
+        wikiRoot,
       ],
       { encoding: 'utf8' }
     );
     const result = JSON.parse(output) as VerificationResult;
     expect(result.importCoverage.differences).toBe(0);
     expect(result.importCoverage.missingStableIds).toBe(0);
+    expect(result.importCoverage.feedbackDifferences).toBe(0);
     expect(result.trelloCoverage.differences).toBe(0);
     expect(result.replayOrder.sequenceViolations).toBe(0);
     expect(result.replayOrder.windowViolations).toBe(0);
@@ -254,5 +298,8 @@ describe('September replay verification', () => {
     expect(result.taskShape.withFiles).toBe(1);
     expect(result.taskShape.withRoles).toBe(1);
     expect(result.unresolvableCitations).toBe(0);
+    expect(result.board.slotCount).toBe(1);
+    expect(result.wiki.pageCount).toBe(1);
+    expect(result.lessons).toEqual({ count: 0, withDerivedFrom: 0 });
   });
 });

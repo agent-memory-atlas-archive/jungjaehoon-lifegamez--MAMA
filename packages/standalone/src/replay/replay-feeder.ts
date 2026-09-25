@@ -13,6 +13,7 @@ import {
   REPLAY_REFERENCE_CAP,
   REPLAY_WINDOW_SIZE_MS,
   ReplaySourceCatalog,
+  type ReplayLedgerDigestItem,
   type ReplayWindow,
 } from './replay-source-catalog.js';
 import { ReplayLedger } from './replay-ledger.js';
@@ -30,6 +31,7 @@ export interface ReplayFeederOptions {
   cursorPath: string;
   ledgerPath: string;
   setReplaySourceEndMs: (value: number | undefined) => void;
+  readLedgerDigest?: () => readonly ReplayLedgerDigestItem[];
   settlePollMs?: number;
   sleep?: (milliseconds: number) => Promise<void>;
 }
@@ -64,8 +66,14 @@ function deltaLedgerFields(delta: SourceDelta): {
   firstSourceAtMs: number;
   lastSourceAtMs: number;
 } {
+  if (delta.refs.length === 0) {
+    if (delta.replay === undefined) throw new Error('Replay delta must contain a replay window');
+    return {
+      firstSourceAtMs: delta.replay.windowStartMs,
+      lastSourceAtMs: delta.replay.windowStartMs,
+    };
+  }
   const times = sourceTimes(delta);
-  if (times.length === 0) throw new Error('Replay delta must contain at least one ref');
   return { firstSourceAtMs: Math.min(...times), lastSourceAtMs: Math.max(...times) };
 }
 
@@ -244,7 +252,9 @@ export class ReplayFeeder {
       ) {
         throw new Error('Replay cursor current window does not match the frozen source fence');
       }
-      const deltas = this.options.catalog.deltasForWindow(runId, window.startMs, window.endMs);
+      const deltas = this.options.catalog.deltasForWindow(runId, window.startMs, window.endMs, {
+        ledgerDigest: this.options.readLedgerDigest?.(),
+      });
       for (const delta of deltas) {
         cursor = await this.deliverDelta(cursor, ledger, window, delta);
         settled += 1;

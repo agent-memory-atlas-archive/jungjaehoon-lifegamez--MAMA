@@ -11,6 +11,13 @@ import type {
 } from '@jungjaehoon/mama-core';
 import type { CommitmentPage, JudgmentAccess } from '@jungjaehoon/mama-core/knowledge';
 import { requireViewerAuth } from './auth-middleware.js';
+import type { ReportStore } from './report-handler.js';
+import {
+  listWikiPages,
+  readWikiPages,
+  WIKI_LIST_MAX_PATHS,
+  WIKI_READ_MAX_PAGE_CHARS,
+} from '../wiki/wiki-read.js';
 import {
   mapArchiveGraphNode,
   shapeArchiveGraph,
@@ -71,6 +78,9 @@ export interface ViewerRuntimeStatus {
 export interface ViewerServerOptions {
   dispatch: ActionDispatcher;
   ownerAccess: JudgmentAccess;
+  reportStore?: ReportStore | null;
+  reportSseClients?: Set<ServerResponse>;
+  wikiRoot?: string | null;
   port?: number;
   host?: string;
   viewerDirectory?: string;
@@ -188,6 +198,89 @@ function graphRef(value: string): { kind: string; id: string } | null {
 
 function notAvailable(): { reason: 'not available in this build' } {
   return { reason: 'not available in this build' };
+}
+
+interface WikiTreeNode {
+  name: string;
+  path: string;
+  type: 'file' | 'directory';
+  children?: WikiTreeNode[];
+}
+
+function wikiFrontmatter(raw: string): { frontmatter: Record<string, unknown>; content: string } {
+  const match = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  if (!match) return { frontmatter: {}, content: raw };
+  const frontmatter: Record<string, unknown> = {};
+  for (const line of match[1].split('\n')) {
+    const separator = line.indexOf(':');
+    if (separator > 0) {
+      frontmatter[line.slice(0, separator).trim()] = line.slice(separator + 1).trim();
+    }
+  }
+  return { frontmatter, content: match[2] };
+}
+
+function addWikiPath(root: WikiTreeNode[], path: string): void {
+  const parts = path.split('/');
+  let nodes = root;
+  let prefix = '';
+  parts.forEach((name, index) => {
+    prefix = prefix === '' ? name : `${prefix}/${name}`;
+    const type = index === parts.length - 1 ? 'file' : 'directory';
+    let node = nodes.find((candidate) => candidate.name === name && candidate.type === type);
+    if (!node) {
+      node = { name, path: prefix, type };
+      if (type === 'directory') node.children = [];
+      nodes.push(node);
+      nodes.sort((left, right) =>
+        left.type === right.type
+          ? left.name.localeCompare(right.name)
+          : left.type === 'directory'
+            ? -1
+            : 1
+      );
+    }
+    nodes = node.children ?? [];
+  });
+}
+
+function wikiTree(root: string): WikiTreeNode[] {
+  const paths: string[] = [];
+  let cursor: string | null = null;
+  let version: string | undefined;
+  do {
+    const page = listWikiPages({
+      root,
+      ...(cursor === null ? {} : { cursor }),
+      ...(version === undefined ? {} : { version }),
+      limit: WIKI_LIST_MAX_PATHS,
+    });
+    paths.push(...page.paths);
+    cursor = page.nextCursor;
+    version = page.readVersion;
+  } while (cursor !== null);
+  const tree: WikiTreeNode[] = [];
+  for (const path of paths) addWikiPath(tree, path);
+  return tree;
+}
+
+function wikiPage(root: string, path: string): Record<string, unknown> {
+  const result = readWikiPages({
+    root,
+    paths: [path],
+    contentLimit: WIKI_READ_MAX_PAGE_CHARS,
+  });
+  const page = result.pages[0];
+  if (!page || !page.exists || page.content === null) {
+    throw new ViewerHttpError(404, 'NOT_FOUND', 'Page not found');
+  }
+  const parsed = wikiFrontmatter(page.content);
+  return {
+    path: page.path,
+    frontmatter: parsed.frontmatter,
+    content: parsed.content,
+    raw: page.content,
+  };
 }
 
 function taskCount(page: CommitmentPage): number {
@@ -322,7 +415,7 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
   let server: Server | null = null;
   let actualPort = port;
   let stopped = false;
-  const reportClients = new Set<ServerResponse>();
+  const reportClients = options.reportSseClients ?? new Set<ServerResponse>();
 
   const callAction = async (action: string, input: Record<string, unknown>): Promise<unknown> => {
     const operationId = `viewer:${action}:${randomUUID()}`;
@@ -543,6 +636,10 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
   };
 
   const handleReportEvents = (req: IncomingMessage, res: ServerResponse): void => {
+    if (!options.reportStore) {
+      json(res, 503, { error: true, code: 'NOT_AVAILABLE', message: 'Report store is not wired' });
+      return;
+    }
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache',
@@ -550,7 +647,7 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
     });
     reportClients.add(res);
     res.write(
-      `event: report-update\ndata: ${JSON.stringify({ slots: [], ...notAvailable() })}\n\n`
+      `event: report-update\ndata: ${JSON.stringify({ slots: options.reportStore.getAllSorted() })}\n\n`
     );
     const keepAlive = setInterval(() => res.write(': keep-alive\n\n'), 15_000);
     req.on('close', () => {
@@ -659,10 +756,23 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
         result = await memorySearch(url.searchParams);
       else if (url.pathname === '/api/operator/tasks') result = await listTasks(url.searchParams);
       else if (url.pathname === '/api/operator/summary') result = await operatorSummary();
-      else if (url.pathname === '/api/report') result = { slots: [], ...notAvailable() };
-      else if (url.pathname === '/api/wiki/tree') result = { tree: [], ...notAvailable() };
-      else if (url.pathname === '/api/wiki/page') {
-        throw new ViewerHttpError(404, 'NOT_AVAILABLE', 'not available in this build');
+      else if (url.pathname === '/api/report') {
+        if (!options.reportStore) {
+          throw new ViewerHttpError(503, 'NOT_AVAILABLE', 'Report store is not wired');
+        }
+        result = { slots: options.reportStore.getAllSorted() };
+      } else if (url.pathname === '/api/wiki/tree') {
+        if (!options.wikiRoot) {
+          throw new ViewerHttpError(503, 'NOT_AVAILABLE', 'Wiki root is not configured');
+        }
+        result = { tree: wikiTree(options.wikiRoot) };
+      } else if (url.pathname === '/api/wiki/page') {
+        if (!options.wikiRoot) {
+          throw new ViewerHttpError(503, 'NOT_AVAILABLE', 'Wiki root is not configured');
+        }
+        const path = url.searchParams.get('path');
+        if (!path) throw new ViewerHttpError(400, 'MISSING_PATH', 'path query param is required');
+        result = wikiPage(options.wikiRoot, path);
       } else if (url.pathname === '/api/runtime/status') {
         if (!options.getRuntimeStatus) {
           throw new ViewerHttpError(503, 'NOT_AVAILABLE', 'not available in this build');

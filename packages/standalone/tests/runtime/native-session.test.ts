@@ -74,9 +74,13 @@ describe('one owner native session', () => {
           .sort()
       ).toEqual([
         'graph.query',
+        'manage.wiki.publish',
+        'manage.wiki.read',
         'memory.checkpoint.list',
         'memory.save',
         'memory.search',
+        'report.publish',
+        'report.read',
         'source.read',
         'source.search',
         'work.create',

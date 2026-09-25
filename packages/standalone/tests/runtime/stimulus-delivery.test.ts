@@ -67,6 +67,9 @@ describe('one stimulus intake and delivery', () => {
           observationRef: 'obs-1',
           sourceId: 'source-1',
           sourceEntityId: 'entity-1',
+          channel: 'room-a',
+          author: 'sender-a',
+          contentPreview: 'bounded message text',
           sourceAt: '2026-01-01T00:00:00.000Z',
           observedAt: '2026-01-01T00:00:01.000Z',
           contentHash: null,
@@ -131,12 +134,31 @@ describe('one stimulus intake and delivery', () => {
           observationRef: 'obs-1',
           sourceId: 'source-1',
           sourceEntityId: 'entity-1',
+          channel: 'room-a',
+          author: 'sender-a',
+          contentPreview: 'bounded message text',
           sourceAt: '2026-01-01T00:00:00.000Z',
           observedAt: '2026-01-01T00:00:01.000Z',
           contentHash: null,
         },
       ],
       preview: ['new observation'],
+      replay: {
+        runId: 'run-1',
+        windowId: 'window-1',
+        windowStartMs: 1,
+        windowEndMs: 2,
+        ledgerDigest: [
+          {
+            commitmentId: 'commitment-1',
+            title: 'Current item',
+            stage: 'active',
+            assignee: 'worker',
+            lastEventTime: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+        endInstructions: 'update the board, wiki, and lessons',
+      },
     });
     intake.acceptOwnerMessage({
       id: 'message-1',
@@ -153,6 +175,9 @@ describe('one stimulus intake and delivery', () => {
     const prompts = runTurn.mock.calls.map((call) => call[0][0].text);
     expect(prompts.some((text) => text.includes('owner request'))).toBe(true);
     expect(prompts.some((text) => text.includes('source-1'))).toBe(true);
+    expect(prompts.some((text) => text.includes('bounded message text'))).toBe(true);
+    expect(prompts.some((text) => text.includes('update the board, wiki, and lessons'))).toBe(true);
+    expect(prompts.some((text) => text.includes('only for the refs whose full text'))).toBe(true);
     expect(prompts.some((text) => text.includes('observationRefs'))).toBe(true);
     expect(runTurn.mock.calls.every((call) => call[1]?.sessionKey === 'owner:runtime')).toBe(true);
   });

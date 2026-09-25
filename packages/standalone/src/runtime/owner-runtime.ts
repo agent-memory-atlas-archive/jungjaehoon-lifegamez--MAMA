@@ -11,9 +11,14 @@ import {
   type JudgmentAccess,
   type MemoryScopeRef,
 } from '@jungjaehoon/mama-core';
+import { join, isAbsolute } from 'node:path';
+import type { ServerResponse } from 'node:http';
 import type { NativeSessionHandle } from '@jungjaehoon/mama-core/runtime/runtime';
 import type { NativeModelRunPort } from '@jungjaehoon/mama-core/runtime/native-turn';
 import { createStoredSourceReader } from '../api/stored-source-reader.js';
+import { createPersistentReportStore } from '../api/report-persistence.js';
+import type { WikiPage } from '../wiki/types.js';
+import { ObsidianWriter } from '../wiki/obsidian-writer.js';
 import { RawStore } from '../storage/source-archive.js';
 import type { RuntimeBackend, RuntimeEffort, RuntimeSandbox } from './config.js';
 import { openCoreDatabase, type CoreDatabase } from './core-db.js';
@@ -53,6 +58,12 @@ export interface OwnerRuntimeOptions {
   mcpConfigPath?: string;
   mcpServerPath?: string;
   pluginDir?: string;
+  reportPath?: string;
+  wiki?: {
+    enabled: boolean;
+    vaultPath: string;
+    wikiDir: string;
+  };
   ownerPolicyProvider?: OwnerPolicyProvider;
   onOwnerResult?: StimulusDeliveryOptions['onOwnerResult'];
   onSourceResult?: StimulusDeliveryOptions['onSourceResult'];
@@ -68,6 +79,9 @@ export interface OwnerRuntime {
   readonly database: CoreDatabase;
   readonly knowledge: Knowledge;
   readonly surface: ActionSurface;
+  readonly reportStore: ReturnType<typeof createPersistentReportStore>;
+  readonly reportSseClients: Set<ServerResponse>;
+  readonly wikiRoot: string | null;
   readonly intake: StimulusIntake;
   readonly acceptSourceDelta: StimulusIntake['acceptSourceDelta'];
   /** Set the ceiling for the next serialized replay turn; delivery clears it when done. */
@@ -125,6 +139,11 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
   let rawStore: RawStore | undefined;
   let nativeSession: NativeSessionHandle | undefined = options.nativeSession;
   let delivery: ReplayClockDelivery | undefined;
+  const reportStore = createPersistentReportStore({
+    filePath: options.reportPath ?? join(options.runtimeRoot, 'report-slots.json'),
+  });
+  const reportSseClients = new Set<ServerResponse>();
+  let wikiRoot: string | null = null;
   try {
     const knowledge = createKnowledge({
       adapter: database.adapter,
@@ -139,6 +158,39 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
             ownerPrincipalId: () => options.ownerPrincipalId,
             rawStore: () => rawStore ?? null,
           });
+    const wikiPorts = options.wiki?.enabled
+      ? (() => {
+          if (options.wiki.vaultPath.trim() === '' || options.wiki.wikiDir.trim() === '') {
+            throw new Error('Enabled wiki requires vaultPath and wikiDir');
+          }
+          wikiRoot = isAbsolute(options.wiki.wikiDir)
+            ? options.wiki.wikiDir
+            : join(options.wiki.vaultPath, options.wiki.wikiDir);
+          const writer = new ObsidianWriter(wikiRoot, '.');
+          writer.ensureDirectories();
+          return {
+            vault: { path: writer.getWikiPath(), name: null },
+            publisher: (
+              pages: Parameters<
+                NonNullable<import('../api/wiki-actions.js').WikiPorts['publisher']>
+              >[0]
+            ) => {
+              const versioned = pages.some((page) => page.expectedContentVersion !== undefined);
+              if (versioned) {
+                writer.writePagesAtomically(pages);
+                return;
+              }
+              const publishedPages: WikiPage[] = [];
+              for (const page of pages) {
+                const path = writer.writePage(page);
+                publishedPages.push({ ...page, path });
+              }
+              writer.updateIndexIncrementally(publishedPages);
+              writer.appendLog('compile', `Published ${pages.length} pages`);
+            },
+          };
+        })()
+      : {};
     const surface = createActionSurface({
       adapter: database.adapter,
       knowledge,
@@ -147,6 +199,9 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       scopes: options.scopes,
       connectors: options.connectors,
       storedSourceReader,
+      reportStore,
+      reportSseClients,
+      wikiPorts,
     });
     const access: JudgmentAccess = surface.ownerAccess;
     const standingText = ownerSystemPrompt(options.backend);
@@ -211,6 +266,9 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       database,
       knowledge,
       surface,
+      reportStore,
+      reportSseClients,
+      wikiRoot,
       intake,
       acceptSourceDelta: intake.acceptSourceDelta,
       setReplaySourceEndMs: (value) => {

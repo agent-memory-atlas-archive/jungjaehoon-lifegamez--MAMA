@@ -73,11 +73,17 @@ function sourceRefId(ref: SourceDelta['refs'][number]): string {
 
 function sourceOccurrenceTime(delta: SourceDelta): number {
   const sourceTimes = delta.refs.map((ref) => Date.parse(ref.sourceAt));
-  if (
-    sourceTimes.length === 0 ||
-    sourceTimes.some((value) => !Number.isSafeInteger(value) || value < 0)
-  ) {
+  if (sourceTimes.some((value) => !Number.isSafeInteger(value) || value < 0)) {
     throw new Error('A source delta requires timezone-qualified source times');
+  }
+  if (sourceTimes.length === 0) {
+    if (delta.replay === undefined)
+      throw new Error('A source delta requires at least one source time');
+    const emptyWindowTime = delta.occurredAt ?? delta.replay.windowStartMs;
+    if (!Number.isSafeInteger(emptyWindowTime) || emptyWindowTime < 0) {
+      throw new Error('An empty replay window requires a valid occurrence time');
+    }
+    return emptyWindowTime;
   }
   const occurredAt = delta.occurredAt ?? Math.max(...sourceTimes);
   if (!Number.isSafeInteger(occurredAt) || occurredAt < 0) {
@@ -87,8 +93,9 @@ function sourceOccurrenceTime(delta: SourceDelta): number {
 }
 
 export function sourceDeltaStimulusId(delta: SourceDelta): string {
-  if (delta.refs.length === 0)
+  if (delta.refs.length === 0 && delta.replay === undefined) {
     throw new Error('A source delta requires at least one observation ref');
+  }
   const refs = delta.refs.map((ref) => sourceRefId(ref)).sort();
   const digest = createHash('sha256')
     .update(canonicalizeJSON({ coalesceKey: delta.coalesceKey, refs }))
@@ -104,12 +111,15 @@ function sourcePayload(delta: SourceDelta): JsonValue {
     coalesceKey: delta.coalesceKey,
     refs: delta.refs.map((ref) => ({
       connector: ref.connector,
+      ...(ref.channel === undefined ? {} : { channel: ref.channel }),
       observationRef: sourceObservationHandle(ref),
       sourceId: ref.sourceId,
       sourceEntityId: ref.sourceEntityId,
       sourceAt: ref.sourceAt,
       observedAt: ref.observedAt,
       contentHash: ref.contentHash,
+      ...(ref.author === undefined ? {} : { author: ref.author }),
+      ...(ref.contentPreview === undefined ? {} : { contentPreview: ref.contentPreview }),
       ...(ref.metadata === undefined ? {} : { metadata: ref.metadata }),
     })),
     preview: [...delta.preview],
@@ -175,6 +185,18 @@ export function createStimulusIntake(
   };
 }
 
+function payloadCarriesMessageText(payload: MailboxRow['payload']): boolean {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  const refs = payload.refs;
+  return (
+    Array.isArray(refs) &&
+    refs.some(
+      (ref) =>
+        ref !== null && typeof ref === 'object' && !Array.isArray(ref) && 'contentPreview' in ref
+    )
+  );
+}
+
 function boundedStimulus(row: MailboxRow): string {
   const lines = [
     '## Bounded stimulus',
@@ -187,8 +209,22 @@ function boundedStimulus(row: MailboxRow): string {
   ];
   if (row.kind === 'source_delta') {
     lines.push(
-      'source_read: read these delta refs in one batched source.read call with observationRefs; content remains bounded per ref.'
+      row.refs.length === 0
+        ? 'source_read: this replay window has no source messages.'
+        : payloadCarriesMessageText(row.payload)
+          ? 'source_read: each ref carries its message text as contentPreview (cut at 280 characters, marked …); call source.read with observationRefs, batched, only for the refs whose full text or attachment you need.'
+          : 'source_read: read these delta refs in one batched source.read call with observationRefs; content remains bounded per ref.'
     );
+    const payload = row.payload;
+    if (payload && typeof payload === 'object' && !Array.isArray(payload) && 'replay' in payload) {
+      const replay = payload.replay;
+      if (replay && typeof replay === 'object' && !Array.isArray(replay)) {
+        const instructions = replay.endInstructions;
+        if (typeof instructions === 'string' && instructions.trim() !== '') {
+          lines.push(`window_end_instructions: ${instructions}`);
+        }
+      }
+    }
   }
   if (row.payload !== undefined) lines.push(`payload: ${JSON.stringify(row.payload)}`);
   return lines.join('\n');

@@ -8,12 +8,17 @@ import {
   type ActionContract,
   type ActionDispatcher,
 } from '@jungjaehoon/mama-core';
+import type { ServerResponse } from 'node:http';
 import type { DatabaseInstance } from '@jungjaehoon/mama-core/db-manager';
 import type { JudgmentAccess, Knowledge } from '@jungjaehoon/mama-core/knowledge';
 import type { MemoryScopeRef } from '@jungjaehoon/mama-core/memory/types';
+import { reportActionRegistrations } from '../api/report-actions.js';
+import { createReportPublisher, type ReportStore } from '../api/report-handler.js';
 import { sourceActionRegistrations } from '../api/source-actions.js';
 import { minimalWorkActionRegistrations } from '../api/work-actions.js';
 import type { StoredSourceReader } from '../api/stored-source-reader.js';
+import { wikiActionRegistrations, type WikiPorts } from '../api/wiki-actions.js';
+import type { BoardSlots } from '../operator/board-read-views.js';
 
 const OWNER_ACTIONS = [
   'graph.query',
@@ -26,6 +31,10 @@ const OWNER_ACTIONS = [
   'work.show',
   'memory.save',
   'memory.search',
+  'report.read',
+  'report.publish',
+  'manage.wiki.publish',
+  'manage.wiki.read',
 ] as const;
 
 const OWNER_CONNECTORS = ['chatwork', 'slack', 'trello', 'kagemusha'] as const;
@@ -44,6 +53,9 @@ export interface ActionSurfaceOptions {
   scopes?: readonly MemoryScopeRef[];
   connectors?: readonly string[];
   storedSourceReader?: StoredSourceReader | null;
+  reportStore?: ReportStore | null;
+  reportSseClients?: Set<ServerResponse>;
+  wikiPorts?: WikiPorts;
 }
 
 export interface ActionSurface {
@@ -96,10 +108,35 @@ export function createActionSurface(options: ActionSurfaceOptions): ActionSurfac
       'work.show',
     ].includes(contract.name)
   );
+  const reportSseClients = options.reportSseClients ?? new Set<ServerResponse>();
+  const reportPorts =
+    options.reportStore === undefined || options.reportStore === null
+      ? {}
+      : {
+          publisher: createReportPublisher(options.reportStore, reportSseClients),
+          reader: (): BoardSlots => {
+            const slots: BoardSlots = {};
+            for (const [name, slot] of Object.entries(options.reportStore!.getAll())) {
+              slots[name] = {
+                html: slot.html,
+                basisRevision: slot.basisRevision,
+                currentBasisRevision: slot.currentBasisRevision,
+                freshness: slot.freshness,
+                publishable: options.reportStore!.isPublishable(name),
+                updatedAt: Number.isFinite(slot.updatedAt)
+                  ? new Date(slot.updatedAt).toISOString()
+                  : null,
+              };
+            }
+            return slots;
+          },
+        };
   const registrations = [
     ...core,
     ...sourceActionRegistrations({ stored: options.storedSourceReader }),
     ...minimalWorkActionRegistrations({ knowledge: options.knowledge }),
+    ...reportActionRegistrations(reportPorts),
+    ...wikiActionRegistrations(options.wikiPorts ?? {}),
   ];
   const catalog = createCatalog(registrations);
   const dispatch = createDispatcher(catalog, {
