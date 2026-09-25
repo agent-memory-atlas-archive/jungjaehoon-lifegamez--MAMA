@@ -102,9 +102,6 @@ importers:
       '@jungjaehoon/mama-core':
         specifier: workspace:*
         version: link:../mama-core
-      '@jungjaehoon/mama-server':
-        specifier: workspace:*
-        version: link:../mcp-server
       '@slack/web-api':
         specifier: ^7.13.0
         version: 7.19.0

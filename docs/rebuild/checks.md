@@ -274,3 +274,9 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Evidence: standalone FULL suite is 52 files / 137 tests, core is 116 / 838, MCP is 13 passed files / 121 passed and 14 skipped tests, plugin is 11 / 165; forced build, typecheck, lint, focused API tests, and the component render test pass.
 - Data path: operator tasks request `work.list(history: all)` and add `commitment_id`; drawer detail reads `work.show`, `graph.query(derived_from)`, and bounded `source.read` slices, projecting event-time Created/Updated and source channels/observation ids.
 - Still open: supervisor replay/live owner C1/C2 evidence remains outside this viewer change; the model cache remained exactly 561768762 bytes after the full suite.
+
+## Action MCP door moved into standalone — 2026-09-25
+
+- Result: the owner agent's action MCP adapter is standalone's own `src/runtime/action-mcp-server.ts` (built to `dist/runtime/action-mcp-server.js`); standalone no longer depends on `@jungjaehoon/mama-server`. The owner pointed out that the public MCP server (Claude Code development memory) is a separate product unrelated to MAMA OS; the engine carry (03da2c6fd) had pulled it in with the archive.
+- Evidence: core 838, standalone 232 (archive handleRequest unit tests carried), mcp-server 121, plugin 165 passed; the built adapter answers `initialize` over stdio; `resolveActionServerPath()` points at standalone's dist for both backends (Claude MCP config and Codex `mcp_servers` read the same file).
+- Still open: `packages/mcp-server` and the plugin keep the archive's carried state, in which the public server calls the daemon socket (`~/.mama`) instead of its own `~/.claude` database. That mixes the two data homes and must be fixed before any mcp-server release; it is outside the owner-flow work.

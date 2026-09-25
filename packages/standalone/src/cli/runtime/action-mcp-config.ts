@@ -1,6 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 
 export interface EnsureMamaMcpConfigOptions {
   mcpConfigPath: string;
@@ -15,10 +14,9 @@ export interface EnsureMamaMcpConfigResult {
 
 export const MAMA_MCP_SERVER_NAME = 'mama';
 
-const nodeRequire = createRequire(__filename);
-
+/** The built action MCP server beside this module (dist/runtime/action-mcp-server.js). */
 export function resolveActionServerPath(): string {
-  return nodeRequire.resolve('@jungjaehoon/mama-server/src/action-server.js');
+  return join(__dirname, '..', '..', 'runtime', 'action-mcp-server.js');
 }
 
 function validEntry(value: unknown, serverPath: string, mamaHome: string): boolean {
