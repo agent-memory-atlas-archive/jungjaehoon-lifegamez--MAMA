@@ -62,6 +62,7 @@ function replayLedgerDigest(
       const status = text(values.status) ?? (item.withdrawn ? 'cancelled' : null);
       result.push({
         commitmentId: item.commitmentId,
+        revision: item.revision,
         title: text(values.title),
         stage: text(values.stage),
         status,
@@ -129,6 +130,7 @@ export async function runReplay(options: ReplayCommandOptions = {}): Promise<Rep
             events: catalog.eventsForWindow(window.startMs, window.endMs),
             workItems: (ledgerDigest ?? []).map((item) => ({
               commitmentId: item.commitmentId,
+              revision: item.revision,
               title: item.title,
               stage: item.stage,
               status: item.status,

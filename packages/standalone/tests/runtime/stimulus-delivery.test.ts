@@ -201,6 +201,7 @@ describe('one stimulus intake and delivery', () => {
         ledgerDigest: [
           {
             commitmentId: 'commitment-1',
+            revision: 3,
             title: 'Current item',
             stage: 'active',
             status: 'pending',
@@ -275,7 +276,7 @@ describe('one stimulus intake and delivery', () => {
         text.includes('[01-01 09:00] client room · sender-a · obs-1: bounded message text')
       )
     ).toBe(true);
-    expect(prompts.some((text) => text.includes('commitment-1 | Current item | active'))).toBe(
+    expect(prompts.some((text) => text.includes('commitment-1 | r3 | Current item | active'))).toBe(
       true
     );
     expect(prompts.some((text) => text.includes('source-1') || text.includes('contentHash'))).toBe(

@@ -245,8 +245,10 @@ function ledgerLines(replay: JsonValue | undefined): string[] {
       ? [
           [
             textField(item.commitmentId),
+            typeof item.revision === 'number' ? `r${String(item.revision)}` : '-',
             textField(item.title),
             textField(item.stage) || '-',
+            textField(item.status) || '-',
             textField(item.assignee) || '-',
             textField(item.lastEventTime) || '-',
           ].join(' | '),
@@ -341,7 +343,7 @@ function boundedStimulus(row: MailboxRow): string {
         if (messages !== null) {
           const work = ledgerLines(replay);
           lines.push(
-            `current_work (commitmentId | title | stage | assignee | lastEventTime), ${String(work.length)} items:`,
+            `current_work (commitmentId | revision | title | stage | status | assignee | lastEventTime), ${String(work.length)} items:`,
             ...work
           );
         }
@@ -351,7 +353,7 @@ function boundedStimulus(row: MailboxRow): string {
     if (messages !== null) {
       const work = ledgerLines(replay);
       lines.push(
-        `current_work (commitmentId | title | stage | assignee | lastEventTime), ${String(work.length)} items:`,
+        `current_work (commitmentId | revision | title | stage | status | assignee | lastEventTime), ${String(work.length)} items:`,
         ...work,
         `messages (KST, channel · sender · observationRef: text), ${String(messages.length)} lines:`,
         ...messages

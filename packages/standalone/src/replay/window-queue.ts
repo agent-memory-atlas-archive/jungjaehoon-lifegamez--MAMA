@@ -18,6 +18,7 @@ export interface ReplayQueueEvent {
 
 export interface QueueWorkItem {
   readonly commitmentId: string;
+  readonly revision?: number;
   readonly title: string | null;
   readonly stage: string | null;
   readonly status: string | null;
@@ -398,6 +399,7 @@ function workCandidate(
     title,
     facts: {
       commitmentId: item.commitmentId,
+      ...(item.revision === undefined ? {} : { revision: item.revision }),
       title: item.title,
       stage: item.stage,
       status: item.status,

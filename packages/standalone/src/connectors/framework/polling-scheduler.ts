@@ -39,6 +39,7 @@ export interface SourceDelta {
     windowEndMs: number;
     ledgerDigest?: readonly {
       commitmentId: string;
+      revision: number;
       title: string | null;
       stage: string | null;
       status: string | null;

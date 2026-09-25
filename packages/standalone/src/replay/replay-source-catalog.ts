@@ -59,6 +59,8 @@ export interface ReplaySourceReadOptions {
 
 export interface ReplayLedgerDigestItem {
   readonly commitmentId: string;
+  /** Current revision: the expectedRevision a work.revise names, so no re-read is needed. */
+  readonly revision: number;
   readonly title: string | null;
   readonly stage: string | null;
   readonly status: string | null;
