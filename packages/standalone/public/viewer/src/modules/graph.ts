@@ -390,7 +390,7 @@ export class GraphModule {
     return `
       <strong>${escapeHtml(node.topic || 'Unknown')}</strong><br>
       Decision: ${escapeHtml((node.decision || '').substring(0, 100))}...<br>
-      Outcome: ${escapeHtml(node.outcome || 'PENDING')}<br>
+      ${node.outcome ? `Outcome: ${escapeHtml(node.outcome)}<br>` : ''}
       Confidence: ${Math.round((node.confidence || 0) * 100)}%
     `;
   }
@@ -578,7 +578,7 @@ export class GraphModule {
 
       const outcomeSelect = getElementByIdOrNull<HTMLSelectElement>('detail-outcome-select');
       if (outcomeSelect) {
-        outcomeSelect.value = (node.outcome || 'PENDING').toUpperCase();
+        outcomeSelect.value = node.outcome ? node.outcome.toUpperCase() : '';
         outcomeSelect.disabled = Boolean(
           (node.kind && node.kind !== 'memory') || (node.state && node.state !== 'current')
         );
@@ -1038,7 +1038,7 @@ export class GraphModule {
       // Filter by outcome
       allNodes.forEach((node) => {
         const nodeData = this.graphData.nodes.find((n) => String(n.id) === String(node.id));
-        const nodeOutcome = (nodeData?.outcome || 'pending').toLowerCase();
+        const nodeOutcome = (nodeData?.outcome || '').toLowerCase();
         this.network.body.data.nodes.update({
           id: node.id,
           hidden: nodeOutcome !== outcome.toLowerCase(),

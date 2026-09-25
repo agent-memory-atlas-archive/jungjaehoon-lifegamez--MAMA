@@ -200,7 +200,9 @@ export class MemoryModule {
 
     const html = results
       .map((item, idx) => {
-        const rawOutcome = String(item.outcome || 'PENDING');
+        // Owner-agent memories (facts, lessons, work judgments) carry no outcome; only a
+        // recorded outcome is shown, never an implied PENDING.
+        const rawOutcome = item.outcome ? String(item.outcome) : '';
         const normalizedOutcome = rawOutcome.toLowerCase();
         const outcomeClass = ['success', 'failed', 'partial', 'pending'].includes(normalizedOutcome)
           ? normalizedOutcome
@@ -213,7 +215,7 @@ export class MemoryModule {
           </div>
           <div class="memory-card-decision">${escapeHtml(truncateText(item.decision, 150))}</div>
           <div class="memory-card-meta">
-            <span class="memory-card-outcome ${outcomeClass}">${escapeHtml(rawOutcome)}</span>
+            ${rawOutcome ? `<span class="memory-card-outcome ${outcomeClass}">${escapeHtml(rawOutcome)}</span>` : ''}
             <span>${formatRelativeTime(item.created_at)}</span>
           </div>
           <div class="memory-card-reasoning">${escapeHtml(item.reasoning || 'No reasoning provided')}</div>
