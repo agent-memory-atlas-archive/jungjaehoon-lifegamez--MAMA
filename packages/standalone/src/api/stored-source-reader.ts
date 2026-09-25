@@ -12,6 +12,8 @@ import {
 
 type Access = ActionContext['access'];
 
+const MAX_BATCH_SOURCE_REFS = 500;
+
 export interface StoredSourceReaderOptions {
   adapter: DatabaseAdapter;
   ownerPrincipalId: () => string;
@@ -87,6 +89,39 @@ function pageChannels(
     return [requested];
   }
   return granted ?? undefined;
+}
+
+function readRefs(input: Record<string, unknown>): { refs: string[]; batched: boolean } {
+  if (input.observationRefs !== undefined) {
+    if (!Array.isArray(input.observationRefs)) {
+      throw new Error('source.read observationRefs must be an array');
+    }
+    if (input.observationRefs.length < 1 || input.observationRefs.length > MAX_BATCH_SOURCE_REFS) {
+      throw new Error(
+        `source.read observationRefs must contain 1 to ${MAX_BATCH_SOURCE_REFS} handles`
+      );
+    }
+    if (input.observationRefs.some((value) => typeof value !== 'string' || value.trim() === '')) {
+      throw new Error('source.read observationRefs must contain nonblank handles');
+    }
+    if (input.observationRef !== undefined) {
+      throw new Error('source.read accepts observationRef or observationRefs, not both');
+    }
+    return { refs: input.observationRefs as string[], batched: true };
+  }
+
+  const ref = input.observationRef;
+  if (typeof ref !== 'string' || ref.trim() === '') {
+    throw new Error('source.read stored view requires observationRef');
+  }
+  return { refs: [ref], batched: false };
+}
+
+function readError(error: unknown): { code: string; message: string } {
+  return {
+    code: error instanceof Error && error.name !== 'Error' ? error.name : 'source_read_failed',
+    message: error instanceof Error ? error.message : String(error),
+  };
 }
 
 export function createStoredSourceReader(options: StoredSourceReaderOptions): StoredSourceReader {
@@ -182,87 +217,100 @@ export function createStoredSourceReader(options: StoredSourceReaderOptions): St
     },
     read(source, input, access, allowance) {
       const granted = allowedChannels(source, access, options.ownerPrincipalId());
-      const ref = input.observationRef;
-      if (typeof ref !== 'string' || ref.trim() === '') {
-        throw new Error('source.read stored view requires observationRef');
-      }
-      const channel = storedObservationChannel(adapter, ref, source, allowance?.maxSourceMs);
-      if (channel === undefined) {
-        if (access.principalId === options.ownerPrincipalId()) throw missing();
-        throw denied();
-      }
-      if (granted && (!channel || !granted.includes(channel))) throw denied();
+      const { refs, batched } = readRefs(input);
       const rawStore = options.rawStore?.();
-      const result = readObservationVersion(
-        adapter,
-        ref,
-        rawStore
-          ? {
-              readVersion: ({ connectorName, revisionSourceId, expectedContentHash }) => {
-                const found = rawStore.readVersion(
-                  connectorName,
-                  revisionSourceId,
-                  expectedContentHash
-                );
-                if (found.status === 'available') {
-                  if (found.body === undefined || found.contentHash === undefined) {
-                    throw new Error('Raw version reader omitted its available body or hash');
+
+      const readOne = (ref: string): Record<string, unknown> => {
+        const channel = storedObservationChannel(adapter, ref, source, allowance?.maxSourceMs);
+        if (channel === undefined) {
+          if (access.principalId === options.ownerPrincipalId()) throw missing();
+          throw denied();
+        }
+        if (granted && (!channel || !granted.includes(channel))) throw denied();
+        const result = readObservationVersion(
+          adapter,
+          ref,
+          rawStore
+            ? {
+                readVersion: ({ connectorName, revisionSourceId, expectedContentHash }) => {
+                  const found = rawStore.readVersion(
+                    connectorName,
+                    revisionSourceId,
+                    expectedContentHash
+                  );
+                  if (found.status === 'available') {
+                    if (found.body === undefined || found.contentHash === undefined) {
+                      throw new Error('Raw version reader omitted its available body or hash');
+                    }
+                    return {
+                      status: 'available' as const,
+                      body: found.body,
+                      contentHash: found.contentHash,
+                    };
                   }
-                  return {
-                    status: 'available' as const,
-                    body: found.body,
-                    contentHash: found.contentHash,
-                  };
+                  if (found.reason === undefined) {
+                    throw new Error('Raw version reader omitted its unavailable reason');
+                  }
+                  return { status: 'version_unavailable' as const, reason: found.reason };
+                },
+              }
+            : undefined,
+          allowance?.maxSourceMs === undefined ? undefined : { maxSourceMs: allowance.maxSourceMs }
+        );
+        if (result.status !== 'available') {
+          throw new Error(result.status === 'not_found' ? 'observation_not_found' : result.reason);
+        }
+        const offset = input.content_offset === undefined ? 0 : Number(input.content_offset);
+        const limit = input.content_limit === undefined ? 4_000 : Number(input.content_limit);
+        if (
+          !Number.isSafeInteger(offset) ||
+          offset < 0 ||
+          !Number.isSafeInteger(limit) ||
+          limit < 1 ||
+          limit > 4_000
+        ) {
+          throw new Error('content_offset/content_limit must be bounded integers');
+        }
+        const chars = [...result.body];
+        const content = chars.slice(offset, offset + limit).join('');
+        const observation = result.observation;
+        return {
+          source,
+          mode: 'stored',
+          observationRef: observation.observationId,
+          sourceId: observation.sourceId,
+          sourceAt: observation.sourceAt,
+          observedAt: observation.observedAt,
+          channel: observation.channel,
+          author: observation.author,
+          metadata: observation.metadata,
+          content,
+          contentHash: observation.contentHash,
+          complete: offset + limit >= chars.length,
+          nextRead:
+            offset + limit < chars.length
+              ? {
+                  source,
+                  view: 'stored',
+                  observationRef: ref,
+                  content_offset: offset + limit,
+                  content_limit: limit,
                 }
-                if (found.reason === undefined) {
-                  throw new Error('Raw version reader omitted its unavailable reason');
-                }
-                return { status: 'version_unavailable' as const, reason: found.reason };
-              },
-            }
-          : undefined,
-        allowance?.maxSourceMs === undefined ? undefined : { maxSourceMs: allowance.maxSourceMs }
-      );
-      if (result.status !== 'available') {
-        throw new Error(result.status === 'not_found' ? 'observation_not_found' : result.reason);
-      }
-      const offset = input.content_offset === undefined ? 0 : Number(input.content_offset);
-      const limit = input.content_limit === undefined ? 4_000 : Number(input.content_limit);
-      if (
-        !Number.isSafeInteger(offset) ||
-        offset < 0 ||
-        !Number.isSafeInteger(limit) ||
-        limit < 1 ||
-        limit > 4_000
-      ) {
-        throw new Error('content_offset/content_limit must be bounded integers');
-      }
-      const chars = [...result.body];
-      const content = chars.slice(offset, offset + limit).join('');
-      const observation = result.observation;
+              : null,
+        };
+      };
+
+      if (!batched) return readOne(refs[0]!);
       return {
         source,
         mode: 'stored',
-        observationRef: observation.observationId,
-        sourceId: observation.sourceId,
-        sourceAt: observation.sourceAt,
-        observedAt: observation.observedAt,
-        channel: observation.channel,
-        author: observation.author,
-        metadata: observation.metadata,
-        content,
-        contentHash: observation.contentHash,
-        complete: offset + limit >= chars.length,
-        nextRead:
-          offset + limit < chars.length
-            ? {
-                source,
-                view: 'stored',
-                observationRef: ref,
-                content_offset: offset + limit,
-                content_limit: limit,
-              }
-            : null,
+        results: refs.map((ref) => {
+          try {
+            return { observationRef: ref, status: 'completed', data: readOne(ref) };
+          } catch (error) {
+            return { observationRef: ref, status: 'failed', error: readError(error) };
+          }
+        }),
       };
     },
   };

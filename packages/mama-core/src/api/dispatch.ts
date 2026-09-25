@@ -474,6 +474,14 @@ export function validateInput(
   ) {
     return `${path} must carry at least ${schema.minItems} item(s).`;
   }
+  if (
+    schema.type === 'array' &&
+    Array.isArray(value) &&
+    schema.maxItems !== undefined &&
+    value.length > schema.maxItems
+  ) {
+    return `${path} must carry at most ${schema.maxItems} item(s).`;
+  }
   if (schema.type === 'array' && Array.isArray(value) && schema.items !== undefined) {
     for (let i = 0; i < value.length; i += 1) {
       const nested = validateInput(schema.items, value[i], `${path}[${i}]`);

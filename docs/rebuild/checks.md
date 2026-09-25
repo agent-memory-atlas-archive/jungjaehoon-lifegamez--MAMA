@@ -237,3 +237,19 @@ The implementation writes raw/index data during import only. Replay is the owner
    ```
 
    A nonzero exit means at least one count or invariant differs. Finally send the real owner Telegram C1/C2 questions, retain the native receipt/daemon log/DB read-back, restart the daemon, and ask both questions again; those live owner checks are not claimed by the automated script.
+
+## September replay run log
+
+- 2026-09-25 run 1 stopped at the first accept (feeder compared a mailbox row number with the stimulus
+  id; fixed in bef473b37). Run 2 stopped in window 2 because the feeder's 60-second settle deadline
+  killed a healthy turn (fixed in 74c1e49f2). The interrupted delivery (mailbox row 17) was marked
+  uncertain; its model run made only reads (source.read 18, work.list 2, memory.search 2, graph.query 2,
+  no writes), so the row was returned to pending and its native delivery record removed for
+  re-delivery (testbed, supervisor, recorded here).
+
+## Replay delta batch reads and native bridge call cap — 2026-09-25
+
+- Result: `source.read` now accepts one `observationRef` or up to 500 `observationRefs`; each batch item keeps bounded content, replay ceiling, grant checks, and a per-ref error.
+- Result: the host bridge no longer counts calls or applies the emergency cap; the identical-call signature guard and configured turn timeout remain.
+- Evidence: full root suite passed — core 116 files/838 tests, standalone 47/119, MCP 13 files with 121 passed/14 skipped, plugin 11 files/165 tests; typecheck, lint, and format check passed.
+- Still open: the stopped replay and live owner/provider turn were not rerun here; no `~/.mama`, `~/.claude`, or `~/.kagemusha` state was written.

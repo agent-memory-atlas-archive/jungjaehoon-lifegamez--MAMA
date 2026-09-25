@@ -98,9 +98,29 @@ const sourceSchema = {
   },
 };
 
+const observationRefsSchema: ActionSchemaObject = {
+  type: 'array',
+  minItems: 1,
+  maxItems: 500,
+  description: 'Several exact observation handles from one source delta, up to 500 refs.',
+  items: {
+    type: 'string',
+    pattern: '\\S',
+    description: 'Exact stored observation handle from the source delta, e.g. "obs_123".',
+  },
+};
+
 const sourceReadSchema = {
   ...sourceSchema,
-  required: ['source', 'observationRef'] as const,
+  required: ['source'] as const,
+  properties: {
+    ...sourceSchema.properties,
+    observationRefs: observationRefsSchema,
+  },
+  oneOf: [
+    { type: 'object' as const, required: ['observationRef'] as const },
+    { type: 'object' as const, required: ['observationRefs'] as const },
+  ],
 };
 
 export function sourceActionRegistrations(ports: SourcePorts): ActionRegistration[] {
@@ -137,12 +157,19 @@ export function sourceActionRegistrations(ports: SourcePorts): ActionRegistratio
         name: 'source.read',
         readsConnector: { fromInput: 'source' },
         summary:
-          'Read a bounded slice of one preserved source observation by citation reference. Continue with nextRead until complete.',
+          'Read a bounded slice using one observationRef, or read up to 500 observationRefs from one source delta in one call. Batch results contain one per-ref result or error; continue with each nextRead until complete.',
         inputSchema: sourceReadSchema,
         examples: [
           {
             title: 'Read cited source evidence',
             input: { source: 'connector', observationRef: 'observation-reference' },
+          },
+          {
+            title: 'Read source-delta evidence in one batch',
+            input: {
+              source: 'connector',
+              observationRefs: ['observation-reference-1', 'observation-reference-2'],
+            },
           },
         ],
       },

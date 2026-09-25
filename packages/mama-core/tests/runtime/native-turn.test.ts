@@ -60,11 +60,11 @@ function toolCall(index: number, input: Record<string, unknown>): HostToolCall {
 }
 
 describe('native host-tool loop signatures', () => {
-  it('allows twenty consecutive source reads when each input is different', async () => {
+  it('allows more than fifty host calls when each input is different', async () => {
     const prompt = vi.fn(async (_content, _callbacks, options) => {
       const bridge = options?.hostToolBridge;
       expect(bridge).toBeDefined();
-      for (let index = 0; index < 20; index += 1) {
+      for (let index = 0; index < 60; index += 1) {
         const result = await bridge!.execute(toolCall(index, { limit: 1, offset: index }));
         expect(result.abort).not.toBe(true);
       }

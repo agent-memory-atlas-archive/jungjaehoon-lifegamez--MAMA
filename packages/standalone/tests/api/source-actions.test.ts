@@ -12,7 +12,7 @@ const access: ActionContext['access'] = {
 };
 
 describe('minimal source actions', () => {
-  it('registers only source.search and source.read with bounded read fields', () => {
+  it('registers source.read with single and batched bounded read fields', () => {
     const catalog = createCatalog(sourceActionRegistrations({}));
     expect(
       catalog
@@ -26,10 +26,58 @@ describe('minimal source actions', () => {
       maximum: 4_000,
       description: 'Maximum characters returned by a read; at most 4000.',
     });
-    expect(catalog.describe('source.read').inputSchema.required).toEqual([
-      'source',
-      'observationRef',
+    const readSchema = catalog.describe('source.read').inputSchema;
+    expect(readSchema.required).toEqual(['source']);
+    expect(readSchema.properties?.observationRefs).toMatchObject({
+      type: 'array',
+      minItems: 1,
+      maxItems: 500,
+    });
+    expect(readSchema.oneOf).toEqual([
+      expect.objectContaining({ required: ['observationRef'] }),
+      expect.objectContaining({ required: ['observationRefs'] }),
     ]);
+  });
+
+  it('dispatches a batch of source observation handles and rejects more than 500', async () => {
+    const stored = {
+      search: vi.fn().mockReturnValue({ hits: [], next_cursor: null }),
+      read: vi.fn().mockReturnValue({ results: [] }),
+      has: vi.fn().mockReturnValue(true),
+      isOwner: vi.fn().mockReturnValue(true),
+    };
+    const dispatch = createDispatcher(createCatalog(sourceActionRegistrations({ stored })));
+    const refs = ['observation-a', 'observation-b'];
+
+    const batch = await dispatch(
+      {
+        action: 'source.read',
+        input: { source: 'connector-test', observationRefs: refs },
+      },
+      { access }
+    );
+    expect(batch).toMatchObject({ status: 'completed', data: { results: [] } });
+    expect(stored.read).toHaveBeenCalledWith(
+      'connector-test',
+      { source: 'connector-test', observationRefs: refs },
+      access
+    );
+
+    const tooMany = await dispatch(
+      {
+        action: 'source.read',
+        input: {
+          source: 'connector-test',
+          observationRefs: Array.from({ length: 501 }, (_, index) => `observation-${index}`),
+        },
+      },
+      { access }
+    );
+    expect(tooMany).toMatchObject({
+      status: 'failed',
+      error: { kind: 'invalid_input', code: 'invalid_input' },
+    });
+    expect(stored.read).toHaveBeenCalledTimes(1);
   });
 
   it('describes every source and work input field, including nested fields', () => {

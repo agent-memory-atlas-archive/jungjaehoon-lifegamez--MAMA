@@ -25,6 +25,8 @@ export interface ActionSchemaObject {
   maxLength?: number;
   /** Fewest elements an array value may carry. */
   minItems?: number;
+  /** Most elements an array value may carry. */
+  maxItems?: number;
   /** Anchored regular expression a string value must match. */
   pattern?: string;
 }

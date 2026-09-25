@@ -153,6 +153,7 @@ describe('one stimulus intake and delivery', () => {
     const prompts = runTurn.mock.calls.map((call) => call[0][0].text);
     expect(prompts.some((text) => text.includes('owner request'))).toBe(true);
     expect(prompts.some((text) => text.includes('source-1'))).toBe(true);
+    expect(prompts.some((text) => text.includes('observationRefs'))).toBe(true);
     expect(runTurn.mock.calls.every((call) => call[1]?.sessionKey === 'owner:runtime')).toBe(true);
   });
 

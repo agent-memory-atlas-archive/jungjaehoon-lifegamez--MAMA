@@ -19,6 +19,9 @@ describe('owner standing prompt', () => {
       'For every source delta, decide whether it is nothing to record (acknowledgements or chatter) or a work item moved (requested, submitted, received, reviewed, feedback given, fixed, on hold, or delivered).'
     );
     expect(prompt).toContain(
+      "source.read can read a delta's refs in one batched call with observationRefs"
+    );
+    expect(prompt).toContain(
       'When a work item moved, record it now in the work ledger: call work.list first, then work.revise for the existing item or work.create for a new item.'
     );
     expect(prompt).toContain(

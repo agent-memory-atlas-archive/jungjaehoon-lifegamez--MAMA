@@ -185,6 +185,11 @@ function boundedStimulus(row: MailboxRow): string {
     `preview: ${JSON.stringify(row.preview)}`,
     `refs: ${JSON.stringify(row.refs)}`,
   ];
+  if (row.kind === 'source_delta') {
+    lines.push(
+      'source_read: read these delta refs in one batched source.read call with observationRefs; content remains bounded per ref.'
+    );
+  }
   if (row.payload !== undefined) lines.push(`payload: ${JSON.stringify(row.payload)}`);
   return lines.join('\n');
 }

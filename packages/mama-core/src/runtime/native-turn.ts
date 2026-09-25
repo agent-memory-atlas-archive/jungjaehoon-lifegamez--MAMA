@@ -263,11 +263,6 @@ export interface NativeSessionHost<
   }): void;
 }
 
-/** Always above maxTurns: the ceiling that catches a runaway bridge, not a policy. */
-function emergencyMaxCalls(maxTurns: number): number {
-  return Math.max(maxTurns + 10, 50);
-}
-
 async function drainBackgroundTasks(tasks: Promise<unknown>[]): Promise<void> {
   for (let index = 0; index < tasks.length; index += 1) {
     await tasks[index];
@@ -587,8 +582,7 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
   }
 
   /**
-   * One dynamic-tool bridge. Every guard it applies - the emergency call budget and the
-   * same-signature loop guard - is private to the bridge, so a parent and its children
+   * One dynamic-tool bridge. The same-signature loop guard is private to the bridge, so a parent and its children
    * never share a counter. `recordExchange` is the ONLY way a bridge writes to a
    * conversation: a child passes none and therefore cannot touch the parent's history.
    */
@@ -597,14 +591,12 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
     runScope: RunScope;
     executionContext: () => TToolContext | null;
     stopAfterSuccessfulTools: readonly string[];
-    emergencyMaxCalls: number;
     maxConsecutiveSameTool: number;
     recordExchange?: {
       assistant: (toolUse: ToolUseBlock) => void;
       result: (toolResult: InternalToolResultBlock) => void;
     };
   }): HostToolBridge {
-    let toolCallCount = 0;
     let consecutiveToolCalls = 0;
     let lastToolSignature = '';
     return {
@@ -612,14 +604,6 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
       execute: async (call: HostToolCall) => {
         const callSignal = call.signal ?? new AbortController().signal;
         callSignal.throwIfAborted();
-        if (toolCallCount >= params.emergencyMaxCalls) {
-          return {
-            content: `Native tool call budget exceeded emergency maximum turns (${params.emergencyMaxCalls})`,
-            isError: true,
-            abort: true,
-          };
-        }
-
         const toolSignature = canonicalizeJSON({ name: call.name, input: call.input });
         const nextConsecutiveCount =
           toolSignature === lastToolSignature ? consecutiveToolCalls + 1 : 1;
@@ -631,7 +615,6 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
           };
         }
 
-        toolCallCount += 1;
         consecutiveToolCalls = nextConsecutiveCount;
         lastToolSignature = toolSignature;
         const toolUse: ToolUseBlock = {
@@ -799,7 +782,6 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
         runScope,
         executionContext: () => childContext,
         stopAfterSuccessfulTools: [],
-        emergencyMaxCalls: emergencyMaxCalls(host.maxTurns),
         maxConsecutiveSameTool: MAX_CONSECUTIVE_SAME_HOST_TOOL,
       });
     } catch (error) {
@@ -959,8 +941,6 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
 
     // Infinite loop prevention
     const MAX_CONSECUTIVE_SAME_TOOL = MAX_CONSECUTIVE_SAME_HOST_TOOL;
-    const EMERGENCY_MAX_TURNS = emergencyMaxCalls(host.maxTurns);
-
     const policy = host.turnPolicy(request);
     if (policy.restrictedReadRoots && host.backend !== 'codex') {
       throw new Error('Native restricted read roots require the Codex backend');
@@ -1090,7 +1070,6 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
               runScope,
               executionContext: () => toolExecutionContext,
               stopAfterSuccessfulTools: request?.stopAfterSuccessfulTools ?? [],
-              emergencyMaxCalls: EMERGENCY_MAX_TURNS,
               maxConsecutiveSameTool: MAX_CONSECUTIVE_SAME_TOOL,
               // A durable runtime does not return completed host exchanges, so record
               // them here: it reports the paired custom-tool exchange from its event
