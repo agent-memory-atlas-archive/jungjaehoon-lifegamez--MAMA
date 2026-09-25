@@ -17,7 +17,6 @@ import type { NativeSessionHandle } from '@jungjaehoon/mama-core/runtime/runtime
 import type { NativeModelRunPort } from '@jungjaehoon/mama-core/runtime/native-turn';
 import { createStoredSourceReader } from '../api/stored-source-reader.js';
 import { createPersistentReportStore } from '../api/report-persistence.js';
-import type { WikiPage } from '../wiki/types.js';
 import { ObsidianWriter } from '../wiki/obsidian-writer.js';
 import { RawStore } from '../storage/source-archive.js';
 import type { RuntimeBackend, RuntimeEffort, RuntimeSandbox } from './config.js';
@@ -180,12 +179,9 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
                 writer.writePagesAtomically(pages);
                 return;
               }
-              const publishedPages: WikiPage[] = [];
-              for (const page of pages) {
-                const path = writer.writePage(page);
-                publishedPages.push({ ...page, path });
-              }
-              writer.updateIndexIncrementally(publishedPages);
+              for (const page of pages) writer.writePage(page);
+              // No host-written index: the owner agent keeps the table of contents (Home.md),
+              // as in the archive v5 layout; appended "Published" blocks only grew the page.
               writer.appendLog('compile', `Published ${pages.length} pages`);
             },
           };

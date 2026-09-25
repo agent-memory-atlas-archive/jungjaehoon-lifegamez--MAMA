@@ -77,6 +77,7 @@ describe('one owner native session', () => {
         'manage.wiki.publish',
         'manage.wiki.read',
         'memory.checkpoint.list',
+        'memory.read:provenance',
         'memory.save',
         'memory.search',
         'report.publish',

@@ -14,6 +14,7 @@ import { openCoreDatabase } from '../../src/runtime/core-db.js';
 import {
   createStimulusDelivery,
   createStimulusIntake,
+  renderWindowQueue,
   sourceDeltaStimulusId,
 } from '../../src/runtime/stimulus-delivery.js';
 
@@ -55,6 +56,54 @@ async function boot(model: NativeSessionHandle['runTurn']) {
 }
 
 describe('one stimulus intake and delivery', () => {
+  it('renders the queue sections with complete KST source lines', () => {
+    const text = renderWindowQueue({
+      window: { startMs: 1, endMs: 2 },
+      lines: [],
+      sections: {
+        a: [
+          {
+            candidate: {
+              candidate: {
+                key: 'work:item-1',
+                kind: 'work',
+                id: 'item-1',
+                title: 'item-1',
+                facts: {},
+                hints: [],
+              },
+              confidence: 0.91,
+              source: [],
+            },
+            relevance: 0.9,
+            lines: [
+              {
+                connector: 'source',
+                channelName: 'channel',
+                author: 'actor',
+                kstTime: '09-02 09:00',
+                sourceAtMs: 1,
+                observationRef: 'observation-1',
+                text: 'full line A',
+              },
+            ],
+          },
+        ],
+        b: [],
+        c: [],
+        suspectedDuplicates: [],
+        unresolved: [],
+      },
+    });
+
+    expect(text).toContain('## A.');
+    expect(text).toContain('## B.');
+    expect(text).toContain('## C.');
+    expect(text).toContain('## Suspected duplicates');
+    expect(text).toContain('## Unresolved');
+    expect(text).toContain('[09-02 09:00] channel · actor · observation-1: full line A');
+  });
+
   it('hashes a source delta identity from its coalesce key and ref set', () => {
     const base = {
       kind: 'source_delta' as const,
@@ -154,10 +203,49 @@ describe('one stimulus intake and delivery', () => {
             commitmentId: 'commitment-1',
             title: 'Current item',
             stage: 'active',
+            status: 'pending',
             assignee: 'worker',
             lastEventTime: '2026-01-01T00:00:00.000Z',
           },
         ],
+        queue: {
+          window: { startMs: 1, endMs: 2 },
+          lines: [],
+          sections: {
+            a: [
+              {
+                candidate: {
+                  candidate: {
+                    key: 'work:commitment-1',
+                    kind: 'work',
+                    id: 'commitment-1',
+                    title: 'Current item',
+                    facts: {},
+                    hints: [],
+                  },
+                  confidence: 0.9,
+                  source: [],
+                },
+                relevance: 0.9,
+                lines: [
+                  {
+                    connector: 'collector',
+                    channelName: 'client room',
+                    author: 'sender-a',
+                    kstTime: '01-01 09:00',
+                    sourceAtMs: 1,
+                    observationRef: 'obs-1',
+                    text: 'bounded message text',
+                  },
+                ],
+              },
+            ],
+            b: [],
+            c: [],
+            suspectedDuplicates: [],
+            unresolved: [],
+          },
+        },
         endInstructions: 'update the board, wiki, and lessons',
       },
     });
@@ -179,6 +267,12 @@ describe('one stimulus intake and delivery', () => {
     expect(
       prompts.some((text) =>
         text.includes('collector:client room · sender-a · obs-1: bounded message text')
+      )
+    ).toBe(false);
+    expect(prompts.some((text) => text.includes('## A. Matched work'))).toBe(true);
+    expect(
+      prompts.some((text) =>
+        text.includes('[01-01 09:00] client room · sender-a · obs-1: bounded message text')
       )
     ).toBe(true);
     expect(prompts.some((text) => text.includes('commitment-1 | Current item | active'))).toBe(

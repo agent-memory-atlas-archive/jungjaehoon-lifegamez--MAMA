@@ -6,6 +6,7 @@ import type {
   SourceObservationRef,
 } from '../connectors/framework/polling-scheduler.js';
 import Database from '../sqlite.js';
+import type { WindowQueue } from './window-queue.js';
 
 export const KST_OFFSET_MS = 9 * 60 * 60 * 1_000;
 export const REPLAY_WINDOW_SIZE_MS = 24 * 60 * 60 * 1_000;
@@ -60,12 +61,14 @@ export interface ReplayLedgerDigestItem {
   readonly commitmentId: string;
   readonly title: string | null;
   readonly stage: string | null;
+  readonly status: string | null;
   readonly assignee: string | null;
   readonly lastEventTime: string | null;
 }
 
 export interface ReplayWindowDeltaOptions {
   ledgerDigest?: readonly ReplayLedgerDigestItem[];
+  queue?: WindowQueue;
 }
 
 function assertEpochMs(value: number, field: string): void {
@@ -377,7 +380,7 @@ export class ReplaySourceCatalog {
     const occurredAt = first === undefined ? startMs : ordered[ordered.length - 1]!.sourceAtMs;
     const ledgerDigest = options.ledgerDigest === undefined ? undefined : [...options.ledgerDigest];
     const endInstructions =
-      "Record the day's work changes first, then update all four board slots (briefing, action_required, decisions, pipeline), write the wiki page of every case whose work changed in this window: one page per case, read its current page first and publish the whole page again as the case's running history (current state, then dated events with observation ids), creating it when none exists; save owner corrections or learned patterns as lesson memory with derived_from evidence; and before finishing, compare the work you created or revised in this window with each other and with current work: when two items are the same deliverable, keep one and revise the other to status cancelled with a summary naming the kept commitmentId.";
+      "Plan from the window queue before writing: group each work item and its full source lines for a native subagent, ask the subagent for a proposal with status, stage, summary, feedback, roles, evidence and wiki text, then verify every proposal against the source and write the work records yourself; then the wiki (read Home.md first, update the page each change belongs to, create a page only when none fits and list it in Home.md, and write this day's journal daily/YYYY-MM-DD.md), the board slots, and lessons. A Codex subagent is dispatched with the direct spawn_agent tool call, never through exec; a child proposal is not a write receipt. After the writes, compare changed work with current work and settle any duplicate only after reading the evidence.";
     const delta = {
       kind: 'source_delta' as const,
       collector: 'replay',
@@ -398,6 +401,7 @@ export class ReplaySourceCatalog {
         windowStartMs: startMs,
         windowEndMs: endMs,
         ...(ledgerDigest === undefined ? {} : { ledgerDigest }),
+        ...(options.queue === undefined ? {} : { queue: options.queue }),
         endInstructions,
       },
     } satisfies SourceDelta;

@@ -28,6 +28,10 @@ function validConfig(): W1Config {
       owner_user_ids: ['owner-test'],
       polling: false,
     },
+    jev: {
+      keyFile: '/tmp/jev-key',
+      vocabFile: '/tmp/vocab.json',
+    },
   };
 }
 
@@ -107,6 +111,19 @@ describe('W1 runtime configuration', () => {
       expect(loadConfig({ path, home: root })).toMatchObject({
         database: { path: join(root, '.data/memory.db') },
         logging: { file: join(root, '.data/mama.log') },
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('supplies the owner-configured Jev key and vocabulary paths without reading either file', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mama-config-jev-'));
+    try {
+      const parsed = parseConfig({ ...validConfig(), jev: undefined }, { home: root });
+      expect(parsed.jev).toEqual({
+        keyFile: join(root, '.mama/jev-key'),
+        vocabFile: join(root, '.mama/backfill/vocab.json'),
       });
     } finally {
       rmSync(root, { recursive: true, force: true });

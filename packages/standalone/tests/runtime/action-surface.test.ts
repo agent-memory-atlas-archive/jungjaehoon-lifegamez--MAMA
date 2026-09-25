@@ -17,6 +17,7 @@ describe('W1 action surface', () => {
       'manage.wiki.publish',
       'manage.wiki.read',
       'memory.checkpoint.list',
+      'memory.read:provenance',
       'memory.save',
       'memory.search',
       'report.publish',

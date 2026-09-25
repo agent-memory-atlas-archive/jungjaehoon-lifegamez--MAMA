@@ -34,12 +34,18 @@ export interface W1WikiConfig {
   wikiDir?: string;
 }
 
+export interface W1JevConfig {
+  keyFile: string;
+  vocabFile: string;
+}
+
 export interface W1Config {
   version: 1;
   agent: W1AgentConfig;
   database: { path: string };
   logging: { level: 'debug' | 'info' | 'warn' | 'error'; file: string };
   telegram: W1TelegramConfig;
+  jev: W1JevConfig;
   wiki?: W1WikiConfig;
 }
 
@@ -64,7 +70,7 @@ export class ConfigError extends Error {
   }
 }
 
-const CONFIG_KEYS = ['version', 'agent', 'database', 'logging', 'telegram', 'wiki'] as const;
+const CONFIG_KEYS = ['version', 'agent', 'database', 'logging', 'telegram', 'jev', 'wiki'] as const;
 const AGENT_KEYS = [
   'backend',
   'model',
@@ -239,6 +245,18 @@ function parseConfigValue(
     throw new ConfigError('telegram.polling must be boolean');
   }
   const allowedChats = stringList(telegramRaw.allowed_chats, 'telegram.allowed_chats');
+  const jevRaw = raw.jev === undefined ? {} : object(raw.jev, 'jev');
+  collectIgnoredKeys(jevRaw, ['keyFile', 'vocabFile'], 'jev', state);
+  const jev: W1JevConfig = {
+    keyFile: configPath(
+      text(jevRaw.keyFile ?? join(home, '.mama', 'jev-key'), 'jev.keyFile'),
+      home
+    ),
+    vocabFile: configPath(
+      text(jevRaw.vocabFile ?? join(home, '.mama', 'backfill', 'vocab.json'), 'jev.vocabFile'),
+      home
+    ),
+  };
   const wikiRaw = raw.wiki === undefined ? undefined : object(raw.wiki, 'wiki');
   if (wikiRaw !== undefined)
     collectIgnoredKeys(wikiRaw, ['enabled', 'vaultPath', 'wikiDir'], 'wiki', state);
@@ -279,6 +297,7 @@ function parseConfigValue(
         // only an explicit `false` hands inbound polling to another instance.
         polling: (telegramRaw.polling ?? true) as boolean,
       },
+      jev,
       ...(wiki === undefined ? {} : { wiki }),
     },
     ignored: Object.freeze(state.ignored),

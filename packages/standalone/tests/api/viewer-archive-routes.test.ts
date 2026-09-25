@@ -22,6 +22,7 @@ const ownerAccess: JudgmentAccess = {
     'work.list',
     'work.show',
     'source.read',
+    'memory.read:provenance',
   ],
 };
 
@@ -42,33 +43,33 @@ function graphPage(overrides: Partial<WorkGraphPage> = {}): WorkGraphPage {
 
 function workPage() {
   return {
-    items: [
+    view: 'items',
+    tasks: [
       {
+        id: 7,
         commitmentId: 'commitment-1',
-        rowId: 7,
         revision: 2,
-        latestJudgmentRef: { kind: 'memory', id: 'memory-2' },
-        values: {
-          title: 'work title',
-          status: 'in_progress',
-          priority: 'high',
-          assignee: 'worker',
-          deadline: '2026-09-30',
-          dueAt: '2026-09-30T09:00:00+09:00',
-          deadlineOffsetMinutes: 540,
-          latestEvent: 'review requested',
-          sourceChannel: 'connector',
-          autoCreated: true,
-          confirmed: false,
-        },
-        withdrawn: false,
-        basis: [{ kind: 'memory', id: 'memory-1' }],
+        title: 'work title',
+        status: 'in_progress',
+        priority: 'high',
+        assignee: 'worker',
+        deadline: '2026-09-30',
+        due_at: '2026-09-30T00:00:00.000Z',
+        deadline_offset_minutes: 540,
+        latest_event: 'review requested',
+        sourceChannel: 'connector',
+        auto_created: true,
+        confirmed: false,
+        temporal_state: 'exact_upcoming',
         createdAt: 1,
         updatedAt: 2,
       },
     ],
+    total: 1,
+    returned: 1,
     nextCursor: null,
-    coverage: { returned: 1, total: 1, complete: true, reasons: [] },
+    observedAt: new Date(2).toISOString(),
+    readVersion: 'read-version',
   };
 }
 
@@ -224,11 +225,84 @@ describe('archive-compatible viewer routes', () => {
     );
   });
 
+  it('shows the source text of an observation and the cited evidence of a memory in graph detail', async () => {
+    const memoryNode = {
+      ref: { kind: 'memory' as const, id: 'memory-1' },
+      resolvedRef: { kind: 'memory' as const, id: 'memory-1' },
+      label: 'record',
+      data: {
+        kind: 'memory' as const,
+        recordKind: 'judgment',
+        topic: 'work/item',
+        summary: 'revision summary',
+        recordedAt: 1,
+        appliesFrom: 1,
+        appliesUntil: null,
+        stateAtSnapshot: 'current',
+        replaces: [],
+        payload: { reasoning: 'why it changed' },
+        work: null,
+        content: { complete: true, nextRead: null },
+      },
+    };
+    const observationNode = {
+      ref: { kind: 'observation' as const, id: 'obs-1' },
+      resolvedRef: { kind: 'observation' as const, id: 'obs-1' },
+      label: 'connector:source-1',
+      data: {
+        kind: 'observation' as const,
+        connector: 'connector',
+        sourceId: 'source-1',
+        sourceAt: 1_000,
+        observedAt: 2_000,
+        contentHash: null,
+      },
+    };
+    await withServer(
+      async (call) => {
+        if (call.action === 'graph.query') {
+          const seed = (call.input as { seeds: Array<{ id: string }> }).seeds[0]!.id;
+          return completed(
+            graphPage({ nodes: [seed === 'obs-1' ? observationNode : memoryNode] } as never)
+          );
+        }
+        if (call.action === 'source.read') {
+          expect(call.input).toMatchObject({ source: 'connector', observationRef: 'obs-1' });
+          return completed({
+            channel: 'room',
+            author: 'sender',
+            sourceAt: 1_000,
+            content: 'the message text',
+          });
+        }
+        if (call.action === 'memory.read:provenance') {
+          expect(call.input).toMatchObject({ memory_id: 'memory-1' });
+          return completed({
+            events: [{ channel: 'room', observedAt: 'then', excerpt: 'cited text' }],
+          });
+        }
+        throw new Error(`unexpected ${call.action}`);
+      },
+      async (server) => {
+        const observation = JSON.parse(
+          (await makeRequest(server, '/graph/detail?id=observation:obs-1')).body
+        );
+        expect(observation.node.decision).toContain('the message text');
+        expect(observation.node.decision).toContain('sender');
+        const memory = JSON.parse(
+          (await makeRequest(server, '/graph/detail?id=memory:memory-1')).body
+        );
+        expect(memory.node.reasoning).toContain('why it changed');
+        expect(memory.node.reasoning).toContain('cited text');
+      }
+    );
+  });
+
   it('maps work.list to the archive operator task response shape', async () => {
     await withServer(
       async (call) => {
         expect(call.action).toBe('work.list');
-        expect(call.input).toEqual({ history: 'all', limit: 50 });
+        expect(call.input).toEqual({ view: 'items', limit: 50 });
         return completed(workPage());
       },
       async (server) => {

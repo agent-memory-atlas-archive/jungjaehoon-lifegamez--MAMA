@@ -108,6 +108,138 @@ export function shapeTaskList(page: CommitmentPage): ViewerTaskList {
   };
 }
 
+function objectValue(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function scalarNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) ? value : null;
+}
+
+function compactText(value: unknown): string | null {
+  if (typeof value === 'string') return value;
+  const candidate = objectValue(value);
+  return typeof candidate.value === 'string' ? candidate.value : null;
+}
+
+function taskSummaryFromCompact(row: Record<string, unknown>): ViewerTaskSummary {
+  const commitmentId = row.commitmentId;
+  const rowId = row.id;
+  const revision = row.revision;
+  const updatedAt = row.updatedAt ?? row.updated_at;
+  if (
+    typeof commitmentId !== 'string' ||
+    !Number.isSafeInteger(rowId) ||
+    !Number.isSafeInteger(revision) ||
+    !Number.isSafeInteger(updatedAt)
+  ) {
+    throw new Error('work.list items returned an invalid compact work row');
+  }
+  return {
+    commitmentId,
+    rowId: rowId as number,
+    revision: revision as number,
+    title: compactText(row.title),
+    project: typeof row.project === 'string' ? row.project : null,
+    stage: typeof row.stage === 'string' ? row.stage : null,
+    assignee: typeof row.assignee === 'string' ? row.assignee : null,
+    lastEventTime:
+      typeof row.lastEventTime === 'string' || typeof row.lastEventTime === 'number'
+        ? row.lastEventTime
+        : null,
+    updatedAt: updatedAt as number,
+    withdrawn: row.withdrawn === true,
+  };
+}
+
+export function shapeWorkListItems(data: unknown): ViewerTaskList {
+  const result = objectValue(data);
+  if (result.view !== 'items' || !Array.isArray(result.tasks)) {
+    throw new Error('work.list did not return an items view');
+  }
+  const nextCursor = result.nextCursor;
+  const total = result.total;
+  if ((nextCursor !== null && typeof nextCursor !== 'string') || !Number.isSafeInteger(total)) {
+    throw new Error('work.list items returned an invalid page');
+  }
+  const tasks = result.tasks.map((row) => taskSummaryFromCompact(objectValue(row)));
+  return {
+    tasks,
+    nextCursor,
+    coverage: {
+      returned: tasks.length,
+      total: total as number,
+      complete: nextCursor === null,
+      reasons: nextCursor === null ? [] : ['more work follows this page'],
+    },
+  };
+}
+
+export function shapeWorkListDetail(
+  data: unknown,
+  reads: ReadonlyMap<string, RevisionGraphRead>
+): ViewerTaskDetail {
+  const result = objectValue(data);
+  if (result.view !== 'detail' || !Array.isArray(result.tasks)) {
+    throw new Error('work.list did not return a detail view');
+  }
+  if (result.tasks.length !== 1) {
+    throw new Error('work.list detail did not return exactly one task');
+  }
+  const row = objectValue(result.tasks[0]);
+  const summary = taskSummaryFromCompact(row);
+  const history = row.history;
+  if (!Array.isArray(history)) throw new Error('work.list detail did not return revision history');
+  const revisions = [...history]
+    .sort((left, right) => {
+      const a = objectValue(left);
+      const b = objectValue(right);
+      const aTime = Number(a.eventDatetime ?? a.createdAt);
+      const bTime = Number(b.eventDatetime ?? b.createdAt);
+      return aTime - bTime || Number(a.revision) - Number(b.revision);
+    })
+    .map((raw): ViewerRevision => {
+      const revision = objectValue(raw);
+      const rawRecordRef = objectValue(revision.recordRef);
+      if (typeof rawRecordRef.kind !== 'string' || typeof rawRecordRef.id !== 'string') {
+        throw new Error('work.list detail history returned an invalid record reference');
+      }
+      const recordRef = rawRecordRef as unknown as CommitmentRevision['recordRef'];
+      const read = reads.get(refKey(recordRef));
+      const eventDatetime = revision.eventDatetime;
+      const eventTime =
+        typeof eventDatetime === 'number' ? eventDatetime : Number(revision.createdAt);
+      return {
+        revision: Number(revision.revision),
+        operation: revision.operation as CommitmentRevision['operation'],
+        recordRef,
+        eventTime,
+        eventTimeSource: typeof eventDatetime === 'number' ? 'event' : 'recorded',
+        recordedAt: Number(revision.createdAt),
+        summary: recordText(read, 'summary'),
+        reasoning: recordText(read, 'reasoning'),
+        change: objectValue(revision.set) as CommitmentRevision['set'],
+        clear: Array.isArray(revision.clear)
+          ? (revision.clear as Array<keyof CommitmentRevision['set']>)
+          : [],
+        feedback: textField(objectValue(revision.set).feedback),
+        roles: arrayField(objectValue(revision.set).roles),
+        files: arrayField(objectValue(revision.set).files),
+        evidence: read?.evidence ?? [],
+      };
+    });
+  const createdAt = scalarNumber(row.createdAt) ?? revisions[0]?.eventTime ?? summary.updatedAt;
+  const updatedAt = scalarNumber(row.updatedAt) ?? revisions.at(-1)?.eventTime ?? summary.updatedAt;
+  return {
+    ...summary,
+    createdAt: createdAt ?? summary.updatedAt,
+    updatedAt: updatedAt ?? summary.updatedAt,
+    revisions,
+  };
+}
+
 function refKey(ref: { kind: string; id: string }): string {
   return `${ref.kind}:${ref.id}`;
 }
@@ -384,6 +516,99 @@ export function shapeOperatorTasks(
   return { tasks };
 }
 
+function archiveTaskFromCompact(row: Record<string, unknown>): ArchiveOperatorTask {
+  const id = row.id;
+  const commitmentId = row.commitmentId;
+  const revision = row.revision;
+  const updatedAt = row.updatedAt ?? row.updated_at;
+  if (
+    !Number.isSafeInteger(id) ||
+    typeof commitmentId !== 'string' ||
+    !Number.isSafeInteger(revision) ||
+    !Number.isSafeInteger(updatedAt)
+  ) {
+    throw new Error('work.list items returned an invalid operator row');
+  }
+  const status = row.status;
+  const priority = row.priority ?? 'normal';
+  if (!TASK_STATUSES.has(status as ArchiveOperatorTask['status'])) {
+    throw new Error('work.list items returned a status outside the contract');
+  }
+  if (!TASK_PRIORITIES.has(priority as ArchiveOperatorTask['priority'])) {
+    throw new Error('work.list items returned a priority outside the contract');
+  }
+  const text = (value: unknown): string | null => (typeof value === 'string' ? value : null);
+  const number = (value: unknown): number | null =>
+    typeof value === 'number' && Number.isSafeInteger(value) ? value : null;
+  const temporal = row.temporal_state;
+  const validTemporal = new Set<ArchiveOperatorTask['temporal_state']>([
+    'closed',
+    'exact_upcoming',
+    'exact_overdue',
+    'date_upcoming',
+    'date_due',
+    'date_overdue',
+    'unscheduled',
+  ]);
+  if (!validTemporal.has(temporal as ArchiveOperatorTask['temporal_state'])) {
+    throw new Error('work.list items returned an invalid temporal state');
+  }
+  return {
+    id: id as number,
+    commitment_id: commitmentId,
+    title: text(row.title) ?? '',
+    status: status as ArchiveOperatorTask['status'],
+    priority: priority as ArchiveOperatorTask['priority'],
+    assignee: text(row.assignee),
+    due_date: text(row.deadline),
+    due_at: text(row.due_at),
+    deadline_offset_minutes: number(row.deadline_offset_minutes),
+    revision: revision as number,
+    temporal_state: temporal as ArchiveOperatorTask['temporal_state'],
+    source_channel: text(row.sourceChannel),
+    latest_event: text(row.latest_event),
+    auto_created: row.auto_created === true,
+    confirmed: row.confirmed === true,
+    created_at: number(row.createdAt ?? row.created_at) ?? (updatedAt as number),
+    updated_at: updatedAt as number,
+  };
+}
+
+export function shapeOperatorTasksFromItems(
+  data: unknown,
+  options: { status?: string; sourceChannel?: string } = {}
+): {
+  tasks: ArchiveOperatorTask[];
+  nextCursor: string | null;
+  coverage?: ViewerTaskList['coverage'];
+} {
+  const result = objectValue(data);
+  if (result.view !== 'items' || !Array.isArray(result.tasks)) {
+    throw new Error('work.list did not return an items view');
+  }
+  const nextCursor = result.nextCursor;
+  if (nextCursor !== null && typeof nextCursor !== 'string') {
+    throw new Error('work.list items returned an invalid cursor');
+  }
+  let tasks = result.tasks.map((row) => archiveTaskFromCompact(objectValue(row)));
+  if (options.status !== undefined) tasks = tasks.filter((task) => task.status === options.status);
+  if (options.sourceChannel !== undefined) {
+    tasks = tasks.filter((task) => task.source_channel === options.sourceChannel);
+  }
+  const total = result.total;
+  if (!Number.isSafeInteger(total)) throw new Error('work.list items returned an invalid total');
+  return {
+    tasks,
+    nextCursor,
+    coverage: {
+      returned: tasks.length,
+      total: total as number,
+      complete: nextCursor === null,
+      reasons: nextCursor === null ? [] : ['more work follows this page'],
+    },
+  };
+}
+
 function graphRef(ref: { kind: string; id: string }): string {
   return `${ref.kind}:${ref.id}`;
 }
@@ -396,13 +621,22 @@ function preview(value: string): string {
 export function mapArchiveGraphNode(node: WorkGraphPage['nodes'][number]): ArchiveGraphNode {
   const data = node.data;
   const memory = data.kind === 'memory' ? data : null;
-  const summary = memory?.summary ?? node.label;
+  // An observation's label is its source id; show when and where instead (the text is read
+  // on demand by the detail view through source.read).
+  const observationLabel =
+    data.kind === 'observation'
+      ? `${new Date((data.sourceAt ?? data.observedAt) + 9 * 60 * 60 * 1_000)
+          .toISOString()
+          .slice(5, 16)
+          .replace('T', ' ')} KST · ${data.connector}`
+      : null;
+  const summary = memory?.summary ?? observationLabel ?? node.label;
   const payload = memory?.payload ?? null;
   return {
     id: graphRef(node.ref),
     kind: data.kind,
     state: memory?.stateAtSnapshot,
-    label: node.label,
+    label: observationLabel ?? node.label,
     topic: memory?.topic ?? data.kind,
     decision_preview: preview(summary),
     decision: summary,

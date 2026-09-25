@@ -84,6 +84,21 @@ not by restriction: child model runs show reads and proposals only, all writes c
 model run (`tool_traces.model_run_id`, child `parent_model_run_id`), and daemon.log has no
 `subagent authority unavailable`.
 
+**P4 additions (owner review of the viewer and wiki, 2026-09-25).**
+
+1. Relations: the work link contract and the standing text offer the core's relations
+   (derived_from, supersedes, amends, refines, contradicts, builds_on, synthesizes, blocks,
+   next_action_for); the agent chooses, code never links.
+2. Provenance: `memory.read:provenance` joins the owner catalog; the standing text traces a memory
+   found by `memory.search` to its cited source messages with it.
+3. Viewer: graph detail reads an observation's text through `source.read` and a memory's cited
+   excerpts through `memory.read:provenance`, with the earlier records it links; observation
+   labels show time and connector instead of the source id.
+4. Daily journal: `daily/YYYY-MM-DD.md` per window, written by the agent.
+5. Wiki structure: the agent reads Home.md first and places changes into the page they belong to
+   (project, client or long-running topic, not one page per task); a new page is listed in Home.md
+   in the same publish. The host no longer appends to index.md.
+
 **P5 — fair measurement before applying.** Same 9/2 window, same observation-ref manifest, same DB
 snapshot, same model/effort/prompt, three arms: current pipeline; P0–P3; P0–P4. Gold labels: the
 hand simulation, confirmed by the owner. Report per arm: recall of movements, wrong attribution,

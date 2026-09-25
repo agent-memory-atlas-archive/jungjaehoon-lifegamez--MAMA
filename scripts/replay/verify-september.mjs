@@ -448,6 +448,78 @@ function unresolvedCitations(db) {
   return missing;
 }
 
+const DURABLE_WRITE_TOOLS = [
+  'work.create',
+  'work.revise',
+  'work.withdraw',
+  'work.update',
+  'work.reclassify',
+  'memory.save',
+  'report.publish',
+  'manage.wiki.publish',
+  'source.ingest',
+  'identity.correct',
+];
+
+function subagentWriteChecks(db) {
+  const placeholders = DURABLE_WRITE_TOOLS.map(() => '?').join(', ');
+  const childModelRuns = Number(
+    db
+      .prepare('SELECT COUNT(*) AS count FROM model_runs WHERE parent_model_run_id IS NOT NULL')
+      .get().count
+  );
+  const childTraceCount = Number(
+    db
+      .prepare(
+        `SELECT COUNT(*) AS count
+           FROM tool_traces t
+           JOIN model_runs m ON m.model_run_id = t.model_run_id
+          WHERE m.parent_model_run_id IS NOT NULL`
+      )
+      .get().count
+  );
+  const childWriteTraces = Number(
+    db
+      .prepare(
+        `SELECT COUNT(*) AS count
+           FROM tool_traces t
+           JOIN model_runs m ON m.model_run_id = t.model_run_id
+          WHERE m.parent_model_run_id IS NOT NULL
+            AND t.tool_name IN (${placeholders})`
+      )
+      .get(...DURABLE_WRITE_TOOLS).count
+  );
+  const parentWriteTraces = Number(
+    db
+      .prepare(
+        `SELECT COUNT(*) AS count
+           FROM tool_traces t
+           JOIN model_runs m ON m.model_run_id = t.model_run_id
+          WHERE m.parent_model_run_id IS NULL
+            AND t.tool_name IN (${placeholders})`
+      )
+      .get(...DURABLE_WRITE_TOOLS).count
+  );
+  const writesWithoutModelRun = Number(
+    db
+      .prepare(
+        `SELECT COUNT(*) AS count
+           FROM tool_traces t
+           LEFT JOIN model_runs m ON m.model_run_id = t.model_run_id
+          WHERE t.tool_name IN (${placeholders})
+            AND (t.model_run_id IS NULL OR m.model_run_id IS NULL)`
+      )
+      .get(...DURABLE_WRITE_TOOLS).count
+  );
+  return {
+    childModelRuns,
+    childTraceCount,
+    childWriteTraces,
+    parentWriteTraces,
+    writesWithoutModelRun,
+  };
+}
+
 function readDatabaseChecks(path) {
   const db = openReadOnly(path, 'MAMA database');
   try {
@@ -520,6 +592,7 @@ function readDatabaseChecks(path) {
       taskShape: shape,
       lessons,
       unresolvableCitations: unresolvedCitations(db),
+      subagentWrites: subagentWriteChecks(db),
     };
   } finally {
     db.close();
@@ -583,6 +656,7 @@ export function verifySeptember(input) {
     wiki,
     lessons: database.lessons,
     unresolvableCitations: database.unresolvableCitations,
+    subagentWrites: database.subagentWrites,
   };
   const failures =
     result.importCoverage.differences +
@@ -600,7 +674,9 @@ export function verifySeptember(input) {
     result.revisionEventTimes.nullEventDatetime +
     result.revisionEventTimes.nullAssignmentAppliesFrom +
     (result.lessons.count - result.lessons.withDerivedFrom) +
-    result.unresolvableCitations;
+    result.unresolvableCitations +
+    result.subagentWrites.childWriteTraces +
+    result.subagentWrites.writesWithoutModelRun;
   return { result, failures };
 }
 
