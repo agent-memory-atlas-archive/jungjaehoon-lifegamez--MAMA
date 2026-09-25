@@ -295,3 +295,18 @@ The implementation writes raw/index data during import only. Replay is the owner
   archive-era slots (taskBasis, next_actions) survived; and wiki pages were thin day deltas that replaced
   the page (plus one catch-all page). Fixed: wipe list, and the window/standing instruction asks for one
   page per case rewritten as its whole running history.
+- 2026-09-25 ~20:00 KST: owner asked to switch the owner agent to effort max and continue with the
+  corrections. Stopped after window 11 settled (row 12 had dispatched but made no action calls; returned to
+  pending), set `agent.effort: max`, removed the two archive-era board slots, and resumed with the viewer
+  served during replay (3ee5ebfb8) and the cumulative wiki instruction (704b67c03). Windows 1–11 ran at low.
+- 2026-09-25 20:30 KST: stopped cleanly after window 12 (max). Resumed with 1b7c603e9 (compact lines),
+  ba3f5e7ae (status vocabulary, owner connector-wide read), 17eac0595 (channel names, Trello lines, whole
+  messages, in-window duplicate check). The owner asked that the agent fix out-of-contract statuses itself,
+  so one owner message was enqueued (mailbox row 13, occurredAt 9/13 00:00 KST) before window 13. Baseline:
+  revisions with off-contract (free-text Korean) status touch 29 / 46 / 14 / 2 commitments
+  (waiting / in progress / done / merged duplicate).
+- 2026-09-25 20:52 KST: window 13 (9/13, max) aborted "without progress" after 5 min of reasoning-only
+  activity (Codex completed a reasoning item every ~10 s); replay stopped on the uncertain row as designed.
+  The turn had made reads only (report.read 5, graph.query 1, memory.search 1). Fixed in 79f32a954
+  (reasoning items refresh the idle timer); row 14 returned to pending; resumed. The owner status
+  correction (row 13) had completed: all latest statuses are in the contract (0 off-contract).
