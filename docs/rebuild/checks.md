@@ -409,3 +409,20 @@ The implementation writes raw/index data during import only. Replay is the owner
   work.list asOf=<day end> changedSince=<day start>, source reads capped at the 9/14 end (owner request
   through the mailbox in replay mode, no outbound reply). Still failing: an owner-admin notice seen in raw
   never became work (judgment, not journal).
+- 2026-09-26 02:30 KST: the owner agent rewrote 9/1–9/14 in 11 min (three children by date range, main
+  reconciled against changedSince). Re-audit: every moved item named on its day (0 missing), ledger
+  source times present (35/39), no ids in any body, later dates only as that day's stated deadlines or
+  schedules (no future facts); 9/10 now 23 dated entries with actor, files, feedback points and next wait,
+  plus a judgment section. Remaining: style differs between children (bold headers vs plain lines, the
+  English "unconfirmed" in prose), entries are not time-ordered within a section. Correction of an earlier
+  claim: the <place-1> 9/16–9/19 reservation is not in the ledger (13 <place-1> items, none a reservation); like
+  the health-insurance notice it is a recording miss in raw, not a journal omission. Replay resumed at 9/16
+  on the new journal instruction.
+- 2026-09-26 02:53 KST: window 9/16 took 22.3 min on the one-entry journal rule. Split (main rollout
+  timestamps): queue 0.5, main listed the whole ledger again 1.0 (two pages, 100k characters, although
+  current_work carries every revision), plan and three dispatch messages 3.0, children 3.5–5.5 in
+  parallel, main read-back and wiki fixes 3.5, main alone writing the journal ~2.5 (10.9 KB), then board.
+  Main context 151k of 258k tokens per call. Changed: the main creates the day's journal with one heading
+  per lane before dispatch, each child adds its items' entries under its heading (manage.wiki.update,
+  re-read on a version conflict), the main writes only the judgment section and fills entries missing
+  from the read-back; and it does not list the whole ledger when current_work already carries it.
