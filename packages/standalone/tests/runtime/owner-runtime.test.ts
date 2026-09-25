@@ -52,4 +52,47 @@ describe('owner runtime assembly', () => {
       await owner.stop();
     }
   });
+
+  it('lets the owner save a correction under user and connector channel scopes', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'mama-owner-memory-scope-'));
+    homes.push(home);
+    const nativeSession: NativeSessionHandle = { stop: async () => {} };
+    const embed = vi.fn(async () => new Float32Array(1024).fill(0.25));
+    const owner = await createOwnerRuntime({
+      backend: 'codex',
+      model: 'test-model',
+      databasePath: join(home, 'state.db'),
+      socketPath: join(home, 'runtime.sock'),
+      credentialPath: join(home, 'credential'),
+      runtimeRoot: home,
+      workspaceDir: join(home, 'workspace'),
+      ownerPrincipalId: 'owner',
+      agentId: 'agent',
+      scopes: [{ kind: 'global', id: 'system' }],
+      embedder: { embed },
+      nativeSession,
+      maxTurns: 20,
+      timeout: 1_000,
+    });
+    try {
+      const result = await owner.surface.hostToolCall(
+        'memory.save',
+        {
+          topic: 'owner-correction',
+          kind: 'lesson',
+          summary: 'The owner correction is durable',
+          details: 'The correction was linked to the source evidence.',
+          scopes: [
+            { kind: 'user', id: 'owner' },
+            { kind: 'channel', id: 'chatwork' },
+          ],
+          source: { package: 'standalone', source_type: 'owner-correction' },
+        },
+        'operation-memory-scope'
+      );
+      expect(result.status).toBe('completed');
+    } finally {
+      await owner.stop();
+    }
+  });
 });

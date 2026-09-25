@@ -59,6 +59,11 @@ const logger = new DebugLogger('NativeTurn');
 
 /** Normal coding tasks often need 10+ consecutive Bash calls; 5 was too low. */
 const MAX_CONSECUTIVE_SAME_HOST_TOOL = 15;
+const COMPLETION_SUMMARY_MAX_CHARS = 2_000;
+
+function completionSummary(response: string): string {
+  return response.slice(0, COMPLETION_SUMMARY_MAX_CHARS);
+}
 
 function historyToolResult(result: InternalToolResultBlock): InternalToolResultBlock {
   const { abort: _abort, terminalCode: _terminalCode, ...block } = result;
@@ -1219,7 +1224,7 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
         if (ownedModelRunId && host.modelRun) {
           await host.modelRun.commit(
             ownedModelRunId,
-            'native turn completed',
+            completionSummary(finalResponse),
             totalUsage.input_tokens + totalUsage.output_tokens
           );
           ownedModelRunCommitted = true;

@@ -643,7 +643,8 @@ const memorySaveSchema: ActionSchemaObject = {
     },
     scopes: {
       type: 'array',
-      description: 'Memory visibility scopes, e.g. [{"kind":"project","id":"project_123"}].',
+      description:
+        "Visibility scopes are global, user, channel, or project; omit to use the caller's admitted scopes.",
       items: scopeRefSchema,
     },
     source: {
@@ -925,7 +926,7 @@ export function coreActionRegistrations(
         // What this writes, recall can return.
         recallableWrite: true,
         summary:
-          'Append one judgment record. Explicit links attach visible evidence; replaces supersedes named visible records while preserving history. Matching topic alone never replaces. Access is the only authority — scopes in input are checked against it, and provenance comes from call authority and host-stated session facts. operationId is the command id; a retry replays the original receipt.',
+          "Append one judgment record. Explicit links attach visible evidence; replaces supersedes named visible records while preserving history. Matching topic alone never replaces. Access is the only authority — scopes in input are checked against it, and provenance comes from call authority and host-stated session facts. Scopes are global, user, channel, or project; omitted scopes use the caller's admitted scopes. operationId is the command id; a retry replays the original receipt.",
         inputSchema: memorySaveSchema,
         examples: [
           {

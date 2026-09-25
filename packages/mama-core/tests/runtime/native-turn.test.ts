@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createNativeSessionRunner,
   type NativeSessionHost,
+  type NativeModelRunPort,
 } from '../../src/runtime/native-turn.js';
 import { SessionPool } from '../../src/runtime/session-pool.js';
 import type { HostToolCall, IModelRunner, PromptResult } from '../../src/runtime/drivers/types.js';
@@ -97,5 +98,49 @@ describe('native host-tool loop signatures', () => {
         sessionKey: 'test-lane',
       })
     ).resolves.toMatchObject({ response: 'done' });
+  });
+
+  it('commits the bounded final response as the model-run completion summary', async () => {
+    const pool = new SessionPool();
+    pools.push(pool);
+    const response = 'x'.repeat(2_100);
+    const commit = vi.fn<NativeModelRunPort['commit']>(async () => {});
+    const modelRun: NativeModelRunPort = {
+      begin: vi.fn(async () => 'model-run-test'),
+      commit,
+      fail: vi.fn(async () => {}),
+    };
+    const agent = {
+      backendType: 'codex' as const,
+      reportsModelRuns: true,
+      supportsNativeSubagents: false,
+      prompt: vi.fn(async () => ({
+        response,
+        session_id: 'test-session',
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })),
+      stop: vi.fn(),
+    } as unknown as IModelRunner;
+    const host: NativeSessionHost<Record<string, never>> = {
+      agent,
+      backend: 'codex',
+      model: 'test-model',
+      maxTurns: 30,
+      isGatewayMode: true,
+      runTokenBudget: 0,
+      sessionPool: pool,
+      turnPolicy: () => ({ channelKey: 'test-lane', systemLayers: [] }),
+      executionContext: () => null,
+      hostToolDefinitions: () => [],
+      callTool: async () => ({ success: true }),
+      modelRun,
+    };
+    const runner = createNativeSessionRunner(host);
+
+    await runner.runTurn([{ type: 'text', text: 'record the result' }], {
+      sessionKey: 'test-lane',
+    });
+
+    expect(commit).toHaveBeenCalledWith('model-run-test', response.slice(0, 2_000), 2);
   });
 });

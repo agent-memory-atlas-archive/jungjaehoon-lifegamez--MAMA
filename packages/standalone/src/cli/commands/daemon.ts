@@ -12,6 +12,7 @@ import {
   type OwnerRuntime,
   type OwnerRuntimeOptions,
 } from '../../runtime/owner-runtime.js';
+import { ownerMemoryScopes } from '../../runtime/action-surface.js';
 import {
   startConnectorRuntime,
   type ConnectorRuntime,
@@ -23,8 +24,8 @@ import type { SourceDelta } from '../../connectors/framework/polling-scheduler.j
 
 const OWNER_PRINCIPAL_ID = 'owner';
 const OWNER_AGENT_ID = 'owner-agent';
-const OWNER_MEMORY_SCOPES = [{ kind: 'global' as const, id: 'system' }];
 const OWNER_CONNECTORS = ['chatwork', 'slack', 'trello', 'kagemusha'] as const;
+const OWNER_MEMORY_SCOPES = ownerMemoryScopes(OWNER_PRINCIPAL_ID, OWNER_CONNECTORS);
 
 export interface DaemonLogger {
   info(line: string): void;

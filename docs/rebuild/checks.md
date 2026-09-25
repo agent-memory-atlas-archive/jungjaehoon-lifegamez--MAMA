@@ -104,3 +104,15 @@ jq -c '.entries[] | {key, state, updatedAt, nextChunkIndex, deliveryUncertain}' 
 - Evidence: the real delta payload supplied both observation handles to two real `source.read` dispatches, `work.create` returned a commitment, and all full suites pass: core 113/829, standalone 41/84, MCP 13 files with 121 passed and 14 skipped.
 - Cause: the fixture double called `work.create` but never recorded `actionNames.push('work.create')`, so the assertion reported a false stop before creation.
 - Still open: live provider/model/Telegram owner evidence and the C1 owner check remain outside this test.
+
+## W1 third live-run recording correction — 2026-09-25
+
+- Result: source-delta policy now records moved work, treats other-system tasks as evidence, admits the owner global/user/connector scopes, and stores bounded final responses in model-run summaries.
+- Evidence: focused regressions pass; core 113 files / 831 tests, standalone 41 / 86, MCP 13 files with 121 passed / 14 skipped; build, typecheck, lint, and formatting pass.
+- Read-only live state remains unchanged: 12 model runs, one historical scope denial, and one historical graph-visibility denial; the daemon stayed stopped.
+- Still open: supervisor rerun of the native W1 path and live provider/model/Telegram receipt and delivery evidence.
+
+## Known flaky (carried from the archive)
+
+- `mama-core tests/knowledge/graph-roundtrip.test.ts` "browses visible edges in bounded pages" failed
+  once in a full parallel run (cursor expected null) and passed 3/3 alone; no knowledge code changed.

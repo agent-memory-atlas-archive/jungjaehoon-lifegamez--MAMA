@@ -24,7 +24,7 @@ describe('minimal source actions', () => {
       type: 'integer',
       minimum: 1,
       maximum: 4_000,
-      description: 'Maximum characters returned by a read, e.g. 4000.',
+      description: 'Maximum characters returned by a read; at most 4000.',
     });
     expect(catalog.describe('source.read').inputSchema.required).toEqual([
       'source',

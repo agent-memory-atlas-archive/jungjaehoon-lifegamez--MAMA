@@ -85,7 +85,7 @@ const sourceSchema = {
       type: 'integer' as const,
       minimum: 1,
       maximum: 4_000,
-      description: 'Maximum characters returned by a read, e.g. 4000.',
+      description: 'Maximum characters returned by a read; at most 4000.',
     },
   },
 };

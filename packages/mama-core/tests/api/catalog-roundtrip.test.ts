@@ -102,6 +102,18 @@ describe('Story R2: action catalog and dispatch roundtrip', () => {
     expect(() => catalog.describe('memory.read.topic')).toThrow(UnknownActionError);
   });
 
+  it('explains memory.save scope kinds and its omitted-scope default', () => {
+    const catalog = createCatalog(coreActionRegistrations(knowledge, getAdapter()));
+    const contract = catalog.describe('memory.save');
+    expect(contract.summary).toContain(
+      "Scopes are global, user, channel, or project; omitted scopes use the caller's admitted scopes."
+    );
+    expect(contract.inputSchema.properties?.scopes).toMatchObject({
+      description:
+        "Visibility scopes are global, user, channel, or project; omit to use the caller's admitted scopes.",
+    });
+  });
+
   it('describes every memory, work, and graph query input field', () => {
     const catalog = createCatalog(coreActionRegistrations(knowledge, getAdapter()));
     const visit = (schema: unknown, path: string): void => {

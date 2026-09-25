@@ -57,6 +57,21 @@ export interface ActionSurface {
   ): Promise<Awaited<ReturnType<ActionDispatcher>>>;
 }
 
+/** The owner grant spans the durable global/user records and connector roots. */
+export function ownerMemoryScopes(
+  ownerPrincipalId: string,
+  connectors: readonly string[] = OWNER_CONNECTORS
+): MemoryScopeRef[] {
+  const scopes: MemoryScopeRef[] = [
+    { kind: 'global', id: 'system' },
+    { kind: 'user', id: ownerPrincipalId },
+  ];
+  for (const connector of connectors) {
+    scopes.push({ kind: 'channel', id: connector }, { kind: 'project', id: connector });
+  }
+  return [...new Map(scopes.map((scope) => [`${scope.kind}\0${scope.id}`, scope])).values()];
+}
+
 function traceSummary(value: unknown): string | null {
   if (value === undefined) return null;
   let serialized: string;
@@ -109,7 +124,14 @@ export function createActionSurface(options: ActionSurfaceOptions): ActionSurfac
   const ownerAccess: JudgmentAccess = {
     principalId: options.ownerPrincipalId,
     agentId: options.agentId,
-    scopes: options.scopes ?? [],
+    scopes: [
+      ...ownerMemoryScopes(options.ownerPrincipalId, options.connectors ?? OWNER_CONNECTORS),
+      ...(options.scopes ?? []),
+    ].filter(
+      (scope, index, all) =>
+        all.findIndex((candidate) => candidate.kind === scope.kind && candidate.id === scope.id) ===
+        index
+    ),
     connectors: options.connectors ?? OWNER_CONNECTORS,
     actions: [...OWNER_ACTIONS],
   };
