@@ -135,6 +135,7 @@ describe('one stimulus intake and delivery', () => {
           sourceId: 'source-1',
           sourceEntityId: 'entity-1',
           channel: 'room-a',
+          channelName: 'client room',
           author: 'sender-a',
           contentPreview: 'bounded message text',
           sourceAt: '2026-01-01T00:00:00.000Z',
@@ -176,7 +177,9 @@ describe('one stimulus intake and delivery', () => {
     expect(prompts.some((text) => text.includes('owner request'))).toBe(true);
     // Replay messages are one line each: channel, sender, observationRef, text; no ids or hashes.
     expect(
-      prompts.some((text) => text.includes('room-a · sender-a · obs-1: bounded message text'))
+      prompts.some((text) =>
+        text.includes('collector:client room · sender-a · obs-1: bounded message text')
+      )
     ).toBe(true);
     expect(prompts.some((text) => text.includes('commitment-1 | Current item | active'))).toBe(
       true

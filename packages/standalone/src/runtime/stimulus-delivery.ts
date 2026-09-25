@@ -119,6 +119,7 @@ function sourcePayload(delta: SourceDelta): JsonValue {
       observedAt: ref.observedAt,
       contentHash: ref.contentHash,
       ...(ref.author === undefined ? {} : { author: ref.author }),
+      ...(ref.channelName === undefined ? {} : { channelName: ref.channelName }),
       ...(ref.contentPreview === undefined ? {} : { contentPreview: ref.contentPreview }),
       ...(ref.metadata === undefined ? {} : { metadata: ref.metadata }),
     })),
@@ -223,8 +224,12 @@ function messageLines(payload: JsonValue | undefined): string[] | null {
     if (!ref || typeof ref !== 'object' || Array.isArray(ref)) continue;
     const author = textField(ref.author) || 'unknown';
     const text = textField(ref.contentPreview).replace(/\s+/g, ' ').trim();
+    const channelName = textField(ref.channelName);
+    const channel = channelName
+      ? `${textField(ref.connector)}:${channelName}`
+      : textField(ref.channel) || textField(ref.connector);
     lines.push(
-      `[${kstStamp(textField(ref.sourceAt))}] ${textField(ref.channel) || textField(ref.connector)} · ${author} · ${textField(ref.observationRef)}: ${text}`
+      `[${kstStamp(textField(ref.sourceAt))}] ${channel} · ${author} · ${textField(ref.observationRef)}: ${text}`
     );
   }
   return lines;
@@ -265,7 +270,7 @@ function boundedStimulus(row: MailboxRow): string {
       row.refs.length === 0
         ? 'source_read: this replay window has no source messages.'
         : messages !== null
-          ? 'source_read: each message line below carries its text (cut at 280 characters, marked …); call source.read with observationRefs only for the messages whose full text or attachment you need, batched per connector (the first segment of the channel) with source set to that connector.'
+          ? 'source_read: each message line below carries its full text (a Trello action rendered from its record); call source.read with observationRefs only for a raw record or attachment you need, batched per connector (the first segment of the channel) with source set to that connector.'
           : 'source_read: read these delta refs in one batched source.read call with observationRefs; content remains bounded per ref.'
     );
     const payload = row.payload;

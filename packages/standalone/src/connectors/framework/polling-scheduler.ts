@@ -15,7 +15,9 @@ export interface SourceObservationRef {
   observedAt: string;
   contentHash: string | null;
   author?: string;
-  /** Bounded source text for replay orientation; source.read remains canonical. */
+  /** Configured channel name, when the connector configuration has one. */
+  channelName?: string;
+  /** Source text for replay orientation (a Trello action as one line); source.read remains canonical. */
   contentPreview?: string;
   metadata?: Record<string, unknown>;
 }

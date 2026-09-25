@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { bootDaemon, type DaemonBootOptions, type DaemonReplayContext } from './daemon.js';
+import { loadConnectorConfig } from '../../connectors/config-loader.js';
 import { setLiveConnectorPollCursors } from '../../runtime/connectors.js';
 import { createOwnerPolicyProvider } from '../../runtime/owner-policy.js';
 import { readImportManifest } from '../../replay/import-manifest.js';
@@ -16,6 +17,19 @@ export interface ReplayCommandOptions {
   cursorPath?: string;
   ledgerPath?: string;
   runId?: string;
+}
+
+/** Channel display names from connectors.json, keyed `${connector}\0${channelId}`. */
+function configuredChannelNames(configPath: string): ReadonlyMap<string, string> {
+  const loaded = loadConnectorConfig(configPath);
+  if (!loaded.ok) throw new Error(`Replay cannot read channel names: ${loaded.error.message}`);
+  const names = new Map<string, string>();
+  for (const [connector, config] of Object.entries(loaded.config)) {
+    for (const [channelId, channel] of Object.entries(config.channels ?? {})) {
+      if (channel.name) names.set(`${connector}\0${channelId}`, channel.name);
+    }
+  }
+  return names;
 }
 
 function requireMailbox(context: DaemonReplayContext) {
@@ -79,7 +93,10 @@ export async function runReplay(options: ReplayCommandOptions = {}): Promise<Rep
         context.owner.database.adapter,
         manifest.fromMs,
         manifest.untilMs,
-        { rawRoot: context.paths.connectorsRoot }
+        {
+          rawRoot: context.paths.connectorsRoot,
+          channelNames: configuredChannelNames(context.paths.connectorsConfigPath),
+        }
       );
       const feeder = new ReplayFeeder({
         catalog,

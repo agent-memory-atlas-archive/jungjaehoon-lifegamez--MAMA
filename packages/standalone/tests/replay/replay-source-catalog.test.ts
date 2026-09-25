@@ -164,4 +164,61 @@ describe('ReplaySourceCatalog', () => {
       readReplaySourceEvents(adapter, start, start + 12 * HOUR, { rawRoot: root })[0]?.rawRowId
     ).toBe(77);
   });
+
+  it('names the channel, keeps the whole message and renders a Trello action as one line', () => {
+    const row = (overrides: Record<string, unknown>) => ({
+      source_at_ms: start + HOUR,
+      raw_row_id: 1,
+      observed_at_ms: start + 2 * HOUR,
+      source_entity_id: null,
+      metadata_json: null,
+      content_hash: null,
+      ...overrides,
+    });
+    const longText = 'x'.repeat(900);
+    const trelloAction = JSON.stringify({
+      type: 'updateCard',
+      memberCreator: { fullName: 'board member' },
+      data: {
+        board: { name: 'board-name' },
+        card: { name: 'asset-card', due: '2026-09-30T07:00:00.000Z' },
+        listBefore: { name: 'waiting' },
+        listAfter: { name: 'submitted' },
+      },
+    });
+    const adapter = {
+      prepare: () => ({
+        all: () => [
+          row({
+            connector: 'chatwork',
+            source_id: 'message-1',
+            observation_ref: 'obs-1',
+            channel_key: 'room-1',
+            author: 'sender',
+            content: longText,
+          }),
+          row({
+            connector: 'trello',
+            source_id: 'action-1',
+            observation_ref: 'obs-2',
+            channel_key: 'board-1',
+            author: 'trello',
+            content: trelloAction,
+          }),
+        ],
+      }),
+    };
+    const [message, action] = readReplaySourceEvents(adapter, start, start + 12 * HOUR, {
+      channelNames: new Map([
+        ['chatwork\0room-1', 'client room'],
+        ['trello\0board-1', 'client board'],
+      ]),
+    });
+    expect(message).toMatchObject({ channelName: 'client room', contentPreview: longText });
+    expect(action).toMatchObject({
+      channelName: 'client board',
+      author: 'board member',
+      contentPreview: 'updateCard · card "asset-card" · list waiting → submitted · due 2026-09-30',
+    });
+  });
 });

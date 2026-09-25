@@ -19,6 +19,8 @@ export interface ReplaySourceEvent {
   readonly sourceAtMs: number;
   readonly rawRowId: number;
   readonly author?: string;
+  /** Display name of the channel from the connector configuration, when it has one. */
+  readonly channelName?: string;
   readonly contentPreview?: string;
   readonly observedAtMs?: number;
   readonly sourceEntityId?: string;
@@ -50,6 +52,8 @@ type ReplayCatalogAdapter = Pick<DatabaseAdapter, 'prepare'>;
 
 export interface ReplaySourceReadOptions {
   rawRoot?: string;
+  /** `${connector}\0${channelId}` → configured channel name (connectors.json). */
+  channelNames?: ReadonlyMap<string, string>;
 }
 
 export interface ReplayLedgerDigestItem {
@@ -118,12 +122,63 @@ function hashText(value: Buffer | Uint8Array | string | null | undefined): strin
   return Buffer.from(value).toString('hex');
 }
 
-function boundedText(value: string, limit = 280): string {
-  const points = Array.from(value);
-  return points.length <= limit ? value : `${points.slice(0, limit - 1).join('')}…`;
+function record(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
-function rowToEvent(row: ReplayIndexRow): ReplaySourceEvent {
+function text(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/**
+ * A Trello action is stored as its API JSON; the day window shows what happened to which
+ * card (type, card, list before → after, due, attachment, member, comment). The JSON stays
+ * in the raw store, one source.read away.
+ */
+function trelloActionLine(content: string): { line: string; actor: string } {
+  const action = record(JSON.parse(content) as unknown);
+  const data = record(action.data);
+  const card = record(data.card);
+  const parts = [text(action.type) || 'action'];
+  const cardName = text(card.name);
+  if (cardName) parts.push(`card "${cardName}"`);
+  const before = text(record(data.listBefore).name);
+  const after = text(record(data.listAfter).name);
+  if (before || after) parts.push(`list ${before || '?'} → ${after || '?'}`);
+  else if (text(record(data.list).name)) parts.push(`list ${text(record(data.list).name)}`);
+  if (typeof card.due === 'string') parts.push(`due ${card.due.slice(0, 10)}`);
+  if (card.dueComplete === true) parts.push('due complete');
+  const attachment = text(record(data.attachment).name);
+  if (attachment) parts.push(`attachment ${attachment}`);
+  const member = text(record(data.member).name);
+  if (member) parts.push(`member ${member}`);
+  const source = text(record(data.cardSource).name);
+  if (source) parts.push(`copied from "${source}"`);
+  const changed = Object.keys(record(data.old));
+  if (changed.length > 0 && !(before || after)) parts.push(`changed ${changed.join(',')}`);
+  const comment = text(data.text);
+  if (comment) parts.push(`comment: ${comment}`);
+  return { line: parts.join(' · '), actor: text(record(action.memberCreator).fullName) };
+}
+
+function channelNameFor(
+  connector: string,
+  channelKey: string,
+  names: ReadonlyMap<string, string> | undefined
+): string | undefined {
+  if (names === undefined) return undefined;
+  const local = channelKey.startsWith(`${connector}:`)
+    ? channelKey.slice(connector.length + 1)
+    : channelKey;
+  return names.get(`${connector}\0${channelKey}`) ?? names.get(`${connector}\0${local}`);
+}
+
+function rowToEvent(
+  row: ReplayIndexRow,
+  channelNames: ReadonlyMap<string, string> | undefined
+): ReplaySourceEvent {
   if (typeof row.connector !== 'string' || row.connector.trim() === '') {
     throw new Error('Replay source connector is missing');
   }
@@ -145,6 +200,9 @@ function rowToEvent(row: ReplayIndexRow): ReplaySourceEvent {
   }
   if (row.observed_at_ms !== null) assertEpochMs(row.observed_at_ms, 'observedAtMs');
   const metadata = parseMetadata(row.metadata_json);
+  const trello = row.connector === 'trello' ? trelloActionLine(row.content) : null;
+  const author = trello?.actor || row.author;
+  const channelName = channelNameFor(row.connector, row.channel_key, channelNames);
   const event: ReplaySourceEvent = {
     connector: row.connector,
     sourceId: row.source_id,
@@ -152,8 +210,9 @@ function rowToEvent(row: ReplayIndexRow): ReplaySourceEvent {
     channelKey: row.channel_key,
     sourceAtMs: row.source_at_ms,
     rawRowId: row.raw_row_id,
-    ...(row.author === null ? {} : { author: row.author }),
-    contentPreview: boundedText(row.content),
+    ...(author ? { author } : {}),
+    ...(channelName === undefined ? {} : { channelName }),
+    contentPreview: trello?.line ?? row.content,
     ...(row.observed_at_ms === null ? {} : { observedAtMs: row.observed_at_ms }),
     ...(row.source_entity_id === null ? {} : { sourceEntityId: row.source_entity_id }),
     contentHash: hashText(row.content_hash),
@@ -200,9 +259,9 @@ export function readReplaySourceEvents(
         if (rawRowId === undefined) {
           throw new Error(`Replay raw store row is missing for ${row.connector}:${row.source_id}`);
         }
-        return rowToEvent({ ...row, raw_row_id: rawRowId });
+        return rowToEvent({ ...row, raw_row_id: rawRowId }, options.channelNames);
       }
-      return rowToEvent(row);
+      return rowToEvent(row, options.channelNames);
     })
   );
 }
@@ -241,8 +300,9 @@ function readRawRowIds(rawRoot: string, fromMs: number, untilMs: number): Map<st
 }
 
 /**
- * The catalog carries only bounded orientation text. Full bodies stay in the
- * connector raw stores and reach the owner through the normal source.read action.
+ * The catalog carries each message's text (a Trello action as one readable line) with its
+ * channel name. Raw records and attachments stay in the connector raw stores and reach the
+ * owner through the normal source.read action.
  */
 export class ReplaySourceCatalog {
   private readonly events: readonly ReplaySourceEvent[];
@@ -308,6 +368,7 @@ export class ReplaySourceCatalog {
         observedAt: iso(event.observedAtMs ?? event.sourceAtMs),
         contentHash: event.contentHash ?? null,
         ...(event.author === undefined ? {} : { author: event.author }),
+        ...(event.channelName === undefined ? {} : { channelName: event.channelName }),
         ...(event.contentPreview === undefined ? {} : { contentPreview: event.contentPreview }),
         ...(event.metadata === undefined ? {} : { metadata: event.metadata }),
       }))
@@ -316,7 +377,7 @@ export class ReplaySourceCatalog {
     const occurredAt = first === undefined ? startMs : ordered[ordered.length - 1]!.sourceAtMs;
     const ledgerDigest = options.ledgerDigest === undefined ? undefined : [...options.ledgerDigest];
     const endInstructions =
-      "Record the day's work changes first, then update all four board slots (briefing, action_required, decisions, pipeline), write the wiki page of every case whose work changed in this window: one page per case, read its current page first and publish the whole page again as the case's running history (current state, then dated events with observation ids), creating it when none exists; and save owner corrections or learned patterns as lesson memory with derived_from evidence.";
+      "Record the day's work changes first, then update all four board slots (briefing, action_required, decisions, pipeline), write the wiki page of every case whose work changed in this window: one page per case, read its current page first and publish the whole page again as the case's running history (current state, then dated events with observation ids), creating it when none exists; save owner corrections or learned patterns as lesson memory with derived_from evidence; and before finishing, compare the work you created or revised in this window with each other and with current work: when two items are the same deliverable, keep one and revise the other to status cancelled with a summary naming the kept commitmentId.";
     const delta = {
       kind: 'source_delta' as const,
       collector: 'replay',
