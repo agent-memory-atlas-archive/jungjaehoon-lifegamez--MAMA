@@ -52,7 +52,7 @@ function runner(backend: 'codex' | 'claude'): IModelRunner {
 
 describe('one owner native session', () => {
   it.each(['codex', 'claude'] as const)(
-    'exposes the same eight catalog actions for %s',
+    'exposes the same owner catalog actions for %s',
     async (backend) => {
       const model = runner(backend);
       const session = createNativeSession({
@@ -81,6 +81,7 @@ describe('one owner native session', () => {
         'work.create',
         'work.list',
         'work.revise',
+        'work.show',
       ]);
       await session.stop();
     }

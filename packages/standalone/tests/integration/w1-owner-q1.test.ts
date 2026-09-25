@@ -245,6 +245,13 @@ describe('W1 owner question integration', () => {
             ...options,
             loadConnector: async () => fixtureConnector([item, secondItem]),
           }),
+        createViewerServer: () =>
+          ({
+            port: 0,
+            server: null,
+            start: async () => {},
+            stop: async () => {},
+          }) as never,
         createTelegramGateway: (options) => {
           gatewayIntake = options.intake;
           return gateway;

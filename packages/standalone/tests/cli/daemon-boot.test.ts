@@ -47,12 +47,29 @@ function ownerDouble(order: string[]) {
   };
   return {
     intake,
+    surface: {
+      dispatch: vi.fn(),
+      ownerAccess: {},
+    },
     acceptSourceDelta: vi.fn<(...args: never[]) => StimulusReceipt>(() => ({
       inputId: 'source-input',
       state: 'accepted',
     })),
     stop: vi.fn(async () => {
       order.push('owner:stop');
+    }),
+  };
+}
+
+function viewerDouble(order: string[]) {
+  return {
+    port: 3847,
+    server: null,
+    start: vi.fn(async () => {
+      order.push('viewer:start');
+    }),
+    stop: vi.fn(async () => {
+      order.push('viewer:stop');
     }),
   };
 }
@@ -69,6 +86,7 @@ describe('daemon bootstrap', () => {
       error: (line) => logs.push(`error:${line}`),
     };
     const owner = ownerDouble(order);
+    const viewer = viewerDouble(order);
     const connectors = {
       stop: vi.fn(async () => {
         order.push('connectors:stop');
@@ -93,6 +111,7 @@ describe('daemon bootstrap', () => {
           order.push('owner:start');
           return owner as never;
         }),
+        createViewerServer: vi.fn(() => viewer as never),
         startConnectorRuntime: vi.fn(async () => {
           order.push('connectors:start');
           return connectors as never;
@@ -101,7 +120,7 @@ describe('daemon bootstrap', () => {
       },
     });
 
-    expect(order).toEqual(['owner:start', 'connectors:start', 'telegram:start']);
+    expect(order).toEqual(['owner:start', 'viewer:start', 'connectors:start', 'telegram:start']);
     expect(existsSync(join(mamaRoot, 'workspace', '.git', 'HEAD'))).toBe(true);
     expect(readFileSync(join(mamaRoot, 'workspace', '.git', 'HEAD'), 'utf8')).toBe(
       'ref: refs/heads/main\n'
@@ -112,14 +131,17 @@ describe('daemon bootstrap', () => {
 
     expect(order).toEqual([
       'owner:start',
+      'viewer:start',
       'connectors:start',
       'telegram:start',
       'telegram:stop',
       'connectors:stop',
+      'viewer:stop',
       'owner:stop',
     ]);
     expect(logs.some((line) => line.includes('boot stage=owner_runtime'))).toBe(true);
     expect(logs.some((line) => line.includes('boot stage=connectors'))).toBe(true);
+    expect(logs.some((line) => line.includes('boot stage=viewer'))).toBe(true);
     expect(logs.some((line) => line.includes('boot stage=telegram'))).toBe(true);
     expect(logs.filter((line) => line === 'info:owner policy: none')).toHaveLength(1);
   });
@@ -136,6 +158,7 @@ describe('daemon bootstrap', () => {
       error: (line) => logs.push(`error:${line}`),
     };
     const owner = ownerDouble([]);
+    const viewer = viewerDouble([]);
     const gateway: DaemonGateway = {
       start: vi.fn(async () => {}),
       stop: vi.fn(async () => {}),
@@ -152,6 +175,7 @@ describe('daemon bootstrap', () => {
           policyContent = options.ownerPolicyProvider?.().content;
           return owner as never;
         }),
+        createViewerServer: vi.fn(() => viewer as never),
         startConnectorRuntime: vi.fn(async () => ({ stop: vi.fn(async () => {}) }) as never),
         createTelegramGateway: vi.fn(() => gateway),
       },
@@ -184,6 +208,9 @@ describe('daemon bootstrap', () => {
       replay,
       dependencies: {
         createOwnerRuntime: vi.fn(async () => owner as never),
+        createViewerServer: vi.fn(() => {
+          throw new Error('viewer must not start in replay mode');
+        }),
         startConnectorRuntime: vi.fn(async () => {
           throw new Error('live connectors must not start in replay mode');
         }),
@@ -197,6 +224,7 @@ describe('daemon bootstrap', () => {
     expect(logs.filter((line) => line === 'info:replay collectors: disabled')).toHaveLength(1);
     expect(daemon.connectors).toBeNull();
     expect(daemon.gateway).toBeNull();
+    expect(daemon.viewer).toBeNull();
     await daemon.stop();
   });
 
@@ -212,6 +240,7 @@ describe('daemon bootstrap', () => {
     writeFileSync(preservedSkill, 'preserved', { encoding: 'utf8' });
     const order: string[] = [];
     const owner = ownerDouble(order);
+    const viewer = viewerDouble(order);
     const gateway: DaemonGateway = {
       start: vi.fn(async () => {}),
       stop: vi.fn(async () => {}),
@@ -223,6 +252,7 @@ describe('daemon bootstrap', () => {
       config: config(mamaRoot, 'claude'),
       dependencies: {
         createOwnerRuntime: vi.fn(async () => owner as never),
+        createViewerServer: vi.fn(() => viewer as never),
         startConnectorRuntime: vi.fn(async () => ({ stop: vi.fn(async () => {}) }) as never),
         createTelegramGateway: vi.fn(() => gateway),
       },

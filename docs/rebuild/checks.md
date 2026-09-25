@@ -237,3 +237,10 @@ The implementation writes raw/index data during import only. Replay is the owner
    ```
 
    A nonzero exit means at least one count or invariant differs. Finally send the real owner Telegram C1/C2 questions, retain the native receipt/daemon log/DB read-back, restart the daemon, and ask both questions again; those live owner checks are not claimed by the automated script.
+
+## W10 — 2026-09-25
+
+- Result: read-only viewer server, Tasks/history drawer, canonical graph view, generic-kind filter, and memory search are carried and trimmed; Board, Triggers, Wiki, and lessons are absent.
+- Evidence: viewer dispatcher/auth/data-shaping tests pass (13 tests), daemon live/replay wiring passes, package build/typecheck pass; every data route dispatches under owner access and task evidence is read through `source.read`.
+- Files carried: archive `public/viewer/viewer.css` → same path (1,043 archived lines plus W10 shell styles), archive `public/viewer/icons/mama-icon.svg` → same path, with a new trimmed `viewer.html`/`viewer.js` shell and new `api/{auth-middleware,viewer-data,viewer-server}.ts`.
+- Still open: `graph.query` has no revision-to-revision chain edge (it returns revision memory nodes with `data.work`); the viewer reports that gap and uses `work.show history: all` for the detail drawer. The standalone full suite is 49/50 files (128/129 tests) because the pre-existing process-wide ONNX cache fails protobuf parsing; owner replay/live C1/C2 remains supervisor work.

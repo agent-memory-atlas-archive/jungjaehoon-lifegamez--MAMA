@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#F9F7F4" />
+    <title>MAMA viewer</title>
+    <link rel="icon" type="image/svg+xml" href="/viewer/icons/mama-icon.svg" />
+    <link rel="stylesheet" href="/viewer/viewer.css" />
+  </head>
+  <body>
+    <header class="viewer-header">
+      <img src="/viewer/icons/mama-icon.svg" alt="MAMA" />
+      <div>
+        <div class="viewer-header-title">MAMA</div>
+        <div class="viewer-header-subtitle">Owner records, evidence, and memory</div>
+      </div>
+    </header>
+    <div class="viewer-shell">
+      <nav class="viewer-nav" aria-label="Viewer sections">
+        <button type="button" data-view="tasks" class="active">Tasks</button>
+        <button type="button" data-view="graph">Memory graph</button>
+        <button type="button" data-view="search">Memory search</button>
+      </nav>
+      <main class="viewer-main" id="viewer-main">
+        <section class="viewer-view" data-view-panel="tasks">
+          <div class="viewer-view-heading">
+            <div>
+              <h1>Tasks</h1>
+              <p>The task ledger and its revision history.</p>
+            </div>
+            <button type="button" class="primary" id="tasks-refresh">Refresh</button>
+          </div>
+          <div class="viewer-card viewer-table-wrap" id="tasks-content">
+            <div class="viewer-loading">Loading tasks...</div>
+          </div>
+        </section>
+
+        <section class="viewer-view" data-view-panel="graph" hidden>
+          <div class="viewer-view-heading">
+            <div>
+              <h1>Memory graph</h1>
+              <p>Canonical graph.query nodes and edges, with generic kind filters.</p>
+            </div>
+            <button type="button" class="primary" id="graph-refresh">Refresh</button>
+          </div>
+          <div class="viewer-toolbar">
+            <label for="graph-kind">Kind</label>
+            <select id="graph-kind">
+              <option value="">All</option>
+              <option value="memory">memory</option>
+              <option value="observation">observation</option>
+              <option value="registry">registry</option>
+              <option value="case">case</option>
+              <option value="raw">raw</option>
+              <option value="report">report</option>
+              <option value="edge">edge</option>
+            </select>
+          </div>
+          <div id="graph-missing"></div>
+          <div class="viewer-graph-grid" id="graph-content">
+            <div class="viewer-card"><h2 class="viewer-panel-title">Nodes</h2><div class="viewer-loading">Loading graph...</div></div>
+            <div class="viewer-card"><h2 class="viewer-panel-title">Edges</h2><div class="viewer-loading">Loading graph...</div></div>
+          </div>
+        </section>
+
+        <section class="viewer-view" data-view-panel="search" hidden>
+          <div class="viewer-view-heading">
+            <div>
+              <h1>Memory search</h1>
+              <p>Search the admitted memory records through memory.search.</p>
+            </div>
+          </div>
+          <form class="viewer-search-form" id="memory-search-form">
+            <label class="viewer-muted" for="memory-query">Query</label>
+            <input id="memory-query" name="q" type="search" autocomplete="off" />
+            <button type="submit">Search</button>
+          </form>
+          <div class="viewer-card" id="memory-search-content">
+            <div class="viewer-empty">Enter a query to search memory.</div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <dialog class="viewer-dialog" id="task-dialog" aria-labelledby="task-dialog-title">
+      <div class="viewer-dialog-header">
+        <div>
+          <h2 id="task-dialog-title">Task history</h2>
+          <div class="viewer-muted" id="task-dialog-summary"></div>
+        </div>
+        <button type="button" id="task-dialog-close">Close</button>
+      </div>
+      <div class="viewer-dialog-body" id="task-dialog-content"></div>
+    </dialog>
+    <script type="module" src="/viewer/viewer.js"></script>
+  </body>
+</html>
