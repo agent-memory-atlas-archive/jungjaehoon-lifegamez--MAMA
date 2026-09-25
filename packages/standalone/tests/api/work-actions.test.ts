@@ -19,13 +19,48 @@ const access: ActionContext['access'] = {
 };
 
 describe('minimal work actions', () => {
+  it('refuses sourceRefs that name no observation and names the ref', async () => {
+    const knowledge = { createWork: vi.fn(), reviseWork: vi.fn() };
+    const dispatch = createDispatcher(
+      createCatalog(
+        minimalWorkActionRegistrations({
+          observationExists: (id) => id === 'obs_known',
+          knowledge: knowledge as never,
+        })
+      )
+    );
+    const refused = await dispatch(
+      {
+        action: 'work.create',
+        operationId: 'operation-bad-ref',
+        input: {
+          topic: 'work-topic',
+          summary: 'work-summary',
+          sourceRefs: ['obs_known', 'obs_truncate'],
+          set: { title: 'work-title' },
+        },
+      },
+      { access }
+    );
+    expect(refused).toMatchObject({
+      status: 'failed',
+      error: { message: expect.stringContaining('unavailable observation: obs_truncate') },
+    });
+    expect(knowledge.createWork).not.toHaveBeenCalled();
+  });
+
   it('accepts assignee and roles in create and revise patches', async () => {
     const knowledge = {
       createWork: vi.fn().mockResolvedValue({ commitmentId: 'commitment-test', revision: 1 }),
       reviseWork: vi.fn().mockResolvedValue({ commitmentId: 'commitment-test', revision: 2 }),
     };
     const dispatch = createDispatcher(
-      createCatalog(minimalWorkActionRegistrations({ knowledge: knowledge as never }))
+      createCatalog(
+        minimalWorkActionRegistrations({
+          observationExists: () => true,
+          knowledge: knowledge as never,
+        })
+      )
     );
 
     const created = await dispatch(
@@ -84,7 +119,7 @@ describe('minimal work actions', () => {
     try {
       const knowledge = createKnowledge({ adapter: handle.adapter });
       const dispatch = createDispatcher(
-        createCatalog(minimalWorkActionRegistrations({ knowledge }))
+        createCatalog(minimalWorkActionRegistrations({ observationExists: () => true, knowledge }))
       );
 
       const created = await dispatch(
@@ -131,7 +166,12 @@ describe('minimal work actions', () => {
   it('requires revision history text from the caller', async () => {
     const knowledge = { createWork: vi.fn(), reviseWork: vi.fn() };
     const dispatch = createDispatcher(
-      createCatalog(minimalWorkActionRegistrations({ knowledge: knowledge as never }))
+      createCatalog(
+        minimalWorkActionRegistrations({
+          observationExists: () => true,
+          knowledge: knowledge as never,
+        })
+      )
     );
 
     const result = await dispatch(
@@ -154,7 +194,12 @@ describe('minimal work actions', () => {
   it('requires an operation id for durable work commands', async () => {
     const knowledge = { createWork: vi.fn(), reviseWork: vi.fn() };
     const dispatch = createDispatcher(
-      createCatalog(minimalWorkActionRegistrations({ knowledge: knowledge as never }))
+      createCatalog(
+        minimalWorkActionRegistrations({
+          observationExists: () => true,
+          knowledge: knowledge as never,
+        })
+      )
     );
     const result = await dispatch(
       { action: 'work.create', input: { topic: 'topic', summary: 'summary', set: {} } },
@@ -170,7 +215,12 @@ describe('minimal work actions', () => {
       reviseWork: vi.fn(),
     };
     const dispatch = createDispatcher(
-      createCatalog(minimalWorkActionRegistrations({ knowledge: knowledge as never }))
+      createCatalog(
+        minimalWorkActionRegistrations({
+          observationExists: () => true,
+          knowledge: knowledge as never,
+        })
+      )
     );
 
     const result = await dispatch(
@@ -195,7 +245,12 @@ describe('minimal work actions', () => {
       reviseWork: vi.fn(),
     };
     const dispatch = createDispatcher(
-      createCatalog(minimalWorkActionRegistrations({ knowledge: knowledge as never }))
+      createCatalog(
+        minimalWorkActionRegistrations({
+          observationExists: () => true,
+          knowledge: knowledge as never,
+        })
+      )
     );
 
     const result = await dispatch(
@@ -223,9 +278,10 @@ describe('minimal work actions', () => {
 
   it('describes the owner work contract fields and stable citation handles', () => {
     const knowledge = { createWork: vi.fn(), reviseWork: vi.fn() };
-    const contracts = minimalWorkActionRegistrations({ knowledge: knowledge as never }).map(
-      ({ contract }) => contract
-    );
+    const contracts = minimalWorkActionRegistrations({
+      observationExists: () => true,
+      knowledge: knowledge as never,
+    }).map(({ contract }) => contract);
     const create = contracts.find((contract) => contract.name === 'work.create')!;
     const revise = contracts.find((contract) => contract.name === 'work.revise')!;
     const set = create.inputSchema.properties?.set;

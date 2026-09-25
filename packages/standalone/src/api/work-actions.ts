@@ -14,6 +14,8 @@ import {
 
 export interface WorkPorts {
   knowledge: Pick<Knowledge, 'createWork' | 'reviseWork'>;
+  /** sourceRefs are observationRef handles; core stores them unchecked, so the product checks them. */
+  observationExists: (observationId: string) => boolean;
 }
 
 export interface WorkListPorts {
@@ -871,6 +873,19 @@ function operationId(context: ActionContext, action: string): string {
   return context.operationId;
 }
 
+function assertSourceRefsExist(body: Record<string, unknown>, ports: WorkPorts): void {
+  if (!Array.isArray(body.sourceRefs)) return;
+  for (const ref of body.sourceRefs) {
+    if (typeof ref === 'string' && !ports.observationExists(ref)) {
+      // Echo only the caller's own input, as the core reference refusal does.
+      throw new JudgmentError(
+        'REFERENCE_NOT_FOUND',
+        `sourceRefs names an unavailable observation: ${ref}`
+      );
+    }
+  }
+}
+
 function commandFieldsFrom(body: Record<string, unknown>): Record<string, unknown> {
   const { commitmentId: _commitmentId, expectedRevision: _expectedRevision, ...fields } = body;
   return fields;
@@ -931,6 +946,7 @@ export function minimalWorkActionRegistrations(ports: WorkPorts): ActionRegistra
       exec: (input, context) => {
         const body = input as Record<string, unknown>;
         assertReplayEventDatetime(body, context, 'work.create');
+        assertSourceRefsExist(body, ports);
         return ports.knowledge.createWork(
           {
             ...body,
@@ -965,6 +981,7 @@ export function minimalWorkActionRegistrations(ports: WorkPorts): ActionRegistra
       exec: (input, context) => {
         const body = input as Record<string, unknown>;
         assertReplayEventDatetime(body, context, 'work.revise');
+        assertSourceRefsExist(body, ports);
         const commitmentId = body.commitmentId;
         return ports.knowledge.reviseWork(
           {

@@ -443,3 +443,13 @@ The implementation writes raw/index data during import only. Replay is the owner
   items limit over 50 (2), a channel name passed as the connector (2, left as designed: grants are not
   echoed). The section refusal now lists the page's headings (the heading pattern moved from the schema
   to that check) and the reference refusals name the caller's own kind and id.
+- 2026-09-26 05:10 KST: replay complete (25 windows; 9/23 6 min, 9/24 9, 9/25 9). Refused calls in
+  9/23–9/25: 3 in total (9/21 alone had 7), and the reference refusal now names the truncated id.
+  Journals 9/16–9/25: every moved item present, ledger source times 116/119; 9/15 still has the old
+  style (4/17). verify-september: import 4,349/4,349 and Trello 1,290/1,290 with 0 differences, order
+  and cursor clean (the one duplicate and one uncertain delivery are the 9/8 incident above), 419
+  revisions all with event time, 23 lessons all with derived_from, 233 child writes all tied to a model
+  run, 45 wiki pages. Failing: 9 unresolvable citations, all in commitment sourceRefs, all observation
+  ids with the last character dropped by the agent; links are checked by core but sourceRefs were stored
+  unchecked. work.create/work.revise now refuse a sourceRef that names no observation (the product owns
+  the observationRef meaning; core keeps sourceRefs opaque). The 9 stored refs remain in history.

@@ -142,7 +142,13 @@ export function createActionSurface(options: ActionSurfaceOptions): ActionSurfac
     ...core,
     ...sourceActionRegistrations({ stored: options.storedSourceReader }),
     ...workListActionRegistrations({ knowledge: options.knowledge }),
-    ...minimalWorkActionRegistrations({ knowledge: options.knowledge }),
+    ...minimalWorkActionRegistrations({
+      knowledge: options.knowledge,
+      observationExists: (observationId) =>
+        options.adapter
+          .prepare('SELECT 1 FROM observation_versions WHERE observation_id = ? LIMIT 1')
+          .get(observationId) !== undefined,
+    }),
     ...reportActionRegistrations(reportPorts),
     ...wikiActionRegistrations(options.wikiPorts ?? {}),
   ];

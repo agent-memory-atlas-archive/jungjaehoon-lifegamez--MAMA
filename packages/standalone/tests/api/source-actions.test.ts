@@ -87,7 +87,7 @@ describe('minimal source actions', () => {
     };
     const catalog = createCatalog([
       ...sourceActionRegistrations({}),
-      ...minimalWorkActionRegistrations({ knowledge }),
+      ...minimalWorkActionRegistrations({ observationExists: () => true, knowledge }),
     ]);
 
     const visit = (schema: unknown, path: string): void => {
