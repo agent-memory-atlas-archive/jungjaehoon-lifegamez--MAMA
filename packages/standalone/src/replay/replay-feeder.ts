@@ -1,5 +1,4 @@
 import type { Mailbox, MailboxRow } from '@jungjaehoon/mama-core/runtime/mailbox';
-import type { StimulusReceipt } from '@jungjaehoon/mama-core/runtime/runtime';
 import { sourceDeltaStimulusId, type StimulusIntake } from '../runtime/stimulus-delivery.js';
 import {
   advanceReplayCursor,
@@ -191,11 +190,9 @@ export class ReplayFeeder {
     try {
       if (status === undefined) {
         const existing = this.options.mailbox.readInput(stimulusId, this.options.principalId);
-        let receipt: StimulusReceipt | undefined;
-        if (!existing) receipt = this.options.intake.acceptSourceDelta(delta);
-        if (receipt && receipt.inputId !== null && receipt.inputId !== stimulusId) {
-          throw new Error(`Replay acceptance returned a different stimulus id for ${stimulusId}`);
-        }
+        // The receipt's inputId is the mailbox row number, not the stimulus id; admission is
+        // proven by reading the row back under the deterministic stimulus id below.
+        if (!existing) this.options.intake.acceptSourceDelta(delta);
         const admitted = this.row(stimulusId);
         this.assertNotLost(stimulusId, admitted);
         cursor = markReplayDelta(cursor, stimulusId, 'accepted');

@@ -78,7 +78,8 @@ function harness(
       const acceptedRow = row(id, 'acked', 'settled');
       accepted.set(id, acceptedRow);
       overrides.onAccept?.(id, delta);
-      return { inputId: id, state: 'accepted' } satisfies StimulusReceipt;
+      // Like the core runtime: inputId is the mailbox row number, not the stimulus id.
+      return { inputId: String(accepted.size), state: 'accepted' } satisfies StimulusReceipt;
     }),
   };
   const feeder = new ReplayFeeder({
