@@ -197,6 +197,58 @@ function payloadCarriesMessageText(payload: MailboxRow['payload']): boolean {
   );
 }
 
+const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
+
+function kstStamp(iso: string): string {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) throw new Error(`A message line needs a source time, got ${iso}`);
+  return new Date(ms + KST_OFFSET_MS).toISOString().slice(5, 16).replace('T', ' ');
+}
+
+function textField(value: JsonValue | undefined): string {
+  return typeof value === 'string' ? value : '';
+}
+
+/**
+ * A source delta whose refs carry message text is rendered as one line per message.
+ * The session keeps every turn, so ids, hashes and connector metadata would be re-read on
+ * each later model call; the stored observation stays one source.read away.
+ */
+function messageLines(payload: JsonValue | undefined): string[] | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const refs = payload.refs;
+  if (!Array.isArray(refs) || !payloadCarriesMessageText(payload)) return null;
+  const lines: string[] = [];
+  for (const ref of refs) {
+    if (!ref || typeof ref !== 'object' || Array.isArray(ref)) continue;
+    const author = textField(ref.author) || 'unknown';
+    const text = textField(ref.contentPreview).replace(/\s+/g, ' ').trim();
+    lines.push(
+      `[${kstStamp(textField(ref.sourceAt))}] ${textField(ref.channel) || textField(ref.connector)} · ${author} · ${textField(ref.observationRef)}: ${text}`
+    );
+  }
+  return lines;
+}
+
+function ledgerLines(replay: JsonValue | undefined): string[] {
+  if (!replay || typeof replay !== 'object' || Array.isArray(replay)) return [];
+  const digest = replay.ledgerDigest;
+  if (!Array.isArray(digest)) return [];
+  return digest.flatMap((item) =>
+    item && typeof item === 'object' && !Array.isArray(item)
+      ? [
+          [
+            textField(item.commitmentId),
+            textField(item.title),
+            textField(item.stage) || '-',
+            textField(item.assignee) || '-',
+            textField(item.lastEventTime) || '-',
+          ].join(' | '),
+        ]
+      : []
+  );
+}
+
 function boundedStimulus(row: MailboxRow): string {
   const lines = [
     '## Bounded stimulus',
@@ -205,25 +257,37 @@ function boundedStimulus(row: MailboxRow): string {
     `channel: ${row.channelKey}`,
     `occurred_at: ${new Date(row.occurredAt).toISOString()}`,
     `preview: ${JSON.stringify(row.preview)}`,
-    `refs: ${JSON.stringify(row.refs)}`,
   ];
+  const messages = row.kind === 'source_delta' ? messageLines(row.payload) : null;
+  if (messages === null) lines.push(`refs: ${JSON.stringify(row.refs)}`);
   if (row.kind === 'source_delta') {
     lines.push(
       row.refs.length === 0
         ? 'source_read: this replay window has no source messages.'
-        : payloadCarriesMessageText(row.payload)
-          ? 'source_read: each ref carries its message text as contentPreview (cut at 280 characters, marked …); call source.read with observationRefs only for the refs whose full text or attachment you need, batched per connector with source set to the connector of those refs.'
+        : messages !== null
+          ? 'source_read: each message line below carries its text (cut at 280 characters, marked …); call source.read with observationRefs only for the messages whose full text or attachment you need, batched per connector (the first segment of the channel) with source set to that connector.'
           : 'source_read: read these delta refs in one batched source.read call with observationRefs; content remains bounded per ref.'
     );
     const payload = row.payload;
-    if (payload && typeof payload === 'object' && !Array.isArray(payload) && 'replay' in payload) {
-      const replay = payload.replay;
-      if (replay && typeof replay === 'object' && !Array.isArray(replay)) {
-        const instructions = replay.endInstructions;
-        if (typeof instructions === 'string' && instructions.trim() !== '') {
-          lines.push(`window_end_instructions: ${instructions}`);
-        }
+    const replay =
+      payload && typeof payload === 'object' && !Array.isArray(payload)
+        ? payload.replay
+        : undefined;
+    if (replay && typeof replay === 'object' && !Array.isArray(replay)) {
+      const instructions = replay.endInstructions;
+      if (typeof instructions === 'string' && instructions.trim() !== '') {
+        lines.push(`window_end_instructions: ${instructions}`);
       }
+    }
+    if (messages !== null) {
+      const work = ledgerLines(replay);
+      lines.push(
+        `current_work (commitmentId | title | stage | assignee | lastEventTime), ${String(work.length)} items:`,
+        ...work,
+        `messages (KST, channel · sender · observationRef: text), ${String(messages.length)} lines:`,
+        ...messages
+      );
+      return lines.join('\n');
     }
   }
   if (row.payload !== undefined) lines.push(`payload: ${JSON.stringify(row.payload)}`);

@@ -174,12 +174,21 @@ describe('one stimulus intake and delivery', () => {
     expect(order).toEqual(['start:owner', 'end:owner', 'start:source', 'end:source']);
     const prompts = runTurn.mock.calls.map((call) => call[0][0].text);
     expect(prompts.some((text) => text.includes('owner request'))).toBe(true);
-    expect(prompts.some((text) => text.includes('source-1'))).toBe(true);
+    // Replay messages are one line each: channel, sender, observationRef, text; no ids or hashes.
+    expect(
+      prompts.some((text) => text.includes('room-a · sender-a · obs-1: bounded message text'))
+    ).toBe(true);
+    expect(prompts.some((text) => text.includes('commitment-1 | Current item | active'))).toBe(
+      true
+    );
+    expect(prompts.some((text) => text.includes('source-1') || text.includes('contentHash'))).toBe(
+      false
+    );
     expect(prompts.some((text) => text.includes('bounded message text'))).toBe(true);
     expect(prompts.some((text) => text.includes('update the board, wiki, and lessons'))).toBe(true);
     expect(
       prompts.some((text) =>
-        text.includes('batched per connector with source set to the connector of those refs')
+        text.includes('batched per connector (the first segment of the channel)')
       )
     ).toBe(true);
     expect(prompts.some((text) => text.includes('observationRefs'))).toBe(true);
