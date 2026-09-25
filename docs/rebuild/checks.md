@@ -363,3 +363,49 @@ The implementation writes raw/index data during import only. Replay is the owner
   mostly single lines; asking whether B continues A's topic gave A 7 / B 4 / C 17 / unresolved 10.
 - P4 additions (relations, provenance, viewer source text, daily journal, Home.md-first wiki, no host
   index) implemented with tests; standalone 378 tests.
+
+## Replay restart on the window pipeline — 2026-09-25 22:40 KST
+
+- Owner decision: stop the running replay (old input, effort max, 27–49 min per window) and restart
+  from 9/1 on the merged window pipeline (c57e32bbc) at effort high. Testbed wiped per the runbook
+  (measurement artifacts kept), the rebuild wiki folder emptied, import re-run: kagemusha 4,424,
+  feedback 75 (2 unmapped), trello 1,290, fence T 1790329110001 (same as before). The 9/1–9/2 windows are
+  compared with the hand-simulation gold before continuing.
+- 2026-09-25 23:48 KST: window 9/8 stopped on an uncertain row — the stimulus (1.24M characters) exceeded
+  the Codex input limit because suspected-duplicate pairs each carried all window refs (fixed in the
+  commit after this entry's predecessor, "suspected duplicates carry no window refs"). Windows 9/1–9/7 had
+  run at 4–13 min each. Mailbox row 8 (never delivered: the turn failed before any action) was removed
+  with its refs, delivery record and seen refs, and the cursor's accepted entry cleared, so the window is
+  re-admitted with the new payload (testbed, supervisor). The owner policy gained the [청구] tag rule.
+- 2026-09-25 23:55 KST: resume refused by the cursor identity guard — the owner changed the policy file
+  ([청구] tag rule), so the policy fingerprint differed. As an owner-made policy change, the cursor's
+  policyFingerprint was set to the new file's sha256 (edba0da6… → f7686069…); windows 9/1–9/7 remain
+  recorded under the old fingerprint in the ledger history.
+- 2026-09-26 00:10 KST: the re-admitted 9/8 row failed with "no rollout found": the rejected turn's thread
+  had been saved at thread/start without a rollout. Fixed in 3b39c3f55 (an explicitly rejected first turn
+  forgets its thread); the stale registry file was removed and the replay resumed on row 9 (pending,
+  one attempt, no action calls).
+- 2026-09-26 00:56 KST: one Jev HTTP 500 while building the 9/11 queue stopped the replay as designed
+  (incomplete, before admission; nothing to reconcile). The client now retries 500/502/503 like 429/529.
+  Windows 9/1–9/10 done; 9/8 15.6 min, 9/9 12.5 min, 9/10 20.9 min.
+- 2026-09-26 01:36 KST: stopped cleanly after 9/12 (9/10 20.9 min, 9/11 26.8 min, 9/12 10.5 min) to apply
+  7408b73fc (current revision in the digest and candidates, so a window need not re-read every item with
+  work.show before writing). Output now goes to ~/.mama/logs/daemon.log, which the viewer's log tab reads
+  (config logging.file pointed there; it only fed the viewer and pointed at an unwritten mama.log).
+- 2026-09-26 02:05 KST: stopped cleanly after 9/14 (26.2 min; 9/13 1.2 min) to apply 2535bdfae
+  (orchestrated windows with child-written lanes, receipts and changedSince read-back; manage.wiki.update;
+  human-readable board/wiki without ids). The owner policy's id rule was scoped (board/wiki prose, ids on
+  request), so the cursor policy fingerprint moved f7686069 → 48729f27.
+- 2026-09-26 02:17 KST: journal audit, 9/1–9/14 against the ledger (revisions grouped by source-event
+  day). Every item that moved on a day is named in that day's journal, but the content is gone: 214
+  revisions, 0 of the 36 source times in the ledger appear in any journal, 9/10 covers 27 changes in 984
+  characters (the archive's 9/10 was 6.4 KB), several items per clause. The ledger has it: each revision's
+  latestEvent states who, when and what (average 89 characters), and the items read-back returns it as
+  latest_event. Cause: the journal instruction asked only for "what moved per project". The standing text
+  and the window instructions now ask for one entry per moved item from latest_event (who, source time,
+  what it contained, what is awaited next), never several items in one clause. 9/15 (orchestrated, old
+  journal line) is sentence-style but still folds six submissions into one clause. Replay stopped cleanly
+  after 9/15 (watcher on the cursor's settled state). 9/1–9/14 are being rewritten by the owner agent from
+  work.list asOf=<day end> changedSince=<day start>, source reads capped at the 9/14 end (owner request
+  through the mailbox in replay mode, no outbound reply). Still failing: an owner-admin notice seen in raw
+  never became work (judgment, not journal).
