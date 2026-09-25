@@ -52,6 +52,7 @@ export interface ConnectorRuntime {
   readonly registry: ConnectorRegistry;
   readonly scheduler: PollingScheduler;
   readonly enabledConnectorNames: readonly string[];
+  readonly channelCounts: Readonly<Record<string, number>>;
   pollNow(): Promise<void>;
   stop(): Promise<void>;
 }
@@ -196,6 +197,9 @@ export async function startConnectorRuntime(
       registry,
       scheduler,
       enabledConnectorNames,
+      channelCounts: Object.fromEntries(
+        enabledConnectorNames.map((name) => [name, Object.keys(channelConfigs[name] ?? {}).length])
+      ),
       pollNow: () => scheduler.pollAll(registry, channelConfigs, accept),
       stop: async () => {
         if (stopped) return;

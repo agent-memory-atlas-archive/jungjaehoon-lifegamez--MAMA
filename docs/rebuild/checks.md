@@ -256,3 +256,10 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Run 3 stopped at delta 32: 50 refs read one call each, aborted by the core 50-call emergency cap before
   any write (model run: source.read 50, no writes). Fixed with batched source.read and the cap removed;
   row 32 returned to pending for re-delivery (testbed, supervisor).
+
+## W10 — 2026-09-25
+
+- Result: the carried Tasks drawer now loads the archive-compatible task detail path and renders one event-time-ordered History entry per revision, including summary, reasoning, and cited observations.
+- Evidence: standalone FULL suite is 52 files / 137 tests, core is 116 / 838, MCP is 13 passed files / 121 passed and 14 skipped tests, plugin is 11 / 165; forced build, typecheck, lint, focused API tests, and the component render test pass.
+- Data path: operator tasks request `work.list(history: all)` and add `commitment_id`; drawer detail reads `work.show`, `graph.query(derived_from)`, and bounded `source.read` slices, projecting event-time Created/Updated and source channels/observation ids.
+- Still open: supervisor replay/live owner C1/C2 evidence remains outside this viewer change; the model cache remained exactly 561768762 bytes after the full suite.

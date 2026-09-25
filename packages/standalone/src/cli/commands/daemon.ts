@@ -22,6 +22,13 @@ import { defaultConfigPath, loadConfig, type W1Config } from '../../runtime/conf
 import { ensureMamaMcpConfig, resolveActionServerPath } from '../runtime/action-mcp-config.js';
 import type { SourceDelta } from '../../connectors/framework/polling-scheduler.js';
 import { createOwnerPolicyProvider } from '../../runtime/owner-policy.js';
+import {
+  createViewerServer as createDefaultViewerServer,
+  type ViewerConnectorStatus,
+  type ViewerServer,
+  type ViewerServerOptions,
+} from '../../api/viewer-server.js';
+import { resolvePackageVersion } from '../../package-version.js';
 
 const OWNER_PRINCIPAL_ID = 'owner';
 const OWNER_AGENT_ID = 'owner-agent';
@@ -62,6 +69,7 @@ export interface DaemonIsolationOptions {
 
 export interface DaemonBootDependencies {
   createOwnerRuntime?: (options: OwnerRuntimeOptions) => Promise<OwnerRuntime>;
+  createViewerServer?: (options: ViewerServerOptions) => ViewerServer;
   startConnectorRuntime?: (options: ConnectorRuntimeOptions) => Promise<ConnectorRuntime>;
   createTelegramGateway?: (options: TelegramGatewayOptions) => DaemonGateway;
   ensureIsolation?: (options: DaemonIsolationOptions) => void;
@@ -89,6 +97,7 @@ export interface DaemonHandle {
   readonly config: W1Config;
   readonly paths: DaemonPaths;
   readonly owner: OwnerRuntime;
+  readonly viewer: ViewerServer | null;
   readonly connectors: ConnectorRuntime | null;
   readonly gateway: DaemonGateway | null;
   stop(): Promise<void>;
@@ -215,9 +224,11 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
   let config: W1Config;
   let paths: DaemonPaths;
   let owner: OwnerRuntime | undefined;
+  let viewer: ViewerServer | null = null;
   let connectors: ConnectorRuntime | undefined;
   let gateway: DaemonGateway | null = null;
   let stopped = false;
+  const startedAt = Date.now();
   let currentStage = 'config';
 
   const stopResources = async (): Promise<void> => {
@@ -226,6 +237,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
     const errors: unknown[] = [];
     if (gateway) await stopOne(logger, 'telegram', () => gateway!.stop(), errors);
     if (connectors) await stopOne(logger, 'connectors', () => connectors!.stop(), errors);
+    if (viewer) await stopOne(logger, 'viewer', () => viewer!.stop(), errors);
     if (owner) await stopOne(logger, 'owner_runtime', () => owner!.stop(), errors);
     if (errors.length > 0) throw new AggregateError(errors, 'Daemon shutdown failed');
   };
@@ -295,11 +307,51 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
         config,
         paths,
         owner,
+        viewer: null,
         connectors: null,
         gateway: null,
         stop: stopResources,
       };
     }
+
+    currentStage = 'viewer';
+    const viewerFactory = dependencies.createViewerServer ?? createDefaultViewerServer;
+    viewer = viewerFactory({
+      dispatch: owner.surface.dispatch,
+      ownerAccess: owner.surface.ownerAccess,
+      logPath: config.logging.file,
+      getRuntimeStatus: () => ({
+        running: true,
+        version: resolvePackageVersion(),
+        backend: config.agent.backend,
+        model: config.agent.model,
+        startedAt,
+        health: null,
+        connectors: (connectors?.enabledConnectorNames ?? []).map((name) => ({
+          name,
+          enabled: true,
+          state: connectors?.registry.get(name) ? ('connected' as const) : ('unknown' as const),
+        })),
+      }),
+      getConnectorStatus: async (): Promise<ViewerConnectorStatus[]> => {
+        if (!connectors) return [];
+        const connectorRuntime = connectors;
+        const health = await connectorRuntime.registry.healthCheckAll();
+        return connectorRuntime.enabledConnectorNames.map((name) => {
+          const current = health[name];
+          return {
+            name,
+            enabled: true,
+            healthy: current?.healthy === true,
+            lastPoll: current?.lastPollTime?.toISOString() ?? null,
+            channelCount: connectorRuntime.channelCounts[name] ?? null,
+          };
+        });
+      },
+    });
+    await viewer.start();
+    logger.info(`viewer server listening on port=${String(viewer.port)}`);
+    stage(logger, 'viewer');
 
     currentStage = 'connectors';
     const acceptSourceDelta = async (delta: SourceDelta): Promise<void> => {
@@ -351,6 +403,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
       config,
       paths,
       owner,
+      viewer,
       connectors,
       gateway,
       stop: stopResources,

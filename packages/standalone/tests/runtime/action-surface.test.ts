@@ -3,7 +3,7 @@ import type { DatabaseInstance, Knowledge } from '@jungjaehoon/mama-core';
 import { createActionSurface } from '../../src/runtime/action-surface.js';
 
 describe('W1 action surface', () => {
-  it('exposes exactly the eight owner actions and derives host tools from them', () => {
+  it('exposes the read-only viewer action and derives host tools from the catalog', () => {
     const surface = createActionSurface({
       adapter: {} as DatabaseInstance,
       knowledge: {} as Knowledge,
@@ -14,6 +14,7 @@ describe('W1 action surface', () => {
     });
     const expected = [
       'graph.query',
+      'memory.checkpoint.list',
       'memory.save',
       'memory.search',
       'source.read',
@@ -21,6 +22,7 @@ describe('W1 action surface', () => {
       'work.create',
       'work.list',
       'work.revise',
+      'work.show',
     ];
 
     expect(
