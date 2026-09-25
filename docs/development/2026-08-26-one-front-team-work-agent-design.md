@@ -336,7 +336,7 @@ complete v1 team product from the access foundation alone.
 ### v1 Phase 2b: access foundation
 
 - Follow the reviewed
-  [human-team access plan](2026-08-26-phase2b-human-team-access-plan.md).
+  human-team access plan (removed 2026-09-25; in git history).
 - `principal_scope_grants` or an equivalent explicit grant authority;
 - server-computed effective scope;
 - member-private and source grants;

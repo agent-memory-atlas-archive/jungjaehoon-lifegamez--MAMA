@@ -407,7 +407,6 @@ Existing decisions remain valid across all package updates. SQLite schema change
 ## References
 
 - [Developer Playbook](../development/developer-playbook.md) - Architecture & standards
-- [Deployment Architecture](../development/deployment-architecture.md) - How MAMA is distributed
 - [Testing Guide](../development/testing.md) - Test suite details
 - [CLAUDE.md](../../CLAUDE.md) - Development guidance
 

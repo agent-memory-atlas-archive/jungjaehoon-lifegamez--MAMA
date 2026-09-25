@@ -19,7 +19,6 @@ assistant reads that record to tell you what changed and do what you ask.
 - **[Main README](../README.md)** - Quick overview, installation, and key features
 - **[Work Agent](explanation/work-agent.md)** - Product identity, human team, Cases, and artifacts
 - **[Normative v1 Design](development/2026-08-26-one-front-team-work-agent-design.md)** - One-front team work-agent contract and roadmap boundary
-- **[Phase 2b Access Plan](development/2026-08-26-phase2b-human-team-access-plan.md)** - Human principal grants and effective-scope implementation plan
 - **[GitHub Repository](https://github.com/jungjaehoon-lifegamez/MAMA)** - Source code and issues
 
 ---
@@ -131,8 +130,6 @@ _Contributing, testing, and development guidelines_
 ### 🛠️ I Need to Operate a Live Install
 
 - [Entity Substrate Runbook](operations/entity-substrate-runbook.md)
-- [Channel Key Backfill](operations/channel-key-backfill.md) - repairing channels stored under
-  a display name instead of their upstream id
 
 ### 📖 I Need API/Command Reference
 
