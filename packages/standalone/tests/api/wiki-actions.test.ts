@@ -329,6 +329,20 @@ describe('manage.wiki.* action registrations', () => {
       expect(stale).toMatchObject({ status: 'failed' });
       const staleMessage = (stale as { error: { message: string } }).error.message;
       expect(staleMessage).toContain(`contentVersion is now ${afterPage.version}`);
+      const unknownSection = await call(
+        {
+          action: 'manage.wiki.update',
+          input: {
+            path: 'projects/example.md',
+            expectedContentVersion: afterPage.version,
+            edits: [{ section: '2026-09-11', append: '- a dated line' }],
+          },
+        },
+        { access: ownerAccess }
+      );
+      expect((unknownSection as { error: { message: string } }).error.message).toContain(
+        "this page's headings: ## Current state | ## History"
+      );
       expect(staleMessage).toContain('- 9/10: draft started.\\n- 9/11: client approved the draft.');
     } finally {
       rmSync(root, { recursive: true, force: true });

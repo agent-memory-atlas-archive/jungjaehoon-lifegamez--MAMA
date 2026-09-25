@@ -138,7 +138,11 @@ export function wikiActionRegistrations(ports: WikiPorts): ActionRegistration[] 
                 type: 'object',
                 required: ['section'],
                 properties: {
-                  section: { type: 'string', pattern: '^#{1,6} \\S' },
+                  section: {
+                    type: 'string',
+                    minLength: 1,
+                    description: 'The exact heading line of the page, e.g. "## History"',
+                  },
                   append: { type: 'string', minLength: 1 },
                   replace: { type: 'string', minLength: 1 },
                 },
@@ -188,6 +192,17 @@ export function wikiActionRegistrations(ports: WikiPorts): ActionRegistration[] 
             `Wiki page changed since it was read: ${path}; contentVersion is now ${current.version}; current text of the sections you edit: ${JSON.stringify(sections)}`
           );
         }
+        let content: string;
+        try {
+          content = applyWikiEdits(page.body, body.edits);
+        } catch (error) {
+          // Name the page's headings so the retry needs no whole-page read.
+          const headings = page.body.split('\n').filter((line) => /^#{1,6}\s/.test(line));
+          throw namedError(
+            'TOOL_ERROR',
+            `${error instanceof Error ? error.message : 'Wiki edit failed'}; this page's headings: ${headings.join(' | ')}`
+          );
+        }
         const adapter =
           ports.publishAdapter ?? createWikiPublishAdapter({ publisher: ports.publisher });
         try {
@@ -198,7 +213,7 @@ export function wikiActionRegistrations(ports: WikiPorts): ActionRegistration[] 
                 title: page.title,
                 ...(page.type === null ? {} : { type: page.type }),
                 ...(page.confidence === null ? {} : { confidence: page.confidence }),
-                content: applyWikiEdits(page.body, body.edits),
+                content,
                 expectedContentVersion: current.version,
                 sourceIds: [...new Set([...page.sourceIds, ...(body.sourceIds ?? [])])],
               },

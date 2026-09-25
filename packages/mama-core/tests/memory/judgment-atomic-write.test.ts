@@ -141,7 +141,10 @@ describe('Story R1/TG-03/TG-04/TG-05/TG-06: atomic agent judgment writes', () =>
         access,
         { adapter: getAdapter() }
       )
-    ).rejects.toMatchObject({ code: 'REFERENCE_NOT_FOUND' });
+    ).rejects.toMatchObject({
+      code: 'REFERENCE_NOT_FOUND',
+      message: expect.stringContaining('registry missing'),
+    });
     expect(getAdapter().prepare('SELECT COUNT(*) AS n FROM decisions').get()).toEqual({ n: 0 });
   });
 

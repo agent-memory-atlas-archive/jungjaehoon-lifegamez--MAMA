@@ -507,7 +507,10 @@ export async function reviseWork(
   if (
     readWork(options.adapter, { commitmentId: command.commitmentId }, access).items.length === 0
   ) {
-    throw new JudgmentError('REFERENCE_NOT_FOUND', 'Commitment is unavailable');
+    throw new JudgmentError(
+      'REFERENCE_NOT_FOUND',
+      `Commitment is unavailable: ${command.commitmentId}`
+    );
   }
   const receipt = await appendJudgment(
     {
@@ -542,7 +545,10 @@ export async function withdrawWork(
   if (
     readWork(options.adapter, { commitmentId: command.commitmentId }, access).items.length === 0
   ) {
-    throw new JudgmentError('REFERENCE_NOT_FOUND', 'Commitment is unavailable');
+    throw new JudgmentError(
+      'REFERENCE_NOT_FOUND',
+      `Commitment is unavailable: ${command.commitmentId}`
+    );
   }
   const receipt = await appendJudgment(
     {

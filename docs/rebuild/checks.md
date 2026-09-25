@@ -435,3 +435,11 @@ The implementation writes raw/index data during import only. Replay is the owner
   read (seen on the journal and a project page). It now returns contentVersion, and a stale refusal
   carries the current version and the current text of the sections being edited. 9/18: 24 min, stopped
   at its boundary to apply this.
+- 2026-09-26 04:40 KST: windows 9/19 7 min (1 item), 9/20 14 (7), 9/21 19 (12), 9/22 12. Per item 9/21 is
+  no faster than 9/17 (23 items, 24 min). The main's rollout shows refused calls, each a 20–60 s round:
+  seven in 9/21 alone. Across windows: wiki section not a heading line or not on the page (7; the refusal
+  did not name the page's headings, so the agent re-read the page), an unavailable reference (6; the
+  agent had dropped the last character of an observation id and the refusal did not say which reference),
+  items limit over 50 (2), a channel name passed as the connector (2, left as designed: grants are not
+  echoed). The section refusal now lists the page's headings (the heading pattern moved from the schema
+  to that check) and the reference refusals name the caller's own kind and id.

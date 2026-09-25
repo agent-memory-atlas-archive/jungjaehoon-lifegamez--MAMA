@@ -367,7 +367,11 @@ function validateLinks(
     }
     keys.add(key);
     if (!referenceExists(adapter, link.target, admittedScopeIds)) {
-      throw new JudgmentError('REFERENCE_NOT_FOUND', 'A judgment reference is unavailable');
+      // Echo only the caller's own input: an unavailable id reads the same whether wrong or outside scope.
+      throw new JudgmentError(
+        'REFERENCE_NOT_FOUND',
+        `A judgment reference is unavailable: ${link.target.kind} ${link.target.id}`
+      );
     }
   }
 }
@@ -818,7 +822,10 @@ async function appendJudgmentOnAdapter(
           .prepare('SELECT current_revision, withdrawn FROM commitments WHERE commitment_id = ?')
           .get(work.commitmentId) as { current_revision: number; withdrawn: number } | undefined;
         if (!current) {
-          throw new JudgmentError('REFERENCE_NOT_FOUND', 'Commitment is unavailable');
+          throw new JudgmentError(
+            'REFERENCE_NOT_FOUND',
+            `Commitment is unavailable: ${work.commitmentId}`
+          );
         }
         if (current.current_revision !== work.expectedRevision) {
           throw new JudgmentError('STALE_REVISION', 'Commitment revision is stale');
