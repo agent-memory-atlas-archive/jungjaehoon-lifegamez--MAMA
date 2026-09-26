@@ -114,6 +114,71 @@ describe('Story R2: action catalog and dispatch roundtrip', () => {
     });
   });
 
+  it('defaults work.show to the compact revision chain', async () => {
+    const created = await knowledge.appendJudgment(
+      {
+        commandId: 'cmd-show-create',
+        topic: 'topic-show',
+        summary: 'show create',
+        recordKind: 'commitment',
+        work: { operation: 'create', set: { title: 'Show work', status: 'pending' } },
+        scopes: ACCESS.scopes,
+      },
+      ACCESS
+    );
+    await knowledge.appendJudgment(
+      {
+        commandId: 'cmd-show-revise',
+        topic: 'topic-show',
+        summary: 'show revise',
+        recordKind: 'commitment',
+        work: {
+          operation: 'revise',
+          commitmentId: created.work!.commitmentId,
+          expectedRevision: 1,
+          set: { status: 'done' },
+        },
+        scopes: ACCESS.scopes,
+      },
+      ACCESS
+    );
+
+    const catalog = createCatalog(coreActionRegistrations(knowledge, getAdapter()));
+    const result = await createDispatcher(catalog)(
+      {
+        action: 'work.show',
+        operationId: 'op-show-default',
+        input: { commitmentId: created.work!.commitmentId },
+      },
+      { access: ACCESS }
+    );
+
+    expect(result.status).toBe('completed');
+    if (result.status === 'completed') {
+      const item = (result.data as { items: Array<Record<string, unknown>> }).items[0]!;
+      expect(item.history).toBeUndefined();
+      expect(item.chain).toEqual([
+        {
+          revision: 1,
+          operation: 'create',
+          eventDatetime: null,
+          status: 'pending',
+          stage: null,
+          summary: 'show create',
+        },
+        {
+          revision: 2,
+          operation: 'revise',
+          eventDatetime: null,
+          status: 'done',
+          stage: null,
+          summary: 'show revise',
+        },
+      ]);
+    }
+    expect(catalog.describe('work.show').summary).toContain('revision chain by default');
+  });
+
   it('describes every memory, work, and graph query input field', () => {
     const catalog = createCatalog(coreActionRegistrations(knowledge, getAdapter()));
     const visit = (schema: unknown, path: string): void => {

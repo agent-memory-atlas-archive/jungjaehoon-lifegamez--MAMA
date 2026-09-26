@@ -1765,7 +1765,7 @@ export function coreActionRegistrations(
       contract: {
         name: 'work.show',
         summary:
-          'One commitment by commitmentId (or rowId): current head, or every revision with history: all.',
+          'One commitment by commitmentId (or rowId): the revision chain by default, or every revision with full values when history: all.',
         inputSchema: workShowSchema,
         examples: [
           { title: 'One task as it stands', input: { commitmentId: 'commitment_…' } },
@@ -1783,7 +1783,10 @@ export function coreActionRegistrations(
             'work.show requires commitmentId or rowId: name the commitment'
           );
         }
-        return knowledge.readWork(body, context.access);
+        return knowledge.readWork(
+          body.history === undefined ? { ...body, history: 'chain' } : body,
+          context.access
+        );
       },
     },
     ...(effects !== undefined

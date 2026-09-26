@@ -501,3 +501,23 @@ The implementation writes raw/index data during import only. Replay is the owner
   replay lessons link the owner observation, live ones carry the host-recorded source message). Live
   proof pending: a Telegram answer without ids and a lesson row from a live correction after the daemon
   picks up the new standing text (new session on the prompt change).
+- 2026-09-26 11:20 KST: R1/R2 live (daemon restarted on the new standing text; new Codex thread). Four
+  owner turns on Telegram, all without ids: "<asset-2> SSR1" 23 s (was 56 s), its feedback 41 s — now
+  in order: 9/11 side-hair feedback, 9/14 PDF (details not in the ledger), second draft, 9/17 FIX; the
+  agent read work.show history:"all" this time. "전체보고" 42 s but in chat style; the owner corrected
+  it and the agent saved a lesson in that turn (kind lesson, provenance source_message_ref = the
+  correction's Telegram message) and resent a report-style version. Still failing: the Korean name
+  missed in work.list text again (the agent fell back to "SSR1", 50 rows); the full-report format is
+  not known (R5); the board slots are from 9/25 (no live board pass, R4); lesson recall after a reset is
+  unbuilt (R3).
+- R9 code check: readWork keeps its current default, exposes an internal chain mode, and work.show
+  defaults to the compact revision chain while history: all keeps full assignment values.
+- Evidence: seven-revision set/clear/withdraw fold, inaccessible judgment summary nulling, and the
+  work.show catalog roundtrip pass; knowledge/api suites pass 24 files / 225 tests and core tsc passes.
+- Still open: a fresh live owner C2 turn using the new default has not been run in this code-only change.
+- 2026-09-26 12:00 KST: owner-reports R9 (Codex implemented; supervisor removed a copied visibility
+  query and a wrapper). work.show now returns the revision chain by default — per revision: number,
+  operation, event time (null for legacy rows), the status and stage in effect after it (withdraw →
+  cancelled), and the revision's summary when its record is visible to the caller; history "all" keeps
+  the full values; readWork's own default is unchanged for other callers. Core knowledge+api 225/225,
+  typecheck clean. Live proof pending with R8 (one daemon restart for both).

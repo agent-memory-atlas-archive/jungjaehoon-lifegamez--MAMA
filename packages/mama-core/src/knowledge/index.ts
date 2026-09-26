@@ -114,6 +114,7 @@ export {
 } from './work-dates.js';
 export type {
   CommitmentPage,
+  CommitmentChainEntry,
   CommitmentRevision,
   CommitmentView,
   CreateWorkCommand,

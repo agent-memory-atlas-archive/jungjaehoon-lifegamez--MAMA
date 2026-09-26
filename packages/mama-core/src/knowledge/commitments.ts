@@ -42,6 +42,16 @@ export interface CommitmentRevision {
   createdAt: number;
 }
 
+/** The compact lifecycle entry returned for a progress-oriented chain read. */
+export interface CommitmentChainEntry {
+  revision: number;
+  operation: CommitmentRevision['operation'];
+  eventDatetime: number | null;
+  status: string | null;
+  stage: string | null;
+  summary: string | null;
+}
+
 export interface CommitmentView {
   commitmentId: string;
   rowId: number;
@@ -56,6 +66,8 @@ export interface CommitmentView {
   updatedAt: number;
   /** Present only when the caller asked for `history: 'all'`. */
   history?: CommitmentRevision[];
+  /** Present only when the caller asked for the internal `history: 'chain'`. */
+  chain?: CommitmentChainEntry[];
 }
 
 export interface CommitmentPage {
@@ -79,7 +91,7 @@ export interface WorkRead {
   rowId?: number;
   /** Only revisions effective at or before this epoch millisecond are folded. */
   asOf?: number;
-  history?: 'current' | 'all';
+  history?: 'current' | 'chain' | 'all';
   limit?: number;
   cursor?: string;
 }
@@ -151,6 +163,15 @@ function parseClear(json: string): Array<keyof OwnerWorkPatch> {
   return parsed as Array<keyof OwnerWorkPatch>;
 }
 
+function applyRevision(values: Record<string, unknown>, revision: CommitmentRevision): void {
+  for (const [field, value] of Object.entries(revision.set)) {
+    values[field] = value;
+  }
+  for (const field of revision.clear) {
+    delete values[field as string];
+  }
+}
+
 /**
  * Fold the assignments into the values they leave behind.
  *
@@ -161,14 +182,46 @@ function parseClear(json: string): Array<keyof OwnerWorkPatch> {
 function foldAssignments(revisions: readonly CommitmentRevision[]): OwnerWorkPatch {
   const values: Record<string, unknown> = {};
   for (const revision of revisions) {
-    for (const [field, value] of Object.entries(revision.set)) {
-      values[field] = value;
-    }
-    for (const field of revision.clear) {
-      delete values[field as string];
-    }
+    applyRevision(values, revision);
   }
   return values as OwnerWorkPatch;
+}
+
+function stringField(values: Record<string, unknown>, field: string): string | null {
+  const value = values[field];
+  return typeof value === 'string' ? value : null;
+}
+
+/** A revision's summary, only when its record is visible to the caller. */
+function readJudgmentSummary(
+  adapter: DatabaseAdapter,
+  recordId: string,
+  admitted: readonly string[]
+): string | null {
+  if (!recordVisible(adapter, recordId, admitted)) return null;
+  const row = adapter.prepare('SELECT summary FROM decisions WHERE id = ?').get(recordId) as
+    | { summary: unknown }
+    | undefined;
+  return row && typeof row.summary === 'string' ? row.summary : null;
+}
+
+function buildChain(
+  adapter: DatabaseAdapter,
+  revisions: readonly CommitmentRevision[],
+  admitted: readonly string[]
+): CommitmentChainEntry[] {
+  const values: Record<string, unknown> = {};
+  return revisions.map((revision) => {
+    applyRevision(values, revision);
+    return {
+      revision: revision.revision,
+      operation: revision.operation,
+      eventDatetime: revision.eventDatetime,
+      status: revision.operation === 'withdraw' ? 'cancelled' : stringField(values, 'status'),
+      stage: stringField(values, 'stage'),
+      summary: readJudgmentSummary(adapter, revision.recordRef.id, admitted),
+    };
+  });
 }
 
 /**
@@ -179,14 +232,14 @@ function foldAssignments(revisions: readonly CommitmentRevision[]): OwnerWorkPat
  * no partition boundary to violate and stays readable, exactly as
  * `referenceExists` decides it for a memory ref.
  */
-function headRecordVisible(
+function recordVisible(
   adapter: DatabaseAdapter,
-  headRecordId: string,
+  recordId: string,
   admitted: readonly string[]
 ): boolean {
   const row = adapter
     .prepare('SELECT COUNT(*) AS bindings FROM memory_scope_bindings WHERE memory_id = ?')
-    .get(headRecordId) as { bindings: number } | undefined;
+    .get(recordId) as { bindings: number } | undefined;
   if (!row) return false;
   if (row.bindings === 0) return true;
   if (admitted.length === 0) return false;
@@ -197,7 +250,7 @@ function headRecordVisible(
         `SELECT 1 FROM memory_scope_bindings
           WHERE memory_id = ? AND scope_id IN (${placeholders}) LIMIT 1`
       )
-      .get(headRecordId, ...admitted) !== undefined
+      .get(recordId, ...admitted) !== undefined
   );
 }
 
@@ -219,8 +272,14 @@ export function readWork(
   const afterTaskId = parseCursor(query.cursor);
   const asOf = parseAsOf(query.asOf);
   const wantsHistory = query.history === 'all';
-  if (query.history !== undefined && query.history !== 'all' && query.history !== 'current') {
-    throw new JudgmentError('INVALID_COMMAND', "history must be 'current' or 'all'");
+  const wantsChain = query.history === 'chain';
+  if (
+    query.history !== undefined &&
+    query.history !== 'all' &&
+    query.history !== 'current' &&
+    query.history !== 'chain'
+  ) {
+    throw new JudgmentError('INVALID_COMMAND', "history must be 'current', 'chain', or 'all'");
   }
   if (query.commitmentId !== undefined && query.rowId !== undefined) {
     throw new JudgmentError('INVALID_COMMAND', 'Ask by commitmentId or rowId, not both');
@@ -253,7 +312,7 @@ export function readWork(
   const items: CommitmentView[] = [];
   let scopeHidden = 0;
   for (const row of pageRows) {
-    if (!headRecordVisible(adapter, row.head_record_id, admitted)) {
+    if (!recordVisible(adapter, row.head_record_id, admitted)) {
       scopeHidden += 1;
       continue;
     }
@@ -296,6 +355,7 @@ export function readWork(
       createdAt: row.created_at,
       updatedAt: asOf === null ? row.updated_at : (head.eventDatetime ?? head.createdAt),
       ...(wantsHistory ? { history: revisions } : {}),
+      ...(wantsChain ? { chain: buildChain(adapter, revisions, admitted) } : {}),
     });
   }
 

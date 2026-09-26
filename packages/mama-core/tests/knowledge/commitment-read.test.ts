@@ -7,7 +7,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { getAdapter } from '../../src/db-manager.js';
+import { ensureMemoryScope, getAdapter } from '../../src/db-manager.js';
 import { appendJudgment } from '../../src/knowledge/judgments.js';
 import { readWork } from '../../src/knowledge/commitments.js';
 import { cleanupTestDB, initTestDB } from '../helpers/test-utils.js';
@@ -197,6 +197,239 @@ describe('knowledge/commitments: reading owner work back', () => {
       'Corrected title',
     ]);
     expect(full.history?.map((revision) => revision.operation)).toEqual(['create', 'revise']);
+  });
+
+  it('returns a compact chain with lifecycle state folded through seven revisions', async () => {
+    const commitmentId = await createCommitment('cmd-chain-create', {
+      title: 'Follow the rollout',
+      status: 'pending',
+      stage: 'intake',
+    });
+    await appendJudgment(
+      {
+        commandId: 'cmd-chain-start',
+        topic: 'topic-chain',
+        summary: 'start the rollout',
+        recordKind: 'commitment',
+        eventDatetime: 2_000,
+        work: {
+          operation: 'revise',
+          commitmentId,
+          expectedRevision: 1,
+          set: { status: 'in_progress' },
+        },
+        scopes: access.scopes,
+      },
+      access,
+      { adapter: getAdapter() }
+    );
+    await appendJudgment(
+      {
+        commandId: 'cmd-chain-draft',
+        topic: 'topic-chain',
+        summary: 'move to draft',
+        recordKind: 'commitment',
+        work: {
+          operation: 'revise',
+          commitmentId,
+          expectedRevision: 2,
+          set: { stage: 'draft' },
+        },
+        scopes: access.scopes,
+      },
+      access,
+      { adapter: getAdapter() }
+    );
+    await appendJudgment(
+      {
+        commandId: 'cmd-chain-clear-stage',
+        topic: 'topic-chain',
+        summary: 'clear the draft stage',
+        recordKind: 'commitment',
+        eventDatetime: 4_000,
+        work: {
+          operation: 'revise',
+          commitmentId,
+          expectedRevision: 3,
+          clear: ['stage'],
+        },
+        scopes: access.scopes,
+      },
+      access,
+      { adapter: getAdapter() }
+    );
+    await appendJudgment(
+      {
+        commandId: 'cmd-chain-review',
+        topic: 'topic-chain',
+        summary: 'send for review',
+        recordKind: 'commitment',
+        eventDatetime: 5_000,
+        work: {
+          operation: 'revise',
+          commitmentId,
+          expectedRevision: 4,
+          set: { status: 'review', stage: 'review' },
+        },
+        scopes: access.scopes,
+      },
+      access,
+      { adapter: getAdapter() }
+    );
+    await appendJudgment(
+      {
+        commandId: 'cmd-chain-clear-status',
+        topic: 'topic-chain',
+        summary: 'clear the review status',
+        recordKind: 'commitment',
+        eventDatetime: 6_000,
+        work: {
+          operation: 'revise',
+          commitmentId,
+          expectedRevision: 5,
+          clear: ['status'],
+        },
+        scopes: access.scopes,
+      },
+      access,
+      { adapter: getAdapter() }
+    );
+    await appendJudgment(
+      {
+        commandId: 'cmd-chain-withdraw',
+        topic: 'topic-chain',
+        summary: 'withdraw the rollout',
+        recordKind: 'commitment',
+        eventDatetime: 7_000,
+        work: { operation: 'withdraw', commitmentId, expectedRevision: 6 },
+        scopes: access.scopes,
+      },
+      access,
+      { adapter: getAdapter() }
+    );
+
+    const chain = readWork(getAdapter(), { commitmentId, history: 'chain' }, access).items[0];
+
+    expect(chain.history).toBeUndefined();
+    expect(chain.chain).toEqual([
+      {
+        revision: 1,
+        operation: 'create',
+        eventDatetime: null,
+        status: 'pending',
+        stage: 'intake',
+        summary: 'summary-cmd-chain-create',
+      },
+      {
+        revision: 2,
+        operation: 'revise',
+        eventDatetime: 2_000,
+        status: 'in_progress',
+        stage: 'intake',
+        summary: 'start the rollout',
+      },
+      {
+        revision: 3,
+        operation: 'revise',
+        eventDatetime: null,
+        status: 'in_progress',
+        stage: 'draft',
+        summary: 'move to draft',
+      },
+      {
+        revision: 4,
+        operation: 'revise',
+        eventDatetime: 4_000,
+        status: 'in_progress',
+        stage: null,
+        summary: 'clear the draft stage',
+      },
+      {
+        revision: 5,
+        operation: 'revise',
+        eventDatetime: 5_000,
+        status: 'review',
+        stage: 'review',
+        summary: 'send for review',
+      },
+      {
+        revision: 6,
+        operation: 'revise',
+        eventDatetime: 6_000,
+        status: null,
+        stage: 'review',
+        summary: 'clear the review status',
+      },
+      {
+        revision: 7,
+        operation: 'withdraw',
+        eventDatetime: 7_000,
+        status: 'cancelled',
+        stage: 'review',
+        summary: 'withdraw the rollout',
+      },
+    ]);
+  });
+
+  it('returns null for a chain summary whose judgment record is outside caller access', async () => {
+    const commitmentId = await createCommitment('cmd-chain-access-create', {
+      title: 'Readable work',
+    });
+    await appendJudgment(
+      {
+        commandId: 'cmd-chain-access-hidden',
+        topic: 'topic-chain-access',
+        summary: 'hidden middle revision',
+        recordKind: 'commitment',
+        work: {
+          operation: 'revise',
+          commitmentId,
+          expectedRevision: 1,
+          set: { title: 'Hidden revision' },
+        },
+        scopes: access.scopes,
+      },
+      access,
+      { adapter: getAdapter() }
+    );
+    await appendJudgment(
+      {
+        commandId: 'cmd-chain-access-head',
+        topic: 'topic-chain-access',
+        summary: 'readable head revision',
+        recordKind: 'commitment',
+        work: {
+          operation: 'revise',
+          commitmentId,
+          expectedRevision: 2,
+          set: { title: 'Readable revision' },
+        },
+        scopes: access.scopes,
+      },
+      access,
+      { adapter: getAdapter() }
+    );
+
+    const hiddenRecord = getAdapter()
+      .prepare(
+        'SELECT record_id FROM commitment_assignments WHERE commitment_id = ? AND revision = 2'
+      )
+      .get(commitmentId) as { record_id: string };
+    const otherScopeId = ensureMemoryScope(getAdapter(), 'project', 'scope-other');
+    getAdapter()
+      .prepare('DELETE FROM memory_scope_bindings WHERE memory_id = ?')
+      .run(hiddenRecord.record_id);
+    getAdapter()
+      .prepare('INSERT INTO memory_scope_bindings (memory_id, scope_id) VALUES (?, ?)')
+      .run(hiddenRecord.record_id, otherScopeId);
+
+    const chain = readWork(getAdapter(), { commitmentId, history: 'chain' }, access).items[0];
+
+    expect(chain.chain?.map((revision) => revision.summary)).toEqual([
+      'summary-cmd-chain-access-create',
+      null,
+      'readable head revision',
+    ]);
   });
 
   it('asOf answers with the values that were current then, not with today', async () => {
