@@ -288,6 +288,8 @@ export type WorkGraphNodeData =
   | {
       kind: 'memory';
       recordKind: 'legacy' | 'judgment' | 'commitment';
+      /** Stored classification, independent of the graph reference kind. */
+      memoryKind?: string | null;
       topic: string;
       summary: string;
       recordedAt: number;

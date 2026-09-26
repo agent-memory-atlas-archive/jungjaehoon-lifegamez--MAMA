@@ -174,7 +174,12 @@ describe('daemon bootstrap', () => {
       info: (line) => logs.push(`info:${line}`),
       error: (line) => logs.push(`error:${line}`),
     };
-    const owner = ownerDouble(order);
+    const memoryStats = { total: 7, thisWeek: 2 };
+    const memoryRead = vi.fn(() => memoryStats);
+    const owner = {
+      ...ownerDouble(order),
+      database: { adapter: { prepare: vi.fn(() => ({ get: memoryRead })) } },
+    };
     const viewer = viewerDouble(order);
     const connectors = {
       stop: vi.fn(async () => {
@@ -202,7 +207,14 @@ describe('daemon bootstrap', () => {
           order.push('owner:start');
           return owner as never;
         }),
-        createViewerServer: vi.fn(() => viewer as never),
+        createViewerServer: vi.fn((options) => {
+          expect(options.getMemoryStats?.()).toEqual(memoryStats);
+          expect(owner.database.adapter.prepare).toHaveBeenCalledWith(
+            expect.stringContaining('FROM decisions')
+          );
+          expect(memoryRead).toHaveBeenCalledWith(expect.any(Number), expect.any(Number));
+          return viewer as never;
+        }),
         startConnectorRuntime: vi.fn(async () => {
           order.push('connectors:start');
           return connectors as never;

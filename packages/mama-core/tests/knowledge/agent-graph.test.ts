@@ -130,6 +130,27 @@ describe('Story M6.1: agent graph and entity resolution core', () => {
   });
 
   describe('AC #2: graph traversal applies edge filters and as_of', () => {
+    it.each(['decision', 'preference', 'constraint', 'lesson', 'fact'])(
+      'carries the stored %s kind alongside the memory reference kind',
+      (kind) => {
+        insertScopedMemory('memory-kind', 'global', 'system');
+        getAdapter().prepare('UPDATE decisions SET kind = ? WHERE id = ?').run(kind, 'memory-kind');
+        const page = queryGraph(
+          getAdapter(),
+          { view: 'detail', seeds: [{ kind: 'memory', id: 'memory-kind' }] },
+          {
+            principalId: 'owner',
+            agentId: 'owner-agent',
+            scopes: [{ kind: 'global', id: 'system' }],
+          }
+        );
+        expect(page.nodes[0]).toMatchObject({
+          ref: { kind: 'memory', id: 'memory-kind' },
+          data: { kind: 'memory', memoryKind: kind },
+        });
+      }
+    );
+
     it('shows preserved unscoped observations when the caller has the same connector-wide read as source.read', () => {
       insertScopedMemory('mem-owner-source', 'project', 'alpha');
       const observationId = appendObservationVersion(getAdapter(), {

@@ -29,6 +29,7 @@ import {
   type RevisionGraphRead,
   type ViewerEvidence,
   type ArchiveGraphResponse,
+  type ViewerMemoryStats,
 } from './viewer-data.js';
 
 const GRAPH_KINDS = new Set([
@@ -86,6 +87,7 @@ export interface ViewerServerOptions {
   viewerDirectory?: string;
   getConnectorStatus?: () => ViewerConnectorStatus[] | Promise<ViewerConnectorStatus[]>;
   getRuntimeStatus?: () => ViewerRuntimeStatus | Promise<ViewerRuntimeStatus>;
+  getMemoryStats?: () => ViewerMemoryStats | Promise<ViewerMemoryStats>;
   logPath?: string;
 }
 
@@ -888,7 +890,14 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
           ...notAvailable(),
         };
       } else if (url.pathname === '/api/dashboard/status') {
-        result = { memory: { total: null, thisWeek: null }, ...notAvailable() };
+        if (!options.getMemoryStats) {
+          throw new ViewerHttpError(
+            503,
+            'NOT_AVAILABLE',
+            'Viewer memory database is not configured'
+          );
+        }
+        result = { memory: await options.getMemoryStats() };
       } else if (url.pathname === '/api/logs/daemon') {
         result = readLogTail(options.logPath, url.searchParams);
       } else if (url.pathname === '/api/cron') {

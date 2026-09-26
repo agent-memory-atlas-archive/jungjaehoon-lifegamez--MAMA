@@ -86,26 +86,22 @@ export class GraphModule {
     }
     this.navigateToNode(btn.dataset.nodeId);
   };
-  topicColors: Record<string, string> = {};
-  colorPalette = [
-    '#FFCE00', // mama yellow (primary)
-    '#E6B800', // mama yellow-hover
-    '#FF9999', // mama blush
-    '#D4C4E0', // mama lavender-dark
-    '#22c55e', // success green
-    '#f97316', // warning orange
-    '#06b6d4', // info cyan
-    '#8b5cf6', // purple accent
-    '#ec4899', // pink accent
-    '#f59e0b', // amber
-    '#10b981', // teal
-    '#0ea5e9', // sky blue
-  ];
-  colorIndex = 0;
+  nodeColors: Record<string, string> = {
+    decision: '#60A5FA',
+    preference: '#C084FC',
+    constraint: '#FB7185',
+    lesson: '#FBBF24',
+    fact: '#2DD4BF',
+    commitment: '#FB923C',
+    observation: '#94A3B8',
+    memory: '#CBD5E1', // Legacy memories may have no stored classification.
+    registry: '#A3E635',
+  };
   edgeStyles: Record<string, EdgeStyle> = {
     supersedes: { color: '#666666', dashes: false, width: 2 },
     mentions: { color: '#6B4C9A', dashes: false, width: 2 },
     derived_from: { color: '#3A9E7E', dashes: false, width: 2 },
+    amends: { color: '#2563EB', dashes: [8, 4], width: 2 },
     refines: { color: '#B8860B', dashes: false, width: 2 },
     builds_on: { color: '#B8860B', dashes: [5, 5], width: 2.5 }, // dark goldenrod
     debates: { color: '#DC143C', dashes: [5, 5], width: 2.5 }, // crimson
@@ -169,13 +165,14 @@ export class GraphModule {
       label: n.label || n.topic || String(n.id).substring(0, 20),
       title: this.createNodeTooltip(n),
       color: {
-        background: this.getTopicColor(n.kind || n.topic),
-        border: this.getOutcomeBorderColor(n.outcome),
-        highlight: { background: this.getTopicColor(n.kind || n.topic), border: '#fff' },
+        background: this.getNodeColor(n.kind),
+        // Only a recorded outcome draws a ring; otherwise the kind colour stays visible.
+        border: this.getOutcomeBorderColor(n.outcome, this.getNodeColor(n.kind)),
+        highlight: { background: this.getNodeColor(n.kind), border: '#fff' },
       },
       size: this.getNodeSize(connectionCounts[String(n.id)] || 0),
       font: { color: '#131313', size: 14, vadjust: -2 },
-      borderWidth: 3,
+      borderWidth: n.outcome ? 3 : 1,
       data: n,
     }));
 
@@ -323,6 +320,7 @@ export class GraphModule {
     const topics = [...topicLatest.entries()].sort((a, b) => b[1] - a[1]).map(([topic]) => topic);
     this.populateTopicFilter(topics);
     this.populateDecisionList(data.nodes);
+    this.renderLegend();
 
     const stats = getElementByIdOrNull<HTMLElement>('graph-stats');
     if (stats) {
@@ -336,21 +334,86 @@ export class GraphModule {
   // Styling Utilities
   // =============================================
 
-  /**
-   * Get color for topic
-   */
-  getTopicColor(topic = ''): string {
-    if (!this.topicColors[topic]) {
-      this.topicColors[topic] = this.colorPalette[this.colorIndex % this.colorPalette.length];
-      this.colorIndex++;
+  getNodeColor(kind = 'memory'): string {
+    return this.nodeColors[kind] ?? '#CBD5E1';
+  }
+
+  /** Count the displayed data, excluding nodes hidden by filters and their edges. */
+  getLegendEntries() {
+    const visible = new Set(
+      (this.network ? this.network.body.data.nodes.get() : this.graphData.nodes)
+        .filter((node) => !node.hidden)
+        .map((node) => String(node.id))
+    );
+    const kinds = new Map<string, number>();
+    const relations = new Map<string, number>();
+    for (const node of this.graphData.nodes) {
+      if (!visible.has(String(node.id))) continue;
+      const kind = node.kind ?? 'memory';
+      kinds.set(kind, (kinds.get(kind) ?? 0) + 1);
     }
-    return this.topicColors[topic];
+    for (const edge of this.graphData.edges) {
+      if (!visible.has(String(edge.from)) || !visible.has(String(edge.to))) continue;
+      const relation = edge.relationship ?? 'default';
+      relations.set(relation, (relations.get(relation) ?? 0) + 1);
+    }
+    return {
+      nodes: [...kinds]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([kind, count]) => ({
+          kind,
+          count,
+          color: this.getNodeColor(kind),
+        })),
+      edges: [...relations]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([relationship, count]) => ({
+          relationship,
+          count,
+          ...this.getEdgeStyle(relationship),
+        })),
+    };
+  }
+
+  renderLegend(): void {
+    const container = getElementByIdOrNull<HTMLElement>('graph-legend-content');
+    if (!container) return;
+    const entries = this.getLegendEntries();
+    const section = (title: string, rows: string[]) =>
+      rows.length === 0
+        ? ''
+        : `<div><div class="text-[10px] font-semibold text-gray-600 uppercase tracking-wide mb-1.5">${title}</div>${rows.join('')}</div>`;
+    const row = (sample: string, label: string, count: number) =>
+      `<div class="flex items-center gap-2 text-xs text-gray-700 mb-1">${sample}<span class="flex-1">${escapeHtml(label)}</span><span class="tabular-nums">${count}</span></div>`;
+    container.innerHTML =
+      section(
+        'Node kinds',
+        entries.nodes.map(({ kind, count, color }) =>
+          row(
+            `<span class="w-3 h-3 rounded-full shrink-0" style="background:${color}"></span>`,
+            kind,
+            count
+          )
+        )
+      ) +
+      section(
+        'Relationships',
+        entries.edges.map(({ relationship, count, color, dashes, width }) => {
+          const dash = Array.isArray(dashes) ? dashes.join(' ') : dashes ? '5 5' : 'none';
+          return row(
+            `<svg width="24" height="10" class="shrink-0" aria-hidden="true"><line x1="0" y1="5" x2="24" y2="5" stroke="${color}" stroke-width="${width}" stroke-dasharray="${dash}" /></svg>`,
+            relationship,
+            count
+          );
+        })
+      );
+    if (entries.nodes.length === 0) container.textContent = 'No visible nodes';
   }
 
   /**
    * Get border color based on outcome
    */
-  getOutcomeBorderColor(outcome?: string): string {
+  getOutcomeBorderColor(outcome?: string, fallback = '#4a4a6a'): string {
     switch (outcome?.toLowerCase()) {
       case 'success':
         return '#22c55e';
@@ -359,7 +422,7 @@ export class GraphModule {
       case 'partial':
         return '#f59e0b';
       default:
-        return '#4a4a6a';
+        return fallback;
     }
   }
 
@@ -1018,6 +1081,7 @@ export class GraphModule {
       });
     }
 
+    this.renderLegend();
     logger.debug('[MAMA] Filtered by topic:', topic || 'all');
   }
 
@@ -1051,6 +1115,7 @@ export class GraphModule {
       });
     }
 
+    this.renderLegend();
     logger.debug('[MAMA] Filtered by outcome:', outcome || 'all');
   }
 
@@ -1091,6 +1156,7 @@ export class GraphModule {
       countEl.style.display = 'none';
     }
 
+    this.renderLegend();
     logger.debug('[MAMA] All filters cleared');
   }
 

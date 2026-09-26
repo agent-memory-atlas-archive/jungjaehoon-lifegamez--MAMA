@@ -1,5 +1,6 @@
 import { request as httpRequest, type IncomingMessage } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import Database from 'better-sqlite3';
 import type {
   ActionCall,
   ActionContext,
@@ -8,7 +9,12 @@ import type {
   WorkGraphPage,
 } from '@jungjaehoon/mama-core';
 import type { JudgmentAccess } from '@jungjaehoon/mama-core/knowledge';
-import { createViewerServer, type ViewerServer } from '../../src/api/viewer-server.js';
+import {
+  createViewerServer,
+  type ViewerServer,
+  type ViewerServerOptions,
+} from '../../src/api/viewer-server.js';
+import { readViewerMemoryStats } from '../../src/api/viewer-data.js';
 
 const ownerAccess: JudgmentAccess = {
   principalId: 'owner',
@@ -97,7 +103,8 @@ function makeRequest(
 
 async function withServer(
   implementation: (call: ActionCall, context: ActionContext) => Promise<ActionResult>,
-  callback: (server: ViewerServer, calls: ActionCall[]) => Promise<void>
+  callback: (server: ViewerServer, calls: ActionCall[]) => Promise<void>,
+  options: Partial<ViewerServerOptions> = {}
 ): Promise<void> {
   const calls: ActionCall[] = [];
   const dispatch = vi.fn(async (call: ActionCall, context: ActionContext) => {
@@ -127,6 +134,7 @@ async function withServer(
       health: null,
       connectors: [{ name: 'connector', enabled: true, state: 'connected' }],
     }),
+    ...options,
   });
   await server.start();
   try {
@@ -139,6 +147,38 @@ async function withServer(
 describe('archive-compatible viewer routes', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+  });
+
+  it('serves live memory counts from the supplied daemon database and fails explicitly if unwired', async () => {
+    const db = new Database(':memory:');
+    const now = Date.now();
+    db.exec('CREATE TABLE decisions (created_at INTEGER)');
+    db.prepare('INSERT INTO decisions VALUES (?), (?)').run(now - 8 * 86400000, now);
+    try {
+      await withServer(
+        async () => {
+          throw new Error('dashboard must read the database, not graph pages');
+        },
+        async (server) => {
+          const response = await makeRequest(server, '/api/dashboard/status');
+          expect(response.status).toBe(200);
+          expect(JSON.parse(response.body)).toEqual({ memory: { total: 2, thisWeek: 1 } });
+          db.prepare('INSERT INTO decisions VALUES (?)').run(now);
+          expect(JSON.parse((await makeRequest(server, '/api/dashboard/status')).body)).toEqual({
+            memory: { total: 3, thisWeek: 2 },
+          });
+        },
+        { getMemoryStats: () => readViewerMemoryStats(db, now) }
+      );
+      await withServer(
+        async () => completed({}),
+        async (server) => {
+          expect((await makeRequest(server, '/api/dashboard/status')).status).toBe(503);
+        }
+      );
+    } finally {
+      db.close();
+    }
   });
 
   it('redirects the root and serves the carried operator shell', async () => {
@@ -211,7 +251,7 @@ describe('archive-compatible viewer routes', () => {
           nodes: [
             {
               id: 'memory:memory-1',
-              kind: 'memory',
+              kind: 'commitment',
               topic: 'topic',
               decision: 'summary',
               reasoning: 'reasoning',

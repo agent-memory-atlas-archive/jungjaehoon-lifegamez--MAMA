@@ -4,6 +4,25 @@ import type {
   CommitmentView,
 } from '@jungjaehoon/mama-core/knowledge';
 import type { WorkGraphPage } from '@jungjaehoon/mama-core';
+import type { DatabaseAdapter } from '@jungjaehoon/mama-core/db-manager';
+
+export interface ViewerMemoryStats {
+  total: number;
+  thisWeek: number;
+}
+
+export function readViewerMemoryStats(
+  adapter: Pick<DatabaseAdapter, 'prepare'>,
+  now = Date.now()
+): ViewerMemoryStats {
+  return adapter
+    .prepare(
+      `SELECT COUNT(*) AS total,
+              COUNT(CASE WHEN created_at >= ? AND created_at <= ? THEN 1 END) AS thisWeek
+         FROM decisions`
+    )
+    .get(now - 7 * 24 * 60 * 60 * 1_000, now) as ViewerMemoryStats;
+}
 
 export interface ViewerTaskSummary {
   commitmentId: string;
@@ -634,7 +653,7 @@ export function mapArchiveGraphNode(node: WorkGraphPage['nodes'][number]): Archi
   const payload = memory?.payload ?? null;
   return {
     id: graphRef(node.ref),
-    kind: data.kind,
+    kind: memory?.recordKind === 'commitment' ? 'commitment' : (memory?.memoryKind ?? data.kind),
     state: memory?.stateAtSnapshot,
     label: observationLabel ?? node.label,
     topic: memory?.topic ?? data.kind,

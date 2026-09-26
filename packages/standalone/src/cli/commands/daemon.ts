@@ -36,6 +36,7 @@ import {
   type ViewerServerOptions,
 } from '../../api/viewer-server.js';
 import { resolvePackageVersion } from '../../package-version.js';
+import { readViewerMemoryStats } from '../../api/viewer-data.js';
 import type { TelegramFileDeliveryResult } from '../../api/file-delivery.js';
 import { buildBoardPublishLines } from '../../operator/board-slot-instructions.js';
 import { createReportScheduler, type ReportScheduler } from '../../runtime/report-scheduler.js';
@@ -397,6 +398,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
       reportSseClients: owner.reportSseClients,
       wikiRoot: owner.wikiRoot,
       logPath: config.logging.file,
+      getMemoryStats: () => readViewerMemoryStats(owner!.database.adapter),
       getRuntimeStatus: () => ({
         running: true,
         version: resolvePackageVersion(),

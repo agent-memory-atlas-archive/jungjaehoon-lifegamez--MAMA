@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { CommitmentPage } from '@jungjaehoon/mama-core/knowledge';
 import type { WorkGraphPage } from '@jungjaehoon/mama-core';
+import Database from 'better-sqlite3';
+import { GraphModule } from '../../public/viewer/src/modules/graph.js';
 import {
+  mapArchiveGraphNode,
+  readViewerMemoryStats,
   shapeGraphPage,
   shapeMemorySearch,
   shapeOperatorTasks,
@@ -17,6 +21,141 @@ const page = (items: CommitmentPage['items']): CommitmentPage => ({
 });
 
 describe('viewer data shaping', () => {
+  it('keeps fixed kind colours and counts only visible kinds and relationships in the legend', () => {
+    const graph = new GraphModule();
+    graph.graphData = {
+      nodes: [
+        { id: 'a', kind: 'lesson' },
+        { id: 'b', kind: 'lesson' },
+        { id: 'c', kind: 'observation' },
+        { id: 'd', kind: 'commitment' },
+      ],
+      edges: [
+        { from: 'a', to: 'c', relationship: 'derived_from' },
+        { from: 'b', to: 'c', relationship: 'derived_from' },
+        { from: 'a', to: 'b', relationship: 'amends' },
+        { from: 'd', to: 'a', relationship: 'refines' },
+      ],
+    };
+    const kinds = [
+      'decision',
+      'preference',
+      'constraint',
+      'lesson',
+      'fact',
+      'commitment',
+      'observation',
+    ];
+    expect(new Set(kinds.map((kind) => graph.getNodeColor(kind))).size).toBe(kinds.length);
+    expect([...kinds].reverse().map((kind) => new GraphModule().getNodeColor(kind))).toEqual(
+      kinds.map((kind) => graph.getNodeColor(kind)).reverse()
+    );
+    expect(graph.getLegendEntries()).toEqual({
+      nodes: [
+        { kind: 'commitment', count: 1, color: graph.getNodeColor('commitment') },
+        { kind: 'lesson', count: 2, color: graph.getNodeColor('lesson') },
+        { kind: 'observation', count: 1, color: graph.getNodeColor('observation') },
+      ],
+      edges: ['amends', 'derived_from', 'refines'].map((relationship) => ({
+        relationship,
+        count: relationship === 'derived_from' ? 2 : 1,
+        ...graph.edgeStyles[relationship],
+      })),
+    });
+    graph.network = {
+      body: {
+        data: {
+          nodes: {
+            get: () => [
+              { id: 'a' },
+              { id: 'b' },
+              { id: 'c', hidden: true },
+              { id: 'd', hidden: true },
+            ],
+          },
+        },
+      },
+    } as never;
+    expect(graph.getLegendEntries()).toEqual({
+      nodes: [{ kind: 'lesson', count: 2, color: graph.getNodeColor('lesson') }],
+      edges: [{ relationship: 'amends', count: 1, ...graph.edgeStyles.amends }],
+    });
+    graph.graphData = { nodes: [], edges: [] };
+    expect(graph.getLegendEntries()).toEqual({ nodes: [], edges: [] });
+  });
+
+  it('counts all stored memories and creation times in the last seven days, including replaced records', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(
+        'CREATE TABLE decisions (id TEXT, created_at INTEGER, updated_at INTEGER, status TEXT)'
+      );
+      const now = 1_800_000_000_000;
+      const cutoff = now - 7 * 24 * 60 * 60 * 1_000;
+      expect(readViewerMemoryStats(db, now)).toEqual({ total: 0, thisWeek: 0 });
+      const insert = db.prepare('INSERT INTO decisions VALUES (?, ?, ?, ?)');
+      insert.run('old', cutoff - 1, now, 'active');
+      insert.run('boundary', cutoff, cutoff, 'superseded');
+      insert.run('recent', now, now, 'active');
+      insert.run('future', now + 1, now + 1, 'active');
+      expect(readViewerMemoryStats(db, now)).toEqual({ total: 4, thisWeek: 2 });
+      insert.run('new', now - 1, now - 1, 'active');
+      expect(readViewerMemoryStats(db, now)).toEqual({ total: 5, thisWeek: 3 });
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each(['decision', 'preference', 'constraint', 'lesson', 'fact'])(
+    'preserves %s for display and uses commitment for work records',
+    (memoryKind) => {
+      const node: WorkGraphPage['nodes'][number] = {
+        ref: { kind: 'memory', id: 'memory-1' },
+        resolvedRef: { kind: 'memory', id: 'memory-1' },
+        label: 'stored record',
+        data: {
+          kind: 'memory',
+          recordKind: 'judgment',
+          memoryKind,
+          topic: 'topic',
+          summary: 'summary',
+          recordedAt: 1,
+          appliesFrom: null,
+          appliesUntil: null,
+          stateAtSnapshot: 'current',
+          replaces: [],
+          payload: {},
+          work: null,
+          content: { complete: true, nextRead: null },
+        },
+      };
+      expect(mapArchiveGraphNode(node)).toMatchObject({ id: 'memory:memory-1', kind: memoryKind });
+      if (node.data.kind === 'memory') node.data.recordKind = 'commitment';
+      expect(mapArchiveGraphNode(node)).toMatchObject({
+        id: 'memory:memory-1',
+        kind: 'commitment',
+      });
+    }
+  );
+
+  it('keeps observations separate from stored memory kinds', () => {
+    expect(
+      mapArchiveGraphNode({
+        ref: { kind: 'observation', id: 'source-1' },
+        resolvedRef: { kind: 'observation', id: 'source-1' },
+        label: 'source',
+        data: {
+          kind: 'observation',
+          connector: 'connector',
+          sourceId: 'source-1',
+          observedAt: 1,
+          sourceAt: null,
+          contentHash: null,
+        },
+      })
+    ).toMatchObject({ id: 'observation:source-1', kind: 'observation' });
+  });
+
   it('projects the task list fields without inventing values for missing task fields', () => {
     const result = shapeTaskList(
       page([

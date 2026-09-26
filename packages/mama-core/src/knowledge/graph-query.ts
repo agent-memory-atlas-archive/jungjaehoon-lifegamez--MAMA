@@ -1337,7 +1337,7 @@ function hydrateMemoryNode(
     .prepare(
       `SELECT id, topic, decision, reasoning, outcome, failure_reason, limitation, confidence,
               event_date, event_datetime, created_at, updated_at, status, superseded_by,
-              refined_from, record_kind
+              refined_from, record_kind, kind
          FROM decisions
         WHERE id = ?
         LIMIT 1`
@@ -1360,6 +1360,7 @@ function hydrateMemoryNode(
         superseded_by: string | null;
         refined_from: string | string[] | null;
         record_kind: string | null;
+        kind: string | null;
       }
     | undefined;
   if (!row) {
@@ -1434,6 +1435,7 @@ function hydrateMemoryNode(
     data: {
       kind: 'memory',
       recordKind,
+      memoryKind: row.kind,
       topic: row.topic ?? '',
       summary: text,
       recordedAt,

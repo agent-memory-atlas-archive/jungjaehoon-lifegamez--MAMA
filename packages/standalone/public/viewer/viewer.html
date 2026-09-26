@@ -640,7 +640,7 @@
                   </div>
 
                   <div
-                    class="legend-panel absolute bottom-16 right-4 w-48 bg-white/95 backdrop-blur-sm border border-gray-200 rounded-lg shadow-lg p-3 z-10"
+                    class="legend-panel absolute bottom-16 right-4 w-64 bg-white/95 backdrop-blur-sm border border-gray-200 rounded-lg shadow-lg p-3 z-10"
                     id="legend-panel"
                   >
                     <button
@@ -682,60 +682,10 @@
                       </svg>
                       Legend
                     </h4>
-                    <div class="legend-content space-y-3">
-                      <div>
-                        <div
-                          class="text-[10px] font-semibold text-gray-600 uppercase tracking-wide mb-1.5"
-                        >
-                          Edge Types
-                        </div>
-                        <div class="flex items-center gap-2 text-xs text-gray-700 mb-1">
-                          <span class="w-6 h-0.5" style="background: #666666"></span>
-                          <span>supersedes</span>
-                        </div>
-                        <div class="flex items-center gap-2 text-xs text-gray-700 mb-1">
-                          <span
-                            class="w-6 h-0.5"
-                            style="background: #b8860b; border-bottom: 2px dashed #b8860b"
-                          ></span>
-                          <span>builds_on</span>
-                        </div>
-                        <div class="flex items-center gap-2 text-xs text-gray-700 mb-1">
-                          <span
-                            class="w-6 h-0.5"
-                            style="background: #dc143c; border-bottom: 2px dashed #dc143c"
-                          ></span>
-                          <span>debates</span>
-                        </div>
-                        <div class="flex items-center gap-2 text-xs text-gray-700">
-                          <span class="w-6 h-1" style="background: #6b4c9a"></span>
-                          <span>synthesizes</span>
-                        </div>
-                      </div>
-                      <div>
-                        <div
-                          class="text-[10px] font-semibold text-gray-500 text-gray-600 uppercase tracking-wide mb-1.5"
-                        >
-                          Node Size
-                        </div>
-                        <div
-                          class="flex items-center gap-2 text-xs text-gray-600 text-gray-600 mb-1"
-                        >
-                          <span class="w-2 h-2 rounded-full bg-indigo-500"></span>
-                          <span>1-2 connections</span>
-                        </div>
-                        <div
-                          class="flex items-center gap-2 text-xs text-gray-600 text-gray-600 mb-1"
-                        >
-                          <span class="w-3 h-3 rounded-full bg-indigo-500"></span>
-                          <span>3-5 connections</span>
-                        </div>
-                        <div class="flex items-center gap-2 text-xs text-gray-600 text-gray-600">
-                          <span class="w-4 h-4 rounded-full bg-indigo-500"></span>
-                          <span>6+ connections</span>
-                        </div>
-                      </div>
-                    </div>
+                    <div
+                      id="graph-legend-content"
+                      class="legend-content space-y-3 max-h-64 overflow-y-auto"
+                    ></div>
                   </div>
                   <button
                     class="legend-toggle absolute bottom-4 right-4 px-3 py-1.5 text-xs font-medium bg-gray-100 bg-white hover:bg-gray-200 hover:bg-gray-100 border border-gray-200 border-gray-300 rounded-lg transition-colors flex items-center gap-1.5 z-10"
