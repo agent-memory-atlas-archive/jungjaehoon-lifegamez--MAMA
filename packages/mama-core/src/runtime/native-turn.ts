@@ -38,8 +38,9 @@ import {
 import { NativeEffectReplayBoundary, type NativeEffectObserver } from './native-effect-observer.js';
 import type { PostToolHandler } from './post-tool-handler.js';
 import { composeLayers, type PromptLayer } from './prompt-layers.js';
-import type { SubagentBridge, SubagentBridgeRequest } from './runtime-process.js';
+import type { SubagentBridge, SubagentBridgeRequest } from './subagent-bridge.js';
 import type { SessionPool } from './session-pool.js';
+import type { NativeToolCaller } from '../action-contracts.js';
 import { extractTextResponse } from './turn-text.js';
 import {
   runNativePrompt,
@@ -366,7 +367,14 @@ interface SubagentRunContext {
   tier: 1 | 2 | 3;
   activeChildren: number;
   runFinished: boolean;
+  nativeSessionId?: string;
+  callerTurnId: number;
+  executionContext: () => HostExecutionContext | null;
+  callerChildren: Map<string, Promise<ChildRun | null>>;
+  callerCalls: Set<Promise<unknown>>;
 }
+
+type ChildRun = SubagentBridge & { executionContext: HostExecutionContext | null };
 
 /**
  * The entry a consumer holds: one session's runs, serialized on its lane.
@@ -384,6 +392,16 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
    * child of it is still registered.
    */
   private readonly subagentRunContexts = new Map<string, SubagentRunContext>();
+  private nextCallerTurnId = 0;
+  // Keep only child ownership numbers across turns, not old authority or run contexts.
+  private readonly callerChildOwners = new Map<
+    string,
+    {
+      nativeSessionId: string;
+      turns: Map<string, number>;
+      aliases: Map<string, string>;
+    }
+  >();
 
   constructor(private readonly host: NativeSessionHost<TToolContext>) {}
 
@@ -688,6 +706,11 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
    * process refuses its calls rather than quietly borrowing.
    */
   async createSubagentBridge(info: SubagentBridgeRequest): Promise<SubagentBridge | null> {
+    return this.createChildRun(info);
+  }
+
+  /** Both native dynamic tools and an attributed socket call use this child run. */
+  private async createChildRun(info: SubagentBridgeRequest): Promise<ChildRun | null> {
     const { host } = this;
     const context = this.subagentRunContexts.get(info.sessionKey);
     if (!context) {
@@ -821,6 +844,7 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
     let released = false;
     return {
       bridge,
+      executionContext: childContext,
       release: async (outcome) => {
         if (released) {
           return;
@@ -856,6 +880,81 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
         this.releaseSubagentRunContext(info.sessionKey, context);
       },
     };
+  }
+
+  /** Resolve a harness caller only against a currently dispatched turn. */
+  async withToolCaller<T>(
+    caller: NativeToolCaller,
+    execute: (context: HostExecutionContext) => Promise<T>
+  ): Promise<T> {
+    if (
+      !caller ||
+      typeof caller.session_id !== 'string' ||
+      !caller.session_id ||
+      typeof caller.tool_use_id !== 'string' ||
+      !caller.tool_use_id ||
+      (caller.agent_id !== undefined &&
+        (typeof caller.agent_id !== 'string' || !caller.agent_id)) ||
+      (caller.agent_type !== undefined && typeof caller.agent_type !== 'string')
+    ) {
+      throw new Error('Invalid native tool caller');
+    }
+    const entry = [...this.subagentRunContexts.entries()].find(
+      ([, context]) => !context.runFinished && context.nativeSessionId === caller.session_id
+    );
+    if (!entry) throw new Error('Native tool caller has no matching active turn');
+    const [sessionKey, context] = entry;
+    if (caller.agent_id !== undefined) {
+      const owners = this.callerChildOwners.get(sessionKey);
+      const owner = owners?.turns.get(caller.agent_id);
+      if (owner !== undefined && owner !== context.callerTurnId) {
+        throw new Error('Native child caller belongs to a different turn');
+      }
+      owners?.turns.set(caller.agent_id, context.callerTurnId);
+    }
+    const call = (async () => {
+      let executionContext = context.executionContext();
+      if (caller.agent_id !== undefined) {
+        let child = context.callerChildren.get(caller.agent_id);
+        if (!child) {
+          child = this.createChildRun({
+            sessionKey,
+            parentThreadId: caller.session_id,
+            agentThreadId: caller.agent_id,
+            agentPath: caller.agent_type ?? caller.agent_id,
+          });
+          // Store the promise before awaiting: concurrent calls share exactly one child.
+          context.callerChildren.set(caller.agent_id, child);
+        }
+        const run = await child;
+        if (!run) throw new Error('Native child authority could not be created');
+        executionContext = run.executionContext;
+      }
+      if (!executionContext) throw new Error('Native tool caller has no execution context');
+      return execute({ ...executionContext, gatewayCallId: caller.tool_use_id });
+    })();
+    context.callerCalls.add(call);
+    try {
+      return await call;
+    } finally {
+      context.callerCalls.delete(call);
+    }
+  }
+
+  private async settleCallerRuns(
+    context: SubagentRunContext | undefined,
+    outcome: Parameters<SubagentBridge['release']>[0]
+  ): Promise<void> {
+    // Dynamic-tool children are settled by their native driver's own terminal events.
+    if (!context || this.host.backend !== 'claude') return;
+    context.runFinished = true;
+    await Promise.allSettled(context.callerCalls);
+    await Promise.all(
+      [...context.callerChildren.values()].map(async (pending) => {
+        const child = await pending;
+        await child?.release(outcome);
+      })
+    );
   }
 
   /** Drop a run's subagent context once the run finished and no child still holds it. */
@@ -992,6 +1091,61 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
     // The context object THIS run created, compared by identity before the finally marks
     // it finished: a later run on the same session key replaces the map entry.
     let ownedSubagentRunContext: SubagentRunContext | undefined;
+    const callerSpawnNames = new Map<string, string>();
+    const bindCallerChild = (agentId: string): void => {
+      const context = ownedSubagentRunContext;
+      const owners = this.callerChildOwners.get(channelKey);
+      if (!context || !owners || owners.nativeSessionId !== context.nativeSessionId) return;
+      // A delayed launch event from an older turn cannot undo an explicit later resume.
+      if ((owners.turns.get(agentId) ?? 0) <= context.callerTurnId) {
+        owners.turns.set(agentId, context.callerTurnId);
+      }
+    };
+    const callerObserver = runScope.streamCallbacks;
+    runScope.streamCallbacks = {
+      ...callerObserver,
+      onInputDispatch: (input) => {
+        if (ownedSubagentRunContext) ownedSubagentRunContext.nativeSessionId = input.sessionId;
+        if (
+          host.backend === 'claude' &&
+          this.callerChildOwners.get(channelKey)?.nativeSessionId !== input.sessionId
+        ) {
+          this.callerChildOwners.set(channelKey, {
+            nativeSessionId: input.sessionId,
+            turns: new Map(),
+            aliases: new Map(),
+          });
+        }
+        callerObserver?.onInputDispatch?.(input);
+      },
+      onSubagentStart: (info) => {
+        bindCallerChild(info.agentThreadId);
+        const name = callerSpawnNames.get(info.itemId);
+        const owners = this.callerChildOwners.get(channelKey);
+        if (name && owners && owners.nativeSessionId === ownedSubagentRunContext?.nativeSessionId) {
+          owners.aliases.set(name, info.agentThreadId);
+        }
+        callerObserver?.onSubagentStart?.(info);
+      },
+      onToolUse: (name, input) => {
+        if (host.backend === 'claude') {
+          if (
+            name === 'Agent' &&
+            typeof input.name === 'string' &&
+            typeof input.nativeToolUseId === 'string'
+          ) {
+            callerSpawnNames.set(input.nativeToolUseId, input.name);
+          }
+          // Claude 2.1.x resumes through SendMessage, addressed by native ID or
+          // a name resolved from the observed Agent launch, before child calls run.
+          if (name === 'SendMessage' && typeof input.to === 'string') {
+            const owners = this.callerChildOwners.get(channelKey);
+            bindCallerChild(owners?.aliases.get(input.to) ?? input.to);
+          }
+        }
+        callerObserver?.onToolUse?.(name, input);
+      },
+    };
 
     // Use session pool for conversation continuity
     // IMPORTANT: if the caller passes a session id, use it directly to avoid double-locking
@@ -1116,7 +1270,7 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
                 : {}),
             })
           : undefined;
-      if (hostToolBridge && isCodex) {
+      if ((hostToolBridge && isCodex) || host.backend === 'claude') {
         // A child can be announced during this run and outlive it, so what its authority
         // needs is recorded now, per session key, and dropped when nothing needs it.
         // A previous run's context object stays referenced by ITS still-live children, so
@@ -1129,6 +1283,10 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
           tier: runScope.tier,
           activeChildren: 0,
           runFinished: false,
+          callerTurnId: ++this.nextCallerTurnId,
+          executionContext: () => toolExecutionContext,
+          callerChildren: new Map(),
+          callerCalls: new Set(),
         };
         this.subagentRunContexts.set(channelKey, ownedSubagentRunContext);
       }
@@ -1202,6 +1360,12 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
         modelRunProvenance:
           (ownedModelRunId ?? request?.modelRunId) ? 'available' : 'backend_no_run',
       };
+      await this.settleCallerRuns(
+        ownedSubagentRunContext,
+        stoppedBy
+          ? { status: 'interrupted', error: `parent stopped: ${stoppedBy}` }
+          : { status: 'completed' }
+      );
       // Draining background work and committing the run are separate failures and get
       // separate catches. Sharing one meant a rejected background task skipped the commit
       // and was then reported as `commit_failed` - naming a failure that was never even
@@ -1265,6 +1429,10 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
       }
       return result;
     } catch (error) {
+      await this.settleCallerRuns(ownedSubagentRunContext, {
+        status: 'failed',
+        error: error instanceof Error ? error.message : String(error),
+      });
       if (ownedModelRunId && !ownedModelRunCommitted && host.modelRun) {
         try {
           const summary = error instanceof Error ? error.message : String(error);

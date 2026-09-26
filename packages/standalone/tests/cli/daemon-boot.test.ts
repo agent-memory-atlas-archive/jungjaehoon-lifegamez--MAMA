@@ -97,7 +97,13 @@ describe('daemon bootstrap', () => {
           createOwnerRuntime({
             ...options,
             embedder: { embed: async () => new Float32Array(1024).fill(0.25) },
-            nativeSession: { stop: async () => {} },
+            nativeSession: {
+              stop: async () => {},
+              callAction: (call, caller) =>
+                daemon.owner.surface.hostToolCall(call.action, call.input, call.operationId!, {
+                  session: { gatewayCallId: caller.tool_use_id },
+                }),
+            },
           }),
         createViewerServer: () => viewerDouble([]) as never,
       },
@@ -124,6 +130,7 @@ describe('daemon bootstrap', () => {
           topic: 'fixture-work',
           summary: 'Fixture evidence',
           set: { title: 'Fixture work' },
+          __mama_caller: { session_id: 'fixture-session', tool_use_id: 'fixture-call' },
         },
       });
       expect(called.error).toBeUndefined();
@@ -357,6 +364,15 @@ describe('daemon bootstrap', () => {
     expect(existsSync(join(mamaRoot, 'workspace', '.git', 'HEAD'))).toBe(true);
     expect(existsSync(join(mamaRoot, '.empty-plugins'))).toBe(true);
     expect(existsSync(join(mamaRoot, 'runtime', 'mcp.json'))).toBe(true);
+    const settings = JSON.parse(
+      readFileSync(join(mamaRoot, 'workspace', '.claude', 'settings.json'), 'utf8')
+    );
+    expect(settings.hooks.PreToolUse).toEqual([
+      {
+        matcher: 'mcp__mama__.*',
+        hooks: [{ type: 'command', command: expect.stringContaining('claude-caller-hook.js') }],
+      },
+    ]);
     expect(readFileSync(preservedBrief, 'utf8')).toBe('preserved');
     expect(readFileSync(preservedSkill, 'utf8')).toBe('preserved');
 

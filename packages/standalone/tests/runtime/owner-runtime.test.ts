@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { NativeSessionHandle } from '@jungjaehoon/mama-core/runtime/runtime';
 import { createOwnerRuntime } from '../../src/runtime/owner-runtime.js';
 import { createOwnerPolicyProvider } from '../../src/runtime/owner-policy.js';
+import { createClient } from '@jungjaehoon/mama-core/client/client';
 
 const homes: string[] = [];
 
@@ -13,6 +14,48 @@ afterEach(() => {
 });
 
 describe('owner runtime assembly', () => {
+  it('routes authenticated Claude socket caller facts to the active native session', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'caller-socket-'));
+    homes.push(home);
+    const callAction = vi.fn(async () => ({ status: 'completed' as const, data: { ok: true } }));
+    const owner = await createOwnerRuntime({
+      backend: 'claude',
+      model: 'fixture-model',
+      databasePath: join(home, 'state.db'),
+      socketPath: join(home, 'runtime.sock'),
+      credentialPath: join(home, 'credential'),
+      runtimeRoot: home,
+      workspaceDir: join(home, 'workspace'),
+      ownerPrincipalId: 'owner',
+      agentId: 'agent',
+      scopes: [],
+      nativeSession: { stop: async () => {}, callAction },
+      maxTurns: 10,
+      timeout: 1_000,
+    });
+    try {
+      const client = createClient({
+        socketPath: join(home, 'runtime.sock'),
+        journalPath: join(home, 'journal.jsonl'),
+        credential: readFileSync(join(home, 'credential'), 'utf8').trim(),
+      });
+      const caller = { session_id: 'session', tool_use_id: 'call', agent_id: 'child' };
+      expect(
+        await client.call({
+          action: 'work.create',
+          input: { topic: 'fixture' },
+          operationId: 'op-fixture',
+          session: { nativeCaller: caller },
+        })
+      ).toMatchObject({ status: 'completed' });
+      expect(callAction).toHaveBeenCalledWith(
+        { action: 'work.create', input: { topic: 'fixture' }, operationId: 'op-fixture' },
+        caller
+      );
+    } finally {
+      await owner.stop();
+    }
+  });
   it('reloads an external owner policy and fingerprints exact file bytes', () => {
     const home = mkdtempSync(join(tmpdir(), 'mama-owner-policy-'));
     homes.push(home);

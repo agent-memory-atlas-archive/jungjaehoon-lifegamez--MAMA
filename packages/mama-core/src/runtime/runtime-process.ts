@@ -1,16 +1,10 @@
 import { EventEmitter } from 'events';
 import { CodexAppServerProcess } from './drivers/codex-app-server-process.js';
-import type {
-  SubagentBridge,
-  SubagentBridgeRequest,
-  SubagentEvent,
-} from './drivers/codex-app-server-process.js';
+import type { SubagentBridge, SubagentBridgeRequest } from './subagent-bridge.js';
+import type { SubagentEvent } from './drivers/codex-app-server-process.js';
 
-export type {
-  SubagentBridge,
-  SubagentBridgeRequest,
-  SubagentEvent,
-} from './drivers/codex-app-server-process.js';
+export type { SubagentBridge, SubagentBridgeRequest } from './subagent-bridge.js';
+export type { SubagentEvent } from './drivers/codex-app-server-process.js';
 import type {
   PromptCallbacks as ClaudePromptCallbacks,
   PromptResult as ClaudePromptResult,

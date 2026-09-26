@@ -98,7 +98,21 @@ export type ActionFailureKind =
  * the payload. The model run, the tool call, the context packet, and the
  * source turn are all things only the host can truthfully state.
  */
+/** Native harness identity, supplied per call by the transport hook, never action input. */
+export interface NativeToolCaller {
+  session_id: string;
+  tool_use_id: string;
+  agent_id?: string;
+  agent_type?: string;
+}
+
+/** Wire facts carry identity only; the host resolves authority and run provenance. */
+export interface ClientSessionFacts {
+  nativeCaller?: NativeToolCaller;
+}
+
 export interface ActionSessionFacts {
+  nativeCaller?: NativeToolCaller;
   /** The model run this call belongs to. */
   modelRunId?: string;
   /** The surface the call arrived on (e.g. 'mama_save'). */

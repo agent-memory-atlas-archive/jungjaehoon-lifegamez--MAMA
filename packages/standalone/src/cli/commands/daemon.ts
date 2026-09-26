@@ -22,6 +22,7 @@ import { defaultConfigPath, loadConfig, type W1Config } from '../../runtime/conf
 import { declareModelCache } from '../../runtime/model-cache.js';
 import { sessionCredentialPath } from '../../runtime/session-credential.js';
 import { ensureMamaMcpConfig, resolveActionServerPath } from '../runtime/action-mcp-config.js';
+import { ensureClaudeCallerHook } from '../runtime/claude-caller-config.js';
 import type { SourceDelta } from '../../connectors/framework/polling-scheduler.js';
 import { createOwnerPolicyProvider } from '../../runtime/owner-policy.js';
 import {
@@ -186,6 +187,7 @@ export function ensureDaemonIsolation(options: DaemonIsolationOptions): void {
 
   if (config.agent.backend === 'claude') {
     mkdirSync(paths.pluginDir, { recursive: true });
+    ensureClaudeCallerHook(paths.workspaceDir);
     ensureMamaMcpConfig({
       mcpConfigPath: paths.mcpConfigPath,
       serverPath: options.mcpServerPath ?? resolveActionServerPath(),

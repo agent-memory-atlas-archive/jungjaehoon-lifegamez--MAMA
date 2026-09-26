@@ -13,7 +13,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type { ActionContract, ActionResult } from '../action-contracts.js';
+import type { ActionContract, ActionResult, ClientSessionFacts } from '../action-contracts.js';
 import { canonicalizeJSON } from '../canonicalize.js';
 import { IpcTransportError, newRequestId, sendIpcRequest } from './ipc.js';
 
@@ -35,6 +35,7 @@ export interface ClientOptions {
 export interface ClientCall {
   action: string;
   input?: unknown;
+  session?: ClientSessionFacts;
   /** Reuse this id only to retransmit the same call. */
   operationId?: string;
 }
@@ -118,6 +119,7 @@ export function createClient(options: ClientOptions): Client {
           action: request.action,
           input: request.input,
           operationId,
+          session: request.session,
         },
         { timeoutMs: options.timeoutMs }
       );

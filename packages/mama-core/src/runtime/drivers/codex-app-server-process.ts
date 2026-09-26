@@ -93,29 +93,8 @@ export interface CodexAppServerProcessOptions {
   subagentTtlMs?: number;
 }
 
-/** What the host is asked for when Codex announces a child thread. */
-export interface SubagentBridgeRequest {
-  /** The PARENT's session key; a child never owns a session of its own. */
-  sessionKey: string;
-  parentThreadId: string;
-  agentThreadId: string;
-  agentPath: string;
-}
-
-/**
- * One child's own authority: its tools and the release that closes its run.
- *
- * `release` is called exactly once per child, with the terminal status the process
- * observed. `unknown` means the parent announced a completion the child's own
- * `turn/completed` never confirmed - it is not success.
- */
-export interface SubagentBridge {
-  bridge: HostToolBridge;
-  release: (outcome: {
-    status: 'completed' | 'failed' | 'interrupted' | 'unknown';
-    error?: string;
-  }) => Promise<void>;
-}
+import type { SubagentBridge, SubagentBridgeRequest } from '../subagent-bridge.js';
+export type { SubagentBridge, SubagentBridgeRequest } from '../subagent-bridge.js';
 
 /**
  * One Codex-native subagent thread, observed from the parent thread.

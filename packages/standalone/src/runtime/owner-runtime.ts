@@ -24,7 +24,8 @@ import { RawStore } from '../storage/source-archive.js';
 import type { RuntimeBackend, RuntimeEffort, RuntimeSandbox } from './config.js';
 import { openCoreDatabase, type CoreDatabase } from './core-db.js';
 import { createActionSurface, type ActionSurface } from './action-surface.js';
-import { createNativeSession } from './native-session.js';
+import { createNativeSession, type NativeSession } from './native-session.js';
+import type { ActionDispatcher } from '@jungjaehoon/mama-core/api/dispatch';
 import { ownerSystemPrompt } from './owner-system-prompt.js';
 import { createOwnerPolicyProvider, type OwnerPolicyProvider } from './owner-policy.js';
 import {
@@ -49,7 +50,7 @@ export interface OwnerRuntimeOptions {
   connectors?: readonly string[];
   rawPath?: string;
   embedder?: KnowledgeOptions['embedder'];
-  nativeSession?: NativeSessionHandle;
+  nativeSession?: NativeSessionHandle & Partial<Pick<NativeSession, 'callAction'>>;
   modelRun?: NativeModelRunPort;
   effort?: RuntimeEffort;
   timeout: number;
@@ -139,7 +140,7 @@ function runtimeModelRun(
 export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<OwnerRuntime> {
   const database = await openCoreDatabase({ path: options.databasePath });
   let rawStore: RawStore | undefined;
-  let nativeSession: NativeSessionHandle | undefined = options.nativeSession;
+  let nativeSession: OwnerRuntimeOptions['nativeSession'] = options.nativeSession;
   let delivery: ReplayClockDelivery | undefined;
   const reportStore = createPersistentReportStore({
     filePath: options.reportPath ?? join(options.runtimeRoot, 'report-slots.json'),
@@ -259,14 +260,36 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
         : { onDelivered: options.onStimulusDelivered }),
       ...(options.onStimulusFailed === undefined ? {} : { onFailed: options.onStimulusFailed }),
     });
+    const socketDispatch: ActionDispatcher = Object.assign(
+      async (...[call, context]: Parameters<ActionDispatcher>) => {
+        const caller = context.session?.nativeCaller;
+        if (caller !== undefined) {
+          if (
+            options.backend !== 'claude' ||
+            context.access.principalId !== options.ownerPrincipalId ||
+            !nativeSession?.callAction
+          ) {
+            throw new Error('Native caller attribution requires the Claude owner session');
+          }
+          return nativeSession.callAction(call, caller);
+        }
+        return surface.dispatch(call, context);
+      },
+      { contracts: surface.dispatch.contracts }
+    );
     const intakeRuntime = await startRuntime({
       paths: { socketPath: options.socketPath },
       catalog: surface.catalog,
-      dispatch: surface.dispatch,
+      dispatch: socketDispatch,
       principals: [{ access, credentialPath: options.credentialPath }],
-      sessionFacts: () => {
+      sessionFacts: (_access, request) => {
         const ceiling = delivery?.getReplaySourceEndMs();
-        return ceiling === undefined ? undefined : { replaySourceEndMs: ceiling };
+        return {
+          ...(ceiling === undefined ? {} : { replaySourceEndMs: ceiling }),
+          ...(request.session?.nativeCaller === undefined
+            ? {}
+            : { nativeCaller: request.session.nativeCaller }),
+        };
       },
       mailbox: { adapter: database.adapter },
       nativeSession,

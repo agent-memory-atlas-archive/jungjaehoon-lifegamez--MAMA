@@ -644,3 +644,39 @@ The implementation writes raw/index data during import only. Replay is the owner
   delivery, queue/recovery, per-turn context and records; MCP is the single tool entry for all backends
   (Codex dynamicTools to move), turn attribution once in the daemon; push stays per-CLI session protocol.
   Next: measure Codex over MCP vs dynamicTools before switching.
+- 2026-09-26 16:10 KST: Claude subagent identity for MCP calls, verified (claude 2.1.282, project-settings
+  PreToolUse hook on mcp**mama**.\*, one parent call plus one Agent-spawned child call to work.list). The
+  parent's hook input had no agent fields; the child's carried agent_id and agent_type; both carried a
+  distinct tool_use_id and the session id. So the host can attribute Claude calls per child: the hook can
+  pass the caller (session, agent id, tool_use_id) into the call (PreToolUse may return an updated input)
+  for the MCP bridge to strip and forward as session facts. Fallback not needed.
+- 2026-09-26 16:45 KST: Codex over MCP vs app-server dynamicTools, measured (same MAMA driver, gpt-6-luna
+  high, shell off, fresh codex home per run, same instructions and read-only questions, 2 runs each). Mean
+  seconds / model tool calls / actions / input tokens: dynamicTools q1 19.9 / 2 / 2 / 55k, q2 21.8 / 1 / 1 /
+  33k; MCP q1 36.3 / 4.5 / 2.5 / 104k, q2 31.9 / 4 / 2 / 81k. All answers correct. Cause: in code mode the MCP
+  tools are not in the visible function list, so the model spent 1–3 exec calls listing ALL_TOOLS to find
+  mcp**mama**\* names before calling; dynamicTools are exposed as tools.work_list from the start. No run
+  batched several actions in one exec. Findings on the way: the driver deliberately drops an MCP server named
+  "mama", and Codex MCP tools need default_tools_approval_mode "approve" under approval never. Verdict:
+  Codex keeps dynamicTools (faster, half the tokens, more model-friendly), which also carries the child
+  thread id; Claude uses MCP with hook-supplied subagent identity. Parity is the host contract plus one
+  conformance test, as recorded at 16:10.
+- 2026-09-26: R10(b), Answer/Attach: Claude owner boot installs a project PreToolUse caller hook; standalone MCP strips the reserved input and carries identity over IPC to the active native turn. Shared child-run creation issues access and records separate receipts; Claude drains calls and settles children with the parent, while Codex retains native child events and dynamicTools.
+  Evidence: official hook reference and installed Claude Code 2.1.282 confirm hookSpecificOutput.updatedInput; hook/client tests and real-DB conformance cover parent source/channel/tool identity, concurrent child writes, distinct model runs/parent links and failed parent settlement. Review found cross-turn background attribution; its regression failed first, then passed with native launch/resume ownership binding and in-flight drain checks.
+  Requested suites: core runtime/api 274 passed, 44 failed at sandbox listen EPERM; standalone runtime/cli/api 150 passed, 22 failed at listen EPERM. Both requested tsc commands, changed-file ESLint and git diff --check pass; JSON results are /private/tmp/r10-b-{core,standalone}-tests-final.json. Temporary HOME uses the existing model cache; without it, the initial core run had 16 additional embedding-cache failures, resolved by the cache fixture alone. Current Claude resumes through SendMessage.to (official subagent reference); tests cover native ID and observed launch-name addressing.
+  Still unverified: this implementation's live hook-to-MCP/socket round trip, live launch/resume ordering and owner answer/delivery; socket assertions cannot get past sandbox listen. No daemon restart or commit. MAMA MCP decision recording was attempted but refused by approval policy never; the architecture decision is recorded in owner-reports.md. Production source: +362/-44 lines.
+- 2026-09-26 17:00 KST: Claude caller delivery, verified end to end at the MCP boundary (logging proxy in
+  front of the action MCP server). A PreToolUse hook returning hookSpecificOutput {hookEventName
+  "PreToolUse", permissionDecision "allow", updatedInput <input + \_mama_caller>} changes what the server
+  receives: tools/call arguments carried \_mama_caller with session_id and tool_use_id for the parent call
+  and additionally agent_id and agent_type for the subagent's call. Claude Code also sends
+  \_meta {"claudecode/toolUseId": <tool_use_id>} on every tools/call. The current bridge rejects the extra
+  field ("input.\_mama_caller is not an allowed property"), which is what R10 (b) changes: strip it and
+  forward it as session facts.
+- 2026-09-26 17:25 KST: R10 (b) supervisor check outside the sandbox: core runtime+api 318/318, standalone
+  runtime+cli+api 172/172, typechecks clean. Live path with the built hook and bridge against the restarted
+  daemon (Codex backend): a bench Claude's parent and subagent calls arrived with \_\_mama_caller (the hook's
+  updatedInput applies without a permission decision), the bridge stripped it and forwarded the caller, and
+  the daemon refused both with "Native caller attribution requires the Claude owner session" — a process
+  that is not the owner session cannot write unattributed. Successful attribution needs the Claude backend
+  live (R10 f).

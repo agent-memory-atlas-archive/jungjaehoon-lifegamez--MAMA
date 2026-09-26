@@ -1,4 +1,10 @@
 import { mkdirSync } from 'node:fs';
+import type {
+  ActionCall,
+  ActionResult,
+  NativeToolCaller,
+} from '@jungjaehoon/mama-core/action-contracts';
+import type { ActionContext } from '@jungjaehoon/mama-core/api/catalog';
 
 import {
   createNativeSessionRunner,
@@ -91,6 +97,7 @@ export interface NativeSession {
   readonly sessionKey: string;
   readonly supportsNativeSubagents: boolean;
   hostToolDefinitions(): HostToolDefinition[];
+  callAction(call: ActionCall, caller: NativeToolCaller): Promise<ActionResult>;
   isNewThread(sessionKey: string): boolean;
   runTurn(content: ContentBlock[], request?: NativeSessionRequest): Promise<NativeTurnResult>;
   steer(
@@ -319,6 +326,7 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
       const current = request as NativeSessionRequest | undefined;
       const replaySourceEndMs = current?.replaySourceEndMs ?? options.replaySourceEndMs?.();
       return {
+        access: current?.access,
         ...(typeof current?.modelRunId === 'string' ? { modelRunId: current.modelRunId } : {}),
         ...(typeof current?.sourceMessageRef === 'string'
           ? { sourceMessageRef: current.sourceMessageRef }
@@ -359,6 +367,14 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
     sessionKey: OWNER_RUNTIME_SESSION_KEY,
     supportsNativeSubagents: agent.supportsNativeSubagents === true,
     hostToolDefinitions: () => [...tools],
+    callAction: (call, caller) =>
+      runnerRef.current!.withToolCaller(caller, async (context) => {
+        const facts = toolContext(context);
+        return options.actionSurface.dispatch(call, {
+          access: context.access as ActionContext['access'],
+          session: facts,
+        });
+      }),
     isNewThread: (sessionKey) => runnerRef.current!.isNewThread({ sessionKey }),
     runTurn: (content, request) => {
       const nativeRequest = {

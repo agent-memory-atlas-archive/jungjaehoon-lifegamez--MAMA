@@ -180,10 +180,15 @@ backend CLI keeps its own harness (agent loop, native shell/read/subagents, cont
 loop under subscription access means a fresh process per turn (the Hermes model) and loses the tools the
 model was trained on. MAMA owns one thin common host — intake and push into the session, answer delivery, a
 one-turn-at-a-time queue with recovery, per-turn context (lessons, recent turns), policy and records
-(isolation, write boundary, turn attribution, receipts). Tool calls: one entry for every backend, MCP (Codex's
-dynamicTools moves to MCP), with turn attribution done once in the daemon (owner turns are serialized). Push
+(isolation, write boundary, turn attribution, receipts). Tool calls (updated by the 16:45 measurement):
+Codex keeps app-server dynamicTools and Claude keeps the standalone MCP bridge. Parity is the common host
+contract: every call names its turn and caller, with separate access, model runs and receipts for children.
+Claude's workspace PreToolUse hook supplies session/tool-use/agent identity; the bridge strips it from
+strict action input and forwards it as socket session facts. The daemon binds it to the active native
+dispatch and reuses the same child-run factory as Codex. Claude children settle with the parent after
+in-flight calls drain; Codex retains its native child terminal events. Push
 direction: each CLI's session protocol (Claude persistent stream-json, Codex app-server turn/start); ACP only
 when a third backend arrives. Evidence (checks.md 15:35): on Claude, MCP upfront, CLI and deferred MCP gave the
 same answers in ~20 s; only schema tokens differed, and deferred loading and a CLI's --help are the same
-progressive-disclosure idea. Gate before switching Codex: measure Codex over MCP against dynamicTools (turns,
-time, accuracy, code-mode batching).
+progressive-disclosure idea. The Codex measurement (checks.md 16:45) rejected the MCP switch: dynamicTools
+keeps the faster, model-visible entry. A shared conformance test pins caller attribution and write receipts.

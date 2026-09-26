@@ -519,6 +519,7 @@ describe('Story R2: client/ipc — describe, call, getOperation over a real Unix
         toolName: request.action,
         gatewayCallId: request.requestId,
         envelopeHash: `session:${request.credential}`,
+        nativeCaller: request.session?.nativeCaller,
       }),
     });
     const factsClient = createClient({
@@ -529,6 +530,13 @@ describe('Story R2: client/ipc — describe, call, getOperation over a real Unix
     const result = await factsClient.call({
       action: 'test.echo_session',
       input: { forged: 'session facts cannot ride the payload' },
+      session: {
+        nativeCaller: {
+          session_id: 'native-session',
+          tool_use_id: 'native-call',
+          agent_id: 'child',
+        },
+      },
     });
     await factsServer.close();
 
@@ -541,6 +549,9 @@ describe('Story R2: client/ipc — describe, call, getOperation over a real Unix
     expect(session.toolName).toBe('test.echo_session');
     expect(session.gatewayCallId).toBeTruthy();
     expect(session.envelopeHash).toBe(`session:${GOOD_CREDENTIAL}`);
+    expect(seen.session).toMatchObject({
+      nativeCaller: { session_id: 'native-session', tool_use_id: 'native-call', agent_id: 'child' },
+    });
     expect((seen.access as { principalId: string }).principalId).toBe(ACCESS.principalId);
   });
 

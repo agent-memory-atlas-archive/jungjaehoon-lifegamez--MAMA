@@ -10,7 +10,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, rmSync } from 'node:fs';
 import { createConnection, createServer, type Server, type Socket } from 'node:net';
-import type { ActionFailure, ActionSessionFacts } from '../action-contracts.js';
+import type { ActionFailure, ActionSessionFacts, ClientSessionFacts } from '../action-contracts.js';
 import type { ActionCatalog } from '../api/catalog.js';
 import type { ActionDispatcher } from '../api/dispatch.js';
 import type { JudgmentAccess } from '../knowledge/judgments.js';
@@ -31,6 +31,7 @@ export interface IpcRequest {
   action?: string;
   input?: unknown;
   operationId?: string;
+  session?: ClientSessionFacts;
 }
 
 export type IpcResponse =

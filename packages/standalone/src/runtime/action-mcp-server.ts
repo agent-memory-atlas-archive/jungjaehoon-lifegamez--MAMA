@@ -15,6 +15,8 @@ import type { Readable, Writable } from 'node:stream';
 import type { ActionContract, ActionResult } from '@jungjaehoon/mama-core';
 import { createClient, type Client } from '@jungjaehoon/mama-core/client/client';
 import { readSessionCredential } from './session-credential.js';
+import { CLAUDE_CALLER_FIELD } from './claude-caller-hook.js';
+import type { NativeToolCaller } from '@jungjaehoon/mama-core/action-contracts';
 
 export interface JsonRpcRequest {
   jsonrpc: '2.0';
@@ -97,7 +99,26 @@ async function callTool(client: Client, params: Record<string, unknown>): Promis
     return textResult({ success: false, error: 'missing tool name' }, true);
   }
   try {
-    return resultContent(await client.call({ action: name, input: params.arguments ?? {} }));
+    const input = params.arguments ?? {};
+    if (
+      input &&
+      typeof input === 'object' &&
+      !Array.isArray(input) &&
+      Object.hasOwn(input, CLAUDE_CALLER_FIELD)
+    ) {
+      const { [CLAUDE_CALLER_FIELD]: caller, ...argumentsWithoutCaller } = input as Record<
+        string,
+        unknown
+      >;
+      return resultContent(
+        await client.call({
+          action: name,
+          input: argumentsWithoutCaller,
+          session: { nativeCaller: caller as NativeToolCaller },
+        })
+      );
+    }
+    throw new Error('Claude MCP call is missing hook caller metadata');
   } catch (error) {
     return textResult(
       { success: false, error: error instanceof Error ? error.message : String(error) },

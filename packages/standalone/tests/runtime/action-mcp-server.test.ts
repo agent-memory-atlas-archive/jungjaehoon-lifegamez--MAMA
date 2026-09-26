@@ -16,6 +16,7 @@ import { actionMcpSession } from '../helpers/action-mcp-session.js';
 import { readSessionCredential } from '../../src/runtime/session-credential.js';
 
 afterEach(() => vi.unstubAllEnvs());
+const parentCaller = { session_id: 'native-session', tool_use_id: 'parent-call' };
 
 describe('mama action MCP server — credential rotation', () => {
   it('reads the runtime credential afresh and never uses the legacy root file', () => {
@@ -91,7 +92,7 @@ describe('mama action MCP server — credential rotation', () => {
       runtime.servePrincipal(principal);
       const called = await mcp.request('tools/call', {
         name: 'fixture.echo',
-        arguments: { value: 'fixture' },
+        arguments: { value: 'fixture', __mama_caller: parentCaller },
       });
       expect(called.error).toBeUndefined();
       const payload = JSON.parse(
@@ -162,11 +163,13 @@ describe('mama action MCP server — handleRequest unit surface', () => {
         jsonrpc: '2.0',
         id: 2,
         method: 'tools/call',
-        params: { name: 'work.create', arguments: { topic: 't' } },
+        params: { name: 'work.create', arguments: { topic: 't', __mama_caller: parentCaller } },
       },
       { client: client as never }
     );
-    expect(calls).toEqual([{ action: 'work.create', input: { topic: 't' } }]);
+    expect(calls).toEqual([
+      { action: 'work.create', input: { topic: 't' }, session: { nativeCaller: parentCaller } },
+    ]);
     const content = (response?.result as { content: Array<{ text: string }> }).content;
     expect(JSON.parse(content[0].text)).toEqual({
       success: true,
@@ -181,7 +184,7 @@ describe('mama action MCP server — handleRequest unit surface', () => {
         jsonrpc: '2.0',
         id: 3,
         method: 'tools/call',
-        params: { name: 'memory.delete', arguments: {} },
+        params: { name: 'memory.delete', arguments: { __mama_caller: parentCaller } },
       },
       { client: client as never }
     );
@@ -211,6 +214,44 @@ describe('mama action MCP server — handleRequest unit surface', () => {
 });
 
 describe('mama action MCP server — location', () => {
+  it('refuses an unattributed MCP call instead of writing an operation-only trace', async () => {
+    const call = vi.fn();
+    const result = await handleRequest(
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'work.create', arguments: { topic: 'fixture' } },
+      },
+      { client: { call } as never }
+    );
+    expect(result?.result).toMatchObject({ isError: true });
+    expect(call).not.toHaveBeenCalled();
+  });
+  it('strips hook caller metadata and forwards it as per-call session facts', async () => {
+    const call = vi.fn(async () => ({ status: 'completed', data: {} }));
+    const caller = {
+      session_id: 'native-session',
+      tool_use_id: 'call-1',
+      agent_id: 'child-1',
+      agent_type: 'general-purpose',
+    };
+    await handleRequest(
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'work.create', arguments: { topic: 'fixture', __mama_caller: caller } },
+      },
+      { client: { call } as never }
+    );
+    expect(call).toHaveBeenCalledWith({
+      action: 'work.create',
+      input: { topic: 'fixture' },
+      session: { nativeCaller: caller },
+    });
+  });
+
   it('is the standalone build output, not another package', () => {
     expect(resolveActionServerPath()).toMatch(/[/\\]runtime[/\\]action-mcp-server\.js$/);
   });
