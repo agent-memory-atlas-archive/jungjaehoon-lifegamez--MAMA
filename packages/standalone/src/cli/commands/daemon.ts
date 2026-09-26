@@ -38,6 +38,7 @@ import {
 import { resolvePackageVersion } from '../../package-version.js';
 import type { TelegramFileDeliveryResult } from '../../api/file-delivery.js';
 import { buildBoardPublishLines } from '../../operator/board-slot-instructions.js';
+import { createReportScheduler, type ReportScheduler } from '../../runtime/report-scheduler.js';
 
 const OWNER_PRINCIPAL_ID = 'owner';
 const OWNER_AGENT_ID = 'owner-agent';
@@ -88,6 +89,7 @@ export interface DaemonBootDependencies {
   createViewerServer?: (options: ViewerServerOptions) => ViewerServer;
   startConnectorRuntime?: (options: ConnectorRuntimeOptions) => Promise<ConnectorRuntime>;
   createTelegramGateway?: (options: TelegramGatewayOptions) => DaemonGateway;
+  createReportScheduler?: typeof createReportScheduler;
   ensureIsolation?: (options: DaemonIsolationOptions) => void;
 }
 
@@ -244,6 +246,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
   let viewer: ViewerServer | null = null;
   let connectors: ConnectorRuntime | undefined;
   let gateway: DaemonGateway | null = null;
+  let reportScheduler: ReportScheduler | undefined;
   let stopped = false;
   let deliveryReady = options.mode === 'replay';
   const startedAt = Date.now();
@@ -253,6 +256,8 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
     if (stopped) return;
     stopped = true;
     const errors: unknown[] = [];
+    if (reportScheduler)
+      await stopOne(logger, 'report_scheduler', () => reportScheduler!.stop(), errors);
     if (connectors) await stopOne(logger, 'connectors', () => connectors!.stop(), errors);
     if (viewer) await stopOne(logger, 'viewer', () => viewer!.stop(), errors);
     if (owner) await stopOne(logger, 'owner_runtime', () => owner!.stop(), errors);
@@ -368,7 +373,15 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
       recentDeliveredOwnerMessages: () => gateway?.recentDeliveredMessageRefs() ?? [],
       ...(options.mode === 'replay'
         ? {}
-        : { onOwnerResult: deliverOwnerResponse, onSourceResult: deliverSourceResponse }),
+        : {
+            onOwnerResult: deliverOwnerResponse,
+            onSourceResult: deliverSourceResponse,
+            onScheduledResult: async (row, result) => {
+              if (!reportScheduler)
+                throw new Error('Report scheduler is not available for a scheduled result');
+              await reportScheduler.onResult(row, result);
+            },
+          }),
       onStimulusDelivered: (row) => stimulusDelivered(logger, row),
       onStimulusFailed: (row, reason) =>
         stimulusFailed(logger, row.kind ?? 'unknown', row.stimulusId, reason),
@@ -479,6 +492,41 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
       });
       await gateway.start();
       stage(logger, 'telegram');
+      currentStage = 'report_scheduler';
+      const schedulerFactory = dependencies.createReportScheduler ?? createReportScheduler;
+      reportScheduler = schedulerFactory({
+        config: config.reports,
+        statePath: join(paths.runtimeRoot, 'report-schedule-state.json'),
+        intake: {
+          acceptScheduled: (input) => {
+            const receipt = owner!.intake.acceptScheduled(input);
+            stimulusAccepted(logger, 'scheduled', input.id, receipt);
+            return receipt;
+          },
+        },
+        // Mailbox state also covers a queued input restored at boot and a failure
+        // before native dispatch that the runtime will retry itself. Accepted
+        // failures park uncertain; R5 retries those as a new scheduled turn.
+        hasPendingReport: () =>
+          Boolean(
+            owner!.database.adapter
+              .prepare(
+                `
+          SELECT 1 FROM mailbox_inputs m
+          LEFT JOIN native_input_deliveries n ON n.input_id = m.id
+          WHERE m.principal_id = ? AND m.kind = 'scheduled'
+            AND m.status IN ('pending', 'claimed')
+            AND (n.state IS NULL OR n.state != 'uncertain') LIMIT 1
+        `
+              )
+              .get(OWNER_PRINCIPAL_ID)
+          ),
+        sendToOwner: (text, key) => gateway!.sendToOwner(text, key),
+        onError: (error) =>
+          logger.error(`report scheduler failed reason=${stimulusFailureReason(error)}`),
+      });
+      reportScheduler.start();
+      stage(logger, 'report_scheduler');
     } else {
       stage(logger, 'telegram:disabled');
     }

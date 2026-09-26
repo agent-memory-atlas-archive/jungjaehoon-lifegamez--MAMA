@@ -15,6 +15,7 @@ import type { SourceDelta } from '../connectors/framework/polling-scheduler.js';
 import type { QueueCandidateScore, QueueLine, WindowQueue } from '../replay/window-queue.js';
 import { renderRecentOwnerExchanges, type OwnerExchange } from './recent-owner-exchanges.js';
 import { LIVE_DELTA_ROUTING_INSTRUCTION } from './owner-system-prompt.js';
+import { buildScheduledReportPrompt } from './report-prompts.js';
 
 export const OWNER_RUNTIME_SESSION_KEY = 'owner:runtime';
 
@@ -57,7 +58,7 @@ export interface StimulusDeliveryOptions {
   ) => readonly OwnerExchange[] | Promise<readonly OwnerExchange[]>;
   onOwnerResult?: (row: MailboxRow, result: NativeTurnResult) => void | Promise<void>;
   onSourceResult?: (row: MailboxRow, result: NativeTurnResult) => void | Promise<void>;
-  onScheduledNoop?: (row: MailboxRow) => void | Promise<void>;
+  onScheduledResult?: (row: MailboxRow, result: NativeTurnResult) => void | Promise<void>;
   onNativeEventResult?: (row: MailboxRow, result: NativeTurnResult) => void | Promise<void>;
   onDelivered?: (row: MailboxRow) => void | Promise<void>;
   onFailed?: (row: MailboxRow, reason: string) => void | Promise<void>;
@@ -323,6 +324,8 @@ export function renderWindowQueue(queue: WindowQueue): string {
 }
 
 function boundedStimulus(row: MailboxRow, liveSourceDelta: boolean): string {
+  if (row.kind === 'scheduled')
+    return buildScheduledReportPrompt(row.payload, new Date(row.occurredAt));
   const lines = [
     '## Bounded stimulus',
     `kind: ${row.kind ?? 'unknown'}`,
@@ -408,6 +411,8 @@ function payloadText(payload: JsonValue | undefined): string {
 }
 
 function lessonQuery(row: MailboxRow): string {
+  if (row.kind === 'scheduled')
+    return buildScheduledReportPrompt(row.payload, new Date(row.occurredAt));
   if (row.kind === 'owner_message') return payloadText(row.payload);
   // Collector deltas without per-ref contentPreview carry their text only in the row preview.
   if (row.kind === 'source_delta')
@@ -475,43 +480,41 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
     const liveSourceDelta =
       row.kind === 'source_delta' && replaySourceEndMs === undefined && !hasReplayPayload;
     try {
-      if (row.kind === 'scheduled') {
-        await options.onScheduledNoop?.(row);
-      } else {
-        if (
-          row.kind !== 'owner_message' &&
-          row.kind !== 'source_delta' &&
-          row.kind !== 'native_event'
-        ) {
-          throw new Error('Stimulus kind is missing; no owner turn can be assembled');
-        }
-        const result = await context.run(assembledContent(row, [], liveSourceDelta), {
-          prepareSessionContent: async ({ isNewSession }) => {
-            const lessonBlocks: string[] = [];
-            if (isNewSession) {
-              const startupLessons = renderLessons(
-                await options.lessonResolver(STARTUP_LESSON_QUERY)
-              );
-              if (startupLessons) lessonBlocks.push(startupLessons);
-              const exchanges = renderRecentOwnerExchanges(
-                (await options.recentOwnerExchanges?.(row)) ?? []
-              );
-              if (exchanges) lessonBlocks.push(exchanges);
-            }
-            const currentLessons = renderLessons(await options.lessonResolver(lessonQuery(row)));
-            if (currentLessons) lessonBlocks.push(currentLessons);
-            return assembledContent(row, lessonBlocks, liveSourceDelta);
-          },
-          sessionKey: OWNER_RUNTIME_SESSION_KEY,
-          source: row.kind,
-          channelId: row.channelKey,
-          sourceMessageRef: row.stimulusId,
-          ...(replaySourceEndMs === undefined ? {} : { replaySourceEndMs }),
-        });
-        if (row.kind === 'owner_message') await options.onOwnerResult?.(row, result);
-        if (liveSourceDelta) await options.onSourceResult?.(row, result);
-        if (row.kind === 'native_event') await options.onNativeEventResult?.(row, result);
+      if (
+        row.kind !== 'owner_message' &&
+        row.kind !== 'source_delta' &&
+        row.kind !== 'scheduled' &&
+        row.kind !== 'native_event'
+      ) {
+        throw new Error('Stimulus kind is missing; no owner turn can be assembled');
       }
+      const result = await context.run(assembledContent(row, [], liveSourceDelta), {
+        prepareSessionContent: async ({ isNewSession }) => {
+          const lessonBlocks: string[] = [];
+          if (isNewSession) {
+            const startupLessons = renderLessons(
+              await options.lessonResolver(STARTUP_LESSON_QUERY)
+            );
+            if (startupLessons) lessonBlocks.push(startupLessons);
+            const exchanges = renderRecentOwnerExchanges(
+              (await options.recentOwnerExchanges?.(row)) ?? []
+            );
+            if (exchanges) lessonBlocks.push(exchanges);
+          }
+          const currentLessons = renderLessons(await options.lessonResolver(lessonQuery(row)));
+          if (currentLessons) lessonBlocks.push(currentLessons);
+          return assembledContent(row, lessonBlocks, liveSourceDelta);
+        },
+        sessionKey: OWNER_RUNTIME_SESSION_KEY,
+        source: row.kind,
+        channelId: row.channelKey,
+        sourceMessageRef: row.stimulusId,
+        ...(replaySourceEndMs === undefined ? {} : { replaySourceEndMs }),
+      });
+      if (row.kind === 'owner_message') await options.onOwnerResult?.(row, result);
+      if (liveSourceDelta) await options.onSourceResult?.(row, result);
+      if (row.kind === 'scheduled') await options.onScheduledResult?.(row, result);
+      if (row.kind === 'native_event') await options.onNativeEventResult?.(row, result);
       await options.onDelivered?.(row);
     } catch (error) {
       await options.onFailed?.(row, stimulusFailureReason(error));
@@ -525,6 +528,21 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
   return {
     deliver,
     prefer: ['owner_message'],
+    reconcile: async (row) => {
+      // Core invokes reconciliation only when no delivery in this process owns
+      // the input. A crash after dispatch must not block every future report.
+      if (
+        row.kind === 'scheduled' &&
+        (row.nativeDelivery?.state === 'dispatching' || row.nativeDelivery?.state === 'accepted')
+      ) {
+        const reason =
+          'Scheduled report interrupted before completion; retry on the next report tick';
+        await options.onFailed?.(row, reason);
+        // Core parks the orphan uncertain, preserving its receipt and any result.
+        throw new Error(reason);
+      }
+      return 'unresolved';
+    },
     setReplaySourceEndMs: (value) => {
       if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
         throw new Error('Replay source ceiling must be a nonnegative epoch millisecond integer');

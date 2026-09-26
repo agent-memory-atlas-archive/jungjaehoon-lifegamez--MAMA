@@ -72,7 +72,7 @@ export interface OwnerRuntimeOptions {
   onOwnerResult?: StimulusDeliveryOptions['onOwnerResult'];
   recentDeliveredOwnerMessages?: () => readonly string[];
   onSourceResult?: StimulusDeliveryOptions['onSourceResult'];
-  onScheduledNoop?: StimulusDeliveryOptions['onScheduledNoop'];
+  onScheduledResult?: StimulusDeliveryOptions['onScheduledResult'];
   onNativeEventResult?: StimulusDeliveryOptions['onNativeEventResult'];
   onStimulusDelivered?: StimulusDeliveryOptions['onDelivered'];
   onStimulusFailed?: StimulusDeliveryOptions['onFailed'];
@@ -264,9 +264,9 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       },
       ...(options.onOwnerResult === undefined ? {} : { onOwnerResult: options.onOwnerResult }),
       ...(options.onSourceResult === undefined ? {} : { onSourceResult: options.onSourceResult }),
-      ...(options.onScheduledNoop === undefined
+      ...(options.onScheduledResult === undefined
         ? {}
-        : { onScheduledNoop: options.onScheduledNoop }),
+        : { onScheduledResult: options.onScheduledResult }),
       ...(options.onNativeEventResult === undefined
         ? {}
         : { onNativeEventResult: options.onNativeEventResult }),

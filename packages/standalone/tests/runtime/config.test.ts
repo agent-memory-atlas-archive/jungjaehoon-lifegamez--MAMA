@@ -1,8 +1,19 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { loadConfig, parseConfig, type W1Config } from '../../src/runtime/config.js';
+
+let testHome: string;
+beforeEach(() => {
+  testHome = mkdtempSync(join(tmpdir(), 'report-config-'));
+  vi.stubEnv('HOME', testHome);
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+  rmSync(testHome, { recursive: true, force: true });
+});
 
 function validConfig(): W1Config {
   return {
@@ -32,10 +43,52 @@ function validConfig(): W1Config {
       keyFile: '/tmp/jev-key',
       vocabFile: '/tmp/vocab.json',
     },
+    reports: { full_report_hours: [8, 13, 18], reminder_start_hour: 9, reminder_end_hour: 21 },
   };
 }
 
 describe('W1 runtime configuration', () => {
+  it('defaults report hours and accepts custom KST hours through YAML without ignoring them', () => {
+    const { reports, ...base } = validConfig();
+    expect(parseConfig(base).reports).toEqual(reports);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const path = join(testHome, 'config.yaml');
+    writeFileSync(
+      path,
+      JSON.stringify({
+        ...base,
+        reports: { full_report_hours: [0, 23], reminder_start_hour: 1, reminder_end_hour: 22 },
+      })
+    );
+    expect(loadConfig({ path }).reports).toEqual({
+      full_report_hours: [0, 23],
+      reminder_start_hour: 1,
+      reminder_end_hour: 22,
+    });
+    expect(warn).not.toHaveBeenCalled();
+    expect(parseConfig({ ...base, reports: { full_report_hours: [] } }).reports).toEqual({
+      ...reports,
+      full_report_hours: [],
+    });
+  });
+
+  it.each([
+    null,
+    { full_report_hours: '8,13,18' },
+    { full_report_hours: [24] },
+    { full_report_hours: [-1] },
+    { full_report_hours: [8.5] },
+    { full_report_hours: ['8'] },
+    { full_report_hours: null },
+    { reminder_start_hour: -1 },
+    { reminder_end_hour: 24 },
+    { reminder_start_hour: 1.5 },
+    { reminder_end_hour: null },
+    { reminder_start_hour: 22, reminder_end_hour: 9 },
+  ])('rejects invalid report hours: %j', (reports) => {
+    expect(() => parseConfig({ ...validConfig(), reports })).toThrow(/reports/);
+  });
+
   it('projects the approved YAML fields without retaining retired sections', () => {
     const parsed = parseConfig(validConfig());
 

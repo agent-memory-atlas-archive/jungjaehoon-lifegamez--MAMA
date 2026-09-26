@@ -40,6 +40,12 @@ export interface W1JevConfig {
   vocabFile: string;
 }
 
+export interface W1ReportsConfig {
+  full_report_hours: number[];
+  reminder_start_hour: number;
+  reminder_end_hour: number;
+}
+
 export interface W1Config {
   version: 1;
   agent: W1AgentConfig;
@@ -47,6 +53,7 @@ export interface W1Config {
   logging: { level: 'debug' | 'info' | 'warn' | 'error'; file: string };
   telegram: W1TelegramConfig;
   jev: W1JevConfig;
+  reports: W1ReportsConfig;
   wiki?: W1WikiConfig;
 }
 
@@ -71,7 +78,16 @@ export class ConfigError extends Error {
   }
 }
 
-const CONFIG_KEYS = ['version', 'agent', 'database', 'logging', 'telegram', 'jev', 'wiki'] as const;
+const CONFIG_KEYS = [
+  'version',
+  'agent',
+  'database',
+  'logging',
+  'telegram',
+  'jev',
+  'wiki',
+  'reports',
+] as const;
 const AGENT_KEYS = [
   'backend',
   'model',
@@ -119,6 +135,41 @@ function integer(value: unknown, path: string, minimum = 0): number {
     throw new ConfigError(`${path} must be an integer >= ${minimum}`);
   }
   return value as number;
+}
+
+function reportHour(value: unknown, path: string): number {
+  const hour = integer(value, path);
+  if (hour > 23) throw new ConfigError(`${path} must be an hour from 0 to 23`);
+  return hour;
+}
+
+function parseReports(value: unknown, state: ParseState): W1ReportsConfig {
+  const raw = value === undefined ? {} : object(value, 'reports');
+  collectIgnoredKeys(
+    raw,
+    ['full_report_hours', 'reminder_start_hour', 'reminder_end_hour'],
+    'reports',
+    state
+  );
+  const hours = raw.full_report_hours === undefined ? [8, 13, 18] : raw.full_report_hours;
+  if (!Array.isArray(hours)) throw new ConfigError('reports.full_report_hours must be an array');
+  const reports = {
+    full_report_hours: hours.map((hour, index) =>
+      reportHour(hour, `reports.full_report_hours[${index}]`)
+    ),
+    reminder_start_hour: reportHour(
+      raw.reminder_start_hour === undefined ? 9 : raw.reminder_start_hour,
+      'reports.reminder_start_hour'
+    ),
+    reminder_end_hour: reportHour(
+      raw.reminder_end_hour === undefined ? 21 : raw.reminder_end_hour,
+      'reports.reminder_end_hour'
+    ),
+  };
+  if (reports.reminder_start_hour > reports.reminder_end_hour) {
+    throw new ConfigError('reports.reminder_start_hour must be <= reports.reminder_end_hour');
+  }
+  return reports;
 }
 
 function stringList(value: unknown, path: string): string[] {
@@ -308,6 +359,7 @@ function parseConfigValue(
         polling: (telegramRaw.polling ?? true) as boolean,
       },
       jev,
+      reports: parseReports(raw.reports, state),
       ...(wiki === undefined ? {} : { wiki }),
     },
     ignored: Object.freeze(state.ignored),

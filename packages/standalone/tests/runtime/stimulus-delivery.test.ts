@@ -582,22 +582,83 @@ describe('one stimulus intake and delivery', () => {
     expect(runTurn.mock.calls.every((call) => call[1]?.sessionKey === 'owner:runtime')).toBe(true);
   });
 
-  it('accepts and durably records a scheduled no-op without invoking the model', async () => {
-    const runTurn = vi.fn();
-    const { runtime, intake } = await boot(runTurn);
-    intake.acceptScheduled({
-      id: 'tick-1',
-      channelKey: 'schedule',
-      occurredAt: 1,
-      payload: { schedule: 'tick' },
-    });
-
-    await vi.waitFor(() =>
-      expect(runtime.mailbox?.readInput('tick-1', 'owner')?.status).toBe('acked')
-    );
-    expect(runTurn).not.toHaveBeenCalled();
-    expect(runtime.mailbox?.readInput('tick-1', 'owner')?.nativeDelivery?.state).toBe('settled');
-  });
+  it.each(['full', 'reminder'] as const)(
+    'runs a scheduled %s with report instructions and recalled lessons',
+    async (report) => {
+      const queries: string[] = [];
+      const results: string[] = [];
+      let prompt = '';
+      const delivery = createStimulusDelivery({
+        lessonResolver: async (query) => {
+          queries.push(query);
+          return [{ summary: 'Gather non-urgent updates hourly.' }];
+        },
+        onScheduledResult: async (_row, result) => {
+          results.push(result.response);
+        },
+      });
+      await delivery.deliver(
+        {
+          id: 1,
+          stimulusId: 'report-attempt',
+          principalId: 'owner',
+          kind: 'scheduled',
+          channelKey: 'schedule',
+          occurredAt: Date.parse('2026-01-01T04:00:00Z'),
+          refs: [],
+          preview: [],
+          status: 'claimed',
+          attempts: 1,
+          createdAt: 1,
+          coalesceKey: null,
+          payload: { report, hourKey: '2026-01-01:13' },
+        },
+        {
+          run: async (content, request) => {
+            content = await request.prepareSessionContent({
+              isNewSession: false,
+              sessionId: 'fixture',
+            });
+            prompt = content[0].text;
+            expect(request.source).toBe('scheduled');
+            return { response: 'Owner report' };
+          },
+        } as never
+      );
+      expect(results).toEqual(['Owner report']);
+      expect(prompt).toContain('Gather non-urgent updates hourly.');
+      expect(queries[0]).toContain('report.publish');
+      expect(prompt).toContain('work.list');
+      expect(prompt).toContain('report.publish');
+      expect(prompt).toContain('no commitment, observation, judgment or channel ids');
+      if (report === 'full') {
+        for (const part of [
+          'briefing',
+          'action_required',
+          'decisions',
+          'pipeline',
+          'key situation today',
+          'needs a response',
+          'needs a decision',
+          'next actions',
+          'source.search',
+          'report.read',
+        ])
+          expect(prompt).toContain(part);
+      } else {
+        for (const part of [
+          'priority',
+          'deadline',
+          '5–8',
+          '3–6',
+          'action_required',
+          'since the previous report',
+          'not already notified',
+        ])
+          expect(prompt).toContain(part);
+      }
+    }
+  );
 
   it('does not ack a native turn that throws after native acceptance', async () => {
     const runTurn = vi.fn(async (_content, request) => {
