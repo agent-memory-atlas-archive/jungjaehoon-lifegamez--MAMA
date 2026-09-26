@@ -74,6 +74,6 @@ Nothing degrades automatically; there is no exact-match path to fall back to.
 
 ## RELATED DOCS
 
-- [Developer Playbook](../../../docs/development/developer-playbook.md) — Architecture
+- [Architecture](../../../docs/explanation/architecture.md) — Package and runtime boundaries
 - Refactoring Roadmap — mama-api.js split plan
 - [Testing Guide](../../../docs/development/testing.md) — Test suite details

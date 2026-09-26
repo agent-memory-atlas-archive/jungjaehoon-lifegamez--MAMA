@@ -916,3 +916,17 @@ The implementation writes raw/index data during import only. Replay is the owner
   names MAMA_TELEGRAM_TOKEN, MAMA_SLACK_TOKEN, MAMA_AUTH_TOKEN (generated); `secret list` shows names only;
   init and secret set refuse without a TTY; a second init refuses to overwrite. Not done live: onboarding a
   real fresh machine through a Telegram reply.
+
+## D2 documentation pass 1 — 2026-09-27
+
+- Result: all 27 D2 pages written or updated; 37 retired files read first, with 35 paths removed and two rewritten in place. Current knowledge was carried forward; no archive folder was added.
+- Evidence: source-checked CLI/config/viewer/MCP references; the owner action table is generated from 19 actual runtime registrations. The [pass-1 report](docs-pass1-report.md) records paths, line counts and validation.
+- Verification: combined documentation relative-link check has no unresolved paths; catalog grants and generated rows match. Security content is retained except the onboarding and Telegram environment-token addition.
+- Remaining: README/website/CHANGELOG/TODOS are pass 2; fresh-machine onboarding, packaged viewer assets and owner-result verification are not established by this documentation pass. `git rm` could not write the sandbox-protected index, so deletions remain unstaged; no commit.
+- 2026-09-27 03:40 KST: docs pass 1: 35 obsolete pages deleted (no archive), 27 pages written or updated in
+  the D2 tree, link check 228 links / 39 files / 0 broken, owner actions generated from the registrations.
+  The new setup guide reported two real defects, fixed here instead of documented: the standalone package
+  did not ship public/ (viewer assets; now 30 viewer files in the pack list) and `mama init` told Codex
+  users to run plain `codex login` although the runtime reads its own Codex home (now prints
+  CODEX_HOME=<root>/.codex codex login; the test fails without the fix). The new pages carry no personal,
+  customer or project names; the rebuild logs (checks.md, owner-reports.md) still do — D6.

@@ -43,7 +43,7 @@ export class CaseMergeChainCycleError extends Error {
         code: this.code,
         message: this.message,
         hint: this.hint,
-        doc_url: `docs/operations/entity-substrate-runbook.md${this.doc_section}`,
+        doc_url: `docs/guides/troubleshooting.md${this.doc_section}`,
       },
     };
   }

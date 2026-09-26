@@ -1,35 +1,62 @@
-# INTENT v7 development checks
+# Check the product intent
 
-Use this procedure to evaluate changes against [INTENT.md](../../INTENT.md). These checks are
-development evidence, not a host-side approval gate or a replacement for an owner turn.
+Use these checks to evaluate changes against [INTENT](../../INTENT.md). They are development
+acceptance evidence, not an extra host approval gate or a prescribed owner-agent tool sequence.
 
-## Done means
+## Name the result before implementation
 
-Use the stable IDs below in plans, reviews, checkpoints, and the
-[check log](../../docs/rebuild/checks.md).
+| Check | Required result                                                                                                                      |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| C1    | The owner asks who is working on what and receives an accurate answer supported by work and source evidence.                         |
+| C2    | The owner asks how work progressed and what feedback it received; the answer comes from stored revision history.                     |
+| C3    | The owner asks for a similar past case and receives its relevant feedback and outcome with supporting evidence.                      |
+| C4    | Scheduled reports and the board agree with the work ledger.                                                                          |
+| C5    | An owner correction changes the next relevant action, leaves unrelated actions unchanged and survives restart.                       |
+| C6    | A packed core installed in a temporary directory uses public exports and its own database to write, revise, link and search records. |
 
-| ID  | Success criterion                                                                                                                           |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| C1  | The owner asks "Who is working on what right now?" about September data and receives a cited answer.                                        |
-| C2  | The owner asks "How did X progress, and what was the feedback?" and receives a cited answer from stored task history.                       |
-| C3  | The owner asks "Was there a similar case before? How did it go?" and receives a cited past case with its feedback and outcome.              |
-| C4  | The scheduled reports and board show the same state as the task ledger.                                                                     |
-| C5  | An owner correction changes the next relevant turn, leaves unrelated turns unchanged, and survives restart.                                 |
-| C6  | A packed core installed in a temporary directory opens its own database and uses public exports to write, revise, link, and search records. |
+C1–C5 serve recognise, attach, answer, report and learn. C6 serves the shared-engine goal. Internal
+references belong in records and traces; owner-facing answers use readable sentences without
+internal identifiers. Traceable reads and correct explanation together support the answer.
 
-## Evidence levels
+## Record the evidence you observed
 
-- **unit** — an isolated function or module test.
-- **integration** — several packages or runtime boundaries exercised together.
-- **installed daemon** — the installed process runs with a clean daemon log and a database read-back.
-- **real owner turn** — a real owner question or correction on real data, observed through delivery and read-back.
+| Level            | What it establishes                                                                                     |
+| ---------------- | ------------------------------------------------------------------------------------------------------- |
+| Unit             | A function or module behaves as exercised.                                                              |
+| Integration      | The exercised package or runtime boundaries work together.                                              |
+| Installed daemon | The installed build runs, with a clean daemon log and database read-back.                               |
+| Real owner turn  | A real owner request on real data produced the observed answer or artifact, delivery and stored result. |
 
-Record the strongest level actually observed; do not promote a lower level by inference.
+Do not promote a lower level by inference. A model response is not an effect receipt. A receipt is
+not proof of answer quality. A saved correction is not proof of changed behaviour.
 
-## Procedure
+## Check the complete loop
 
-1. At the start, name the relevant C IDs and the user-visible change they should prove.
-2. Run the smallest useful evidence first, then the installed-daemon and real-owner checks required by those IDs.
-3. Record the command, result, evidence level, and remaining failure in `docs/rebuild/checks.md`.
-4. Use exactly one verdict for each check: **met**, **partial**, **not met**, or **unverified**.
-5. Keep subtask completion separate from completion of the overall INTENT purpose.
+1. Name the relevant C checks and the visible change they should prove.
+2. Inspect the existing producers, consumers, source data and assembly. Reuse the mechanisms that
+   already serve the purpose.
+3. Run the smallest useful test, then the installed and real-owner checks needed for the claim.
+4. Read back work revisions, source evidence, board or wiki changes and delivery results. For files,
+   compare the actual artifact with the request and base version; preserve originals and new versions.
+5. Add 3–5 lines to [checks](../rebuild/checks.md): result, command or evidence, evidence level and
+   what still fails. Use **met**, **partial**, **not met** or **unverified** for each check.
+6. Keep completed sub-tasks separate from completion of the overall purpose.
+
+## Preserve the learning test
+
+The useful cycle is: a related situation brings a small hint; the agent investigates the underlying
+experience, decides and acts; the actual result supports a scoped correction; the next related
+situation produces a better result. Hints need applicability and evidence access. They should not
+replace judgment with a prewritten answer or mandatory recipe.
+
+Test a new related request, an unrelated request, a fresh session and a restart. Treat a backend
+change as a separate transfer test. Keep original feedback and outcomes available when replacing,
+merging or retiring a rule. A failure count or the model's success claim is not enough to change
+that rule automatically.
+
+Before removing a procedure or policy, identify where its knowledge will reach the agent and
+confirm it in an owner turn. Compare guidance changes with the same model, effort, tools and frozen
+sources. Record quality, completion, correction scope and request-to-delivery time together.
+
+Team sharing follows the owner checks. Future requester, executor, approver and recipient roles
+must remain distinguishable, but a future team contract is not evidence that today's owner flow works.

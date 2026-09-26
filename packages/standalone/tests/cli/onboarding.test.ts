@@ -125,8 +125,11 @@ describe('owner-only onboarding', () => {
       expect(existsSync(join(home, 'Library', 'LaunchAgents', 'com.mama.server.plist'))).toBe(
         false
       );
+      // Codex must log in to the managed home the owner runtime reads, not the default one.
       expect(p.output.join('\n')).toContain(
-        backend === 'claude' ? 'claude auth login' : 'codex login'
+        backend === 'claude'
+          ? 'claude auth login'
+          : `CODEX_HOME='${join(root, '.codex')}' codex login`
       );
       expect(p.answers).toEqual([]);
       expect(p.hidden).toEqual([]);

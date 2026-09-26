@@ -15,7 +15,7 @@ product layer is rebuilt. The drift audit is MAMA decision `unified_core_purpose
 
 1. **MAMA's owner flow** (INTENT v7): Kagemusha's loop + a wiki + memory that carries over, with
    task history and similar-case search.
-2. **mama-core as a shared engine.** A separate project such as nh must be able to open its own
+2. **mama-core as a shared engine.** A separate project must be able to open its own
    database and principals and write, revise, link and search its own records through public
    exports, without importing `standalone` or touching `~/.mama`. This is a target, proven only when
    check 6 passes; the archive's second-consumer suite covered save and recall only, with four

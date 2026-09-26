@@ -43,6 +43,16 @@ application; it does not maintain a second email allowlist.
 
 ## Owner credential boundary
 
+Run `mama init` in the owner's terminal for onboarding. It reads tokens with echo
+off and writes them only to `~/.mama/auth.env` with mode 0600; `config.yaml` and
+`connectors.json` carry settings and credential variable names. Rotate a token
+with `mama secret set <NAME>`, also in a terminal, then restart the daemon.
+`mama secret list` prints names only. The agent does not receive or type tokens.
+
+The daemon reads the Telegram bot token from `MAMA_TELEGRAM_TOKEN`, loaded by
+`~/.mama/start.sh` from `auth.env`. A `telegram.token` key in `config.yaml` is an
+error; move it with `mama secret set MAMA_TELEGRAM_TOKEN` and remove that key.
+
 The daemon's connectors retain the credentials needed to collect and deliver
 work. Before starting either native agent backend, standalone removes
 secret-shaped environment names. The shared core driver accepts that complete

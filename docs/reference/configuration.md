@@ -1,0 +1,93 @@
+# Configuration reference
+
+Use `mama init` to create a configuration, then change non-secret settings in `~/.mama/config.yaml`
+and `~/.mama/connectors.json`. Rotate credentials with `mama secret set <NAME>` in a terminal.
+Restart the daemon to apply changes. Development-memory settings are [separate](mcp-tools.md).
+
+## config.yaml
+
+The runtime requires `version`, `agent`, `database` and `logging`. Unknown keys are logged as
+`ignored in W1`; they do not configure features. A `telegram.token` key is an error, even if empty.
+Move that value using `mama secret set MAMA_TELEGRAM_TOKEN`, then remove the YAML key.
+
+| Key                           | Meaning and default                                                                                                                                                  |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version`                     | Required; must be `1`.                                                                                                                                               |
+| `agent.backend`               | Required; `claude` or `codex`.                                                                                                                                       |
+| `agent.model`                 | Required, nonblank backend model identifier.                                                                                                                         |
+| `agent.effort`                | `low`, `medium`, `high`, `max`, or `xhigh`; default `medium`. Backend support determines the useful values.                                                          |
+| `agent.max_turns`             | Required positive integer. `init` writes `100`.                                                                                                                      |
+| `agent.timeout`               | Required positive operation timeout in milliseconds. `init` writes `300000`.                                                                                         |
+| `agent.run_token_budget`      | Nonnegative integer; default `0` (no budget limit).                                                                                                                  |
+| `agent.codex_home`            | Optional managed Codex home override; normally `~/.mama/.codex`.                                                                                                     |
+| `agent.codex_cwd`             | Optional owner workspace override used by the daemon for both backends; normally `~/.mama/workspace`. Keep the workspace inside the MAMA data home.                  |
+| `agent.codex_sandbox`         | The parser accepts `read-only`, `workspace-write`, and `danger-full-access`; the owner Codex session requires `workspace-write` and rejects the other values.        |
+| `agent.tools.mcp_config`      | Optional path to the Claude owner action MCP configuration; normally `~/.mama/runtime/mama-mcp-config.json`. The daemon generates its MAMA entry.                    |
+| `database.path`               | Required database path. `init` writes `~/.mama/memory.db`.                                                                                                           |
+| `logging.level`               | Required; `debug`, `info`, `warn`, or `error`.                                                                                                                       |
+| `logging.file`                | Required log path. `init` writes `~/.mama/logs/daemon.log`.                                                                                                          |
+| `telegram.enabled`            | Boolean; default `false`.                                                                                                                                            |
+| `telegram.owner_chat_id`      | Required when Telegram is enabled; must also be in `allowed_chats`.                                                                                                  |
+| `telegram.allowed_chats`      | Array of string chat IDs; default empty.                                                                                                                             |
+| `telegram.owner_user_ids`     | Array of string user IDs. If omitted, the parser derives one owner only when `allowed_chats` contains exactly one distinct positive numeric ID. Prefer explicit IDs. |
+| `telegram.polling`            | Boolean; default `true`. `false` disables inbound polling by this instance.                                                                                          |
+| `jev.keyFile`                 | Replay key file; default `~/.mama/jev-key`.                                                                                                                          |
+| `jev.vocabFile`               | Replay vocabulary file; default `~/.mama/backfill/vocab.json`.                                                                                                       |
+| `wiki.enabled`                | Boolean; default `false` when the wiki block is present.                                                                                                             |
+| `wiki.vaultPath`              | Required when wiki is enabled; vault root.                                                                                                                           |
+| `wiki.wikiDir`                | Required when wiki is enabled; wiki directory within the vault, or an absolute path.                                                                                 |
+| `reports.full_report_hours`   | Array of hours `0`–`23`; default `[8, 13, 18]`. An empty array schedules no full reports.                                                                            |
+| `reports.reminder_start_hour` | Hour `0`–`23`; default `9`.                                                                                                                                          |
+| `reports.reminder_end_hour`   | Hour `0`–`23`; default `21`; must be at least the start hour.                                                                                                        |
+
+Report hours use Korea Standard Time. File paths accept `~` and `${HOME}`. Most relative paths
+resolve against the user's home; a relative `wiki.wikiDir` stays relative to its vault.
+See [backends](../guides/backends.md) and [reports](../guides/reports-and-board.md) for behavior.
+
+## connectors.json
+
+The file is an object keyed by connector name: `chatwork`, `slack`, `trello`, `kagemusha`, or
+`calendar`. Names are normalized to lowercase; case collisions fail validation. Unknown connector
+names and unknown fields are logged as ignored. A missing file means no configured connectors.
+
+| Field within each connector       | Required content                                                                                                |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `enabled`                         | Boolean.                                                                                                        |
+| `pollIntervalMinutes`             | Finite number greater than zero. `init` writes `5`.                                                             |
+| `channels`                        | Object keyed by source channel ID. Each entry needs `role`; optional `name` and `boardId` are nonblank strings. |
+| `channels.<id>.role`              | `truth`, `hub`, `deliverable`, `spoke`, `reference`, or `ignore`.                                               |
+| `auth.type`                       | `token`, `cli`, or `none`.                                                                                      |
+| `auth.tokenName`                  | Optional environment variable name, never its token value.                                                      |
+| `auth.cli`, `auth.cliAuthCommand` | Optional CLI authentication metadata; Calendar uses `gws` and `gws auth login`.                                 |
+
+`init` uses `MAMA_CHATWORK_TOKEN`, `MAMA_SLACK_TOKEN` and `MAMA_TRELLO_TOKEN` as token names.
+Trello additionally reads `MAMA_TRELLO_KEY`. Kagemusha uses the read-only local bridge; Calendar
+uses the authenticated `gws` CLI and its primary-calendar source channel `calendar`.
+See [connectors](../guides/connectors.md) for per-source setup and channel roles.
+
+## Environment and credentials
+
+The generated `start.sh` exports `auth.env` for the daemon. That file has mode `0600`; the owner
+agent cannot read it. The daemon removes secret-shaped environment names before launching either
+owner backend. Pass non-secret service settings through the startup environment.
+
+| Variable                                      | Purpose                                                                                                                            |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `MAMA_TELEGRAM_TOKEN`                         | Telegram bot credential.                                                                                                           |
+| `MAMA_CHATWORK_TOKEN`, `MAMA_SLACK_TOKEN`     | Connector credentials used by generated connector configuration.                                                                   |
+| `MAMA_TRELLO_KEY`, `MAMA_TRELLO_TOKEN`        | Separate Trello API key and token.                                                                                                 |
+| `MAMA_AUTH_TOKEN`                             | Viewer API bearer credential.                                                                                                      |
+| `MAMA_CF_ACCESS_ISSUER`, `MAMA_CF_ACCESS_AUD` | Expected Cloudflare Access issuer and audience for JWT verification. Both must be configured.                                      |
+| `MAMA_VIEWER_HOSTNAMES`                       | Comma-separated extra allowed Host names; loopback hosts are already allowed.                                                      |
+| `MAMA_VIEWER_OWNER_EMAILS`                    | Comma-separated verified emails expected in access monitoring. This flags unfamiliar identities; it does not grant or deny access. |
+| `MAMA_API_HOST`                               | Viewer bind address; default `127.0.0.1`.                                                                                          |
+| `MAMA_API_PORT`                               | Viewer port; default `3847`, accepted range `1024`–`65535`.                                                                        |
+| `MAMA_VIEWER_DIR`                             | Optional viewer static-asset directory.                                                                                            |
+| `MAMA_PID_FILE`                               | Optional daemon PID-record location.                                                                                               |
+
+Sources: [runtime parser](../../packages/standalone/src/runtime/config.ts),
+[daemon wiring](../../packages/standalone/src/cli/commands/daemon.ts),
+[connector parser](../../packages/standalone/src/connectors/config-loader.ts),
+[initial setup](../../packages/standalone/src/cli/commands/init.ts),
+[backend boundary](../../packages/standalone/src/runtime/backend-security.ts),
+[viewer API](viewer-api.md).

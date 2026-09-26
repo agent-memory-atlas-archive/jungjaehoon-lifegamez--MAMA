@@ -218,7 +218,7 @@ export async function runInit(options: InitOptions = {}): Promise<void> {
   if (!backendPath)
     prompt.write(`Install ${backend} and add its bin directory to PATH in ~/.mama/start.sh.`);
   prompt.write(
-    `If you have not logged in, run: ${backend === 'claude' ? 'claude auth login' : 'codex login'}`
+    `If you have not logged in, run: ${backend === 'claude' ? 'claude auth login' : `CODEX_HOME=${shellQuote(join(root, '.codex'))} codex login`}`
   );
   if (connectors.calendar) {
     if (!gwsPath)

@@ -1,0 +1,59 @@
+# Replay retained history
+
+Use replay to process already imported originals chronologically through the owner
+runtime. It rebuilds work history, daily journals, wiki pages and board views from
+the evidence available at each historical day. This is an operator workflow;
+`mama init` does not import historical sources.
+
+## Prepare the input
+
+The current `mama replay` command has no date-range or import flags. It expects
+prepared raw observations and their core index, plus these default runtime files:
+
+- `~/.mama/runtime/september-import-manifest.json`: import range and coverage counts.
+- `~/.mama/runtime/september-replay-cursor.json`: progress; created and updated by replay.
+- `~/.mama/runtime/september-replay-ledger.jsonl`: replay attempt and result records.
+
+The names are the current defaults even for another period. The manifest supplies
+`fromMs` (inclusive) and `untilMs` (exclusive), maximum source time and import
+counts. The replay queue also requires the configured `jev.keyFile` and
+`jev.vocabFile`. Keep provider credentials private. See the
+[window pipeline work log](../rebuild/window-pipeline.md) for the import and
+verification procedure; there is no general-purpose historical import CLI yet.
+
+## Run without a live daemon
+
+Stop the supervised daemon first:
+
+```bash
+launchctl bootout gui/$(id -u)/com.mama.server
+mama status
+mama replay
+```
+
+For an unsupervised daemon, use `mama stop` and confirm it stopped. Replay starts
+its own owner runtime and read-only viewer, skips live connector polling and
+Telegram delivery, and stops after completion. Do not run it beside the live
+service.
+
+Each window follows source occurrence time with day boundaries in KST. The owner
+reads the day's work, reconciles changes and child results, and is instructed to
+write the journal, board, wiki table of contents and applicable lessons. Source
+reads are capped at the window's end so later evidence cannot leak into an earlier
+day. The cursor preserves progress; inspect a failed window's ledger and durable
+writes before retrying it.
+
+## Return to live collection
+
+On successful completion, replay resets the owner session and sets enabled live
+connector cursors to the manifest's `untilMs` fence. It does not start live
+collection automatically. Start the launch agent again:
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.mama.server.plist
+```
+
+Compare a replayed task's chronology, feedback and roles with the originals; check
+that its daily journal and board agree. Then ask about that history in a fresh
+owner session. Completion counts alone do not establish that history was
+understood correctly.

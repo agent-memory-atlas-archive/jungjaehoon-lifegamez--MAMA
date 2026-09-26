@@ -7,13 +7,12 @@ workorders, cron/heartbeat, 13 connectors. Four read-only audits on 2026-09-26 c
 the code (removals confirmed in `packages/*/src`). Owner checks served: all five (a reader who follows
 the docs must reach a working owner loop) and the shared-engine goal (core README, second consumer).
 
-What is true today, in one place: `mama daemon | replay | status | stop`; one owner session on the
-`claude` or `codex` backend; Telegram owner chat only; connectors chatwork, slack, trello, kagemusha,
-calendar (gws); 19 owner actions (`runtime/action-surface.ts`); reports (delta routing, 8/13/18 full,
-9–21 reminder); replay; viewer on 127.0.0.1:3847 (GET only); config keys `version, agent, database,
-logging, telegram, jev, wiki, reports` (others logged as ignored); manual setup with `config.yaml`,
-`connectors.json`, launchd `com.mama.server` and `~/.mama/start.sh`. The MCP server holds no database:
-it calls the daemon over `~/.mama/runtime.sock`; only the plugin hooks open `~/.claude/mama-memory.db`.
+Current behavior is recorded in [product facts](product-facts.md): `mama init`, `mama secret`,
+`mama daemon`, `mama replay`, `mama status` and `mama stop`; one owner session on the `claude` or
+`codex` backend; Telegram owner chat; five source connectors; 19 owner actions; reports, replay and
+the GET-only viewer. Onboarding writes secret-free config and connector files plus `auth.env`,
+and can write launchd files without starting the service. The public MCP server uses core in
+process with its own development-memory database; it does not need the OS daemon.
 
 ## D0 — code defects the audits found (fix before the PR)
 
@@ -24,7 +23,7 @@ it calls the daemon over `~/.mama/runtime.sock`; only the plugin hooks open `~/.
 | D0c | `packages/standalone/package.json` declares bin `mama-code-act-mcp` → `dist/mcp/code-act-server.js`, which does not exist                                                                                                                   | **Done** `ec3a09eba`                                                                                                      |
 | D0d | Viewer auth accepts Cloudflare Access headers from a local peer by presence only (no JWT check); security.md calls this "validated"                                                                                                         | **Done** `b0545603c`: JWT verified (issuer/AUD from the live Access app); owner login passes, forged headers 401          |
 | D0e | Settings nothing reads: `MAMA_EMBEDDING_MODEL` in the plugin's `plugin.json` and `.mcp.json`; `/mama:configure` writes `~/.mama/config.json` and offers `--tier-check`; AGENTS.md names `MAMA_PERSONA_NATIVE_TOOLS`                         | **Done** `ec3a09eba` (manifest test pins it)                                                                              |
-| D0f | `docs/guides/standalone-troubleshooting.md:456-462` tells readers to delete SQLite `-wal`/`-shm` files (data loss)                                                                                                                          | **Done** `ec3a09eba`                                                                                                      |
+| D0f | The retired standalone troubleshooting guide advised deleting SQLite `-wal`/`-shm` files (data loss); retained guidance is in [troubleshooting](../guides/troubleshooting.md)                                                               | **Done** `ec3a09eba`                                                                                                      |
 | D0g | Leftover folders `packages/desktop`, `packages/core-conformance` (only `node_modules`/`src-tauri`/`.turbo`); migration 030 comments cite a spec that never existed in git                                                                   | **Done** `ec3a09eba`                                                                                                      |
 
 ## D1 — first things a reader opens (rewrite)
@@ -76,6 +75,10 @@ docs/development/{developer-playbook, one-mama-learning-anchor, 2026-09-08-one-m
 2026-08-26-one-front-team-work-agent-design}.md. Fix every inbound link (AGENTS.md, INTENT.md, READMEs,
 CHANGELOG, code comments). TODOS.md keeps only the items that still match INTENT. `docs/superpowers/`
 is untracked and never committed; it is left alone (deleting it cannot be undone).
+
+Pass 1 is recorded in the [documentation rewrite report](docs-pass1-report.md): the D2 tree,
+retired paths, carry-forward decisions and link check. READMEs, the website, CHANGELOG and TODOS
+remain pass 2. Working-tree deletions are unstaged because the session cannot write the git index.
 
 ## D3 — onboarding with owner-typed tokens (owner decision 2026-09-27)
 

@@ -21,7 +21,7 @@ It starts from what Kagemusha already does and adds two things.
 
 ## The engine is shared
 
-mama-core is not MAMA's private internals. A separate project (for example nh) must be able to
+mama-core is not MAMA's private internals. A separate project must be able to
 connect to it and build its own records: its own storage, its own principals, its own sources, with history,
 evidence links and search. It does this without MAMA's product code or MAMA's data. Records,
 revisions, evidence and search belong to the engine. Each product's work vocabulary (task
@@ -114,4 +114,4 @@ requester, executor, approver and recipient separately. A permission change must
 can actually be read and done.
 
 Development checks: [intent workflow](docs/development/intent-workflow.md),
-[learning anchor](docs/development/one-mama-learning-anchor.md).
+[corrections and learning](docs/guides/corrections-and-learning.md).

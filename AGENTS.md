@@ -72,7 +72,7 @@ cd packages/mama-core && npx vitest run -t "pattern"
 
 - **No PII:** no personal names, project names or channel IDs in source, comments, examples or
   test fixtures.
-- **Core knows no consumer.** Other projects (such as nh) use `mama-core` through public exports
+- **Core knows no consumer.** Other projects use `mama-core` through public exports
   only. Engine features (records, revisions, evidence links, search) go in core; product vocabulary
   stays in the product. A MAMA name inside core is a defect only when it makes the packed
   second-consumer test fail.
@@ -140,4 +140,5 @@ the owner turn (background tasks off). Any other widening needs an owner decisio
 - Release: [docs/development/release-process.md](docs/development/release-process.md). A release
   that touches mama-core publishes core first. The plugin's `package.json` and
   `.claude-plugin/plugin.json` versions must match; a test enforces it.
-- Learning anchor: [docs/development/one-mama-learning-anchor.md](docs/development/one-mama-learning-anchor.md)
+- Learning: [corrections and learning](docs/guides/corrections-and-learning.md), with
+  development evidence recorded through the [intent workflow](docs/development/intent-workflow.md).
