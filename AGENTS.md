@@ -103,18 +103,21 @@ tokens every turn. Defined in `packages/mama-core/src/runtime/drivers/persistent
 and `claude-cli-wrapper.ts`; native tool projection in
 `packages/standalone/src/agent/claude-native-tool-policy.ts` (carried back at W1).
 
-| Setting             | Value                                                        | Why                                                                               |
-| ------------------- | ------------------------------------------------------------ | --------------------------------------------------------------------------------- |
-| `cwd`               | `~/.mama/workspace`                                          | The home directory would inject `~/CLAUDE.md` every turn                          |
-| `.git/HEAD`         | created in the workspace                                     | Git boundary stops the upward CLAUDE.md search                                    |
-| `--plugin-dir`      | `~/.mama/.empty-plugins` (empty)                             | Keeps global plugin skills out                                                    |
-| `--setting-sources` | `project,local` (no `user`)                                  | Keeps `~/.claude/settings.json` plugins out                                       |
-| `--system-prompt`   | first turn only                                              | The session persists                                                              |
-| Native tools        | Claude: projected from the turn's role; other backends: none | Overlap with catalog actions produces hallucinated calls and unverifiable reports |
+| Setting             | Value                                                                                              | Why                                                                                                                                                                                 |
+| ------------------- | -------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cwd`               | `~/.mama/workspace`                                                                                | The home directory would inject `~/CLAUDE.md` every turn                                                                                                                            |
+| `.git/HEAD`         | created in the workspace                                                                           | Git boundary stops the upward CLAUDE.md search                                                                                                                                      |
+| `--plugin-dir`      | `~/.mama/.empty-plugins` (empty)                                                                   | Keeps global plugin skills out                                                                                                                                                      |
+| `--setting-sources` | `project,local` (no `user`)                                                                        | Keeps `~/.claude/settings.json` plugins out                                                                                                                                         |
+| `--system-prompt`   | first turn only                                                                                    | The session persists                                                                                                                                                                |
+| Native tools        | Claude: projected from the turn's role; Codex shell: MAMA owner runtime only; other backends: none | Owner decision 2026-09-26: file work requested by the owner; Codex sandbox `workspace-write` in `~/.mama/workspace`, approvals `never`, no network widening; core default stays off |
 
 Forbidden: `cwd` set to home, removing `--plugin-dir`, adding `user` to `--setting-sources`,
 adding `--no-session-persistence`, removing the `.git/HEAD` creation, widening native tools in
-source. Lift the native tool limit only with `MAMA_PERSONA_NATIVE_TOOLS=1`.
+source except for the owner decision of 2026-09-26: enable the Codex shell only for the MAMA owner
+runtime to serve owner requests that need files, with sandbox `workspace-write` in
+`~/.mama/workspace`, approvals `never`, and no network widening; core default stays off. Lift any
+other native tool limit only with `MAMA_PERSONA_NATIVE_TOOLS=1`.
 
 ## References
 

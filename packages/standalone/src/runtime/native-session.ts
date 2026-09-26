@@ -41,6 +41,7 @@ export interface NativeDriverOptions {
   cwd: string;
   runtimeRoot: string;
   sandbox: RuntimeSandbox;
+  shellTool?: boolean;
   requestTimeout: number;
   effort: RuntimeEffort;
   codexHome?: string;
@@ -151,6 +152,9 @@ function driverOptions(
     cwd: options.workspaceDir,
     runtimeRoot: options.runtimeRoot,
     sandbox: 'workspace-write',
+    // Owner decision 2026-09-26: shell for requested file work. This owner's Codex
+    // home also serves native subagents and replay turns, which share this option.
+    ...(options.backend === 'codex' ? { shellTool: true } : {}),
     requestTimeout: options.timeout,
     effort: options.effort ?? 'medium',
     ...(options.codexHome === undefined ? {} : { codexHome: options.codexHome }),
@@ -171,6 +175,7 @@ function createDriver(
       model: options.model,
       cwd: nativeOptions.cwd,
       sandbox: nativeOptions.sandbox,
+      shellTool: nativeOptions.shellTool,
       requestTimeout: nativeOptions.requestTimeout,
       codexHome: options.codexHome,
       effort: nativeOptions.effort,

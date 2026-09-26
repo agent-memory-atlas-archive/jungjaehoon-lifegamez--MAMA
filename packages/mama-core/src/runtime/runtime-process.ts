@@ -51,6 +51,8 @@ export interface CodexRuntimeProcessOptions {
   authSourcePath?: string;
   /** Managed Codex `model_reasoning_effort`; unset means the built-in default. */
   effort?: string;
+  /** Enable the managed workspace shell; disabled unless the consumer opts in. */
+  shellTool?: boolean;
   auxiliaryToolPolicy?: CodexAuxiliaryToolPolicy;
   /**
    * Root the driver keeps its files under. The caller names it: a runtime process
@@ -116,6 +118,7 @@ export class CodexRuntimeProcess extends EventEmitter implements AgentRuntimePro
       mcpConfigPath: options.mcpConfigPath,
       authSourcePath: options.authSourcePath,
       effort: options.effort,
+      shellTool: options.shellTool,
       // A completed child is accepted by the consumer's durable intake before the
       // driver forgets it. Started events remain observational.
       onSubagentEvent: (event: SubagentEvent) => {

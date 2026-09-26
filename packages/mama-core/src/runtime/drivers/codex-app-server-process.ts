@@ -67,6 +67,8 @@ export interface CodexAppServerProcessOptions {
   authSourcePath?: string;
   /** Managed `model_reasoning_effort`; unset means the built-in default, unknown values throw. */
   effort?: string;
+  /** Enable the managed workspace shell; disabled unless the consumer opts in. */
+  shellTool?: boolean;
   /** Stable identity/rules fingerprint; dynamic conversation context must be excluded. */
   policyFingerprint?: string;
   /** Observability sink for Codex-native subagent threads spawned by a parent turn. */
@@ -630,6 +632,7 @@ export class CodexAppServerProcess {
     authSourcePath?: string;
     policyFingerprint?: string;
     effort?: string;
+    shellTool?: boolean;
     onSubagentEvent?: (event: SubagentEvent) => void;
     createSubagentBridge?: (info: SubagentBridgeRequest) => Promise<SubagentBridge | null>;
     subagentGraceMs?: number;
@@ -1047,7 +1050,9 @@ export class CodexAppServerProcess {
     ensurePrivateDirectory(this.options.codexHome);
     ensurePrivateDirectory(this.options.isolatedHome);
     const configPath = join(this.options.codexHome, 'config.toml');
-    const config = buildMAMACodexAppServerConfig(this.options.effort);
+    const config = buildMAMACodexAppServerConfig(this.options.effort, undefined, {
+      shellTool: this.options.shellTool,
+    });
     const configFingerprint = fingerprintText(config);
     const configSignature = managedFileSignature(configPath);
     if (

@@ -581,3 +581,8 @@ The implementation writes raw/index data during import only. Replay is the owner
   files, no symlink, regular file, ≤ 50 MB, idempotent per operation). Live Chatwork and Slack collection
   now keep file ids in metadata. Standalone 213/213, typecheck clean. Live proof pending with part 2
   (shell), on the 9/14 feedback ZIP.
+- 2026-09-26: owner-reports R6 part 2 implements the owner decision: optional core `shellTool` defaults off; the owner native-session passes true through runtime-process and the app-server driver, including its native subagents and replay turns.
+  AGENTS.md records the exception; one standing-prompt line keeps requested file work inside the workspace and source reads, records and delivery on MAMA actions. `unified_exec=false`, workspace-write, per-thread approvals never, declined escalation and network policy are unchanged.
+  Regression evidence: 5 core config/driver tests and 19 standalone native-session/prompt tests pass; both requested package typechecks pass. Core was compiled first because standalone consumes its dist exports.
+  Requested runtime suites: core 171 passed, 44 failed plus 3 setup-blocked suites (21 tests not run); standalone 48 passed, 5 failed. Socket `listen EPERM` caused the failures; core IPC teardown also tried `close` on its uninitialized server. Logs: `/private/tmp/mama-r6-{core,standalone}-runtime.log`.
+  Still unverified: the live feedback ZIP/PDF to Excel delivery owner turn; no daemon restart or commit. MCP decision save was blocked because the tool requires approval while this session's approval policy is never.

@@ -97,7 +97,7 @@ describe('one owner native session', () => {
     }
   );
 
-  it('keeps the Codex launch writable in the workspace and native-subagent capable', () => {
+  it('enables the owner Codex shell in the writable workspace with native subagents', () => {
     let received: NativeDriverOptions | undefined;
     const model = runner('codex');
     const session = createNativeSession({
@@ -117,6 +117,7 @@ describe('one owner native session', () => {
     expect(received).toMatchObject({
       cwd: '/tmp/mama-native-workspace',
       sandbox: 'workspace-write',
+      shellTool: true,
       requestTimeout: 300_000,
     });
     expect(received?.createSubagentBridge).toEqual(expect.any(Function));

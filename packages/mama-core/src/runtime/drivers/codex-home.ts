@@ -417,7 +417,8 @@ function resolveCodexReasoningEffort(effort?: string | null): CodexReasoningEffo
 
 export function buildMAMACodexAppServerConfig(
   effort?: string | null,
-  hostNotes?: readonly string[]
+  hostNotes?: readonly string[],
+  options: { shellTool?: boolean } = {}
 ): string {
   return [
     'approval_policy = "on-request"',
@@ -438,7 +439,7 @@ export function buildMAMACodexAppServerConfig(
     'plugins = false',
     'apps = false',
     'tool_search = false',
-    'shell_tool = false',
+    `shell_tool = ${options.shellTool ?? false}`,
     'unified_exec = false',
     'web_search = false',
     'browser_use = false',

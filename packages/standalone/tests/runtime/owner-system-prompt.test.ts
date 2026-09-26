@@ -48,6 +48,15 @@ describe('owner standing prompt', () => {
     );
   });
 
+  it.each(['codex', 'claude'] as const)(
+    'bounds the %s workspace shell to requested file work and preserves required actions',
+    (backend) => {
+      expect(ownerSystemPrompt(backend).split('\n')).toContain(
+        '- Use the workspace shell for file work the owner asks for (unzip, read PDFs and images, build spreadsheets) inside the workspace; use MAMA actions to read sources, record work and deliver, and never bypass a required action with the shell.'
+      );
+    }
+  );
+
   it('keeps owner-facing text free of stable ids and leaves reads in tool traces', () => {
     const prompt = ownerSystemPrompt('codex');
 
