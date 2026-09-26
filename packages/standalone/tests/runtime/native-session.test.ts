@@ -118,9 +118,12 @@ describe('one owner native session', () => {
       cwd: '/tmp/mama-native-workspace',
       sandbox: 'workspace-write',
       shellTool: true,
+      allowLoginShell: false,
+      shellEnvironment: { PATH: process.env.PATH },
       requestTimeout: 300_000,
     });
     expect(received?.createSubagentBridge).toEqual(expect.any(Function));
+    expect(received?.shellEnvironment).toEqual({ PATH: process.env.PATH });
     expect(model.supportsNativeSubagents).toBe(true);
     void session.stop();
   });

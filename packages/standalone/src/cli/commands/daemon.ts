@@ -418,6 +418,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
         },
         messageLedgerPath: paths.telegramLedgerPath,
         filesRoot: join(paths.workspaceDir, 'files'),
+        workspaceDir: paths.workspaceDir,
       });
       await gateway.start();
       stage(logger, 'telegram');

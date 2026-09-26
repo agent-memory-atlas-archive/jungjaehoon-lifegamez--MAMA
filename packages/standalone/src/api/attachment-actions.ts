@@ -1,5 +1,5 @@
 import { mkdirSync, statSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 import type {
   ActionContext,
   ActionRegistration,
@@ -182,11 +182,15 @@ function idsFor(observation: StoredAttachmentObservation): {
   return { ids: contentIds, fileIdRule: contentIds.length > 0 ? 'text_marker' : undefined };
 }
 
-function safeFileName(name: string): string {
+export function safeFileName(name: string): string {
   // Keep the provider's name readable (the owner receives this file); drop only what could
   // leave the directory or break a path.
-  const safe = [...basename(name)]
-    .map((char) => (char === '/' || char === '\\' || char === ':' || char < ' ' ? '_' : char))
+  const safe = [...name]
+    .map((char) =>
+      char === '/' || char === '\\' || char < ' ' || (char >= '\u007f' && char <= '\u009f')
+        ? '_'
+        : char
+    )
     .join('');
   if (safe === '' || safe === '.' || safe === '..') throw new Error('Attachment filename is empty');
   return safe;

@@ -121,6 +121,7 @@ describe('daemon bootstrap', () => {
         createTelegramGateway: vi.fn((options) => {
           expect(options.config?.ownerChatId).toBe('chat');
           expect(options.filesRoot).toBe(join(mamaRoot, 'workspace', 'files'));
+          expect(options.workspaceDir).toBe(join(mamaRoot, 'workspace'));
           return gateway;
         }),
       },

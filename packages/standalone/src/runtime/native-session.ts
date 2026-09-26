@@ -42,6 +42,8 @@ export interface NativeDriverOptions {
   runtimeRoot: string;
   sandbox: RuntimeSandbox;
   shellTool?: boolean;
+  shellEnvironment?: Record<string, string>;
+  allowLoginShell?: boolean;
   requestTimeout: number;
   effort: RuntimeEffort;
   codexHome?: string;
@@ -145,6 +147,10 @@ function driverOptions(
   options: NativeSessionOptions,
   bridge: NativeDriverOptions['createSubagentBridge']
 ): NativeDriverOptions {
+  const path = process.env.PATH;
+  if (options.backend === 'codex' && !path?.trim()) {
+    throw new Error('Owner Codex shell requires the host PATH');
+  }
   return {
     backend: options.backend,
     model: options.model,
@@ -154,7 +160,15 @@ function driverOptions(
     sandbox: 'workspace-write',
     // Owner decision 2026-09-26: shell for requested file work. This owner's Codex
     // home also serves native subagents and replay turns, which share this option.
-    ...(options.backend === 'codex' ? { shellTool: true } : {}),
+    ...(options.backend === 'codex'
+      ? {
+          shellTool: true,
+          // macOS login shells run path_helper and put the system Python before Homebrew.
+          // Keep the daemon's toolchain PATH and the driver's isolated HOME; no user profiles.
+          shellEnvironment: { PATH: path! },
+          allowLoginShell: false,
+        }
+      : {}),
     requestTimeout: options.timeout,
     effort: options.effort ?? 'medium',
     ...(options.codexHome === undefined ? {} : { codexHome: options.codexHome }),
@@ -176,6 +190,8 @@ function createDriver(
       cwd: nativeOptions.cwd,
       sandbox: nativeOptions.sandbox,
       shellTool: nativeOptions.shellTool,
+      shellEnvironment: nativeOptions.shellEnvironment,
+      allowLoginShell: nativeOptions.allowLoginShell,
       requestTimeout: nativeOptions.requestTimeout,
       codexHome: options.codexHome,
       effort: nativeOptions.effort,

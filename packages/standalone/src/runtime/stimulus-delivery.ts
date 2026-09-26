@@ -326,6 +326,26 @@ function boundedStimulus(row: MailboxRow): string {
     `occurred_at: ${new Date(row.occurredAt).toISOString()}`,
     `preview: ${JSON.stringify(row.preview)}`,
   ];
+  if (row.kind === 'owner_message') {
+    const payload = row.payload;
+    const input =
+      payload && typeof payload === 'object' && !Array.isArray(payload) ? payload.input : undefined;
+    const attachments =
+      input && typeof input === 'object' && !Array.isArray(input) ? input.attachments : undefined;
+    if (Array.isArray(attachments)) {
+      for (const attachment of attachments) {
+        if (!attachment || typeof attachment !== 'object' || Array.isArray(attachment)) continue;
+        const name = JSON.stringify(attachment.name);
+        if (typeof attachment.error === 'string') {
+          lines.push(`attachment: name=${name} error=${JSON.stringify(attachment.error)}`);
+        } else {
+          lines.push(
+            `attachment: name=${name} path=${JSON.stringify(attachment.path)}${typeof attachment.size === 'number' ? ` size=${attachment.size} bytes` : ''}`
+          );
+        }
+      }
+    }
+  }
   const messages = row.kind === 'source_delta' ? messageLines(row.payload) : null;
   if (messages === null) lines.push(`refs: ${JSON.stringify(row.refs)}`);
   if (row.kind === 'source_delta') {

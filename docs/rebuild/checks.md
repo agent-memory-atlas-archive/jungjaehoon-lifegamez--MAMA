@@ -598,3 +598,16 @@ The implementation writes raw/index data during import only. Replay is the owner
   Without file ids, list only with the uploader account id from observation metadata or exact room-member name; report an unmatched author explicitly. Match by message id or the existing five-minute upload window when the file omits message id.
   Synthetic fake-fetch evidence: all 28 attachment action/Chatwork tests pass, covering direct reads, filtered lists, member resolution, errors, downloads, and no unfiltered file listing; standalone typecheck and ESLint on all five changed TypeScript files pass.
   Requested connectors/API run: 141 passed, 14 failed across viewer-archive-routes, viewer-records, and viewer-server because sandbox socket binding raises `listen EPERM 127.0.0.1`. Live owner-turn verification remains pending; no daemon restart or commit.
+- 2026-09-26 14:00 KST: R6 live, end to end (after the Chatwork lookup fix). Same owner request: the
+  agent listed the 9/14 message's attachments (the uploader-filtered list found
+  <customer-A>\_<file-1>.zip), downloaded it into the workspace (0.7 s), unzipped it with the shell (two
+  1-page PDFs), rendered the target PDF to PNG with sips and read it with its image viewer, wrote an
+  .xlsx, and sent it with deliver.telegram.file (Telegram message 4171, 3.2 KB). About 3 min, no ids,
+  daemon.log clean. Gaps: the sandbox's python3 has no openpyxl/PyMuPDF (the host's Homebrew python
+  has both), so the agent hand-wrote the xlsx XML; the "existing Excel format" is only a lesson — MAMA
+  holds no template file — so layout fidelity is the owner's call.
+- 2026-09-26: R6 owner Telegram intake (Attach/Answer): all eight media kinds now download into the owner's shared workspace files/telegram; Unicode-safe names, file-only text, per-file errors and readable stimulus descriptors preserve the original request.
+  Enforce the Bot API 20 MB limit on message/getFile metadata and streamed bytes; reuse safeFileName and retain caption formatting. Fake-bot coverage includes documents, largest photos, other media names, failures, dedupe and sanitization (22 passing tests).
+  Exact reader cause: app-server inherits daemon PATH but isolates HOME; macOS login zsh runs /etc/zprofile path_helper, selecting system Python before Homebrew, while isolated HOME hides the host user site. Owner-only shell_environment_policy.set.PATH plus allow_login_shell=false fixes resolution; core defaults, isolated HOME, workspace-write, approvals never and network policy remain unchanged.
+  Evidence: standalone gateways/runtime 87 passed, 5 socket-listen EPERM failures; standalone tsc --noEmit and changed-file ESLint pass; core config/driver 6 passed and core tsc passed; adjacent attachment/daemon suites 17 passed. Isolated-HOME non-login shell imported openpyxl/fitz/pdfplumber/PIL and round-tripped XLSX/PDF. Logs: /private/tmp/mama-telegram-{suites,typecheck,eslint,adjacent}.log and /private/tmp/mama-shell-green.log.
+  Still unverified: a live Telegram attachment owner turn after deployment; no daemon restart or commit. MAMA MCP decision save was blocked because the tool requires approval and this session's approval policy is never.

@@ -21,6 +21,7 @@ import {
 } from './telegram-message-ledger.js';
 import { TelegramResponsePresenter } from './telegram-response-presenter.js';
 import { validateWorkspaceFile, type TelegramFileDeliveryResult } from '../api/file-delivery.js';
+import { downloadTelegramFiles, telegramFiles } from './telegram-attachments.js';
 
 const TELEGRAM_MAX_LENGTH = 4096;
 const MESSAGE_DEDUP_TTL_MS = 60_000;
@@ -48,6 +49,7 @@ export interface TelegramGatewayOptions {
   config?: Partial<TelegramGatewayConfig>;
   messageLedgerPath?: string;
   filesRoot?: string;
+  workspaceDir?: string;
 }
 
 function entityOptions<T>(entities: TelegramFormattedText['entities']): T {
@@ -122,14 +124,6 @@ function outboundLedgerKey(idempotencyKey: string): string {
   return `outbound:${createHash('sha256').update(`text\0${idempotencyKey}`).digest('hex')}`;
 }
 
-function payloadForFormatting(
-  formatting: ReturnType<typeof captureTelegramTextFormatting>
-): JsonValue | undefined {
-  return formatting === undefined
-    ? undefined
-    : ({ telegramFormatting: formatting } as unknown as JsonValue);
-}
-
 /** Telegram owner ingress and its durable response transport. */
 export class TelegramGateway extends BaseGateway {
   readonly source = 'telegram' as const;
@@ -137,6 +131,7 @@ export class TelegramGateway extends BaseGateway {
   private readonly token: string;
   private readonly config: TelegramGatewayConfig;
   private readonly filesRoot?: string;
+  private readonly workspaceDir?: string;
   private readonly messageLedger: TelegramMessageLedger;
   private readonly chatTails = new Map<string, Promise<void>>();
   private readonly activePresenters = new Map<string, TelegramResponsePresenter>();
@@ -165,6 +160,7 @@ export class TelegramGateway extends BaseGateway {
       ...(options.config?.polling === undefined ? {} : { polling: options.config.polling }),
     };
     this.filesRoot = options.filesRoot;
+    this.workspaceDir = options.workspaceDir;
     const ledgerPath = options.messageLedgerPath ?? process.env.MAMA_TELEGRAM_MESSAGE_LEDGER_PATH;
     if (!ledgerPath?.trim()) {
       throw new Error('Telegram message ledger path is required');
@@ -350,7 +346,8 @@ export class TelegramGateway extends BaseGateway {
     }
 
     const selected = selectTelegramTextEntities(message);
-    if (!selected.text.trim()) return;
+    const files = telegramFiles(message);
+    if (!selected.text.trim() && files.length === 0) return;
     const formatting = captureTelegramTextFormatting(
       selected.field,
       selected.text,
@@ -361,13 +358,27 @@ export class TelegramGateway extends BaseGateway {
     this.activePresenters.set(ref, presenter);
     try {
       if (ledgerEntry.state !== 'ready') await presenter.start();
-      const formattingPayload = payloadForFormatting(formatting);
+      const attachments = await downloadTelegramFiles(files, {
+        api: this.bot!.api,
+        token: this.token,
+        workspaceDir: this.workspaceDir,
+        messageId: message.message_id,
+      });
       const input: OwnerMessageInput = {
         id: ref,
         channelKey: chatId,
         occurredAt: message.date * 1000,
-        text: selected.text,
-        ...(formattingPayload === undefined ? {} : { payload: formattingPayload }),
+        text: selected.text.trim()
+          ? selected.text
+          : attachments.map(({ name }) => `[file: ${name}]`).join('\n'),
+        ...(formatting === undefined && attachments.length === 0
+          ? {}
+          : {
+              payload: {
+                ...(formatting === undefined ? {} : { telegramFormatting: formatting }),
+                ...(attachments.length === 0 ? {} : { attachments }),
+              } as unknown as JsonValue,
+            }),
       };
       this.intake.acceptOwnerMessage(input);
       this.emitEvent({

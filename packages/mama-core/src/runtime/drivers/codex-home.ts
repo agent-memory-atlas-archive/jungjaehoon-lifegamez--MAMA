@@ -418,7 +418,11 @@ function resolveCodexReasoningEffort(effort?: string | null): CodexReasoningEffo
 export function buildMAMACodexAppServerConfig(
   effort?: string | null,
   hostNotes?: readonly string[],
-  options: { shellTool?: boolean } = {}
+  options: {
+    shellTool?: boolean;
+    shellEnvironment?: Record<string, string>;
+    allowLoginShell?: boolean;
+  } = {}
 ): string {
   return [
     'approval_policy = "on-request"',
@@ -428,6 +432,18 @@ export function buildMAMACodexAppServerConfig(
     'developer_instructions = ""',
     'include_apps_instructions = false',
     'include_environment_context = false',
+    ...(options.allowLoginShell === undefined
+      ? []
+      : [`allow_login_shell = ${options.allowLoginShell}`]),
+    ...(options.shellEnvironment === undefined
+      ? []
+      : [
+          '',
+          '[shell_environment_policy.set]',
+          ...Object.entries(options.shellEnvironment).map(
+            ([name, value]) => `${tomlString(name)} = ${tomlString(value)}`
+          ),
+        ]),
     '',
     '[analytics]',
     'enabled = false',

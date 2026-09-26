@@ -69,6 +69,9 @@ export interface CodexAppServerProcessOptions {
   effort?: string;
   /** Enable the managed workspace shell; disabled unless the consumer opts in. */
   shellTool?: boolean;
+  /** Explicit shell environment overrides; does not replace the app-server's isolated HOME. */
+  shellEnvironment?: Record<string, string>;
+  allowLoginShell?: boolean;
   /** Stable identity/rules fingerprint; dynamic conversation context must be excluded. */
   policyFingerprint?: string;
   /** Observability sink for Codex-native subagent threads spawned by a parent turn. */
@@ -633,6 +636,8 @@ export class CodexAppServerProcess {
     policyFingerprint?: string;
     effort?: string;
     shellTool?: boolean;
+    shellEnvironment?: Record<string, string>;
+    allowLoginShell?: boolean;
     onSubagentEvent?: (event: SubagentEvent) => void;
     createSubagentBridge?: (info: SubagentBridgeRequest) => Promise<SubagentBridge | null>;
     subagentGraceMs?: number;
@@ -1052,6 +1057,8 @@ export class CodexAppServerProcess {
     const configPath = join(this.options.codexHome, 'config.toml');
     const config = buildMAMACodexAppServerConfig(this.options.effort, undefined, {
       shellTool: this.options.shellTool,
+      shellEnvironment: this.options.shellEnvironment,
+      allowLoginShell: this.options.allowLoginShell,
     });
     const configFingerprint = fingerprintText(config);
     const configSignature = managedFileSignature(configPath);

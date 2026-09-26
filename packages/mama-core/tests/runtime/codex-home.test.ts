@@ -6,6 +6,30 @@ import { buildMAMACodexAppServerConfig } from '../../src/runtime/drivers/codex-h
 import { CodexRuntimeProcess } from '../../src/runtime/runtime-process.js';
 
 describe('managed Codex shell configuration', () => {
+  it('writes consumer shell environment overrides without changing the isolated home or sandbox', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'codex-shell-env-'));
+    const runtime = new CodexRuntimeProcess({
+      hostRootDir: root,
+      cwd: root,
+      shellTool: true,
+      shellEnvironment: { PATH: '/opt/toolchain/bin:/usr/bin:/bin' },
+      allowLoginShell: false,
+      command: join(root, 'missing-codex'),
+    });
+    try {
+      await expect(runtime.prompt('prepare configuration')).rejects.toThrow('ENOENT');
+      const config = readFileSync(join(root, '.codex/config.toml'), 'utf8');
+      expect(config).toContain('allow_login_shell = false');
+      expect(config).toContain('[shell_environment_policy.set]');
+      expect(config).toContain('"PATH" = "/opt/toolchain/bin:/usr/bin:/bin"');
+      expect(config).not.toContain('"HOME" =');
+      expect(config).toContain('sandbox_mode = "workspace-write"');
+      expect(config).not.toContain('network_access = true');
+    } finally {
+      await runtime.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
   it('keeps shell and unified execution disabled by default', () => {
     const config = buildMAMACodexAppServerConfig();
     expect(config).toContain('shell_tool = false');

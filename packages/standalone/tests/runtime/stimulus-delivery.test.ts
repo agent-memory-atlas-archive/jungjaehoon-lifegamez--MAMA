@@ -56,6 +56,61 @@ async function boot(model: NativeSessionHandle['runTurn']) {
 }
 
 describe('one stimulus intake and delivery', () => {
+  it('renders owner attachment paths, names, sizes and errors from the intake payload', async () => {
+    let accepted: Record<string, unknown> = {};
+    const intake = createStimulusIntake(
+      {
+        accept: (input) => {
+          accepted = input;
+          return { inputId: 'file-input', state: 'accepted' };
+        },
+      },
+      'owner'
+    );
+    intake.acceptOwnerMessage({
+      id: 'file-input',
+      channelKey: 'synthetic-channel',
+      occurredAt: 1,
+      text: '[file: 書式.xlsx]',
+      payload: {
+        attachments: [
+          { path: '/workspace/files/telegram/11_書式.xlsx', name: '書式.xlsx', size: 128 },
+          { name: 'large.zip', error: 'Telegram Bot API download limit is 20 MB' },
+        ],
+      },
+    });
+    let prompt = '';
+    const delivery = createStimulusDelivery({ lessonResolver: async () => [] });
+    await delivery.deliver(
+      {
+        ...accepted,
+        id: 'file-input',
+        status: 'claimed',
+        attempts: 1,
+        createdAt: 1,
+      } as never,
+      {
+        nativeInputId: 'file-input',
+        isNewThread: () => false,
+        resultForReceipt: () => null,
+        run: async (content: Array<{ text?: string }>) => {
+          prompt = content[0]?.text ?? '';
+          return {} as never;
+        },
+        steer: vi.fn(),
+        wasDispatched: () => false,
+        onInputDispatch: vi.fn(),
+        onAccepted: vi.fn(),
+      } as never
+    );
+    expect(prompt.split('\n')).toContain(
+      'attachment: name="書式.xlsx" path="/workspace/files/telegram/11_書式.xlsx" size=128 bytes'
+    );
+    expect(prompt.split('\n')).toContain(
+      'attachment: name="large.zip" error="Telegram Bot API download limit is 20 MB"'
+    );
+  });
+
   it('renders a seeded lesson for an owner message through the recall sanitizer', async () => {
     const queries: string[] = [];
     const delivery = createStimulusDelivery({
