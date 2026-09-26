@@ -712,7 +712,9 @@ The implementation writes raw/index data during import only. Replay is the owner
   recognised from the carried exchanges; "find the first feedback" ran work.show → memory provenance →
   source.read → attachment list/download → Read of the image → Bash/openpyxl → deliver.telegram.file and
   answered with the right dates, sender and resubmission (about 85 s, 17 tools). The owner correction
-  "the Excel style differs" was redone against the reference file cell by cell, and "why, did you forget
+  "the Excel style differs" was redone (v2 read back by the supervisor: column widths, fills, header row
+  and row heights match the reference; row 2–3 font colours, header borders and centre alignment were not
+  copied although the answer claimed an exact match), and "why, did you forget
   the workflow" produced memory.save kind=lesson with the host-set source_message_ref, model_run_id and
   the tool_use id. Every agent tool trace carries a model_run_id; the unattributed work.list rows every 30 s
   are the viewer's operation-scoped reads. Still failing: "make it again and send" resent the old file
