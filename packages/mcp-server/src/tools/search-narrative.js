@@ -11,15 +11,15 @@
  * @module search-narrative
  */
 
+const { search } = require('../mama/search-engine');
+const { expand } = require('../mama/link-expander');
 const { formatMultiple } = require('../mama/response-formatter');
+const { info, error: logError } = require('@jungjaehoon/mama-core/debug-logger');
 
 /**
- * Create the search_narrative tool bound to the shared action caller
- * @param {Object} deps - Injected dependencies
- * @param {(action: string, input?: Object) => Promise<any>} deps.call -
- *   Shared action-catalog caller
+ * Search narrative tool definition
  */
-const createSearchNarrativeTool = ({ call }) => ({
+const searchNarrativeTool = {
   name: 'search_narrative',
   description:
     'Search decisions by query using semantic search. Returns narratives with 5-layer structure (topic, decision, reasoning, evidence, alternatives, risks) and related links. Supports depth-based link expansion and multiple output modes (full/summary/minimal). Use this when you need to find past decisions by semantic meaning, not exact topic match.',
@@ -100,16 +100,15 @@ const createSearchNarrativeTool = ({ call }) => ({
         };
       }
 
-      // 1. Semantic search is one action call; the runtime owns the index.
-      const searchResult = await call('memory.search', {
-        query,
-        limit,
-        threshold,
-        ...(depth > 0 && { includeRelated: true }),
-      });
-      const searchResults = Array.isArray(searchResult?.results) ? searchResult.results : [];
+      info(
+        `[search_narrative] Query: "${query}" (depth: ${depth}, limit: ${limit}, mode: ${mode}, threshold: ${threshold})`
+      );
 
-      if (searchResults.length === 0) {
+      // 1. Perform semantic search
+      const searchResults = await search(query, { limit, threshold });
+
+      if (!searchResults || searchResults.length === 0) {
+        info(`[search_narrative] No results found for query: "${query}"`);
         return {
           content: [
             {
@@ -120,28 +119,20 @@ const createSearchNarrativeTool = ({ call }) => ({
         };
       }
 
-      // 2. Expand links for each result — twin-edge neighbors stand in for
-      // the old decision_edges expansion, mapped back to the legacy link
-      // shape the response formatter renders.
+      info(`[search_narrative] Found ${searchResults.length} results`);
+
+      // 2. Expand links for each result
       const linksMap = {};
       if (depth > 0) {
         for (const decision of searchResults) {
           try {
-            const page = await call('graph.query', {
-              view: 'neighbors',
-              seeds: [{ kind: 'memory', id: decision.id }],
-              maxDepth: depth,
-              history: 'all',
-            });
-            linksMap[decision.id] = (page?.edges ?? []).map((edge) => ({
-              from_id: edge.from?.id,
-              to_id: edge.to?.id,
-              relationship: edge.relation,
-              direction: edge.from?.id === decision.id ? 'outgoing' : 'incoming',
-              depth: 1,
-            }));
+            const links = expand(decision.id, depth, true); // approvedOnly=true
+            linksMap[decision.id] = links;
+            info(
+              `[search_narrative] Expanded ${links.length} links for decision ${decision.id} (depth: ${depth})`
+            );
           } catch (error) {
-            console.error(
+            logError(
               `[search_narrative] Failed to expand links for ${decision.id}: ${error.message}`
             );
             linksMap[decision.id] = [];
@@ -178,7 +169,7 @@ const createSearchNarrativeTool = ({ call }) => ({
         _data: responseData,
       };
     } catch (error) {
-      console.error(`[search_narrative] Search failed: ${error.message}`);
+      logError(`[search_narrative] Search failed: ${error.message}`);
       return {
         success: false,
         message: `❌ Search failed: ${error.message}`,
@@ -250,6 +241,6 @@ const createSearchNarrativeTool = ({ call }) => ({
 
     return text;
   },
-});
+};
 
-module.exports = { createSearchNarrativeTool };
+module.exports = { searchNarrativeTool };

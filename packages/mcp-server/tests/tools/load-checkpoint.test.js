@@ -7,12 +7,8 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { initDB, closeDB, getAdapter } from '@jungjaehoon/mama-core/db-manager';
-import {
-  createSaveCheckpointTool,
-  createLoadCheckpointTool,
-} from '../../src/tools/checkpoint-tools.js';
-import { createSaveDecisionTool } from '../../src/tools/save-decision.js';
-import { createActionCall } from '../helpers/action-call.js';
+import { saveCheckpointTool, loadCheckpointTool } from '../../src/tools/checkpoint-tools.js';
+import { saveDecisionTool } from '../../src/tools/save-decision.js';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
@@ -28,11 +24,6 @@ const mockContext = {
     error: () => {},
   },
 };
-
-// Bound tools — created in beforeAll once the test adapter exists
-let saveDecisionTool;
-let saveCheckpointTool;
-let loadCheckpointTool;
 
 // Force sequential execution for this test file to avoid DB race conditions
 describe.sequential('load_checkpoint MCP Tool', () => {
@@ -52,12 +43,6 @@ describe.sequential('load_checkpoint MCP Tool', () => {
 
     // Initialize test database
     await initDB();
-
-    const adapter = getAdapter();
-    const call = createActionCall(adapter);
-    saveDecisionTool = createSaveDecisionTool({ call });
-    saveCheckpointTool = createSaveCheckpointTool({ call });
-    loadCheckpointTool = createLoadCheckpointTool({ call });
 
     // Verify DB is initialized by inserting a test decision
     // This ensures the database is ready before running tests
@@ -299,8 +284,7 @@ describe.sequential('load_checkpoint MCP Tool', () => {
       expect(duration).toBeLessThan(10000); // Should complete within 10 seconds
     });
 
-    // TODO: Fix DB isolation issue - test fails in full suite but passes individually
-    it.sequential.skip('should log failed restart when no checkpoint exists', async () => {
+    it.sequential('should log failed restart when no checkpoint exists', async () => {
       // Force-delete ALL checkpoints to ensure test isolation
       const adapter = getAdapter();
       adapter.prepare('DELETE FROM checkpoints').run();

@@ -10,6 +10,8 @@
  * @module update-outcome
  */
 
+const mama = require('@jungjaehoon/mama-core/mama-api');
+
 /**
  * Valid outcome values (uppercase canonical form)
  */
@@ -56,12 +58,9 @@ function suggestOutcome(input) {
 }
 
 /**
- * Create the update_outcome tool bound to the shared action caller
- * @param {Object} deps - Injected dependencies
- * @param {(action: string, input?: Object) => Promise<any>} deps.call -
- *   Shared action-catalog caller
+ * Update outcome tool definition
  */
-const createUpdateOutcomeTool = ({ call }) => ({
+const updateOutcomeTool = {
   name: 'update_outcome',
   description: `Update decision outcome after real-world validation.
 
@@ -166,13 +165,11 @@ When providing failure_reason or limitation, consider including:
         };
       }
 
-      // The amendment is one action call — the append-only judgment row and
-      // the maintained projection move in one transaction server-side.
-      await call('memory.update', {
-        id: decisionId,
+      // Call MAMA API with normalized outcome
+      await mama.updateOutcome(decisionId, {
         outcome: normalizedOutcome,
-        ...(failure_reason !== undefined && { failure_reason }),
-        ...(limitation !== undefined && { limitation }),
+        failure_reason,
+        limitation,
       });
 
       // Return success response
@@ -203,5 +200,6 @@ When providing failure_reason or limitation, consider including:
       };
     }
   },
-});
-module.exports = { createUpdateOutcomeTool };
+};
+
+module.exports = { updateOutcomeTool };

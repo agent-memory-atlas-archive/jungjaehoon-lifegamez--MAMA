@@ -119,8 +119,8 @@ source except for the owner decision of 2026-09-26: both MAMA owner-runtime back
 `workspace-write` and approvals `never`; core shell/web defaults stay off and shell network policy
 is unchanged. Claude replaces permission bypass with required sandboxed Bash (no unsandboxed
 retry), a workspace-only `Edit(//<workspace>/**)` rule passed with `--allowedTools` and `dontAsk`, retaining readable-file access,
-WebFetch/WebSearch, MAMA MCP tools and Agent. Subagents inherit the same boundary. Lift any other
-native tool limit only with `MAMA_PERSONA_NATIVE_TOOLS=1`.
+WebFetch/WebSearch, MAMA MCP tools and Agent. Subagents inherit the same boundary and run inside
+the owner turn (background tasks off). Any other widening needs an owner decision recorded here.
 
 ## References
 

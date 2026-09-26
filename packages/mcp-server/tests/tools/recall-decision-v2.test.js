@@ -1,31 +1,31 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createRecallDecisionTool } from '../../src/tools/recall-decision.js';
 
-const BUNDLE = {
-  memories: [
-    {
-      id: 'mem_1',
-      topic: 'auth',
-      summary: 'Use JWT',
-      details: 'For stateless auth',
-      confidence: 0.9,
-      status: 'active',
-      event_date: '2024-06-15',
-    },
-  ],
-  profile: { static: [], dynamic: [], evidence: [] },
-  graph_context: { primary: [], expanded: [], edges: [] },
-  search_meta: { query: 'auth', scope_order: ['project'], retrieval_sources: ['vector'] },
-};
-
 describe('recall_decision v2: scopes + format', () => {
-  let mockCall;
+  let mockMama;
   let tool;
 
   beforeEach(() => {
-    // One protocol: call('memory.read:topic', input) → recall bundle.
-    mockCall = vi.fn().mockResolvedValue(BUNDLE);
-    tool = createRecallDecisionTool({ call: mockCall });
+    mockMama = {
+      recall: vi.fn().mockResolvedValue('# Legacy recall result'),
+      recallMemory: vi.fn().mockResolvedValue({
+        memories: [
+          {
+            id: 'mem_1',
+            topic: 'auth',
+            summary: 'Use JWT',
+            details: 'For stateless auth',
+            confidence: 0.9,
+            status: 'active',
+            event_date: '2024-06-15',
+          },
+        ],
+        profile: { static: [], dynamic: [], evidence: [] },
+        graph_context: { primary: [], expanded: [], edges: [] },
+        search_meta: { query: 'auth', scope_order: ['project'], retrieval_sources: ['vector'] },
+      }),
+    };
+    tool = createRecallDecisionTool(mockMama);
   });
 
   // Schema tests
@@ -55,20 +55,21 @@ describe('recall_decision v2: scopes + format', () => {
     expect(result.success).toBe(false);
   });
 
-  // Handler behavior: topic recall goes through the unified read surface
-  it('calls memory.read:topic with the topic and scopes', async () => {
+  // Handler behavior: scopes → recallMemory v2
+  it('calls recallMemory with scopes when scopes provided', async () => {
     const scopes = [{ kind: 'project', id: '/my/project' }];
     const result = await tool.handler({ topic: 'auth', scopes });
 
-    expect(mockCall).toHaveBeenCalledWith('memory.read:topic', {
-      query: 'auth',
+    expect(mockMama.recallMemory).toHaveBeenCalledWith('auth', {
       scopes,
+      includeHistory: true,
     });
+    expect(mockMama.recall).not.toHaveBeenCalled();
     expect(result.success).toBe(true);
     expect(result.message).toContain('auth');
   });
 
-  it('returns the json bundle when format=json', async () => {
+  it('returns json bundle when format=json and scopes provided', async () => {
     const scopes = [{ kind: 'project', id: '/p' }];
     const result = await tool.handler({ topic: 'auth', scopes, format: 'json' });
 
@@ -84,19 +85,27 @@ describe('recall_decision v2: scopes + format', () => {
     expect(result.message).toContain('Event: 2024-06-15');
   });
 
-  // Omitted scopes read the admitted corpus — the server bounds the read,
-  // so the adapter never forwards an empty-scope request.
-  it('omits scopes from the action input when not provided', async () => {
+  // Handler behavior: no scopes → legacy recall
+  it('falls back to legacy recall without scopes', async () => {
     const result = await tool.handler({ topic: 'auth' });
 
-    expect(mockCall).toHaveBeenCalledWith('memory.read:topic', { query: 'auth' });
+    expect(mockMama.recall).toHaveBeenCalledWith('auth', { format: 'markdown' });
+    expect(mockMama.recallMemory).not.toHaveBeenCalled();
     expect(result.success).toBe(true);
-    expect(result.history).toContain('Recall: auth');
+    expect(result.history).toBe('# Legacy recall result');
   });
 
-  it('omits scopes when the caller passes an empty array', async () => {
+  it('passes format to legacy recall', async () => {
+    await tool.handler({ topic: 'auth', format: 'json' });
+
+    expect(mockMama.recall).toHaveBeenCalledWith('auth', { format: 'json' });
+  });
+
+  // Backward compat: empty scopes = legacy path
+  it('uses legacy recall when scopes is empty array', async () => {
     await tool.handler({ topic: 'auth', scopes: [] });
 
-    expect(mockCall).toHaveBeenCalledWith('memory.read:topic', { query: 'auth' });
+    expect(mockMama.recall).toHaveBeenCalled();
+    expect(mockMama.recallMemory).not.toHaveBeenCalled();
   });
 });

@@ -15,9 +15,7 @@ import {
   createMockToolContext,
 } from '../helpers/test-db.js';
 import { MAMAServer } from '../../src/server.js';
-import { createSaveDecisionTool } from '../../src/tools/save-decision.js';
-import { openDatabase } from '@jungjaehoon/mama-core/db-manager';
-import { createActionCall } from '../helpers/action-call.js';
+import { saveDecisionTool } from '../../src/tools/save-decision.js';
 
 const embeddingsAvailable = await isEmbeddingsAvailable();
 
@@ -28,7 +26,6 @@ describe.skipIf(!embeddingsAvailable)(
   () => {
     let testDbPath;
     let server;
-    let dbHandle;
 
     beforeAll(async () => {
       testDbPath = await initTestDB('mcp-search-options');
@@ -54,23 +51,15 @@ describe.skipIf(!embeddingsAvailable)(
         },
       ];
 
-      // The test owns this handle — the server binds a dispatch-backed call
-      // over the same adapter, exactly what bindRuntime(openRuntimeClient)
-      // does over the socket in production.
-      dbHandle = await openDatabase({ path: testDbPath });
-      const call = createActionCall(dbHandle.adapter);
-      const saveDecisionTool = createSaveDecisionTool({ call });
       for (const decision of fixtures) {
         await saveDecisionTool.handler(decision, mockContext);
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
 
       server = new MAMAServer();
-      server.bindRuntime(call);
     });
 
     afterAll(async () => {
-      await dbHandle?.close();
       await cleanupTestDB(testDbPath);
     });
 
@@ -91,6 +80,16 @@ describe.skipIf(!embeddingsAvailable)(
           })
         );
       }
+    });
+
+    it('keeps a queryless topic prefix lookup within its ledger', async () => {
+      const response = await server.handleSearch({
+        type: 'decision',
+        topicPrefix: 'context_compile',
+      });
+      expect(response.success).toBe(true);
+      expect(response.results).toHaveLength(1);
+      expect(response.results[0].topic).toBe('context_compile_strategy');
     });
 
     it('omits diagnostics block when diagnostics is not requested', async () => {

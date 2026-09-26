@@ -452,14 +452,10 @@ mama start --foreground
 
 4. **Database locked:**
 
-   ```bash
-   # Check for lock file
-   ls -la ~/.claude/mama-memory.db-*
-
-   # Remove if stale
-   rm ~/.claude/mama-memory.db-shm
-   rm ~/.claude/mama-memory.db-wal
-   ```
+   Never delete the `-wal` or `-shm` files next to a SQLite database: the `-wal` file can hold
+   committed writes that are not in the main file yet, and deleting it loses them. Stop every
+   process that has the database open (the daemon: `launchctl bootout gui/$(id -u)/com.mama.server`),
+   and SQLite checkpoints and removes them itself when the last connection closes.
 
 #### Process Zombie/Orphan
 

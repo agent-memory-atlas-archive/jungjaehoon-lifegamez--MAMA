@@ -14,13 +14,13 @@
  * @module list-decisions
  */
 
+// Import MAMA API from core directory
+const mama = require('@jungjaehoon/mama-core/mama-api');
+
 /**
- * Create the list_decisions tool bound to the shared action caller
- * @param {Object} deps - Injected dependencies
- * @param {(action: string, input?: Object) => Promise<any>} deps.call -
- *   Shared action-catalog caller
+ * List decisions tool definition
  */
-const createListDecisionsTool = ({ call }) => ({
+const listDecisionsTool = {
   name: 'list_decisions',
   description:
     'List recent decisions in chronological order. Returns formatted list showing time, type (user/assistant), topic, preview, confidence, and status. Use this to see recent activity or find decisions by browsing. Use scopes to filter by project/channel.',
@@ -61,26 +61,7 @@ const createListDecisionsTool = ({ call }) => ({
         };
       }
 
-      // A query-less memory.search is the recent-decisions ledger read.
-      const result = await call('memory.search', {
-        limit,
-        ...(scopes && { scopes }),
-      });
-      const items = Array.isArray(result?.results) ? result.results : [];
-
-      const list =
-        items.length === 0
-          ? 'No decisions recorded yet.'
-          : `Recent decisions (${items.length}):\n` +
-            items
-              .map((d, index) => {
-                const when = d.created_at ? new Date(d.created_at).toISOString() : '';
-                const status = d.status ? ` [${d.status}]` : '';
-                const confidence =
-                  typeof d.confidence === 'number' ? ` ${Math.round(d.confidence * 100)}%` : '';
-                return `${index + 1}. **${d.topic || d.id}**${confidence}${status} ${when}\n   ${d.decision || d.summary || ''}`;
-              })
-              .join('\n');
+      const list = await mama.list({ limit, format: 'markdown', ...(scopes && { scopes }) });
 
       // Return success response with formatted list
       return {
@@ -98,5 +79,6 @@ const createListDecisionsTool = ({ call }) => ({
       };
     }
   },
-});
-module.exports = { createListDecisionsTool };
+};
+
+module.exports = { listDecisionsTool };

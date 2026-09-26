@@ -1,3 +1,8 @@
+const { saveCheckpoint, loadCheckpoint } = require('@jungjaehoon/mama-core/mama-api');
+const { getAdapter } = require('@jungjaehoon/mama-core/db-manager');
+const { logRestartMetric } = require('../mama/restart-metrics');
+const { search } = require('../mama/search-engine');
+const { expand } = require('../mama/link-expander');
 const { formatRestart } = require('../mama/response-formatter');
 const fs = require('fs');
 const path = require('path');
@@ -130,7 +135,7 @@ function inferCurrentStory(summary) {
   return null;
 }
 
-const createSaveCheckpointTool = ({ call }) => ({
+const saveCheckpointTool = {
   name: 'save_checkpoint',
   description: `Save the current session state (checkpoint) to MAMA memory.
 
@@ -211,12 +216,7 @@ Before saving: scan for TODOs or missing tests and state them plainly.`,
       }
     }
 
-    const saved = await call('memory.checkpoint.save', {
-      summary,
-      ...(open_files && { open_files }),
-      ...(next_steps && { next_steps }),
-    });
-    const id = saved?.id;
+    const id = await saveCheckpoint(summary, open_files, next_steps);
     return {
       content: [
         {
@@ -226,9 +226,9 @@ Before saving: scan for TODOs or missing tests and state them plainly.`,
       ],
     };
   },
-});
+};
 
-const createLoadCheckpointTool = ({ call }) => ({
+const loadCheckpointTool = {
   name: 'load_checkpoint',
   description:
     'Load the latest active session checkpoint with narrative and links. Use this at the start of a new session to resume work seamlessly.',
@@ -256,140 +256,148 @@ const createLoadCheckpointTool = ({ call }) => ({
     const start = Date.now();
     const { include_narrative = true, include_links = true, link_depth = 1 } = args;
 
-    const checkpoint = await call('memory.checkpoint.load', {});
+    try {
+      const adapter = getAdapter();
+      const dbPath = adapter.getDbPath();
 
-    if (!checkpoint) {
+      const checkpoint = await loadCheckpoint();
+
+      if (!checkpoint) {
+        const end = Date.now();
+        const durationMs = end - start;
+
+        // Log failed restart (no checkpoint found)
+        await logRestartMetric({ success: false, latency: durationMs, reason: 'no_checkpoint' });
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `ℹ️ No active checkpoint found.\n\n` +
+                `⏱️ load_checkpoint: start ${new Date(start).toISOString()}, end ${new Date(end).toISOString()}, duration ${durationMs}ms\n` +
+                `🗄️ DB Path: ${dbPath}`,
+            },
+          ],
+        };
+      }
+
+      // Load related narrative if requested
+      let narrative = [];
+      if (include_narrative) {
+        // Search for decisions around checkpoint time (1 hour window)
+        const timeWindow = 3600000; // 1 hour in ms
+        const checkpointTime = checkpoint.timestamp;
+
+        // Use checkpoint summary as query for semantic search
+        try {
+          const searchResults = await search(checkpoint.summary, { limit: 5, threshold: 0.7 });
+          narrative = searchResults.filter((d) => {
+            // Filter decisions within time window of checkpoint
+            const decisionTime = new Date(d.created_at).getTime();
+            return Math.abs(decisionTime - checkpointTime) < timeWindow;
+          });
+        } catch (error) {
+          console.error('[loadCheckpoint] Failed to load narrative:', error.message);
+          // Continue without narrative
+        }
+      }
+
+      // Expand links if requested
+      let links = [];
+      if (include_links && narrative.length > 0) {
+        // Expand links for each narrative decision
+        try {
+          const allLinks = [];
+          for (const decision of narrative) {
+            const decisionLinks = expand(decision.id, link_depth, true); // approvedOnly = true
+            allLinks.push(...decisionLinks);
+          }
+
+          // Deduplicate links
+          const linkMap = new Map();
+          allLinks.forEach((link) => {
+            const key = `${link.from_id}-${link.to_id}-${link.relationship}`;
+            if (!linkMap.has(key)) {
+              linkMap.set(key, link);
+            }
+          });
+          links = Array.from(linkMap.values());
+        } catch (error) {
+          console.error('[loadCheckpoint] Failed to expand links:', error.message);
+          // Continue without links
+        }
+      }
+
+      // Format response using response-formatter
+      const formattedResponse = formatRestart(checkpoint, narrative, links);
+
+      // BMad Workflow Integration: Add Story context
+      const currentStory = include_narrative ? inferCurrentStory(checkpoint.summary) : null;
+      let bmadWorkflowContext = '';
+
+      if (currentStory && currentStory.details) {
+        const { status, completedTasks, totalTasks, tasks } = currentStory.details;
+        const progress = totalTasks > 0 ? `${completedTasks}/${totalTasks}` : '0/0';
+        const remainingTasks = tasks.filter((t) => !t.done);
+
+        bmadWorkflowContext =
+          `\n\n📋 BMad Workflow Context:\n` +
+          `- Story: ${currentStory.name}\n` +
+          `- File: ${currentStory.path}\n` +
+          `- Status: ${status}\n` +
+          `- Progress: ${progress} tasks completed\n`;
+
+        if (remainingTasks.length > 0) {
+          bmadWorkflowContext += `\n🎯 Remaining Tasks:\n`;
+          remainingTasks.slice(0, 5).forEach((t, i) => {
+            bmadWorkflowContext += `  ${i + 1}. [ ] ${t.text}\n`;
+          });
+          if (remainingTasks.length > 5) {
+            bmadWorkflowContext += `  ... and ${remainingTasks.length - 5} more\n`;
+          }
+        } else if (totalTasks > 0) {
+          bmadWorkflowContext += `\n✅ All tasks completed! Consider updating Story status.\n`;
+        }
+      }
+
       const end = Date.now();
       const durationMs = end - start;
+
+      // Log successful restart
+      await logRestartMetric({
+        success: true,
+        latency: durationMs,
+        narrativeCount: narrative.length,
+        linkCount: links.length,
+      });
 
       return {
         content: [
           {
             type: 'text',
             text:
-              `ℹ️ No active checkpoint found.\n\n` +
-              `⏱️ load_checkpoint: start ${new Date(start).toISOString()}, end ${new Date(end).toISOString()}, duration ${durationMs}ms`,
+              `🔄 Resuming Session (from ${new Date(checkpoint.timestamp).toLocaleString()})\n\n` +
+              `${JSON.stringify(formattedResponse, null, 2)}\n` +
+              `${bmadWorkflowContext}\n\n` +
+              `⏱️ load_checkpoint: duration ${durationMs}ms (p95 target: <2500ms)\n` +
+              `🗄️ DB Path: ${dbPath}`,
           },
         ],
       };
+    } catch (error) {
+      const end = Date.now();
+      const durationMs = end - start;
+
+      // Log failed restart
+      await logRestartMetric({ success: false, latency: durationMs, error: error.message });
+
+      throw error;
     }
-
-    // Load related narrative if requested
-    let narrative = [];
-    if (include_narrative) {
-      // Search for decisions around checkpoint time (1 hour window)
-      const timeWindow = 3600000; // 1 hour in ms
-      const checkpointTime = checkpoint.timestamp;
-
-      // Use checkpoint summary as query for semantic search
-      try {
-        const searchResult = await call('memory.search', {
-          query: checkpoint.summary,
-          limit: 5,
-          threshold: 0.7,
-        });
-        const searchResults = Array.isArray(searchResult?.results) ? searchResult.results : [];
-        narrative = searchResults.filter((d) => {
-          // Filter decisions within time window of checkpoint
-          const decisionTime = new Date(d.created_at).getTime();
-          return Math.abs(decisionTime - checkpointTime) < timeWindow;
-        });
-      } catch (error) {
-        console.error('[loadCheckpoint] Failed to load narrative:', error.message);
-        // Continue without narrative
-      }
-    }
-
-    // Expand links if requested — twin-edge neighbors stand in for the old
-    // decision_edges expansion; the response keeps the legacy link shape.
-    let links = [];
-    if (include_links && narrative.length > 0) {
-      try {
-        const allLinks = [];
-        for (const decision of narrative) {
-          const page = await call('graph.query', {
-            view: 'neighbors',
-            seeds: [{ kind: 'memory', id: decision.id }],
-            maxDepth: link_depth,
-            history: 'all',
-          });
-          for (const edge of page?.edges ?? []) {
-            allLinks.push({
-              from_id: edge.from?.id,
-              to_id: edge.to?.id,
-              relationship: edge.relation,
-              direction: edge.from?.id === decision.id ? 'outgoing' : 'incoming',
-              depth: 1,
-            });
-          }
-        }
-
-        // Deduplicate links
-        const linkMap = new Map();
-        allLinks.forEach((link) => {
-          const key = `${link.from_id}-${link.to_id}-${link.relationship}`;
-          if (!linkMap.has(key)) {
-            linkMap.set(key, link);
-          }
-        });
-        links = Array.from(linkMap.values());
-      } catch (error) {
-        console.error('[loadCheckpoint] Failed to expand links:', error.message);
-        // Continue without links
-      }
-    }
-
-    // Format response using response-formatter
-    const formattedResponse = formatRestart(checkpoint, narrative, links);
-
-    // BMad Workflow Integration: Add Story context
-    const currentStory = include_narrative ? inferCurrentStory(checkpoint.summary) : null;
-    let bmadWorkflowContext = '';
-
-    if (currentStory && currentStory.details) {
-      const { status, completedTasks, totalTasks, tasks } = currentStory.details;
-      const progress = totalTasks > 0 ? `${completedTasks}/${totalTasks}` : '0/0';
-      const remainingTasks = tasks.filter((t) => !t.done);
-
-      bmadWorkflowContext =
-        `\n\n📋 BMad Workflow Context:\n` +
-        `- Story: ${currentStory.name}\n` +
-        `- File: ${currentStory.path}\n` +
-        `- Status: ${status}\n` +
-        `- Progress: ${progress} tasks completed\n`;
-
-      if (remainingTasks.length > 0) {
-        bmadWorkflowContext += `\n🎯 Remaining Tasks:\n`;
-        remainingTasks.slice(0, 5).forEach((t, i) => {
-          bmadWorkflowContext += `  ${i + 1}. [ ] ${t.text}\n`;
-        });
-        if (remainingTasks.length > 5) {
-          bmadWorkflowContext += `  ... and ${remainingTasks.length - 5} more\n`;
-        }
-      } else if (totalTasks > 0) {
-        bmadWorkflowContext += `\n✅ All tasks completed! Consider updating Story status.\n`;
-      }
-    }
-
-    const end = Date.now();
-    const durationMs = end - start;
-
-    return {
-      content: [
-        {
-          type: 'text',
-          text:
-            `🔄 Resuming Session (from ${new Date(checkpoint.timestamp).toLocaleString()})\n\n` +
-            `${JSON.stringify(formattedResponse, null, 2)}\n` +
-            `${bmadWorkflowContext}\n\n` +
-            `⏱️ load_checkpoint: duration ${durationMs}ms (p95 target: <2500ms)`,
-        },
-      ],
-    };
   },
-});
+};
 
 module.exports = {
-  createSaveCheckpointTool,
-  createLoadCheckpointTool,
+  saveCheckpointTool,
+  loadCheckpointTool,
 };

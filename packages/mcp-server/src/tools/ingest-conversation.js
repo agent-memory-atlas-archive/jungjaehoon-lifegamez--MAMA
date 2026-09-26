@@ -6,13 +6,9 @@
  * @module ingest-conversation
  */
 
-/**
- * Create the ingest_conversation tool bound to the shared action caller
- * @param {Object} deps - Injected dependencies
- * @param {(action: string, input?: Object) => Promise<any>} deps.call -
- *   Shared action-catalog caller
- */
-const createIngestConversationTool = ({ call }) => ({
+const { ingestConversation } = require('@jungjaehoon/mama-core/mama-api');
+
+const createIngestConversationTool = (mamaApi) => ({
   name: 'ingest_conversation',
   description:
     "Ingest a conversation into MAMA's memory. Stores the raw conversation as one source observation without creating decisions. Use this to import past conversations or chat logs into memory.",
@@ -74,25 +70,21 @@ const createIngestConversationTool = ({ call }) => ({
         };
       }
 
-      // One call is one observation: the whole conversation is stored as a
-      // single raw evidence record, bound to the operationId the client issued.
-      const receipt = await call('source.ingest', {
+      const result = await mamaApi.ingestConversation({
         messages,
-        ...(scopes && scopes.length > 0 ? { scopes } : {}),
+        scopes: scopes || [],
         source: {
-          connector: 'conversation:mcp_ingest_conversation',
           package: 'mcp-server',
           source_type: 'mcp_ingest_conversation',
         },
-        ...(session_date && { session_date }),
+        ...(session_date && { sessionDate: session_date }),
       });
-      const rawId = receipt?.observationRef ?? receipt?.observationId;
 
       return {
         success: true,
-        raw_id: rawId,
-        extracted_memories: [],
-        message: `✅ Conversation ingested (ID: ${rawId})`,
+        raw_id: result.rawId,
+        extracted_memories: result.extractedMemories || [],
+        message: `✅ Conversation ingested (ID: ${result.rawId})`,
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
@@ -104,4 +96,6 @@ const createIngestConversationTool = ({ call }) => ({
   },
 });
 
-module.exports = { createIngestConversationTool };
+const ingestConversationTool = createIngestConversationTool({ ingestConversation });
+
+module.exports = { ingestConversationTool, createIngestConversationTool };

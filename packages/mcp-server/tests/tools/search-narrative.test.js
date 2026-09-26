@@ -12,21 +12,14 @@ import {
   isEmbeddingsAvailable,
   createMockToolContext,
 } from '../helpers/test-db.js';
-import { createSaveDecisionTool } from '../../src/tools/save-decision.js';
-import { createSearchNarrativeTool } from '../../src/tools/search-narrative.js';
-import { openDatabase } from '@jungjaehoon/mama-core/db-manager';
-import { createActionCall } from '../helpers/action-call.js';
+import { saveDecisionTool } from '../../src/tools/save-decision.js';
+import { searchNarrativeTool } from '../../src/tools/search-narrative.js';
 
 // Test database path (set by initTestDB)
 let testDbPath;
 
 // Check if embedding model is available (preloaded by globalSetup)
 const embeddingsAvailable = await isEmbeddingsAvailable();
-
-// Bound tools — created in beforeAll once the test adapter exists
-let saveDecisionTool;
-let searchNarrativeTool;
-let dbHandle;
 
 // Mock tool context
 const mockContext = createMockToolContext();
@@ -35,12 +28,6 @@ describe('search_narrative MCP Tool', () => {
   beforeAll(async () => {
     // Initialize isolated test database (handles cleanup, env var, and init)
     testDbPath = await initTestDB('search-narrative');
-    // The test owns this handle: no reliance on which module instance
-    // test-utils' initDB populated.
-    dbHandle = await openDatabase({ path: testDbPath });
-    const call = createActionCall(dbHandle.adapter);
-    saveDecisionTool = createSaveDecisionTool({ call });
-    searchNarrativeTool = createSearchNarrativeTool({ call });
 
     // Insert test decisions using save tool
     const testDecisions = [
@@ -76,7 +63,6 @@ describe('search_narrative MCP Tool', () => {
   });
 
   afterAll(async () => {
-    await dbHandle?.close();
     // Clean up test database (handles close, cleanup files, and env var)
     await cleanupTestDB(testDbPath);
   });

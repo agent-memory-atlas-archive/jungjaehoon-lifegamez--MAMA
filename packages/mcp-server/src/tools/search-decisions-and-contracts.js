@@ -8,14 +8,14 @@
  */
 
 const path = require('path');
+const { initDB, getAdapter } = require('@jungjaehoon/mama-core/db-manager');
+const { vectorSearch } = require('@jungjaehoon/mama-core/knowledge');
+const { generateEmbedding } = require('@jungjaehoon/mama-core/embeddings');
 
 /**
- * Create the search_decisions_and_contracts tool bound to the shared action caller
- * @param {Object} deps - Injected dependencies
- * @param {(action: string, input?: Object) => Promise<any>} deps.call -
- *   Shared action-catalog caller
+ * search_decisions_and_contracts tool definition
  */
-const createSearchDecisionsAndContractsTool = ({ call }) => ({
+const searchDecisionsAndContractsTool = {
   name: 'search_decisions_and_contracts',
   description: 'Search decisions and contracts for PreToolUse hook injection.',
   inputSchema: {
@@ -44,6 +44,8 @@ const createSearchDecisionsAndContractsTool = ({ call }) => ({
         similarityThreshold = 0.7,
       } = args;
 
+      await initDB();
+
       let decisionResults = [];
       let contractResults = [];
 
@@ -51,13 +53,16 @@ const createSearchDecisionsAndContractsTool = ({ call }) => ({
       // outer catch and the caller gets success:false, which is the only way it
       // can tell "nothing matched" from "the search did not run".
       if (decisionLimit > 0 && query) {
-        const result = await call('memory.search', {
-          query,
-          limit: decisionLimit,
-          threshold: similarityThreshold,
-        });
-        const results = Array.isArray(result?.results) ? result.results : [];
-        decisionResults = results.slice(0, decisionLimit);
+        const queryEmbedding = await generateEmbedding(query, 'query');
+        const results = await vectorSearch(
+          getAdapter(),
+          queryEmbedding,
+          decisionLimit,
+          similarityThreshold
+        );
+        if (Array.isArray(results)) {
+          decisionResults = results.slice(0, decisionLimit);
+        }
       }
 
       // Contract search (file-specific)
@@ -76,13 +81,19 @@ const createSearchDecisionsAndContractsTool = ({ call }) => ({
         const contractQuery = `contract api ${keywords.join(' ')}`.trim();
 
         if (contractQuery) {
-          const contractResult = await call('memory.search', {
-            query: contractQuery,
-            limit: contractLimit,
-            threshold: similarityThreshold,
-            topicPrefix: 'contract_',
-          });
-          contractResults = Array.isArray(contractResult?.results) ? contractResult.results : [];
+          const contractEmbedding = await generateEmbedding(contractQuery, 'query');
+          const contractMatches = await vectorSearch(
+            getAdapter(),
+            contractEmbedding,
+            contractLimit,
+            similarityThreshold,
+            'contract_'
+          );
+          if (Array.isArray(contractMatches)) {
+            contractResults = contractMatches
+              .filter((r) => r.topic && r.topic.startsWith('contract_'))
+              .slice(0, contractLimit);
+          }
         }
       }
 
@@ -98,6 +109,6 @@ const createSearchDecisionsAndContractsTool = ({ call }) => ({
       };
     }
   },
-});
+};
 
-module.exports = { createSearchDecisionsAndContractsTool };
+module.exports = { searchDecisionsAndContractsTool };

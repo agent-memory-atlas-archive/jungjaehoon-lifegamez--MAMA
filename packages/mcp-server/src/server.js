@@ -3,16 +3,15 @@
 /**
  * MAMA MCP Server
  *
- * Memory-Augmented MCP Assistant - MCP protocol adapter
+ * Memory-Augmented MCP Assistant - Standalone MCP Server
  *
  * This server provides MCP tools for decision tracking, semantic search,
  * and decision graph navigation across Claude Code and Claude Desktop.
  *
  * Architecture:
  * - Stdio transport (standard MCP pattern)
- * - Thin protocol adapter: every tool call is an action request on the
- *   runtime's private socket via the shared core client. This process owns
- *   no database handle and no embedding model — `runtime.start` does.
+ * - SQLite + pure-TS cosine similarity for decision storage
+ * - Transformers.js for local embeddings
  * - No network dependencies (100% local)
  *
  * Usage:
@@ -30,8 +29,27 @@ const {
 
 // Import all MAMA tools from src/tools/ — single source of truth for tool definitions
 const { createMemoryTools } = require('./tools/index.js');
-const { openRuntimeClient, callAction } = require('./runtime-client.js');
+const memoryTools = createMemoryTools();
+const mama = require('@jungjaehoon/mama-core/mama-api');
+
+// Import core modules from mama-core
+const { initDB, declareProductionDatabasePath } = require('@jungjaehoon/mama-core/db-manager');
+const { declareEmbeddingCacheDir } = require('@jungjaehoon/mama-core/embeddings');
+const os = require('node:os');
+const path = require('node:path');
 const { version: PACKAGE_VERSION } = require('../package.json');
+
+/** Name this consumer's storage and model cache before core initialization. */
+function validateEnvironment() {
+  const defaultPath = path.join(os.homedir(), '.claude', 'mama-memory.db');
+  declareProductionDatabasePath(defaultPath);
+  declareEmbeddingCacheDir(path.join(os.homedir(), '.cache', 'huggingface', 'transformers'));
+  // The core also accepts the older MAMA_DATABASE_PATH name; a path set under either wins.
+  if (!process.env.MAMA_DB_PATH && !process.env.MAMA_DATABASE_PATH) {
+    process.env.MAMA_DB_PATH = defaultPath;
+  }
+  return process.env.MAMA_DB_PATH || process.env.MAMA_DATABASE_PATH;
+}
 
 /**
  * MAMA MCP Server Class
@@ -54,15 +72,9 @@ class MAMAServer {
   }
 
   setupHandlers() {
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: this.listToolDefinitions(),
-    }));
-    this.registerCallToolHandler();
-  }
-
-  listToolDefinitions() {
-    const memoryTools = this.memoryTools;
-    return [
+    // Tool definitions come from src/tools/ (single source of truth).
+    // Legacy unified tools (save, search, update) kept as wrappers for backward compat.
+    const tools = [
       // 1. SAVE — decisions, checkpoints, conversation ingestion
       {
         name: 'save',
@@ -294,9 +306,9 @@ After failure → save a NEW decision and explicitly reference any relationship 
         inputSchema: memoryTools.case_timeline_range.inputSchema,
       },
     ];
-  }
 
-  registerCallToolHandler() {
+    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
+
     // Handle tool execution — legacy wrappers + v2 tools from src/tools/
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
@@ -319,8 +331,8 @@ After failure → save a NEW decision and explicitly reference any relationship 
             break;
           default:
             // All other tools → src/tools/ handlers (single source of truth)
-            if (this.memoryTools[name] && typeof this.memoryTools[name].handler === 'function') {
-              result = await this.memoryTools[name].handler(args);
+            if (memoryTools[name] && typeof memoryTools[name].handler === 'function') {
+              result = await memoryTools[name].handler(args);
             } else {
               throw new Error(`Unknown tool: ${name}`);
             }
@@ -372,24 +384,23 @@ After failure → save a NEW decision and explicitly reference any relationship 
       if (!topic || !decision || !reasoning) {
         return { success: false, message: '❌ Decision requires: topic, decision, reasoning' };
       }
-      const saved = await this.call('memory.save', {
+      const saved = await mama.save({
+        type: 'user_decision',
         topic,
-        kind: 'decision',
-        summary: decision,
-        details: reasoning,
+        decision,
+        reasoning,
         confidence,
         ...(scopes && { scopes }),
-        ...(event_date && { eventDate: event_date }),
-        ...(item && { itemId: item }),
-        ...(actors && {
-          actors: actors.map((a) => ({ personId: a.person, role: a.role })),
-        }),
-        source: { package: 'mcp-server', source_type: 'mcp_save' },
+        ...(event_date && { event_date }),
+        ...(item && { item }),
+        ...(actors && { actors }),
       });
-      const id = saved?.saved_decision_id ?? saved?.id;
+      if (!saved.success) {
+        return saved;
+      }
       return {
         success: true,
-        id,
+        id: saved.id,
         type: 'decision',
         message: `✅ Decision saved: ${topic}`,
       };
@@ -400,31 +411,24 @@ After failure → save a NEW decision and explicitly reference any relationship 
       if (!summary) {
         return { success: false, message: '❌ Checkpoint requires: summary' };
       }
-      const saved = await this.call('memory.checkpoint.save', {
-        summary,
-        ...(open_files && { open_files }),
-        ...(next_steps && { next_steps }),
-      });
+      const id = await mama.saveCheckpoint(summary, open_files || [], next_steps || '');
       return {
         success: true,
-        id: saved?.id,
+        id,
         type: 'checkpoint',
         message: '✅ Checkpoint saved',
       };
     }
 
     if (type === 'ingest') {
-      return await this.memoryTools.ingest_conversation.handler(args);
+      return await memoryTools.ingest_conversation.handler(args);
     }
 
     return { success: false, message: "❌ type must be 'decision', 'checkpoint', or 'ingest'" };
   }
 
   /**
-   * Handle unified search — the same contract the gateway's mama_search
-   * serves: `type='checkpoint'` restores the latest checkpoint (scopes are
-   * rejected rather than silently bypassed), every other read goes through
-   * `memory.search`.
+   * Handle unified search (decisions + checkpoints)
    */
   async handleSearch(args) {
     const {
@@ -442,10 +446,10 @@ After failure → save a NEW decision and explicitly reference any relationship 
       diagnostics,
     } = args;
 
-    // type='checkpoint' restores the latest checkpoint — the resume read.
-    // Checkpoints are not scope-bound, so a scoped request is rejected
-    // explicitly rather than silently bypassing scope isolation.
-    if (type === 'checkpoint') {
+    // type='checkpoint' without query → load latest checkpoint (resume session).
+    // load_checkpoint does not yet honor scopes, so reject scoped checkpoint reads
+    // explicitly rather than silently bypass scope isolation.
+    if (type === 'checkpoint' && !query) {
       if (Array.isArray(scopes) && scopes.length > 0) {
         return {
           success: false,
@@ -455,106 +459,146 @@ After failure → save a NEW decision and explicitly reference any relationship 
           message: 'Scoped checkpoint reads are not supported yet',
         };
       }
-      const checkpoint = await this.call('memory.checkpoint.load', {});
-      if (checkpoint && typeof checkpoint === 'object' && 'summary' in checkpoint) {
-        return {
-          success: true,
-          count: 1,
-          results: [
-            {
-              id: `checkpoint_${checkpoint.id ?? 'latest'}`,
-              summary: checkpoint.summary,
-              next_steps: checkpoint.next_steps,
-              created_at: checkpoint.timestamp,
-              _type: 'checkpoint',
-            },
-          ],
-        };
-      }
-      return { success: true, count: 0, results: [] };
+      return await memoryTools.load_checkpoint.handler(args);
     }
 
-    const hasScopes = Array.isArray(scopes) && scopes.length > 0;
+    const results = [];
+    let searchDiagnostics;
+    let searchMeta;
 
-    if (!query) {
-      // No query + topicPrefix is a ledger read: exactly the records filed
-      // under one item key.
-      const listed = await this.call('memory.search', {
-        limit,
-        ...(hasScopes && { scopes }),
-        ...(typeof topicPrefix === 'string' && topicPrefix.length > 0 && { topicPrefix }),
-      });
-      const raw = Array.isArray(listed?.results) ? listed.results : [];
-      let results = raw.filter((item) => item && typeof item === 'object' && 'id' in item);
-      if (type === 'decision') {
-        // Result rows discriminate by source_type ('decision', 'contract',
-        // 'wiki_page', ...) — unified judgment ids carry no legacy prefix.
-        results = results.filter((item) => item.source_type === 'decision');
+    // Search decisions
+    if (type === 'all' || type === 'decision') {
+      let decisions;
+      if (query) {
+        const suggestResult = await mama.suggest(query, {
+          limit,
+          ...(scopes && { scopes }),
+          ...(threshold !== undefined && { threshold }),
+          ...(strict !== undefined && { strict }),
+          ...(strictness !== undefined && { strictness }),
+          ...(disableRecency !== undefined && { disableRecency }),
+          ...(includeRelated !== undefined && { includeRelated }),
+          ...(topicPrefix !== undefined && { topicPrefix }),
+          ...(minLexicalSupport !== undefined && { minLexicalSupport }),
+          ...(diagnostics !== undefined && { diagnostics }),
+        });
+        // Preserve the failure signal — collapsing a null/invalid suggest
+        // response to [] would make callers unable to distinguish "no matches"
+        // from "search pipeline failed". Mirror the standalone handler's
+        // suggest_returned_null code so behavior stays consistent across
+        // transports.
+        if (!suggestResult || typeof suggestResult !== 'object') {
+          return {
+            success: false,
+            code: 'suggest_returned_null',
+            count: 0,
+            results: [],
+            message: 'Search failed: suggest() returned no result for query',
+          };
+        }
+        // Forward explicit { success: false, code, error } failures from
+        // mama.suggest() unchanged so callers see the real cause instead of
+        // a synthetic empty success.
+        if (suggestResult.success === false) {
+          const hasOwn = Object.prototype.hasOwnProperty;
+          const forwarded = {
+            ...suggestResult,
+            success: false,
+            code: suggestResult.code || 'suggest_failed',
+          };
+          if (!hasOwn.call(forwarded, 'count')) {
+            forwarded.count = 0;
+          }
+          if (!hasOwn.call(forwarded, 'results')) {
+            forwarded.results = [];
+          }
+          if (!hasOwn.call(forwarded, 'message')) {
+            forwarded.message = suggestResult.error || 'Search pipeline failed';
+          }
+          return forwarded;
+        }
+        searchDiagnostics = suggestResult.diagnostics;
+        searchMeta = suggestResult.meta;
+        decisions = Array.isArray(suggestResult.results) ? suggestResult.results : [];
+      } else {
+        decisions = await mama.list({
+          limit,
+          ...(scopes && { scopes }),
+          ...(topicPrefix !== undefined && { topicPrefix }),
+        });
       }
-      results = results.map((d) => ({ ...d, _type: 'decision' }));
-      return { success: true, count: results.length, results };
+      if (Array.isArray(decisions)) {
+        results.push(
+          ...decisions.map((d) => ({
+            ...d,
+            _type: 'decision',
+          }))
+        );
+      }
     }
 
-    const result = await this.call('memory.search', {
-      query,
-      limit,
-      ...(hasScopes && { scopes }),
-      ...(threshold !== undefined && { threshold }),
-      ...(strict !== undefined && { strict }),
-      ...(strictness !== undefined && { strictness }),
-      ...(disableRecency !== undefined && { disableRecency }),
-      ...(includeRelated !== undefined && { includeRelated }),
-      ...(topicPrefix !== undefined && { topicPrefix }),
-      ...(minLexicalSupport !== undefined && { minLexicalSupport }),
-      ...(diagnostics !== undefined && { diagnostics }),
-    });
-    // Preserve the failure signal — collapsing a null/invalid search result
-    // to [] would make callers unable to distinguish "no matches" from
-    // "search pipeline failed".
-    if (!result || typeof result !== 'object') {
+    // mama.listCheckpoints() does not yet honor the scopes filter, so any
+    // checkpoint read with scopes provided would silently bypass scope
+    // isolation. Reject explicitly when the caller requested scopes — for
+    // type='checkpoint' this fails the whole search; for type='all' we let
+    // decisions (which DO honor scopes via mama.suggest/list) return alone
+    // and skip the checkpoint blocks below.
+    const checkpointReadsBlockedByScope = Array.isArray(scopes) && scopes.length > 0;
+    if (checkpointReadsBlockedByScope && type === 'checkpoint') {
       return {
         success: false,
-        code: 'suggest_returned_null',
+        code: 'scoped_checkpoint_unsupported',
         count: 0,
         results: [],
-        message: 'Search failed: memory.search returned no result for query',
+        message: 'Scoped checkpoint reads are not supported yet',
       };
     }
-    if (result.success === false) {
-      const hasOwn = Object.prototype.hasOwnProperty;
-      const forwarded = {
-        ...result,
-        success: false,
-        code: result.code || 'suggest_failed',
-      };
-      if (!hasOwn.call(forwarded, 'count')) {
-        forwarded.count = 0;
-      }
-      if (!hasOwn.call(forwarded, 'results')) {
-        forwarded.results = [];
-      }
-      if (!hasOwn.call(forwarded, 'message')) {
-        forwarded.message = result.error || 'Search pipeline failed';
-      }
-      return forwarded;
-    }
-    const searchDiagnostics = result.diagnostics;
 
-    let results = (Array.isArray(result.results) ? result.results : [])
-      .filter((item) => item && typeof item === 'object' && 'id' in item)
-      .map((d) => ({ ...d, _type: 'decision' }));
-    if (type === 'decision') {
-      results = results.filter((item) => item.source_type === 'decision');
+    // Search checkpoints (with query = search, without = handled above as load)
+    if ((type === 'all' || type === 'checkpoint') && query && !checkpointReadsBlockedByScope) {
+      const checkpoints = await mama.listCheckpoints(limit);
+      results.push(
+        ...checkpoints
+          .filter((c) => c.summary && c.summary.toLowerCase().includes(query.toLowerCase()))
+          .map((c) => ({
+            id: `checkpoint_${c.id}`,
+            summary: c.summary,
+            next_steps: c.next_steps,
+            created_at: c.timestamp,
+            _type: 'checkpoint',
+          }))
+      );
     }
-    results = results.slice(0, limit);
+
+    // type='all' without query — include recent checkpoints
+    if (type === 'all' && !query && !checkpointReadsBlockedByScope) {
+      const checkpoints = await mama.listCheckpoints(limit);
+      results.push(
+        ...checkpoints.map((c) => ({
+          id: `checkpoint_${c.id}`,
+          summary: c.summary,
+          next_steps: c.next_steps,
+          created_at: c.timestamp,
+          _type: 'checkpoint',
+        }))
+      );
+    }
+
+    // Decisions are already sorted by similarity from suggest().
+    // Only sort checkpoints by time. Keep decisions first (relevance), checkpoints after (recency).
+    const decisions = results.filter((r) => r._type === 'decision');
+    const checkpoints = results
+      .filter((r) => r._type === 'checkpoint')
+      .sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+    const limited = [...decisions, ...checkpoints].slice(0, limit);
 
     return {
       success: true,
-      query,
-      count: results.length,
-      results,
+      ...(query ? { query } : {}),
+      count: limited.length,
+      results: limited,
       ...(searchDiagnostics !== undefined ? { diagnostics: searchDiagnostics } : {}),
-      ...(result.meta !== undefined ? { meta: result.meta } : {}),
+      ...(searchMeta !== undefined ? { meta: searchMeta } : {}),
     };
   }
 
@@ -575,10 +619,9 @@ After failure → save a NEW decision and explicitly reference any relationship 
       normalizedOutcome = 'FAILED';
     }
 
-    await this.call('memory.update', {
-      id,
+    await mama.updateOutcome(id, {
       outcome: normalizedOutcome,
-      ...(reason !== undefined && { failure_reason: reason }),
+      failure_reason: reason,
     });
 
     return {
@@ -587,23 +630,14 @@ After failure → save a NEW decision and explicitly reference any relationship 
     };
   }
 
-  /**
-   * Bind the shared action caller: every handler and tool reaches the action
-   * catalog through it. start() binds the socket client; tests may bind a
-   * dispatch-backed call over their own adapter or a stub.
-   */
-  bindRuntime(call) {
-    this.call = call;
-    this.memoryTools = createMemoryTools({ call });
-  }
-
   async start() {
     try {
-      // No database in this process — `runtime.start` owns it. The common
-      // client binds the runtime socket, the shared operation journal, and
-      // this boot's session credential. A missing runtime surfaces per call
-      // as `ipc_unavailable` naming the real start command.
-      this.bindRuntime((action, input) => callAction(openRuntimeClient(), action, input));
+      validateEnvironment();
+
+      // Initialize database
+      console.error('[MAMA MCP] Initializing database...');
+      await initDB();
+      console.error('[MAMA MCP] Database initialized');
 
       // Start the stdio MCP server.
       const transport = new StdioServerTransport();
@@ -629,4 +663,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { MAMAServer };
+module.exports = { MAMAServer, validateEnvironment };

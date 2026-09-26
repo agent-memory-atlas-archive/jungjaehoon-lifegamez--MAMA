@@ -8,7 +8,7 @@
 -- connector_event_index, learned ranker + search feedback,
 -- case_links + tombstones, case promotion/freshness columns,
 -- case membership explanation columns.
--- Spec: docs/superpowers/specs/2026-04-17-mama-work-case-first-memory-system-design.md
+-- Spec: the case-first memory design spec (not retained in the repository)
 
 -- ================================================================
 -- Entity substrate — decision_entity_sources
@@ -259,7 +259,7 @@ ALTER TABLE entity_observations DROP COLUMN source_raw_db_ref;
 -- ================================================================
 -- Migration 039: Create case_truth table
 -- Phase 1 of MAMA Case-First Memory System
--- Spec: docs/superpowers/specs/2026-04-17-mama-work-case-first-memory-system-design.md §5.2
+-- Spec: the case-first memory design spec (not retained in the repository) §5.2
 
 CREATE TABLE IF NOT EXISTS case_truth (
   case_id TEXT PRIMARY KEY,                                                 -- UUID, also persisted in wiki frontmatter
@@ -295,7 +295,7 @@ CREATE INDEX IF NOT EXISTS idx_case_truth_last_activity ON case_truth(last_activ
 -- ================================================================
 -- Migration 040: Create case_memberships table
 -- Phase 1 of MAMA Case-First Memory System
--- Spec: docs/superpowers/specs/2026-04-17-mama-work-case-first-memory-system-design.md §5.3
+-- Spec: the case-first memory design spec (not retained in the repository) §5.3
 --
 -- Locked tombstone encoding (§0d Option B): (status='stale', user_locked=1).
 -- CHECK enum stays at 5 values; no 'stale_locked'.
@@ -326,7 +326,7 @@ CREATE INDEX IF NOT EXISTS idx_case_memberships_case_status
 -- ================================================================
 -- Migration 041: Create case_corrections table
 -- Phase 1 of MAMA Case-First Memory System
--- Spec: docs/superpowers/specs/2026-04-17-mama-work-case-first-memory-system-design.md §5.4
+-- Spec: the case-first memory design spec (not retained in the repository) §5.4
 --
 -- Option C (Phase 0 §0f): target_ref_json TEXT (readable canonical JSON) +
 -- target_ref_hash BLOB (32-byte SHA-256 over canonical JSON).
@@ -372,7 +372,7 @@ CREATE INDEX IF NOT EXISTS idx_case_corrections_target_kind
 -- ================================================================
 -- Migration 042: Create case_proposal_queue table
 -- Phase 1 of MAMA Case-First Memory System
--- Spec: docs/superpowers/specs/2026-04-17-mama-work-case-first-memory-system-design.md §5.7
+-- Spec: the case-first memory design spec (not retained in the repository) §5.7
 --
 -- Acceptance-layer queue for LLM proposals rejected by the deterministic
 -- acceptance layer (§4.2). Phase 1 SCAFFOLD + quarantine writes only; HITL
@@ -429,7 +429,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_case_proposal_queue_dedup
 -- ================================================================
 -- Migration 043: Wiki page search index for mama_search integration
 -- Phase 1 of MAMA Case-First Memory System
--- Spec: docs/superpowers/specs/2026-04-17-mama-work-case-first-memory-system-design.md §7.1
+-- Spec: the case-first memory design spec (not retained in the repository) §7.1
 --
 -- Tables: wiki_page_index (metadata), wiki_page_embeddings (vectors),
 -- wiki_pages_fts (FTS5 inverted index). FTS5 is REGULAR (not contentless,
@@ -524,7 +524,7 @@ ALTER TABLE entity_timeline_events ADD COLUMN role TEXT;
 -- ================================================================
 -- Migration 046: Create search_feedback and ranker_model_versions
 -- Phase 3 of MAMA Case-First Memory System
--- Spec: docs/superpowers/specs/2026-04-17-mama-work-case-first-memory-system-design.md Amendment 10
+-- Spec: the case-first memory design spec (not retained in the repository) Amendment 10
 
 CREATE TABLE IF NOT EXISTS search_feedback (
   feedback_id TEXT PRIMARY KEY,
@@ -615,7 +615,7 @@ VALUES ('search_feedback_retention_days', '180', strftime('%Y-%m-%dT%H:%M:%fZ','
 -- ================================================================
 -- Migration 047: Create case_links and revoked wiki tombstones
 -- Phase 3 of MAMA Case-First Memory System
--- Spec: docs/superpowers/specs/2026-04-17-mama-work-case-first-memory-system-design.md Amendment 11
+-- Spec: the case-first memory design spec (not retained in the repository) Amendment 11
 
 CREATE TABLE IF NOT EXISTS case_links (
   link_id TEXT PRIMARY KEY,
@@ -770,7 +770,7 @@ WHERE split_from_case_id IS NOT NULL
 -- ================================================================
 -- Migration 048: Add case promotion and freshness columns
 -- Phase 3 of MAMA Case-First Memory System
--- Spec: docs/superpowers/specs/2026-04-17-mama-work-case-first-memory-system-design.md Amendments 12 + 13
+-- Spec: the case-first memory design spec (not retained in the repository) Amendments 12 + 13
 
 ALTER TABLE case_truth ADD COLUMN canonical_decision_id TEXT;
 ALTER TABLE case_truth ADD COLUMN canonical_event_id TEXT;
@@ -801,7 +801,7 @@ ALTER TABLE case_truth ADD COLUMN freshness_reason_json TEXT;
 -- ================================================================
 -- Migration 049: Add case membership explanation columns
 -- Phase 3 of MAMA Case-First Memory System
--- Spec: docs/superpowers/specs/2026-04-17-mama-work-case-first-memory-system-design.md Amendment 14
+-- Spec: the case-first memory design spec (not retained in the repository) Amendment 14
 
 ALTER TABLE case_memberships ADD COLUMN assignment_strategy TEXT;
 ALTER TABLE case_memberships ADD COLUMN score_breakdown_json TEXT;

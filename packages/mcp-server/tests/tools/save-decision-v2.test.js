@@ -1,28 +1,24 @@
 import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest';
-import { createSaveDecisionTool } from '../../src/tools/save-decision.js';
+import { createSaveDecisionTool, saveDecisionTool } from '../../src/tools/save-decision.js';
 import { MAMAServer } from '../../src/server.js';
 import Database from 'better-sqlite3';
 import { cleanupTestDB, initTestDB } from '../helpers/test-db.js';
+import { getAdapter } from '@jungjaehoon/mama-core/db-manager';
 import { createNode } from '@jungjaehoon/mama-core/registry/store';
-import { getAdapter, initDB } from '@jungjaehoon/mama-core/db-manager';
-import { createActionCall } from '../helpers/action-call.js';
 
 describe('save_decision v2: scopes + event_date', () => {
-  let mockCall;
+  let mockMama;
   let tool;
 
   beforeEach(() => {
-    // The tool speaks one protocol: call(action, input) → data payload.
-    mockCall = vi.fn().mockImplementation(async (action) => {
-      if (action === 'memory.save') {
-        return { success: true, saved_decision_id: 'test_id_123', id: 'test_id_123' };
-      }
-      return {};
-    });
-    tool = createSaveDecisionTool({ call: mockCall });
+    mockMama = {
+      save: vi.fn().mockResolvedValue({ success: true, id: 'test_id_123' }),
+      recall: vi.fn().mockResolvedValue({ supersedes_chain: [] }),
+    };
+    tool = createSaveDecisionTool(mockMama);
   });
 
-  it('passes scopes to memory.save', async () => {
+  it('passes scopes to mama.save()', async () => {
     const scopes = [{ kind: 'project', id: '/my/project' }];
     await tool.handler({
       topic: 'test_topic',
@@ -31,10 +27,10 @@ describe('save_decision v2: scopes + event_date', () => {
       scopes,
     });
 
-    expect(mockCall).toHaveBeenCalledWith('memory.save', expect.objectContaining({ scopes }));
+    expect(mockMama.save).toHaveBeenCalledWith(expect.objectContaining({ scopes }));
   });
 
-  it('maps event_date to the action eventDate field', async () => {
+  it('passes event_date to mama.save()', async () => {
     await tool.handler({
       topic: 'test_topic',
       decision: 'Something happened',
@@ -42,9 +38,8 @@ describe('save_decision v2: scopes + event_date', () => {
       event_date: '2024-01-15',
     });
 
-    expect(mockCall).toHaveBeenCalledWith(
-      'memory.save',
-      expect.objectContaining({ eventDate: '2024-01-15' })
+    expect(mockMama.save).toHaveBeenCalledWith(
+      expect.objectContaining({ event_date: '2024-01-15' })
     );
   });
 
@@ -55,15 +50,12 @@ describe('save_decision v2: scopes + event_date', () => {
       reasoning: 'Legacy caller',
     });
 
-    expect(mockCall).toHaveBeenCalledWith(
-      'memory.save',
-      expect.objectContaining({ topic: 'test_topic' })
-    );
-    const callInput = mockCall.mock.calls[0][1];
-    expect(callInput.scopes).toBeUndefined();
+    expect(mockMama.save).toHaveBeenCalledWith(expect.objectContaining({ topic: 'test_topic' }));
+    const callArgs = mockMama.save.mock.calls[0][0];
+    expect(callArgs.scopes).toBeUndefined();
   });
 
-  it('does not forward caller-supplied provenance to memory.save', async () => {
+  it('does not forward caller-supplied provenance to mama.save()', async () => {
     await tool.handler({
       topic: 'test_topic',
       decision: 'Caller cannot spoof provenance',
@@ -71,10 +63,10 @@ describe('save_decision v2: scopes + event_date', () => {
       provenance: { envelope_hash: 'attacker_env', gateway_call_id: 'attacker_gw' },
     });
 
-    const callInput = mockCall.mock.calls[0][1];
-    expect(callInput.provenance).toBeUndefined();
-    expect(callInput.envelope_hash).toBeUndefined();
-    expect(callInput.gateway_call_id).toBeUndefined();
+    const callArgs = mockMama.save.mock.calls[0][0];
+    expect(callArgs.provenance).toBeUndefined();
+    expect(callArgs.envelope_hash).toBeUndefined();
+    expect(callArgs.gateway_call_id).toBeUndefined();
   });
 
   it('scopes appear in inputSchema', () => {
@@ -92,12 +84,9 @@ describe('save and save_decision real record identity', () => {
   let dbPath;
   let item;
   let person;
-  let saveDecisionTool;
 
   beforeAll(async () => {
     dbPath = await initTestDB('mcp-save-record-identity');
-    await initDB();
-    saveDecisionTool = createSaveDecisionTool({ call: createActionCall(getAdapter()) });
     item = createNode(getAdapter(), { kind: 'item', name: 'synthetic item' });
     person = createNode(getAdapter(), { kind: 'person', name: 'synthetic person' });
   });
@@ -112,7 +101,6 @@ describe('save and save_decision real record identity', () => {
       'save',
       () => {
         const server = new MAMAServer();
-        server.bindRuntime(createActionCall(getAdapter()));
         return server.handleSave.bind(server);
       },
     ],

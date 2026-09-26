@@ -805,3 +805,13 @@ The implementation writes raw/index data during import only. Replay is the owner
   typecheck clean; connectors.json calendar enabled; after restart 66 events stored (9/25 to 12/25), no
   email address or phone number in stored content. First live R4 evidence: the calendar's first delta turn
   routed ack ("delta report route=ack") and queued its board turn.
+- 2026-09-26: Shared engine/public MCP — restored the origin/main in-process design against current core public exports; removed the transport client/helper and retained save/search/update, contracts, case timeline, checkpoint/resume and raw conversation ingest. The server and plugin choose MAMA_DB_PATH or ~/.claude/mama-memory.db before initDB; no alternate transport.
+  Evidence: from packages/mcp-server, `pnpm exec vitest run` passes 139/139 (15 files, zero skips), including real stdio initialize/tools-list/save/vector-search/update/ingest, DB read-back and checkpoint resume across restart. All DB tests use temporary HOME and DB paths. Current mama-core `pnpm build`, MCP ESLint/Prettier, plugin db-path ESLint/Prettier, public-export resolution and scoped git diff --check pass.
+  Adaptations: current save returns an object, ingestConversation's ambient facade is in mama-api, registry writes take an adapter, and timeline evidence lives in observation_versions. Retained queryless topicPrefix, contract pre-filtering, diagnostics/meta, provenance stripping, package-local helpers and external core loading. Dropped obsolete config-loader tests (no current configuration-file API); cache declaration and model defaults use the public embeddings module.
+  Limits: MAMA MCP decision save was blocked by its approval requirement under approval=never; no decision persisted there. No commit, live DB test, service restart or OS owner-flow completion claim. Unrelated concurrent edits remain untouched.
+- 2026-09-27 00:00 KST: supervisor check of D0 outside the sandbox: mcp-server 139/139, plugin 165/165
+  (a new manifest test fails without the fix); live stdio run of `node src/server.js` on a temporary
+  MAMA_DB_PATH, no daemon involved: tools/list shows save, search, update, search_decisions_and_contracts,
+  case_timeline_range; save, search, save type=checkpoint, load_checkpoint and update all succeed. The
+  server and hook default honours the older MAMA_DATABASE_PATH name the core still reads (Codex had
+  dropped it, which would have switched such users to the default database silently).

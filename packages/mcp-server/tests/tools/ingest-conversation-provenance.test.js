@@ -2,11 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { createIngestConversationTool } from '../../src/tools/ingest-conversation.js';
 
 describe('ingest_conversation provenance boundary', () => {
-  it('does not forward caller-supplied provenance to source.ingest', async () => {
-    const call = vi.fn().mockResolvedValue({
-      observationRef: 'raw_1',
+  it('does not forward caller-supplied provenance to ingestConversation()', async () => {
+    const ingestConversation = vi.fn().mockResolvedValue({
+      rawId: 'raw_1',
+      extractedMemories: [],
     });
-    const tool = createIngestConversationTool({ call });
+    const tool = createIngestConversationTool({ ingestConversation });
 
     const result = await tool.handler({
       messages: [{ role: 'user', content: 'Remember this safely.' }],
@@ -15,8 +16,7 @@ describe('ingest_conversation provenance boundary', () => {
     });
 
     expect(result).toMatchObject({ success: true, raw_id: 'raw_1' });
-    expect(call).toHaveBeenCalledWith('source.ingest', expect.any(Object));
-    const [, input] = call.mock.calls[0];
+    const [input] = ingestConversation.mock.calls[0];
     expect(input.provenance).toBeUndefined();
     expect(input.envelope_hash).toBeUndefined();
     expect(input.gateway_call_id).toBeUndefined();

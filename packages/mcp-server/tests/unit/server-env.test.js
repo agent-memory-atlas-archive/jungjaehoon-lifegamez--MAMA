@@ -1,59 +1,58 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { MAMAServer } from '../../src/server.js';
+import { MAMAServer, validateEnvironment } from '../../src/server.js';
 
 const SERVER_SOURCE = readFileSync(join(process.cwd(), 'src/server.js'), 'utf8');
-const RUNTIME_CLIENT_SOURCE = readFileSync(join(process.cwd(), 'src/runtime-client.js'), 'utf8');
 const PACKAGE_VERSION = JSON.parse(
   readFileSync(join(process.cwd(), 'package.json'), 'utf8')
 ).version;
 
-describe('Runtime client architecture', () => {
-  const ORIGINAL_ENV = process.env;
+describe('development-memory environment', () => {
+  const originalEnv = { ...process.env };
 
-  beforeEach(() => {
-    vi.resetModules();
-    process.env = { ...ORIGINAL_ENV };
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    vi.spyOn(process, 'exit').mockImplementation(() => {});
-  });
-
+  const restoreEnv = () => {
+    for (const key of Object.keys(process.env)) {
+      if (!(key in originalEnv)) {
+        delete process.env[key];
+      }
+    }
+    Object.assign(process.env, originalEnv);
+  };
+  beforeEach(restoreEnv);
   afterEach(() => {
-    process.env = ORIGINAL_ENV;
+    restoreEnv();
     vi.restoreAllMocks();
   });
 
-  it('owns no database: no MAMA_DB_PATH, openDatabase, or direct core API imports', () => {
-    // The runtime owns the store — this process is a stdio protocol adapter.
-    expect(SERVER_SOURCE).not.toMatch(/MAMA_DB_PATH/);
-    expect(SERVER_SOURCE).not.toMatch(/openDatabase|initDB|getAdapter|closeDB/);
-    expect(SERVER_SOURCE).not.toMatch(/createMamaApi|mama-api|db-manager/);
-    expect(SERVER_SOURCE).not.toMatch(/bindRuntime\(this\.dbHandle|dbHandle/);
+  it.each(['development', 'production'])('uses the plugin default in %s', async (mode) => {
+    process.env.NODE_ENV = mode;
+    delete process.env.MAMA_DB_PATH;
+    const expected = join(process.env.HOME, '.claude', 'mama-memory.db');
+    expect(validateEnvironment()).toBe(expected);
+    expect(process.env.MAMA_DB_PATH).toBe(expected);
+    const { usePluginDatabase } = await import('../../../claude-code-plugin/scripts/db-path.js');
+    delete process.env.MAMA_DB_PATH;
+    expect(usePluginDatabase()).toBe(expected);
   });
 
-  it('binds the shared runtime client over the socket path', () => {
-    expect(SERVER_SOURCE).toContain("require('./runtime-client.js')");
-    expect(SERVER_SOURCE).toMatch(/openRuntimeClient/);
-    expect(SERVER_SOURCE).toMatch(/callAction/);
-    // Tool calls dispatch through the bound caller, not a local adapter.
-    expect(SERVER_SOURCE).toMatch(/this\.call\('/);
+  it('preserves an explicit MAMA_DB_PATH in both consumers', async () => {
+    const expected = join(process.env.HOME, 'explicit.db');
+    process.env.MAMA_DB_PATH = expected;
+    expect(validateEnvironment()).toBe(expected);
+    const { usePluginDatabase } = await import('../../../claude-code-plugin/scripts/db-path.js');
+    expect(usePluginDatabase()).toBe(expected);
   });
 
-  it('resolves MAMA_HOME for the socket, journal, and credential paths', () => {
-    expect(RUNTIME_CLIENT_SOURCE).toMatch(/MAMA_HOME/);
-    expect(RUNTIME_CLIENT_SOURCE).toMatch(/runtime\.sock/);
-    expect(RUNTIME_CLIENT_SOURCE).toMatch(/client-journal\.jsonl/);
-    expect(RUNTIME_CLIENT_SOURCE).toMatch(/session-credential/);
-  });
-
-  it('keeps failed and unknown outcomes distinct from success', () => {
-    // callAction must not collapse a failed action into an empty success —
-    // the error carries the server's code and the operation id for
-    // operation.get settlement.
-    expect(RUNTIME_CLIENT_SOURCE).toMatch(/operationId/);
-    expect(RUNTIME_CLIENT_SOURCE).toMatch(/ipc_unavailable/);
-    expect(RUNTIME_CLIENT_SOURCE).not.toMatch(/status === 'failed'.*return\s+\{\}/s);
+  it('honours the older MAMA_DATABASE_PATH name the core still reads, in server and hooks alike', async () => {
+    delete process.env.MAMA_DB_PATH;
+    const expected = join(process.env.HOME, 'older-name.db');
+    process.env.MAMA_DATABASE_PATH = expected;
+    expect(validateEnvironment()).toBe(expected);
+    expect(process.env.MAMA_DB_PATH).toBeUndefined();
+    const { usePluginDatabase } = await import('../../../claude-code-plugin/scripts/db-path.js');
+    expect(usePluginDatabase()).toBe(expected);
+    delete process.env.MAMA_DATABASE_PATH;
   });
 });
 

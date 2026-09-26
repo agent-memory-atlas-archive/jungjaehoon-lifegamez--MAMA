@@ -35,7 +35,7 @@ export async function initTestDB(testName) {
 /** Close the handle and remove the temp directory. Safe to call twice. */
 export async function cleanupTestDB(dbPath) {
   try {
-    closeDB();
+    await closeDB();
   } catch {
     // Already closed, or never opened. Either way there is nothing to release.
   }
@@ -49,21 +49,14 @@ export async function cleanupTestDB(dbPath) {
   created.delete(dir);
 }
 
-/**
- * Whether the embedding model can load here.
- *
- * Tests that need vectors skip rather than fail when it cannot: a machine without the
- * model downloaded is not a broken build, and reporting it as one trains people to
- * ignore red.
- */
+/** Load the real model; a failed load must fail the suite, not skip coverage. */
 export async function isEmbeddingsAvailable() {
-  try {
-    const { generateEmbedding } = await import('@jungjaehoon/mama-core/embeddings');
-    const vector = await generateEmbedding('probe', 'query');
-    return Array.isArray(vector) && vector.length > 0;
-  } catch {
-    return false;
+  const { generateEmbedding } = await import('@jungjaehoon/mama-core/embeddings');
+  const vector = await generateEmbedding('probe', 'query');
+  if (!vector || vector.length === 0) {
+    throw new Error('Embedding probe returned no vector');
   }
+  return true;
 }
 
 /** The smallest tool context the MCP tools read. */

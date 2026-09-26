@@ -1,45 +1,37 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createSaveDecisionTool } from '../../src/tools/save-decision.js';
 
-/**
- * Narrative input validation over the action contract.
- *
- * The unified memory.save payload carries topic/kind/summary/details/
- * confidence — the legacy evidence/alternatives/risks/trust_context fields
- * were accepted by api.save but never persisted, so the adapter must not
- * forward them.
- */
 describe('Narrative Input Validation', () => {
   let saveDecisionTool;
-  let mockCall;
+  let mamaMock;
 
   beforeEach(() => {
     vi.clearAllMocks();
 
-    mockCall = vi.fn().mockImplementation(async (action) => {
-      if (action === 'memory.save') {
-        return { success: true, saved_decision_id: 'decision_123', id: 'decision_123' };
-      }
-      if (action === 'memory.read:topic') {
-        return { memories: [] };
-      }
-      return {};
-    });
+    // Create fresh mock for each test
+    mamaMock = {
+      save: vi.fn(),
+      updateOutcome: vi.fn(),
+      recall: vi.fn(),
+    };
 
-    saveDecisionTool = createSaveDecisionTool({ call: mockCall });
+    // Inject mock using factory function
+    saveDecisionTool = createSaveDecisionTool(mamaMock);
   });
 
   describe('save_decision tool', () => {
-    it('maps narrative fields onto the memory.save contract', async () => {
+    it('forwards persisted narrative fields without dead metadata', async () => {
       const params = {
         topic: 'test_topic',
         decision: 'test_decision',
         reasoning: 'test_reasoning',
-        // Legacy fields the action contract deliberately does not carry.
         evidence: ['file.js', 'log.txt'],
         alternatives: ['alt1', 'alt2'],
         risks: 'high risk',
       };
+
+      // Story 1.1/1.2: save() now returns enhanced response object
+      mamaMock.save.mockResolvedValue({ success: true, id: 'decision_123' });
 
       const result = await saveDecisionTool.handler(params);
 
@@ -48,20 +40,19 @@ describe('Narrative Input Validation', () => {
       }
 
       expect(result.success).toBe(true);
-      expect(mockCall).toHaveBeenCalledWith(
-        'memory.save',
+      const input = mamaMock.save.mock.calls[0]?.[0];
+      if (input) {
+        for (const field of ['evidence', 'alternatives', 'risks', 'trust_context']) {
+          expect(input).not.toHaveProperty(field);
+        }
+      }
+      expect(mamaMock.save).toHaveBeenCalledWith(
         expect.objectContaining({
           topic: 'test_topic',
-          kind: 'decision',
-          summary: 'test_decision',
-          details: 'test_reasoning',
+          decision: 'test_decision',
+          reasoning: 'test_reasoning',
         })
       );
-      const input = mockCall.mock.calls.find(([action]) => action === 'memory.save')[1];
-      expect(input.evidence).toBeUndefined();
-      expect(input.alternatives).toBeUndefined();
-      expect(input.risks).toBeUndefined();
-      expect(input.trust_context).toBeUndefined();
     });
 
     it('should handle missing optional narrative fields', async () => {
@@ -71,13 +62,24 @@ describe('Narrative Input Validation', () => {
         reasoning: 'test_reasoning',
       };
 
+      // Story 1.1/1.2: save() now returns enhanced response object
+      mamaMock.save.mockResolvedValue({ success: true, id: 'decision_123' });
+
       const result = await saveDecisionTool.handler(params);
 
       expect(result.success).toBe(true);
-      const input = mockCall.mock.calls.find(([action]) => action === 'memory.save')[1];
-      expect(input.evidence).toBeUndefined();
-      expect(input.alternatives).toBeUndefined();
-      expect(input.risks).toBeUndefined();
+      const input = mamaMock.save.mock.calls[0]?.[0];
+      if (input) {
+        for (const field of ['evidence', 'alternatives', 'risks', 'trust_context']) {
+          expect(input).not.toHaveProperty(field);
+        }
+      }
+      expect(mamaMock.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          topic: 'test_topic',
+          decision: 'test_decision',
+        })
+      );
     });
 
     it('should fail if required fields are missing', async () => {
@@ -100,11 +102,14 @@ describe('Narrative Input Validation', () => {
         reasoning: 'Needs to be added',
       };
 
+      mamaMock.recall.mockResolvedValue({
+        supersedes_chain: [],
+      });
+
       const result = await saveDecisionTool.handler(params);
 
       expect(result.success).toBe(false);
       expect(result.message).toContain('contract decision seems malformed');
-      expect(mockCall).not.toHaveBeenCalledWith('memory.save', expect.anything());
     });
 
     it('should accept well-formed contract decisions', async () => {
@@ -114,13 +119,27 @@ describe('Narrative Input Validation', () => {
         reasoning: 'Represents API contract from users.ts and must be stable.',
       };
 
+      mamaMock.recall.mockResolvedValue({
+        supersedes_chain: [],
+      });
+
+      mamaMock.save.mockResolvedValue({ success: true, id: 'decision_456' });
+
       const result = await saveDecisionTool.handler(params);
 
       expect(result.success).toBe(true);
-      const input = mockCall.mock.calls.find(([action]) => action === 'memory.save')[1];
-      expect(input.topic).toBe('contract_get_users');
-      expect(input.summary).toBe('GET /users expects none, returns User[] defined in users.ts');
-      expect(input.trust_context).toBeUndefined();
+      const input = mamaMock.save.mock.calls[0]?.[0];
+      if (input) {
+        for (const field of ['evidence', 'alternatives', 'risks', 'trust_context']) {
+          expect(input).not.toHaveProperty(field);
+        }
+      }
+      expect(mamaMock.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          topic: 'contract_get_users',
+          decision: 'GET /users expects none, returns User[] defined in users.ts',
+        })
+      );
     });
 
     it('should skip duplicate contract decisions', async () => {
@@ -130,28 +149,27 @@ describe('Narrative Input Validation', () => {
         reasoning: 'Same as existing contract.',
       };
 
-      mockCall.mockImplementation(async (action) => {
-        if (action === 'memory.read:topic') {
-          return {
-            memories: [
-              {
-                id: 'decision_existing',
-                topic: 'contract_get_users',
-                decision: 'GET /users expects none, returns User[] defined in users.ts',
-                status: 'active',
-              },
-            ],
-          };
-        }
-        return {};
+      mamaMock.recall.mockResolvedValue({
+        supersedes_chain: [
+          {
+            id: 'decision_existing',
+            decision: 'GET /users expects none, returns User[] defined in users.ts',
+          },
+        ],
       });
 
       const result = await saveDecisionTool.handler(params);
 
       expect(result.success).toBe(true);
+      const input = mamaMock.save.mock.calls[0]?.[0];
+      if (input) {
+        for (const field of ['evidence', 'alternatives', 'risks', 'trust_context']) {
+          expect(input).not.toHaveProperty(field);
+        }
+      }
       expect(result.decision_id).toBe('decision_existing');
       expect(result.message).toContain('Duplicate contract');
-      expect(mockCall).not.toHaveBeenCalledWith('memory.save', expect.anything());
+      expect(mamaMock.save).not.toHaveBeenCalled();
     });
   });
 });

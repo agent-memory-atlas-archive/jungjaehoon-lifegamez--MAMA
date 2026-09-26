@@ -9,6 +9,8 @@
  * @module save-decision
  */
 
+const mama = require('@jungjaehoon/mama-core/mama-api');
+
 const CONTRACT_TOPIC_PREFIXES = [
   'contract_get_',
   'contract_post_',
@@ -87,11 +89,9 @@ function normalizeDecisionText(text) {
 
 /**
  * Create save decision tool with dependencies
- * @param {Object} deps - Injected dependencies
- * @param {(action: string, input?: Object) => Promise<any>} deps.call -
- *   Shared action-catalog caller
+ * @param {Object} mamaApi - MAMA API instance
  */
-const createSaveDecisionTool = ({ call }) => ({
+const createSaveDecisionTool = (mamaApi) => ({
   name: 'save_decision',
   description: `Save your architectural decisions, lessons learned, or insights to MAMA's shared memory.
 
@@ -234,6 +234,7 @@ Structure your reasoning with these layers for maximum value:
       decision,
       reasoning,
       confidence = 0.5,
+      type = 'user_decision',
       outcome = 'pending',
       scopes,
       event_date,
@@ -273,14 +274,11 @@ Structure your reasoning with these layers for maximum value:
         }
 
         try {
-          const bundle = await call('memory.read:topic', { query: topic });
-          const memories = Array.isArray(bundle?.memories) ? bundle.memories : [];
-          const existing =
-            memories.find((m) => m.topic === topic && m.status === 'active') ?? memories[0];
-          const existingDecision = existing?.decision ?? existing?.summary;
-          if (existingDecision) {
+          const recallResult = await mamaApi.recall(topic);
+          const existing = recallResult?.supersedes_chain?.[0];
+          if (existing?.decision) {
             const incoming = normalizeDecisionText(decision);
-            const current = normalizeDecisionText(existingDecision);
+            const current = normalizeDecisionText(existing.decision);
             if (incoming && incoming === current) {
               contractSkipId = existing.id;
               contractWarning = 'Duplicate contract detected; skipping save.';
@@ -305,47 +303,35 @@ Structure your reasoning with these layers for maximum value:
         };
       }
 
-      // The judgment write is one action call; operationId idempotency lives
-      // in the client. type/evidence/alternatives/risks/trust_context were
-      // accepted by the legacy api.save signature but never persisted — the
-      // action contract does not carry dead fields.
-      const saved = await call('memory.save', {
+      // Call MAMA API (mama.save will handle outcome mapping to DB format)
+      // Story 1.1/1.2: save() now returns enhanced response object
+      const result = await mamaApi.save({
         topic,
-        kind: 'decision',
-        summary: decision,
-        details: reasoning,
+        decision,
+        reasoning,
         confidence,
+        type,
+        outcome,
         ...(scopes && { scopes }),
-        ...(event_date && { eventDate: event_date }),
-        ...(item && { itemId: item }),
-        ...(actors && {
-          actors: actors.map((a) => ({ personId: a.person, role: a.role })),
-        }),
-        source: { package: 'mcp-server', source_type: 'mcp_save_decision' },
+        ...(event_date && { event_date }),
+        ...(item && { item }),
+        ...(actors && { actors }),
       });
-      const savedId = saved?.saved_decision_id ?? saved?.id;
 
-      // A non-pending outcome is its own amendment: the designed path is
-      // memory.update, not a save-time column.
-      const outcomeMap = { success: 'SUCCESS', failure: 'FAILED', partial: 'PARTIAL' };
-      let outcomeWarning = null;
-      if (outcome && outcomeMap[outcome]) {
-        try {
-          await call('memory.update', { id: savedId, outcome: outcomeMap[outcome] });
-        } catch (error) {
-          outcomeWarning = `Decision saved but the outcome amendment failed: ${error.message}`;
-        }
-      }
-
+      // Story 1.2: Return enhanced response with collaborative fields
       return {
-        success: true,
-        decision_id: savedId,
+        success: result.success,
+        decision_id: result.id,
         topic: topic,
-        message: `✅ Decision saved successfully (ID: ${savedId})`,
+        message: `✅ Decision saved successfully (ID: ${result.id})`,
         recall_command: `To recall: mama.recall('${topic}')`,
-        ...((outcomeWarning || contractWarning) && {
-          warning: [outcomeWarning, contractWarning].filter(Boolean).join(' '),
+        // Story 1.1/1.2: Collaborative fields (optional)
+        ...(result.similar_decisions && { similar_decisions: result.similar_decisions }),
+        ...((result.warning || contractWarning) && {
+          warning: [result.warning, contractWarning].filter(Boolean).join(' '),
         }),
+        ...(result.collaboration_hint && { collaboration_hint: result.collaboration_hint }),
+        ...(result.reasoning_graph && { reasoning_graph: result.reasoning_graph }),
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
@@ -357,4 +343,7 @@ Structure your reasoning with these layers for maximum value:
   },
 });
 
-module.exports = { createSaveDecisionTool };
+// Default instance with real dependency
+const saveDecisionTool = createSaveDecisionTool(mama);
+
+module.exports = { saveDecisionTool, createSaveDecisionTool };
