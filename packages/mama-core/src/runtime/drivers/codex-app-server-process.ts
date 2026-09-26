@@ -73,6 +73,8 @@ export interface CodexAppServerProcessOptions {
   effort?: string;
   /** Enable the managed workspace shell; disabled unless the consumer opts in. */
   shellTool?: boolean;
+  /** Enable live web search; disabled unless the consumer opts in. */
+  webSearch?: boolean;
   /** Explicit shell environment overrides; does not replace the app-server's isolated HOME. */
   shellEnvironment?: Record<string, string>;
   allowLoginShell?: boolean;
@@ -621,6 +623,8 @@ export class CodexAppServerProcess {
     policyFingerprint?: string;
     effort?: string;
     shellTool?: boolean;
+    /** Enable live web search; disabled unless the consumer opts in. */
+    webSearch?: boolean;
     shellEnvironment?: Record<string, string>;
     allowLoginShell?: boolean;
     onSubagentEvent?: (event: SubagentEvent) => void;
@@ -1066,6 +1070,7 @@ export class CodexAppServerProcess {
     const configPath = join(this.options.codexHome, 'config.toml');
     const config = buildMAMACodexAppServerConfig(this.options.effort, undefined, {
       shellTool: this.options.shellTool,
+      webSearch: this.options.webSearch,
       shellEnvironment: this.options.shellEnvironment,
       allowLoginShell: this.options.allowLoginShell,
     });

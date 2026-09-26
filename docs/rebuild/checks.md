@@ -692,3 +692,18 @@ The implementation writes raw/index data during import only. Replay is the owner
 - 2026-09-26 17:55 KST: R7/R10 (d) supervisor check outside the sandbox: core runtime 247/247,
   standalone runtime+cli+replay+gateways+agent+integration 272/272, typechecks clean. Live proof pending
   with the next daemon restart (new thread: startup lessons + recent owner exchanges in the first stimulus).
+- 2026-09-26: R10(e), Answer/Attach/shared engine: owner Codex enables live web search through an opt-in (core default output unchanged); owner Claude replaces bypass with dontAsk, required sandboxed Bash and workspace Edit/Write permissions, preserving caller hooks and isolation flags.
+  Evidence: 21 focused tests pass, including emitted CLI args, configured outside-path denial and stale local grants; installed Claude 2.1.282 help lists dontAsk, and sandbox status reports enabled=true, strictMode=true, filesystemPolicy=strict, autoAllowBashIfSandboxed=true from the generated project settings.
+  Requested suites: core runtime 184 passed, 44 listen EPERM failures and 21 tests blocked by 3 failed setups (plus ipc-actions teardown close error); standalone runtime/cli/agent 199 passed, 8 listen EPERM failures. Both requested tsc checks and changed-file ESLint pass. Logs: /private/tmp/r10-{core-runtime,standalone-suite,core-tsc,standalone-tsc,eslint}.log.
+  Still unverified: real CLI outside/symlink writes, temp-path enforcement, subagent inheritance and web calls; no live owner turn or service restart. MAMA decision search/save was refused by approval policy never. Production diff: +88/-7 lines. No commit; R10(f) remains open.
+- 2026-09-26 18:20 KST: R10 (e) live check of the Claude boundary (claude 2.1.282, --permission-mode dontAsk,
+  --setting-sources project). First probe of the generated config: Write inside the workspace was denied —
+  project-settings permissions were not applied at all to these non-interactive runs (bare "WebFetch"
+  allowed via --allowedTools worked; the same rule in settings did not), and Edit(/**) anchors at the
+  settings file's folder anyway. Bash sandbox from the same settings did apply (write to a home path:
+  "operation not permitted"; /tmp writes are allowed by the sandbox by default, so the first "outside"
+  probe under /tmp was not a real outside). A bare Write rule allowed writes anywhere. Supervisor fix: the
+  rules go on the CLI as --allowedTools [Read, Glob, Grep, Edit(//<workspace>/**), Bash, WebFetch,
+  WebSearch, mcp**mama**\*, Agent]; the host-owned settings keep only hooks, sandbox and env. Final probe:
+  Write inside allowed / outside denied, Bash inside allowed / outside denied, WebFetch allowed, python
+  openpyxl+PyMuPDF load. Codex: web search on for the owner runtime (core default off).

@@ -47,6 +47,8 @@ export interface CodexRuntimeProcessOptions {
   effort?: string;
   /** Enable the managed workspace shell; disabled unless the consumer opts in. */
   shellTool?: boolean;
+  /** Enable live web search; disabled unless the consumer opts in. */
+  webSearch?: boolean;
   /** Explicit shell environment overrides supplied by the consumer. */
   shellEnvironment?: Record<string, string>;
   allowLoginShell?: boolean;
@@ -116,6 +118,7 @@ export class CodexRuntimeProcess extends EventEmitter implements AgentRuntimePro
       authSourcePath: options.authSourcePath,
       effort: options.effort,
       shellTool: options.shellTool,
+      webSearch: options.webSearch,
       shellEnvironment: options.shellEnvironment,
       allowLoginShell: options.allowLoginShell,
       // A completed child is accepted by the consumer's durable intake before the

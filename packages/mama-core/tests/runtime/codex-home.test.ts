@@ -6,12 +6,26 @@ import { buildMAMACodexAppServerConfig } from '../../src/runtime/drivers/codex-h
 import { CodexRuntimeProcess } from '../../src/runtime/runtime-process.js';
 
 describe('managed Codex shell configuration', () => {
+  it('opts into live web search without changing the core default or shell network policy', () => {
+    const baseline = buildMAMACodexAppServerConfig();
+    expect(baseline).toContain('web_search = false');
+    expect(buildMAMACodexAppServerConfig(undefined, undefined, { webSearch: false })).toBe(
+      baseline
+    );
+    const enabled = buildMAMACodexAppServerConfig(undefined, undefined, { webSearch: true });
+    expect(enabled).toBe(
+      `web_search = "live"\n${baseline.replace('web_search = false', 'web_search = true')}`
+    );
+    expect(enabled).not.toContain('network_access = true');
+  });
+
   it('writes consumer shell environment overrides without changing the isolated home or sandbox', async () => {
     const root = mkdtempSync(join(tmpdir(), 'codex-shell-env-'));
     const runtime = new CodexRuntimeProcess({
       hostRootDir: root,
       cwd: root,
       shellTool: true,
+      webSearch: true,
       shellEnvironment: { PATH: '/opt/toolchain/bin:/usr/bin:/bin' },
       allowLoginShell: false,
       command: join(root, 'missing-codex'),
@@ -20,6 +34,8 @@ describe('managed Codex shell configuration', () => {
       await expect(runtime.prompt('prepare configuration')).rejects.toThrow('ENOENT');
       const config = readFileSync(join(root, '.codex/config.toml'), 'utf8');
       expect(config).toContain('allow_login_shell = false');
+      expect(config).toContain('web_search = "live"');
+      expect(config).toContain('web_search = true');
       expect(config).toContain('[shell_environment_policy.set]');
       expect(config).toContain('"PATH" = "/opt/toolchain/bin:/usr/bin:/bin"');
       expect(config).not.toContain('"HOME" =');

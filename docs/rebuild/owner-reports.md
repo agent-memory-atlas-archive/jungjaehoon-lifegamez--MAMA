@@ -175,6 +175,16 @@ keeping WebFetch/WebSearch, within the AGENTS.md isolation rules. (f) Live proof
 a correction saved and applied after restart, and an attachment turned into a delivered file. Done: (f) with
 native input receipts, action traces, DB read-back, Telegram receipt and a clean daemon.log.
 
+R10(e) implementation (2026-09-26): owner Codex opts into live web search; core defaults and the
+`workspace-write`/`never` thread policy are unchanged. Owner Claude uses `dontAsk`, required sandboxed
+Bash without an unsandboxed retry, project-anchored Edit rules (also covering Write/NotebookEdit),
+and a workspace temp directory. Project/local policy is refreshed without removing caller hooks.
+Claude 2.1.282 `--help` and `sandbox status` confirm the mode and enabled/strict configuration;
+outside-write, symlink, web and subagent execution still need a real CLI turn (R10 f).
+Configuration references: [Claude permissions](https://code.claude.com/docs/en/permissions),
+[Claude sandbox](https://code.claude.com/docs/en/sandboxing),
+[Codex web search configuration](https://developers.openai.com/codex/config-reference/).
+
 **Architecture decision (owner discussion 2026-09-26) — replaces the per-backend approach of R10.** Each
 backend CLI keeps its own harness (agent loop, native shell/read/subagents, context management): a host-side
 loop under subscription access means a fresh process per turn (the Hermes model) and loses the tools the

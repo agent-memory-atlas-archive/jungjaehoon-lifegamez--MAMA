@@ -118,6 +118,8 @@ export interface PersistentProcessOptions {
    * Only enable in trusted environments where agent actions are pre-approved.
    */
   dangerouslySkipPermissions?: boolean;
+  /** Noninteractive consumers use dontAsk with explicit permission rules. */
+  permissionMode?: 'default' | 'acceptEdits' | 'dontAsk' | 'plan';
   useGatewayTools?: boolean;
   /** Timeout for each request in ms (default: 120000) */
   requestTimeout?: number;
@@ -548,6 +550,9 @@ export class PersistentClaudeProcess extends EventEmitter {
       args.push('--effort', normalizeThinkingEffort(this.options.model, this.options.effort));
     }
 
+    if (this.options.permissionMode) {
+      args.push('--permission-mode', this.options.permissionMode);
+    }
     if (this.options.dangerouslySkipPermissions) {
       args.push('--dangerously-skip-permissions');
     }

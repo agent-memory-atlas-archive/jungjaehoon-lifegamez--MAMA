@@ -82,6 +82,9 @@ export interface ClaudeCLIWrapperOptions {
    * Only enable in trusted environments where agent actions are pre-approved.
    */
   dangerouslySkipPermissions?: boolean;
+  env?: Record<string, string>;
+  /** Noninteractive consumers use dontAsk with explicit permission rules. */
+  permissionMode?: 'default' | 'acceptEdits' | 'dontAsk' | 'plan';
   /** If true, use GatewayToolExecutor instead of MCP (default: false) */
   useGatewayTools?: boolean;
   /** Request timeout in ms (default: 120000). Increase for complex/long tasks. */
@@ -197,6 +200,9 @@ export class ClaudeCLIWrapper {
         logger.debug('Gateway Tools mode enabled');
       }
 
+      if (this.options.permissionMode) {
+        args.push('--permission-mode', this.options.permissionMode);
+      }
       if (this.options.dangerouslySkipPermissions) {
         args.push('--dangerously-skip-permissions');
       }
@@ -236,6 +242,7 @@ export class ClaudeCLIWrapper {
         stdio: ['pipe', 'pipe', 'pipe'],
         // ⚠️ NEVER spawn in the user's home directory — it breaks agent isolation.
         cwd: mamaWorkspace,
+        ...(this.options.env ? { env: { ...process.env, ...this.options.env } } : {}),
       });
 
       // Handle stdin: write content if using stdin mode, otherwise close immediately

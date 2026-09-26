@@ -118,6 +118,7 @@ describe('one owner native session', () => {
       cwd: '/tmp/mama-native-workspace',
       sandbox: 'workspace-write',
       shellTool: true,
+      webSearch: true,
       allowLoginShell: false,
       shellEnvironment: { PATH: process.env.PATH },
       requestTimeout: 300_000,
@@ -186,6 +187,36 @@ describe('one owner native session', () => {
       tools: 'Read,Bash',
     });
     await session.stop();
+  });
+
+  it('configures the owner Claude driver for dontAsk and installs workspace settings before construction', () => {
+    const root = mkdtempSync(join(tmpdir(), 'owner-claude-policy-'));
+    const workspace = join(root, 'workspace');
+    try {
+      const session = createNativeSession({
+        backend: 'claude',
+        model: 'test-model',
+        workspaceDir: workspace,
+        runtimeRoot: root,
+        actionSurface: surface(),
+        maxTurns: 20,
+        timeout: 1_000,
+        createAgent: (options) => {
+          expect(options.permissionMode).toBe('dontAsk');
+          expect(options.cwd).toBe(workspace);
+          const settings = JSON.parse(
+            readFileSync(join(workspace, '.claude/settings.json'), 'utf8')
+          );
+          expect(settings.permissions).toBeUndefined();
+          expect(settings.sandbox.enabled).toBe(true);
+          expect(settings.hooks.PreToolUse[0].matcher).toBe('mcp__mama__.*');
+          return runner('claude');
+        },
+      });
+      void session.stop();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('carries the active replay source ceiling into a native action call', async () => {

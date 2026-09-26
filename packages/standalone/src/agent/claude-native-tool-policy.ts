@@ -29,6 +29,27 @@ const CLAUDE_BUILTIN_TOOLS: readonly string[] = [
   'WebSearch',
 ];
 
+/**
+ * Owner decision 2026-09-26: the Claude owner runtime writes only inside its workspace and has
+ * web access. The rules go on the CLI (--allowedTools): measured with Claude Code 2.1.282, project
+ * settings permissions were not applied to non-interactive runs while their sandbox was. An Edit
+ * path rule also governs Write and NotebookEdit; "//" anchors it at an absolute path. Under dontAsk
+ * an unmatched call is denied. Bash is confined by the sandbox in the workspace project settings.
+ */
+export function claudeOwnerAllowedTools(workspaceDir: string): string[] {
+  return [
+    'Read',
+    'Glob',
+    'Grep',
+    `Edit(/${workspaceDir}/**)`,
+    'Bash',
+    'WebFetch',
+    'WebSearch',
+    'mcp__mama__*',
+    'Agent',
+  ];
+}
+
 export interface ClaudeToolRole {
   allowedTools?: readonly string[];
   blockedTools?: readonly string[];
@@ -48,7 +69,7 @@ export function projectClaudeNativeTools(role: ClaudeToolRole | undefined): stri
   if (blocked.has('*')) return '';
   if (allowed.includes('*')) {
     const granted = CLAUDE_BUILTIN_TOOLS.filter((tool) => !isBlocked(tool, blocked));
-    return granted.length === CLAUDE_BUILTIN_TOOLS.length ? undefined : granted.join(',');
+    return granted.join(',');
   }
   const granted = new Set<string>();
   for (const [roleName, cliName] of Object.entries(CLAUDE_NATIVE_TOOL_MAP)) {

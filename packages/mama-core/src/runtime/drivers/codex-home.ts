@@ -420,11 +420,14 @@ export function buildMAMACodexAppServerConfig(
   hostNotes?: readonly string[],
   options: {
     shellTool?: boolean;
+    /** Enable live web search; disabled unless the consumer opts in. */
+    webSearch?: boolean;
     shellEnvironment?: Record<string, string>;
     allowLoginShell?: boolean;
   } = {}
 ): string {
   return [
+    ...(options.webSearch ? ['web_search = "live"'] : []),
     'approval_policy = "on-request"',
     'sandbox_mode = "workspace-write"',
     `model_reasoning_effort = ${tomlString(resolveCodexReasoningEffort(effort))}`,
@@ -457,7 +460,7 @@ export function buildMAMACodexAppServerConfig(
     'tool_search = false',
     `shell_tool = ${options.shellTool ?? false}`,
     'unified_exec = false',
-    'web_search = false',
+    `web_search = ${options.webSearch ?? false}`,
     'browser_use = false',
     'computer_use = false',
     'image_generation = false',

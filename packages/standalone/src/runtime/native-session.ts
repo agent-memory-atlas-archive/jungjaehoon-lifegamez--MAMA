@@ -1,4 +1,5 @@
 import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import type {
   ActionCall,
   ActionResult,
@@ -30,10 +31,12 @@ import type {
   SubagentBridgeRequest,
 } from '@jungjaehoon/mama-core/runtime/runtime-process';
 import {
+  claudeOwnerAllowedTools,
   projectClaudeNativeTools,
   type ClaudeToolRole,
 } from '../agent/claude-native-tool-policy.js';
 import { ensureMamaMcpConfig } from '../cli/runtime/action-mcp-config.js';
+import { ensureClaudeCallerHook } from '../cli/runtime/claude-caller-config.js';
 import type { RuntimeBackend, RuntimeEffort, RuntimeSandbox } from './config.js';
 import type { ActionSurface } from './action-surface.js';
 import type { OwnerPolicyProvider, OwnerPolicySnapshot } from './owner-policy.js';
@@ -48,6 +51,9 @@ export interface NativeDriverOptions {
   runtimeRoot: string;
   sandbox: RuntimeSandbox;
   shellTool?: boolean;
+  /** Enable live web search; disabled unless the consumer opts in. */
+  webSearch?: boolean;
+  permissionMode?: 'dontAsk';
   shellEnvironment?: Record<string, string>;
   allowLoginShell?: boolean;
   requestTimeout: number;
@@ -170,12 +176,13 @@ function driverOptions(
     ...(options.backend === 'codex'
       ? {
           shellTool: true,
+          webSearch: true,
           // macOS login shells run path_helper and put the system Python before Homebrew.
           // Keep the daemon's toolchain PATH and the driver's isolated HOME; no user profiles.
           shellEnvironment: { PATH: path! },
           allowLoginShell: false,
         }
-      : {}),
+      : { permissionMode: 'dontAsk' as const }),
     requestTimeout: options.timeout,
     effort: options.effort ?? 'medium',
     ...(options.codexHome === undefined ? {} : { codexHome: options.codexHome }),
@@ -197,6 +204,7 @@ function createDriver(
       cwd: nativeOptions.cwd,
       sandbox: nativeOptions.sandbox,
       shellTool: nativeOptions.shellTool,
+      webSearch: nativeOptions.webSearch,
       shellEnvironment: nativeOptions.shellEnvironment,
       allowLoginShell: nativeOptions.allowLoginShell,
       requestTimeout: nativeOptions.requestTimeout,
@@ -216,7 +224,9 @@ function createDriver(
     workspaceDir: options.workspaceDir,
     model: options.model,
     mcpConfigPath,
-    dangerouslySkipPermissions: true,
+    permissionMode: nativeOptions.permissionMode,
+    allowedTools: claudeOwnerAllowedTools(options.workspaceDir),
+    env: { CLAUDE_CODE_TMPDIR: join(options.workspaceDir, '.tmp') },
     pluginDir: nativeOptions.pluginDir,
     requestTimeout: nativeOptions.requestTimeout,
     effort: nativeOptions.effort as 'low' | 'medium' | 'high' | 'max',
@@ -236,6 +246,7 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
     throw new Error('The owner Codex session requires the workspace-write sandbox');
   }
   mkdirSync(options.workspaceDir, { recursive: true });
+  if (options.backend === 'claude') ensureClaudeCallerHook(options.workspaceDir);
   const tools = actionToolDefinitions(options.actionSurface);
   const runnerRef: { current?: NativeSessionRunner<HostExecutionContext> } = {};
   const bridge: NativeDriverOptions['createSubagentBridge'] = (info) =>

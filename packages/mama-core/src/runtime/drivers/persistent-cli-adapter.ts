@@ -83,6 +83,8 @@ export class PersistentCLIAdapter extends EventEmitter implements IModelRunner {
       systemPrompt: options.systemPrompt,
       mcpConfigPath: options.mcpConfigPath,
       dangerouslySkipPermissions: options.dangerouslySkipPermissions,
+      permissionMode: options.permissionMode,
+      env: options.env,
       useGatewayTools: options.useGatewayTools,
       requestTimeout: options.requestTimeout,
       tools: options.tools,
@@ -118,6 +120,7 @@ export class PersistentCLIAdapter extends EventEmitter implements IModelRunner {
       model: options?.model || this.options.model,
       systemPrompt: options?.systemPrompt ?? this.options.systemPrompt,
       dangerouslySkipPermissions: this.options.dangerouslySkipPermissions,
+      permissionMode: this.options.permissionMode,
       useGatewayTools: this.options.useGatewayTools,
       allowedTools: options?.allowedTools || this.options.allowedTools,
       disallowedTools: options?.disallowedTools || this.options.disallowedTools,
@@ -128,7 +131,7 @@ export class PersistentCLIAdapter extends EventEmitter implements IModelRunner {
       // out the pool's construction-time requestTimeout (chat runs keep it).
       requestTimeout: options?.requestTimeout ?? this.options.requestTimeout,
       policyFingerprint: options?.sessionPolicyFingerprint,
-      env: { MAMA_HOOK_FEATURES: 'rules,agents' },
+      env: { ...this.options.env, MAMA_HOOK_FEATURES: 'rules,agents' },
     });
     // Keep the legacy accessor pointing at the most recent process, but NEVER
     // dereference this.currentProcess inside prompt() - concurrent calls race it.
