@@ -680,3 +680,15 @@ The implementation writes raw/index data during import only. Replay is the owner
   the daemon refused both with "Native caller attribution requires the Claude owner session" — a process
   that is not the owner session cannot write unattributed. Successful attribution needs the Claude backend
   live (R10 f).
+
+- 2026-09-26: R10(d), Answer/Learn: replaced the SessionPool guess with shared prepareSessionContent/preparePrompt callbacks, invoked after each native driver settles its real session and before input dispatch; normal Codex resumption carries no startup block.
+  Evidence: core session-context 5/5 covers first start, continuation, Claude death, policy replacement, explicit reset, failed assembly and death during assembly; Codex protocol suite 127/127 covers durable resume, missing rollout replacement and startup failure before dispatch.
+  Requested core runtime suite: 182 passed, 44 failed at socket listen EPERM; 21 tests were blocked in 3 suite setups by the same EPERM, with an ipc-actions teardown close error after failed setup. Both package tsc --noEmit checks pass.
+  Isolation settings and native tool boundaries are unchanged. Live installed-CLI owner turns and daemon.log/DB/Telegram read-back remain unverified; this run neither deploys nor commits.
+- 2026-09-26: R7, Answer/Learn: new sessions prepend at most 5 owner exchanges, oldest first, with the full rendered block below 6000 characters; mailbox input and native result are joined only through retained Telegram delivered receipts (latest 20 candidates, existing 7-day receipt retention), excluding the current input and other principals.
+  Replay finalization resets the native session for either backend after reaching the import fence, before live cursor finalization and daemon.stop; the SessionPool route is dropped while durable mailbox, transport, wiki, report and lesson records are retained.
+  Evidence: recent-exchange tests 3/3 and replay-finalization tests 2/2 pass; requested standalone runtime/cli/replay/gateways suite: 136 passed, 8 socket listen EPERM failures. Changed-file ESLint passes; production diff including the new renderer: +289/-64 lines. Logs: /private/tmp/mama-r7-{core-tests,standalone-tests,codex-full,core-tsc,standalone-tsc,eslint}.log.
+  Still unverified: a real replay-to-live owner exchange on each installed backend. Required MAMA MCP decision save was attempted but refused because it requires approval and this session uses approval policy never; no replacement memory store was written.
+- 2026-09-26 17:55 KST: R7/R10 (d) supervisor check outside the sandbox: core runtime 247/247,
+  standalone runtime+cli+replay+gateways+agent+integration 272/272, typechecks clean. Live proof pending
+  with the next daemon restart (new thread: startup lessons + recent owner exchanges in the first stimulus).

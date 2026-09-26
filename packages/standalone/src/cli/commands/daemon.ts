@@ -45,6 +45,7 @@ export interface DaemonLogger {
 }
 
 export interface DaemonGateway {
+  recentDeliveredMessageRefs(): string[];
   start(): Promise<void>;
   stop(): Promise<void>;
   deliverResponse(sourceRef: string, response: string): Promise<void>;
@@ -315,6 +316,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
           }
         : {}),
       ownerPolicyProvider,
+      recentDeliveredOwnerMessages: () => gateway?.recentDeliveredMessageRefs() ?? [],
       ...(options.mode === 'replay' ? {} : { onOwnerResult: deliverOwnerResponse }),
       onStimulusDelivered: (row) => stimulusDelivered(logger, row),
       onStimulusFailed: (row) => stimulusFailed(logger, row.kind ?? 'unknown', row.stimulusId),

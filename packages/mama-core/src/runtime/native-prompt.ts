@@ -29,6 +29,7 @@ import {
   HostToolTerminalError,
   ModelRunnerError,
   NativeInputUncertainError,
+  NativeSessionUnavailableError,
   type NativeInputReceipt,
   type NativeInputDispatch,
 } from './drivers/types.js';
@@ -109,6 +110,9 @@ export type InternalToolResultBlock = ToolResultBlock & {
  * once, before the first turn.
  */
 export interface NativePromptContext<TToolContext extends HostExecutionContext> {
+  prepareSessionContent?: (
+    session: import('./drivers/types.js').NativeSessionState
+  ) => Promise<ContentBlock[]>;
   channelKey: string;
   claudeNativeTools: string | undefined;
   effectiveSessionPolicyFingerprint: string | undefined;
@@ -258,6 +262,18 @@ export async function runNativePrompt<TToolContext extends HostExecutionContext>
       let provisionalDurableSessionId: string | undefined;
       // All three backends preserve context and receive only the new user message.
       const basePromptText = host.formatLastMessageOnly(history);
+      const preparePrompt = context.prepareSessionContent
+        ? async (session: import('./drivers/types.js').NativeSessionState): Promise<string> => {
+            const content = await context.prepareSessionContent!(session);
+            const input = [...history].reverse().find((message) => message.role === 'user');
+            if (!input) throw new Error('Native session content requires an input message');
+            input.content = content;
+            console.log(
+              `[NativeTurn] [${host.backend}] ${channelKey} (${session.isNewSession ? 'NEW' : 'CONTINUE'} native session)`
+            );
+            return host.formatLastMessageOnly(history);
+          }
+        : undefined;
       let promptText = basePromptText;
       const promptStart = Date.now();
       const throwFinalCliError = (error: unknown): never => {
@@ -387,6 +403,7 @@ export async function runNativePrompt<TToolContext extends HostExecutionContext>
         }
         promptText = basePromptText;
         piResult = await host.agent.prompt(promptText, callbacks, {
+          preparePrompt,
           model: request.model,
           nativeInputId: request.nativeInputId,
           resumeSession: shouldResume,
@@ -501,6 +518,7 @@ export async function runNativePrompt<TToolContext extends HostExecutionContext>
         const isCorruptTranscript = errorMessage.includes('text content blocks must be non-empty');
 
         const canRecoverSession =
+          error instanceof NativeSessionUnavailableError ||
           (isCodex && isCodexPolicyMismatch) ||
           (!isCodex &&
             (isSessionNotFound || isSessionInUse || isPromptTooLong || isCorruptTranscript));
@@ -512,13 +530,15 @@ export async function runNativePrompt<TToolContext extends HostExecutionContext>
         if (canRecoverSession) {
           const reason = isCodexPolicyMismatch
             ? 'policy mismatch'
-            : isSessionNotFound
-              ? 'not found in CLI'
-              : isSessionInUse
-                ? 'already in use'
-                : isCorruptTranscript
-                  ? 'transcript corrupt (empty content block)'
-                  : 'prompt too long (context overflow)';
+            : error instanceof NativeSessionUnavailableError
+              ? 'native context missing'
+              : isSessionNotFound
+                ? 'not found in CLI'
+                : isSessionInUse
+                  ? 'already in use'
+                  : isCorruptTranscript
+                    ? 'transcript corrupt (empty content block)'
+                    : 'prompt too long (context overflow)';
           console.log(`[turn] Session ${reason}, retrying with new session`);
 
           // Reset session in pool so it creates a new one
@@ -544,6 +564,7 @@ export async function runNativePrompt<TToolContext extends HostExecutionContext>
 
             promptText = basePromptText;
             piResult = await host.agent.prompt(promptText, callbacks, {
+              preparePrompt,
               model: request.model,
               nativeInputId: request.nativeInputId,
               resumeSession: false, // Force new session

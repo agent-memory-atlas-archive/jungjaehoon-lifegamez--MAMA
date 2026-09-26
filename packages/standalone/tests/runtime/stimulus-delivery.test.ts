@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { NativeInvocationOptions } from '@jungjaehoon/mama-core/runtime/runtime';
 import type { DatabaseInstance } from '@jungjaehoon/mama-core/db-manager';
 import {
   createCatalog,
@@ -45,7 +46,17 @@ async function boot(model: NativeSessionHandle['runTurn']) {
       },
     ],
     mailbox: { adapter },
-    nativeSession: { runTurn: model, isNewThread: () => false, stop: async () => {} },
+    nativeSession: {
+      runTurn: async (content, request) =>
+        model!(
+          (await request?.prepareSessionContent?.({
+            sessionId: 'test-session',
+            isNewSession: false,
+          })) ?? content,
+          request
+        ),
+      stop: async () => {},
+    },
     delivery: {
       ...createStimulusDelivery({ lessonResolver: async () => [] }),
       intervalMs: 0,
@@ -91,9 +102,13 @@ describe('one stimulus intake and delivery', () => {
       } as never,
       {
         nativeInputId: 'file-input',
-        isNewThread: () => false,
         resultForReceipt: () => null,
-        run: async (content: Array<{ text?: string }>) => {
+        run: async (content: Array<{ text?: string }>, request?: NativeInvocationOptions) => {
+          content =
+            (await request?.prepareSessionContent?.({
+              sessionId: 'test-session',
+              isNewSession: false,
+            })) ?? content;
           prompt = content[0]?.text ?? '';
           return {} as never;
         },
@@ -128,12 +143,21 @@ describe('one stimulus intake and delivery', () => {
     let prompt = '';
     const context = {
       nativeInputId: 'input-lesson',
-      isNewThread: () => false,
       resultForReceipt: () => null,
-      run: vi.fn(async (content: Array<{ type: string; text?: string }>) => {
-        prompt = content[0]?.text ?? '';
-        return {} as never;
-      }),
+      run: vi.fn(
+        async (
+          content: Array<{ type: string; text?: string }>,
+          request?: NativeInvocationOptions
+        ) => {
+          content =
+            (await request?.prepareSessionContent?.({
+              sessionId: 'test-session',
+              isNewSession: false,
+            })) ?? content;
+          prompt = content[0]?.text ?? '';
+          return {} as never;
+        }
+      ),
       steer: vi.fn(),
       wasDispatched: () => false,
       onInputDispatch: vi.fn(),
@@ -171,12 +195,21 @@ describe('one stimulus intake and delivery', () => {
     let prompt = '';
     const context = {
       nativeInputId: 'input-no-lesson',
-      isNewThread: () => false,
       resultForReceipt: () => null,
-      run: vi.fn(async (content: Array<{ type: string; text?: string }>) => {
-        prompt = content[0]?.text ?? '';
-        return {} as never;
-      }),
+      run: vi.fn(
+        async (
+          content: Array<{ type: string; text?: string }>,
+          request?: NativeInvocationOptions
+        ) => {
+          content =
+            (await request?.prepareSessionContent?.({
+              sessionId: 'test-session',
+              isNewSession: false,
+            })) ?? content;
+          prompt = content[0]?.text ?? '';
+          return {} as never;
+        }
+      ),
       steer: vi.fn(),
       wasDispatched: () => false,
       onInputDispatch: vi.fn(),
@@ -212,18 +245,30 @@ describe('one stimulus intake and delivery', () => {
         queries.push(query);
         return query === 'startup operating lessons' ? [{ summary: 'startup lesson' }] : [];
       },
+      recentOwnerExchanges: () => [
+        { owner: 'use the earlier asset', answer: 'prior delivered answer' },
+      ],
     });
     let isNewThread = true;
     const prompts: string[] = [];
     const context = {
       nativeInputId: 'input-startup',
-      isNewThread: () => isNewThread,
       resultForReceipt: () => null,
-      run: vi.fn(async (content: Array<{ type: string; text?: string }>) => {
-        prompts.push(content[0]?.text ?? '');
-        isNewThread = false;
-        return {} as never;
-      }),
+      run: vi.fn(
+        async (
+          content: Array<{ type: string; text?: string }>,
+          request?: NativeInvocationOptions
+        ) => {
+          content =
+            (await request?.prepareSessionContent?.({
+              sessionId: 'test-session',
+              isNewSession: isNewThread,
+            })) ?? content;
+          prompts.push(content[0]?.text ?? '');
+          isNewThread = false;
+          return {} as never;
+        }
+      ),
       steer: vi.fn(),
       wasDispatched: () => false,
       onInputDispatch: vi.fn(),
@@ -252,6 +297,9 @@ describe('one stimulus intake and delivery', () => {
     expect(queries.filter((query) => query === 'startup operating lessons')).toHaveLength(1);
     expect(prompts[0]).toContain('startup lesson');
     expect(prompts[1]).not.toContain('startup lesson');
+    expect(prompts[0]).toContain('use the earlier asset');
+    expect(prompts[0]).toContain('prior delivered answer');
+    expect(prompts[1]).not.toContain('<recent_owner_exchanges>');
   });
 
   it('renders the queue sections with complete KST source lines', () => {
@@ -542,7 +590,6 @@ describe('one stimulus intake and delivery', () => {
     delivery.setReplaySourceEndMs(1_500);
     const context = {
       nativeInputId: 'input',
-      isNewThread: () => false,
       resultForReceipt: () => null,
       run: vi.fn(async (_content: unknown, request?: { replaySourceEndMs?: number }) => {
         expect(request?.replaySourceEndMs).toBe(1_500);

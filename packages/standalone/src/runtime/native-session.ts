@@ -98,7 +98,7 @@ export interface NativeSession {
   readonly supportsNativeSubagents: boolean;
   hostToolDefinitions(): HostToolDefinition[];
   callAction(call: ActionCall, caller: NativeToolCaller): Promise<ActionResult>;
-  isNewThread(sessionKey: string): boolean;
+  resetSession(sessionKey: string): Promise<void>;
   runTurn(content: ContentBlock[], request?: NativeSessionRequest): Promise<NativeTurnResult>;
   steer(
     content: string,
@@ -375,7 +375,7 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
           session: facts,
         });
       }),
-    isNewThread: (sessionKey) => runnerRef.current!.isNewThread({ sessionKey }),
+    resetSession: (sessionKey) => runnerRef.current!.resetSession(sessionKey),
     runTurn: (content, request) => {
       const nativeRequest = {
         ...(request ?? {}),

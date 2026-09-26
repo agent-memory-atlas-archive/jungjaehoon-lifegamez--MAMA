@@ -195,6 +195,10 @@ export class CodexRuntimeProcess extends EventEmitter implements AgentRuntimePro
     });
   }
 
+  resetSession(sessionId?: string, sessionKey?: string): Promise<void> {
+    return this.appServer.reset(sessionKey ?? sessionId ?? this.defaultSessionKey);
+  }
+
   // ─── AgentRuntimeProcess.sendMessage() ─────────────────────────────────
 
   async sendMessage(
@@ -231,6 +235,7 @@ export class CodexRuntimeProcess extends EventEmitter implements AgentRuntimePro
         resumeSession: promptOptions?.resumeSession,
         hostToolBridge: promptOptions?.hostToolBridge ?? this.auxiliaryToolBridge,
         resumeInstructions: promptOptions?.resumeInstructions,
+        preparePrompt: promptOptions?.preparePrompt,
         promptTelemetry: promptOptions?.promptTelemetry,
       });
 

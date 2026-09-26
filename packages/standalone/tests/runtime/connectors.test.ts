@@ -316,7 +316,6 @@ describe('connector runtime', () => {
       const reads: string[] = [];
       const context: NativeDeliveryContext = {
         nativeInputId: 'native-input',
-        isNewThread: () => false,
         resultForReceipt: () => null,
         run: async (content): Promise<NativeTurnResult> => {
           const text = content[0]?.type === 'text' ? (content[0].text ?? '') : '';

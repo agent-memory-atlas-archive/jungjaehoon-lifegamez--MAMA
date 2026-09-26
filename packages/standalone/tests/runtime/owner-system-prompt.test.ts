@@ -98,7 +98,6 @@ describe('owner standing prompt', () => {
       await createStimulusDelivery({ lessonResolver: async () => [] }).deliver(
         accepted! as MailboxRow,
         {
-          isNewThread: () => false,
           run: async (content: ContentBlock[]) => {
             replayText = content.map((block) => block.text ?? '').join('\n');
             return {} as never;

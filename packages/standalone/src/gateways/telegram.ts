@@ -220,6 +220,11 @@ export class TelegramGateway extends BaseGateway {
     this.emitEvent({ type: 'disconnected', source: 'telegram', timestamp: new Date() });
   }
 
+  /** Delivered inbound identities; message and answer text stay in the durable runtime journal. */
+  recentDeliveredMessageRefs(): string[] {
+    return this.messageLedger.recentDeliveredMessageRefs();
+  }
+
   /** Final response callback used by the owner runtime after a native turn settles. */
   async deliverResponse(sourceRef: string, response: string): Promise<void> {
     const chatId = chatIdFromSourceMessageRef(sourceRef);

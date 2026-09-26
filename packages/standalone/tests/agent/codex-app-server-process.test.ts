@@ -14,6 +14,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { createNativeSessionRunner } from '@jungjaehoon/mama-core/runtime/native-turn';
+import { SessionPool } from '@jungjaehoon/mama-core/runtime/session-pool';
 import { NativeEffectReplayBoundary } from '@jungjaehoon/mama-core/runtime/native-session';
 import { CodexAppServerProcess } from '@jungjaehoon/mama-core/runtime/drivers/codex-app-server-process';
 // The protocol class the driver throws — same module the driver loads.
@@ -223,6 +225,7 @@ rl.on('line', line => {
   }
   const threadResult = (id,params) => { const sandbox=params.sandbox === 'workspace-write'?{type:'workspaceWrite',writableRoots:[params.cwd],networkAccess:false,excludeTmpdirEnvVar:false,excludeSlashTmp:false}:params.sandbox === 'read-only'?{type:'readOnly',networkAccess:false}:{type:'dangerFullAccess'}; const instructionSources=mode==='symlink-source'?[params.cwd+'/AGENTS.md']:fs.existsSync(${JSON.stringify(join(root, 'bad-source'))})?['/outside/AGENTS.md']:[]; const result={...${JSON.stringify(responseFixture)},thread:fullThread(id),model:mode === 'bad-policy'?'unexpected-model':params.model,cwd:params.cwd,instructionSources,sandbox}; if(mode==='bad-thread-schema') delete result.thread.sessionId; return result; };
   if (message.method === 'thread/start') return send({jsonrpc:'2.0',id:message.id,result:threadResult('thread-'+(++thread),message.params)});
+  if (message.method === 'thread/resume' && mode === 'resume-missing') return send({jsonrpc:'2.0',id:message.id,error:{code:-32600,message:'no rollout found for thread id'}});
   if (message.method === 'thread/resume') return send({jsonrpc:'2.0',id:message.id,result:threadResult(message.params.threadId,message.params)});
   if (message.method === 'command/exec') return send({jsonrpc:'2.0',id:message.id,result:{exitCode:0,stdout:'sandboxed command',stderr:''}});
   if (message.method === 'turn/steer') {
@@ -3000,3 +3003,113 @@ it.each(['native-effects-failed', 'native-effects-pending'])(
     }
   }
 );
+
+describe('settled Codex startup context', () => {
+  it('does not retain an empty thread when startup assembly fails before dispatch', async () => {
+    const item = fixture();
+    const first = new CodexAppServerProcess(item.options);
+    try {
+      await expect(
+        first.prompt('current', undefined, {
+          preparePrompt: async () => {
+            throw new Error('context unavailable');
+          },
+        })
+      ).rejects.toThrow('context unavailable');
+      expect(first.getSessionPolicyStatus()).toBe('missing');
+      expect(messages(item.capture).filter((entry) => entry.method === 'turn/start')).toEqual([]);
+    } finally {
+      await first.stop();
+    }
+    const second = new CodexAppServerProcess(item.options);
+    const states: boolean[] = [];
+    try {
+      await second.prompt('current', undefined, {
+        preparePrompt: async ({ isNewSession }) => {
+          states.push(isNewSession);
+          return 'startup';
+        },
+      });
+      expect(states).toEqual([true]);
+    } finally {
+      await second.stop();
+    }
+  });
+
+  it.each(['success', 'resume-missing'])(
+    'settles start, continuation, %s resume, policy change and reset before composing',
+    async (mode) => {
+      const item = fixture(mode);
+      const states: boolean[] = [];
+      let policy = 'policy-one';
+      const pools: SessionPool[] = [];
+      const open = () => {
+        const pool = new SessionPool();
+        pools.push(pool);
+        const agent = new CodexRuntimeProcess({
+          ...item.options,
+          hostRootDir: item.root,
+          defaultSessionKey: 'test-session',
+        });
+        return {
+          pool,
+          runner: createNativeSessionRunner({
+            agent,
+            backend: 'codex',
+            model: 'gpt-test',
+            maxTurns: 10,
+            isGatewayMode: false,
+            runTokenBudget: 0,
+            sessionPool: pool,
+            turnPolicy: () => ({
+              channelKey: 'test-session',
+              systemLayers: [{ name: 'standing', content: policy, priority: 1 }],
+              reanchorLayers: async () => [{ name: 'standing', content: policy, priority: 1 }],
+              sessionPolicyFingerprint: policy,
+              standingPolicy: true,
+            }),
+            executionContext: () => null,
+            hostToolDefinitions: () => [],
+            callTool: async () => ({ success: true }),
+          }),
+        };
+      };
+      let handle = open();
+      const run = () =>
+        handle.runner.runTurn([{ type: 'text', text: 'current input' }], {
+          sessionKey: 'test-session',
+          prepareSessionContent: async ({ isNewSession }) => {
+            states.push(isNewSession);
+            return [
+              {
+                type: 'text',
+                text: isNewSession ? 'startup carry; current input' : 'current input',
+              },
+            ];
+          },
+        });
+      try {
+        await run();
+        await run();
+        await handle.runner.stop();
+        handle = open();
+        await run();
+        policy = 'policy-two';
+        await run();
+        await run();
+        await handle.runner.resetSession('test-session');
+        expect(handle.pool.peekSession('test-session')).toEqual({ busy: false });
+        await run();
+        expect(states).toEqual([true, false, mode === 'resume-missing', true, false, true]);
+        const inputs = messages(item.capture)
+          .filter((entry) => entry.method === 'turn/start')
+          .map((entry) => (entry.params as { input: Array<{ text: string }> }).input[0]!.text);
+        expect(inputs).toHaveLength(6);
+        expect(inputs.map((text) => text.includes('startup carry'))).toEqual(states);
+      } finally {
+        await handle.runner.stop();
+        for (const pool of pools) pool.dispose();
+      }
+    }
+  );
+});

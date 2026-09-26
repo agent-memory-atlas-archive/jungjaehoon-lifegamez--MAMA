@@ -26,7 +26,11 @@ import {
   type NativeInputReceipt,
   type SessionPolicyStatus,
 } from './types.js';
-import type { PromptCallbacks } from './types.js';
+import {
+  NativeSessionUnavailableError,
+  type PromptCallbacks,
+  type PromptOptions,
+} from './types.js';
 import {
   buildCodexAppServerLaunchConfig,
   buildMAMACodexAppServerConfig,
@@ -124,6 +128,7 @@ export interface SubagentEvent {
 }
 
 export interface CodexAppServerPromptOptions {
+  preparePrompt?: PromptOptions['preparePrompt'];
   nativeInputId?: string;
   /**
    * Per-run counted-token budget (input + output; codex reports input INCLUSIVE of cache,
@@ -253,6 +258,7 @@ interface SessionPolicy {
 
 interface SessionState {
   threadId: string;
+  startupPending?: boolean;
   bootstrapPending: boolean;
   /** True until the first turn on a thread started (not resumed) by this process completes. */
   unproven?: boolean;
@@ -718,10 +724,27 @@ export class CodexAppServerProcess {
             this.sessions.set(session.sessionKey, state);
           }
         }
+        let prompt = text;
+        if (overrides.preparePrompt) {
+          try {
+            prompt = await overrides.preparePrompt({
+              sessionId: state.threadId,
+              isNewSession: state.startupPending === true,
+            });
+          } catch (error) {
+            // No turn/start has been sent. Do not persist a never-populated thread
+            // as a retained session if startup context failed to assemble.
+            if (state.startupPending) {
+              this.registry.remove(session.sessionKey);
+              this.sessions.delete(session.sessionKey);
+            }
+            throw error;
+          }
+        }
         const replayReminder = Boolean(state.bootstrapPending && session.systemPrompt);
         const turnText = replayReminder
-          ? `<system-reminder>\nFresh MAMA runtime context after resuming this durable thread:\n${session.systemPrompt.replace(/<\/system-reminder>/gi, '')}\n</system-reminder>\n\n${text}`
-          : text;
+          ? `<system-reminder>\nFresh MAMA runtime context after resuming this durable thread:\n${session.systemPrompt.replace(/<\/system-reminder>/gi, '')}\n</system-reminder>\n\n${prompt}`
+          : prompt;
         // One line per turn, where the text that actually reaches the model is known.
         // This is what makes "fixed things once, turns carry only deltas" measurable
         // from daemon.log instead of asserted.
@@ -744,7 +767,13 @@ export class CodexAppServerProcess {
         const result = await this.startTurn(
           state.threadId,
           turnText,
-          callbacks,
+          {
+            ...callbacks,
+            onAccepted: (receipt) => {
+              state.startupPending = false;
+              callbacks?.onAccepted?.(receipt);
+            },
+          },
           session.requestTimeout,
           session.hostToolBridge,
           overrides.runTokenBudget,
@@ -752,6 +781,7 @@ export class CodexAppServerProcess {
           session.restrictedReadRoots
         );
         state.bootstrapPending = false;
+        state.startupPending = false;
         state.unproven = false;
         return result;
       } catch (error: unknown) {
@@ -1185,9 +1215,20 @@ export class CodexAppServerProcess {
       if (resumeInstructions) {
         resumeParams.baseInstructions = resumeInstructions;
       }
-      const result = object(
-        await this.request('thread/resume', resumeParams, session.requestTimeout)
-      );
+      let result: JsonObject | undefined;
+      try {
+        result = object(await this.request('thread/resume', resumeParams, session.requestTimeout));
+      } catch (error) {
+        // Only an explicit missing-context rejection permits replacement. Transport,
+        // authentication and overloaded-server failures retain the durable thread.
+        if (
+          error instanceof CodexAppServerRpcError &&
+          /no rollout found|thread (?:[^\n]* )?not found/i.test(error.message)
+        ) {
+          throw new NativeSessionUnavailableError(error.message, { cause: error });
+        }
+        throw error;
+      }
       this.validateResponsePolicy(result, session);
       this.validateInstructionMetadata(result, session);
       const resumed = validateThread(result?.thread);
@@ -1226,7 +1267,7 @@ export class CodexAppServerProcess {
       systemPromptFingerprint: this.policyFingerprint(session),
       mcpConfigFingerprint: launch.fingerprint,
     });
-    return { threadId: thread.id, bootstrapPending: false, unproven: true };
+    return { threadId: thread.id, bootstrapPending: false, unproven: true, startupPending: true };
   }
 
   private policyFingerprint(session: SessionPolicy): string {

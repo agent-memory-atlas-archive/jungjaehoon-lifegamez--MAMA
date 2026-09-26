@@ -60,18 +60,6 @@ function toolCall(index: number, input: Record<string, unknown>): HostToolCall {
 }
 
 describe('native host-tool loop signatures', () => {
-  it('exposes whether a session key will open a new native thread', async () => {
-    const runner = runnerWithPrompt(vi.fn(async () => promptResult()));
-
-    expect(runner.isNewThread({ sessionKey: 'test-lane' })).toBe(true);
-
-    await runner.runTurn([{ type: 'text', text: 'open the thread' }], {
-      sessionKey: 'test-lane',
-    });
-
-    expect(runner.isNewThread({ sessionKey: 'test-lane' })).toBe(false);
-  });
-
   it('allows more than fifty host calls when each input is different', async () => {
     const prompt = vi.fn(async (_content, _callbacks, options) => {
       const bridge = options?.hostToolBridge;

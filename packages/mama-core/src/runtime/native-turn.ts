@@ -82,6 +82,10 @@ export interface BackgroundTaskRegistry {
  * that crosses.
  */
 export interface NativeTurnRequest extends NativePromptRequest {
+  /** Assembled only after the native driver has selected a new or retained session. */
+  prepareSessionContent?: (
+    session: import('./drivers/types.js').NativeSessionState
+  ) => Promise<ContentBlock[]>;
   sessionKey?: string;
   channelId?: string;
   lanePriority?: number;
@@ -405,20 +409,29 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
 
   constructor(private readonly host: NativeSessionHost<TToolContext>) {}
 
-  /** State the next native turn will observe without claiming or mutating the session. */
-  isNewThread(
-    request: Pick<
-      NativeTurnRequest,
-      'sessionKey' | 'freshSession' | 'resumeSession' | 'cliSessionId'
-    > = {}
-  ): boolean {
-    if (request.freshSession === true) return true;
-    if (request.cliSessionId !== undefined) {
-      return request.resumeSession === undefined ? true : !request.resumeSession;
+  /** Retire native context only. Durable input, results and knowledge remain owned by the host. */
+  async resetSession(sessionKey: string): Promise<void> {
+    const reset = async (): Promise<void> => {
+      if (this.stopped) throw new Error('Native session is stopped');
+      const entry = this.host.sessionPool.peekSession(sessionKey);
+      if (entry.busy) throw new Error('Cannot reset a busy native session');
+      if (!this.host.agent.resetSession)
+        throw new Error('Native runner does not support session reset');
+      await this.host.agent.resetSession(entry.sessionId, sessionKey);
+      this.host.sessionPool.invalidateSession(sessionKey);
+      this.callerChildOwners.delete(sessionKey);
+      this.subagentRunContexts.delete(sessionKey);
+    };
+    if (this.host.useLanes && this.host.lanes) {
+      await this.host.lanes.enqueueWithSession(
+        sessionKey,
+        reset,
+        this.host.globalLaneFor?.(sessionKey),
+        { priority: 0 }
+      );
+    } else {
+      await reset();
     }
-    const sessionKey =
-      request.sessionKey ?? this.host.turnPolicy(request as NativeTurnRequest).channelKey;
-    return !this.host.sessionPool.hasActiveSession(sessionKey);
   }
 
   /** Use the current turn's authority. Steering cannot replace its policy or open a new turn. */
@@ -1165,18 +1178,10 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
         : policy.sessionPolicyFingerprint;
     let resolvedCliSessionId: string | null = request?.cliSessionId ?? null;
 
-    const sessionLabel = (isNew: boolean): string => {
-      if (isDurableRuntime) {
-        return isNew ? 'NEW thread' : 'CONTINUE thread';
-      }
-      return isNew ? 'NEW process' : 'CONTINUE session';
-    };
-
     if (request?.cliSessionId) {
       // Session routing travels per prompt() call via resolvedCliSessionId - no
       // shared-adapter mutation (setSessionId re-pointed channelKey/currentProcess
       // across awaits, cross-wiring concurrent lanes).
-      console.log(`[NativeTurn] [${host.backend}] ${channelKey} (${sessionLabel(sessionIsNew)})`);
     } else if (request?.freshSession) {
       // Stateless lanes: session context is a cache, not persistence - every run
       // self-gathers and recalls; carrying prior runs' gather dumps only grows the
@@ -1185,7 +1190,6 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
       sessionIsNew = true;
       ownedSession = true;
       resolvedCliSessionId = cliSessionId;
-      console.log(`[NativeTurn] [${host.backend}] ${channelKey} (FRESH session - stateless lane)`);
     } else {
       // The native lane serializes this session before the pool is acquired.
       // A busy entry means another caller holds it outside this lane: reusing
@@ -1202,7 +1206,6 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
       sessionIsNew = isNew;
       ownedSession = true;
       resolvedCliSessionId = cliSessionId;
-      console.log(`[NativeTurn] [${host.backend}] ${channelKey} (${sessionLabel(isNew)})`);
     }
 
     // A run record is opened for EVERY turn this entry runs, with two exceptions that
@@ -1313,6 +1316,7 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
           restrictedReadRoots: policy.restrictedReadRoots,
           nativeCwd: policy.nativeCwd,
           history,
+          prepareSessionContent: request?.prepareSessionContent,
           hostToolBridge,
           isCodex,
           isDurableRuntime,

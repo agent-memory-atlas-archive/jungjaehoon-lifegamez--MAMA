@@ -13,6 +13,7 @@ import type {
 import type { NativeTurnResult } from '@jungjaehoon/mama-core/runtime/native-turn';
 import type { SourceDelta } from '../connectors/framework/polling-scheduler.js';
 import type { QueueCandidateScore, QueueLine, WindowQueue } from '../replay/window-queue.js';
+import { renderRecentOwnerExchanges, type OwnerExchange } from './recent-owner-exchanges.js';
 
 export const OWNER_RUNTIME_SESSION_KEY = 'owner:runtime';
 
@@ -50,6 +51,9 @@ export interface StimulusIntake {
 
 export interface StimulusDeliveryOptions {
   lessonResolver: LessonResolver;
+  recentOwnerExchanges?: (
+    row: MailboxRow
+  ) => readonly OwnerExchange[] | Promise<readonly OwnerExchange[]>;
   onOwnerResult?: (row: MailboxRow, result: NativeTurnResult) => void | Promise<void>;
   onSourceResult?: (row: MailboxRow, result: NativeTurnResult) => void | Promise<void>;
   onScheduledNoop?: (row: MailboxRow) => void | Promise<void>;
@@ -429,7 +433,7 @@ function assembledContent(row: MailboxRow, lessonBlocks: readonly string[]): Con
   return [
     {
       type: 'text',
-      text: [boundedStimulus(row), ...lessonBlocks].join('\n\n'),
+      text: [...lessonBlocks, boundedStimulus(row)].join('\n\n'),
     },
   ];
 }
@@ -458,14 +462,23 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
         ) {
           throw new Error('Stimulus kind is missing; no owner turn can be assembled');
         }
-        const lessonBlocks: string[] = [];
-        if (context.isNewThread(OWNER_RUNTIME_SESSION_KEY)) {
-          const startupLessons = renderLessons(await options.lessonResolver(STARTUP_LESSON_QUERY));
-          if (startupLessons) lessonBlocks.push(startupLessons);
-        }
-        const currentLessons = renderLessons(await options.lessonResolver(lessonQuery(row)));
-        if (currentLessons) lessonBlocks.push(currentLessons);
-        const result = await context.run(assembledContent(row, lessonBlocks), {
+        const result = await context.run(assembledContent(row, []), {
+          prepareSessionContent: async ({ isNewSession }) => {
+            const lessonBlocks: string[] = [];
+            if (isNewSession) {
+              const startupLessons = renderLessons(
+                await options.lessonResolver(STARTUP_LESSON_QUERY)
+              );
+              if (startupLessons) lessonBlocks.push(startupLessons);
+              const exchanges = renderRecentOwnerExchanges(
+                (await options.recentOwnerExchanges?.(row)) ?? []
+              );
+              if (exchanges) lessonBlocks.push(exchanges);
+            }
+            const currentLessons = renderLessons(await options.lessonResolver(lessonQuery(row)));
+            if (currentLessons) lessonBlocks.push(currentLessons);
+            return assembledContent(row, lessonBlocks);
+          },
           sessionKey: OWNER_RUNTIME_SESSION_KEY,
           source: row.kind,
           channelId: row.channelKey,

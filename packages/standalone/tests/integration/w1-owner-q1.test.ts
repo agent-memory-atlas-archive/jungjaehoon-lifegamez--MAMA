@@ -107,7 +107,6 @@ describe('W1 owner question integration', () => {
     let sourceObservationRefs: string[] = [];
 
     const model: NativeSessionHandle = {
-      isNewThread: () => false,
       runTurn: vi.fn(async (content, request) => {
         const modelRun = beginModelRun(owner!.database.adapter, {
           model_id: 'fixture-model',

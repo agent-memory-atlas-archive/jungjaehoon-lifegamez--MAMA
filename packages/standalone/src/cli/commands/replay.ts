@@ -12,6 +12,7 @@ import {
 } from '../../replay/replay-source-catalog.js';
 import { createJevClient } from '../../replay/jev-client.js';
 import { buildWindowQueue, trelloCardsFromEvents } from '../../replay/window-queue.js';
+import { OWNER_RUNTIME_SESSION_KEY } from '../../runtime/stimulus-delivery.js';
 
 export interface ReplayCommandOptions {
   daemon?: Omit<DaemonBootOptions, 'mode' | 'replay'>;
@@ -152,6 +153,10 @@ export async function runReplay(options: ReplayCommandOptions = {}): Promise<Rep
       if (result.nextWindowStartMs !== manifest.untilMs) {
         throw new Error('Replay feeder stopped before the import fence');
       }
+      const session = context.owner.runtime.nativeSession;
+      if (!session?.resetSession)
+        throw new Error('Replay finalization requires native session reset');
+      await session.resetSession(OWNER_RUNTIME_SESSION_KEY);
       setLiveConnectorPollCursors({
         configPath: context.paths.connectorsConfigPath,
         statePath: context.paths.connectorsRoot,

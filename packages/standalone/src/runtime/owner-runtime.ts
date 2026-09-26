@@ -28,6 +28,7 @@ import { createNativeSession, type NativeSession } from './native-session.js';
 import type { ActionDispatcher } from '@jungjaehoon/mama-core/api/dispatch';
 import { ownerSystemPrompt } from './owner-system-prompt.js';
 import { createOwnerPolicyProvider, type OwnerPolicyProvider } from './owner-policy.js';
+import { readRecentOwnerExchanges } from './recent-owner-exchanges.js';
 import {
   createStimulusDelivery,
   createStimulusIntake,
@@ -68,6 +69,7 @@ export interface OwnerRuntimeOptions {
   };
   ownerPolicyProvider?: OwnerPolicyProvider;
   onOwnerResult?: StimulusDeliveryOptions['onOwnerResult'];
+  recentDeliveredOwnerMessages?: () => readonly string[];
   onSourceResult?: StimulusDeliveryOptions['onSourceResult'];
   onScheduledNoop?: StimulusDeliveryOptions['onScheduledNoop'];
   onNativeEventResult?: StimulusDeliveryOptions['onNativeEventResult'];
@@ -237,6 +239,12 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       });
     }
     delivery = createStimulusDelivery({
+      recentOwnerExchanges: (row) =>
+        readRecentOwnerExchanges(
+          intakeRuntime.mailbox!,
+          options.recentDeliveredOwnerMessages?.() ?? [],
+          row
+        ),
       lessonResolver: async (query) => {
         const bundle = await recallMemory(database.adapter, query, {
           kind: 'lesson',

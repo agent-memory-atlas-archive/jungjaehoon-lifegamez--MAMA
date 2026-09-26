@@ -89,6 +89,16 @@ export class TelegramMessageLedger {
       .map((entry) => ({ ...entry }));
   }
 
+  /** Bounded inbound delivery receipts for startup conversation carry, newest first. */
+  recentDeliveredMessageRefs(): string[] {
+    this.prune();
+    return [...this.entries.values()]
+      .filter((entry) => entry.state === 'delivered' && !entry.key.startsWith('outbound:'))
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, 20)
+      .map((entry) => entry.key);
+  }
+
   isOwnedByCurrentProcess(entry: TelegramMessageLedgerEntry): boolean {
     return entry.ownerId === this.ownerId;
   }

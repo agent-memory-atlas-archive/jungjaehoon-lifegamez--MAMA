@@ -262,6 +262,8 @@ export class HostToolAbortError extends Error {
  * Options passed to prompt() that are backend-agnostic.
  */
 export interface PromptOptions {
+  /** Called after the backend settles its actual session, before any input is dispatched. */
+  preparePrompt?: (session: NativeSessionState) => Promise<string>;
   /** Stable, caller-persisted native invocation UUID; not the model session routing key. */
   nativeInputId?: string;
   model?: string;
@@ -323,6 +325,15 @@ export interface PromptOptions {
 }
 
 export type SessionPolicyStatus = 'missing' | 'compatible' | 'mismatch';
+
+/** Actual native context, not the host's session-pool routing hint. */
+export interface NativeSessionState {
+  sessionId: string;
+  isNewSession: boolean;
+}
+
+/** The native protocol explicitly rejected resumption because its context no longer exists. */
+export class NativeSessionUnavailableError extends Error {}
 
 /**
  * Runtime metrics collected by a model runner.
@@ -416,7 +427,7 @@ export interface IModelRunner {
   getSessionPolicyStatus?(options: PromptOptions): SessionPolicyStatus;
 
   /** Retire one exact routed backend session before replacing its authority policy. */
-  resetSession?(sessionId?: string): void | Promise<void>;
+  resetSession?(sessionId?: string, sessionKey?: string): void | Promise<void>;
 
   /** Set the session/channel ID */
   setSessionId(id: string): void;

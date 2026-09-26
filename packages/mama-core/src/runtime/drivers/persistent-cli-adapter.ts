@@ -32,7 +32,7 @@ import {
   type RunnerMetrics,
   type SessionPolicyStatus,
 } from './types.js';
-import { ClaudeToolStreamProtocolError } from './types.js';
+import { ClaudeToolStreamProtocolError, NativeSessionUnavailableError } from './types.js';
 
 // Re-export types for convenience
 export type { ClaudeCLIWrapperOptions, PromptCallbacks, PromptResult, ToolUseBlock };
@@ -65,6 +65,7 @@ export class PersistentCLIAdapter extends EventEmitter implements IModelRunner {
   private lastToolUseBlocks: ToolUseBlock[] = [];
   /** Processes whose subagent stream events are already wired to this adapter. */
   private readonly wiredProcesses = new WeakSet<PersistentClaudeProcess>();
+  private readonly initializedProcesses = new WeakSet<PersistentClaudeProcess>();
 
   // ─── Metrics tracking ───
   private _requestCount = 0;
@@ -172,7 +173,35 @@ export class PersistentCLIAdapter extends EventEmitter implements IModelRunner {
       }
     };
     try {
-      const result = await proc.sendMessage(content, callbacks, options?.nativeInputId);
+      let prompt = content;
+      if (options?.preparePrompt) {
+        try {
+          prompt = await options.preparePrompt({
+            sessionId: proc.getSessionId(),
+            isNewSession: !this.initializedProcesses.has(proc),
+          });
+        } catch (error) {
+          if (!this.initializedProcesses.has(proc))
+            this.processPool.retireProcess(channelKey, proc);
+          throw error;
+        }
+      }
+      // sendMessage can start a dead process for legacy callers. A prepared turn
+      // must instead rebuild its context for the replacement before dispatch.
+      if (!proc.isAlive())
+        throw new NativeSessionUnavailableError('Claude process died while preparing input');
+      const result = await proc.sendMessage(
+        prompt,
+        {
+          ...callbacks,
+          onAccepted: (receipt) => {
+            this.initializedProcesses.add(proc);
+            callbacks?.onAccepted?.(receipt);
+          },
+        },
+        options?.nativeInputId
+      );
+      this.initializedProcesses.add(proc);
       recordLatency();
 
       // Track tool use blocks for potential tool result sending
