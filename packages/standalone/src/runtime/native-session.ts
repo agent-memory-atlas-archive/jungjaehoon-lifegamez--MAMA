@@ -88,6 +88,7 @@ export interface NativeSession {
   readonly sessionKey: string;
   readonly supportsNativeSubagents: boolean;
   hostToolDefinitions(): HostToolDefinition[];
+  isNewThread(sessionKey: string): boolean;
   runTurn(content: ContentBlock[], request?: NativeSessionRequest): Promise<NativeTurnResult>;
   steer(
     content: string,
@@ -337,6 +338,7 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
     sessionKey: OWNER_RUNTIME_SESSION_KEY,
     supportsNativeSubagents: agent.supportsNativeSubagents === true,
     hostToolDefinitions: () => [...tools],
+    isNewThread: (sessionKey) => runnerRef.current!.isNewThread({ sessionKey }),
     runTurn: (content, request) => {
       const nativeRequest = {
         ...(request ?? {}),

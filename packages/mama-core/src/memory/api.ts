@@ -1045,7 +1045,8 @@ export async function recallMemory(
         searchOptions.topicPrefix,
         // Keep superseded history out of the candidate top-K at search time; the
         // post-filter below stays the authority (and includeHistory restores it).
-        options.includeHistory ? undefined : Array.from(EXCLUDED_STATUSES)
+        options.includeHistory ? undefined : Array.from(EXCLUDED_STATUSES),
+        options.kind
       );
 
       let filtered = vectorResults;
@@ -1072,7 +1073,7 @@ export async function recallMemory(
         vectorMatched.push({
           id: String(result.id),
           topic: String(result.topic || ''),
-          kind: 'decision' as MemoryKind,
+          kind: ((result as { kind?: string }).kind ?? 'decision') as MemoryKind,
           summary: String(result.decision || ''),
           details: String(result.reasoning || ''),
           confidence: (result as { similarity?: number }).similarity ?? 0.5,
@@ -1168,7 +1169,7 @@ export async function recallMemory(
         .map((t) => stemToken(t))
         .filter((t) => !FTS5_NOISE_WORDS.has(t));
       const ftsQuery = ftsTokens.length > 0 ? ftsTokens.join(' OR ') : query;
-      const ftsResults = await fts5Search(searchAdapter, ftsQuery, lexicalLimit);
+      const ftsResults = await fts5Search(searchAdapter, ftsQuery, lexicalLimit, options.kind);
       if (ftsResults.length > 0) {
         const adapter = searchAdapter;
         const fallbackSource: SaveMemoryInput['source'] = {
@@ -1205,6 +1206,8 @@ export async function recallMemory(
           // Topic prefix filtering (matches vectorSearch behavior)
           if (searchOptions.topicPrefix && !record.topic.startsWith(searchOptions.topicPrefix))
             continue;
+
+          if (options.kind !== undefined && record.kind !== options.kind) continue;
 
           // Scope filtering
           if (options.scopes && options.scopes.length > 0) {
@@ -1256,6 +1259,10 @@ export async function recallMemory(
         lexicalRecords = lexicalRecords.filter((r) =>
           r.topic.startsWith(searchOptions.topicPrefix!)
         );
+      }
+
+      if (options.kind !== undefined) {
+        lexicalRecords = lexicalRecords.filter((r) => r.kind === options.kind);
       }
 
       lexicalCandidates = buildLexicalCandidates(lexicalRecords, query);
@@ -1534,11 +1541,21 @@ export async function recallMemory(
       // Re-filter expanded results: apply status and scope checks
       if (!options.includeHistory) {
         expandedOnly = expandedOnly.filter((e) => {
-          const row = adapter.prepare(`SELECT status FROM decisions WHERE id = ?`).get(e.id) as
-            | { status?: string }
-            | undefined;
+          const row = adapter
+            .prepare(`SELECT kind, status FROM decisions WHERE id = ?`)
+            .get(e.id) as { kind?: string; status?: string } | undefined;
           const status = row?.status || '';
-          return !status || !EXCLUDED_STATUSES.has(status);
+          return (
+            (options.kind === undefined || row?.kind === options.kind) &&
+            (!status || !EXCLUDED_STATUSES.has(status))
+          );
+        });
+      } else if (options.kind !== undefined) {
+        expandedOnly = expandedOnly.filter((e) => {
+          const row = adapter.prepare(`SELECT kind FROM decisions WHERE id = ?`).get(e.id) as
+            | { kind?: string }
+            | undefined;
+          return row?.kind === options.kind;
         });
       }
       if (options.scopes && options.scopes.length > 0) {
@@ -1553,10 +1570,13 @@ export async function recallMemory(
       }
 
       bundle.graph_context.expanded = expandedOnly.flatMap((e) => {
+        const kindRow = adapter.prepare(`SELECT kind FROM decisions WHERE id = ?`).get(e.id) as
+          | { kind?: string }
+          | undefined;
         const expandedRecord: MemoryRecord = {
           id: String(e.id),
           topic: String(e.topic || ''),
-          kind: 'decision' as const,
+          kind: (kindRow?.kind ?? 'decision') as MemoryKind,
           summary: String(e.decision || ''),
           details: '',
           confidence: (e.graph_rank as number) ?? 0.5,
@@ -2171,6 +2191,7 @@ function applyRecencyBoost(
 export interface SuggestFunctionOptions extends SearchQualityOptions {
   format?: 'json' | 'markdown';
   limit?: number;
+  kind?: MemoryKind;
   useReranking?: boolean;
   /** Phase 3 Task 33: apply learned offline ranker rescoring. */
   rerankWithLearned?: boolean;
@@ -2244,6 +2265,7 @@ function mapRolledUpResult(result: SearchRollupResult) {
     edge_reason: null,
     case_id: result.case_id,
     source_type: result.source_type,
+    kind: stringOrNull(record.kind) ?? 'decision',
     contributing_leaves: result.contributing_leaves ?? null,
     ...(result.contributing_leaf_diagnostics
       ? { contributing_leaf_diagnostics: result.contributing_leaf_diagnostics }
@@ -2278,6 +2300,7 @@ export async function suggestInAdapter(
     includeRelated,
     minLexicalSupport,
     diagnostics: includeDiagnostics,
+    kind,
   } = options;
   const normalizedSearchOptions = normalizeSearchQualityOptions({
     threshold,
@@ -2297,7 +2320,8 @@ export async function suggestInAdapter(
     minLexicalSupport !== undefined ||
     includeDiagnostics === true ||
     options.topicPrefix !== undefined ||
-    options.scopes !== undefined;
+    options.scopes !== undefined ||
+    options.kind !== undefined;
   const rerankPoolLimit = rerankWithLearned ? Math.max(limit * 4, limit + 5) : limit;
 
   try {
@@ -2314,6 +2338,7 @@ export async function suggestInAdapter(
       includeRelated,
       minLexicalSupport,
       diagnostics: includeDiagnostics,
+      kind,
       ...(options.scopes && { scopes: options.scopes }),
     });
     const diagnosticsByMemoryId = new Map(
@@ -2515,6 +2540,7 @@ export async function suggestInAdapter(
           (memory as { source_type?: string; type?: string }).source_type ??
           (memory as { type?: string }).type ??
           'decision',
+        kind: memory.kind,
         ...(memory.retrieval_diagnostics
           ? { retrieval_diagnostics: memory.retrieval_diagnostics }
           : {}),
@@ -2594,7 +2620,15 @@ export async function suggestInAdapter(
       const adaptiveThreshold = threshold !== undefined ? threshold : wordCount < 3 ? 0.7 : 0.6;
 
       // Vector search
-      results = await vectorSearch(adapter, queryEmbedding, rerankPoolLimit * 2, 0.5); // Get more candidates
+      results = await vectorSearch(
+        adapter,
+        queryEmbedding,
+        rerankPoolLimit * 2,
+        0.5,
+        undefined,
+        undefined,
+        kind
+      ); // Get more candidates
 
       // Filter by adaptive threshold
       results = results.filter((r) => r.similarity >= adaptiveThreshold);
@@ -2651,7 +2685,7 @@ export async function suggestInAdapter(
       // Stage 1.7: FTS5 hybrid merge (Haiku Memory Layer)
       {
         try {
-          const ftsResults = await fts5Search(adapter, userQuestion, rerankPoolLimit * 2);
+          const ftsResults = await fts5Search(adapter, userQuestion, rerankPoolLimit * 2, kind);
           if (ftsResults.length > 0) {
             // Normalize FTS5 ranks (BM25 returns negative values, closer to 0 = better)
             const maxRank = Math.max(...ftsResults.map((r) => Math.abs(r.rank)));
@@ -2680,8 +2714,8 @@ export async function suggestInAdapter(
                 const stmt = adapter.prepare(
                   'SELECT * FROM decisions WHERE id = ? AND superseded_by IS NULL'
                 );
-                const decision = stmt.get(id) as DecisionRecord | undefined;
-                if (decision) {
+                const decision = stmt.get(id) as (DecisionRecord & { kind?: string }) | undefined;
+                if (decision && (kind === undefined || decision.kind === kind)) {
                   results.push({
                     ...decision,
                     similarity: fts5Weight * ftsScore, // Only FTS5 score component
@@ -2745,16 +2779,22 @@ export async function suggestInAdapter(
       // Build LIKE query for each keyword
       const likeConditions = keywords.map(() => '(topic LIKE ? OR decision LIKE ?)').join(' OR ');
       const likeParams = keywords.flatMap((k) => [`%${k}%`, `%${k}%`]);
+      const kindClause = kind === undefined ? '' : 'AND kind = ?';
 
       const stmt = adapter.prepare(`
         SELECT * FROM decisions
         WHERE ${likeConditions}
         AND superseded_by IS NULL
+        ${kindClause}
         ORDER BY created_at DESC
         LIMIT ?
       `);
 
-      const rows = (await stmt.all(...likeParams, rerankPoolLimit)) as DecisionRecord[];
+      const rows = (await stmt.all(
+        ...likeParams,
+        ...(kind === undefined ? [] : [kind]),
+        rerankPoolLimit
+      )) as DecisionRecord[];
       results = rows.map((row: DecisionRecord) => ({
         ...row,
         similarity: 0.75, // Assign moderate similarity for keyword matches
@@ -2795,6 +2835,7 @@ export async function suggestInAdapter(
       created_at: r.created_at,
       event_date: r.event_date ?? null,
       event_datetime: r.event_datetime ?? null,
+      kind: (r as DecisionRecord & { kind?: string }).kind ?? 'decision',
       // Recency metadata (NEW - Gaussian Decay)
       recency_score: r.recency_score,
       recency_age_days: r.recency_age_days,
@@ -2933,6 +2974,7 @@ Example: { "ranking": [2, 0, 4, 1, 3] } means 3rd is most relevant, then 1st, th
 export interface ListDecisionsOptions {
   limit?: number;
   format?: 'json' | 'markdown';
+  kind?: MemoryKind;
   scopes?: Array<{ kind: string; id: string }>;
   /**
    * Exact ledger read: every decision whose topic starts with this string, superseded rows
@@ -2959,8 +3001,10 @@ export async function listDecisionsInAdapter(
     const topicPrefix = typeof options.topicPrefix === 'string' ? options.topicPrefix.trim() : '';
     // A prefix read keeps superseded rows: they are the item's earlier rounds.
     const currency = topicPrefix ? '' : 'AND d.superseded_by IS NULL';
+    const kindClause = options.kind === undefined ? '' : 'AND d.kind = ?';
     const prefixClause = topicPrefix ? "AND d.topic LIKE ? ESCAPE '\\'" : '';
     const prefixParams = topicPrefix ? [topicPrefixLikePattern(topicPrefix)] : [];
+    const kindParams = options.kind === undefined ? [] : [options.kind];
 
     if (options.scopes && options.scopes.length > 0) {
       // Scope-filtered query: JOIN memory_scope_bindings + memory_scopes
@@ -2973,21 +3017,23 @@ export async function listDecisionsInAdapter(
         JOIN memory_scope_bindings msb ON msb.memory_id = d.id
         WHERE msb.scope_id IN (${placeholders})
           ${currency}
+          ${kindClause}
           ${prefixClause}
         ORDER BY COALESCE(d.event_datetime, d.created_at) DESC, d.created_at DESC
         LIMIT ?
       `);
-      decisions = await stmt.all(...scopeIds, ...prefixParams, limit);
+      decisions = await stmt.all(...scopeIds, ...kindParams, ...prefixParams, limit);
     } else {
       const stmt = adapter.prepare(`
         SELECT d.* FROM decisions d
         WHERE 1 = 1
           ${currency}
+          ${kindClause}
           ${prefixClause}
         ORDER BY COALESCE(d.event_datetime, d.created_at) DESC, d.created_at DESC
         LIMIT ?
       `);
-      decisions = await stmt.all(...prefixParams, limit);
+      decisions = await stmt.all(...kindParams, ...prefixParams, limit);
     }
 
     if (format === 'markdown') {

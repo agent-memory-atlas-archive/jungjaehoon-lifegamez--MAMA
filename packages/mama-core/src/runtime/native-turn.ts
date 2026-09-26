@@ -387,6 +387,22 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
 
   constructor(private readonly host: NativeSessionHost<TToolContext>) {}
 
+  /** State the next native turn will observe without claiming or mutating the session. */
+  isNewThread(
+    request: Pick<
+      NativeTurnRequest,
+      'sessionKey' | 'freshSession' | 'resumeSession' | 'cliSessionId'
+    > = {}
+  ): boolean {
+    if (request.freshSession === true) return true;
+    if (request.cliSessionId !== undefined) {
+      return request.resumeSession === undefined ? true : !request.resumeSession;
+    }
+    const sessionKey =
+      request.sessionKey ?? this.host.turnPolicy(request as NativeTurnRequest).channelKey;
+    return !this.host.sessionPool.hasActiveSession(sessionKey);
+  }
+
   /** Use the current turn's authority. Steering cannot replace its policy or open a new turn. */
   async steer(
     content: string,

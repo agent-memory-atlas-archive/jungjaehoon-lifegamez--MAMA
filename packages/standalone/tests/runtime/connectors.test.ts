@@ -312,10 +312,11 @@ describe('connector runtime', () => {
       const row = mailbox.claimNext();
       expect(row).not.toBeNull();
       expect(row?.kind).toBe('source_delta');
-      const delivery = createStimulusDelivery({});
+      const delivery = createStimulusDelivery({ lessonResolver: async () => [] });
       const reads: string[] = [];
       const context: NativeDeliveryContext = {
         nativeInputId: 'native-input',
+        isNewThread: () => false,
         resultForReceipt: () => null,
         run: async (content): Promise<NativeTurnResult> => {
           const text = content[0]?.type === 'text' ? (content[0].text ?? '') : '';

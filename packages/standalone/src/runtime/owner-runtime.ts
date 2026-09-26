@@ -4,6 +4,7 @@ import {
   createKnowledge,
   failModelRun,
   generateEmbedding,
+  recallMemory,
   startRuntime,
   type Knowledge,
   type KnowledgeOptions,
@@ -228,6 +229,16 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       });
     }
     delivery = createStimulusDelivery({
+      lessonResolver: async (query) => {
+        const bundle = await recallMemory(database.adapter, query, {
+          kind: 'lesson',
+          scopes: [...options.scopes],
+          limit: 3,
+          includeRelated: false,
+          skipGraphExpansion: true,
+        });
+        return bundle.memories;
+      },
       ...(options.onOwnerResult === undefined ? {} : { onOwnerResult: options.onOwnerResult }),
       ...(options.onSourceResult === undefined ? {} : { onSourceResult: options.onSourceResult }),
       ...(options.onScheduledNoop === undefined

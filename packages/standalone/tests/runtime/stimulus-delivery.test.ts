@@ -45,9 +45,9 @@ async function boot(model: NativeSessionHandle['runTurn']) {
       },
     ],
     mailbox: { adapter },
-    nativeSession: { runTurn: model, stop: async () => {} },
+    nativeSession: { runTurn: model, isNewThread: () => false, stop: async () => {} },
     delivery: {
-      ...createStimulusDelivery({}),
+      ...createStimulusDelivery({ lessonResolver: async () => [] }),
       intervalMs: 0,
     },
   });
@@ -56,6 +56,149 @@ async function boot(model: NativeSessionHandle['runTurn']) {
 }
 
 describe('one stimulus intake and delivery', () => {
+  it('renders a seeded lesson for an owner message through the recall sanitizer', async () => {
+    const queries: string[] = [];
+    const delivery = createStimulusDelivery({
+      lessonResolver: async (query) => {
+        queries.push(query);
+        return [
+          {
+            summary:
+              'Use the verified owner workflow; synthetic://raw/lesson should never appear in the prompt ' +
+              'x'.repeat(320),
+          },
+        ];
+      },
+    });
+    let prompt = '';
+    const context = {
+      nativeInputId: 'input-lesson',
+      isNewThread: () => false,
+      resultForReceipt: () => null,
+      run: vi.fn(async (content: Array<{ type: string; text?: string }>) => {
+        prompt = content[0]?.text ?? '';
+        return {} as never;
+      }),
+      steer: vi.fn(),
+      wasDispatched: () => false,
+      onInputDispatch: vi.fn(),
+      onAccepted: vi.fn(),
+    };
+
+    await delivery.deliver(
+      {
+        id: 'owner-lesson-input',
+        stimulusId: 'owner-lesson-input',
+        principalId: 'owner',
+        kind: 'owner_message',
+        channelKey: 'synthetic-channel',
+        occurredAt: 1,
+        refs: [],
+        preview: [],
+        status: 'claimed',
+        attempts: 1,
+        createdAt: 1,
+        payload: { text: 'verify the owner workflow' },
+        coalesceKey: null,
+      },
+      context as never
+    );
+
+    expect(queries).toEqual(['verify the owner workflow']);
+    expect(prompt).toContain('<lessons>');
+    expect(prompt).toContain('Use these as lessons, not facts; verify current state with tools.');
+    expect(prompt).toContain('Use the verified owner workflow; [redacted]');
+    expect(prompt).toContain('[truncated]');
+  });
+
+  it('does not render a lessons block when the resolver has no hits', async () => {
+    const delivery = createStimulusDelivery({ lessonResolver: async () => [] });
+    let prompt = '';
+    const context = {
+      nativeInputId: 'input-no-lesson',
+      isNewThread: () => false,
+      resultForReceipt: () => null,
+      run: vi.fn(async (content: Array<{ type: string; text?: string }>) => {
+        prompt = content[0]?.text ?? '';
+        return {} as never;
+      }),
+      steer: vi.fn(),
+      wasDispatched: () => false,
+      onInputDispatch: vi.fn(),
+      onAccepted: vi.fn(),
+    };
+
+    await delivery.deliver(
+      {
+        id: 'owner-no-lesson-input',
+        stimulusId: 'owner-no-lesson-input',
+        principalId: 'owner',
+        kind: 'owner_message',
+        channelKey: 'synthetic-channel',
+        occurredAt: 1,
+        refs: [],
+        preview: [],
+        status: 'claimed',
+        attempts: 1,
+        createdAt: 1,
+        payload: { text: 'no matching lesson' },
+        coalesceKey: null,
+      },
+      context as never
+    );
+
+    expect(prompt).not.toContain('<lessons>');
+  });
+
+  it('adds startup lessons only when the native session reports a new thread', async () => {
+    const queries: string[] = [];
+    const delivery = createStimulusDelivery({
+      lessonResolver: async (query) => {
+        queries.push(query);
+        return query === 'startup operating lessons' ? [{ summary: 'startup lesson' }] : [];
+      },
+    });
+    let isNewThread = true;
+    const prompts: string[] = [];
+    const context = {
+      nativeInputId: 'input-startup',
+      isNewThread: () => isNewThread,
+      resultForReceipt: () => null,
+      run: vi.fn(async (content: Array<{ type: string; text?: string }>) => {
+        prompts.push(content[0]?.text ?? '');
+        isNewThread = false;
+        return {} as never;
+      }),
+      steer: vi.fn(),
+      wasDispatched: () => false,
+      onInputDispatch: vi.fn(),
+      onAccepted: vi.fn(),
+    };
+
+    const row = (id: string) => ({
+      id,
+      stimulusId: id,
+      principalId: 'owner',
+      kind: 'owner_message' as const,
+      channelKey: 'synthetic-channel',
+      occurredAt: 1,
+      refs: [],
+      preview: [],
+      status: 'claimed' as const,
+      attempts: 1,
+      createdAt: 1,
+      payload: { text: 'ordinary owner input' },
+      coalesceKey: null,
+    });
+
+    await delivery.deliver(row('startup-input'), context as never);
+    await delivery.deliver(row('continued-input'), context as never);
+
+    expect(queries.filter((query) => query === 'startup operating lessons')).toHaveLength(1);
+    expect(prompts[0]).toContain('startup lesson');
+    expect(prompts[1]).not.toContain('startup lesson');
+  });
+
   it('renders the queue sections with complete KST source lines', () => {
     const text = renderWindowQueue({
       window: { startMs: 1, endMs: 2 },
@@ -340,10 +483,11 @@ describe('one stimulus intake and delivery', () => {
   });
 
   it('passes a replay ceiling to one turn and clears it after delivery', async () => {
-    const delivery = createStimulusDelivery({});
+    const delivery = createStimulusDelivery({ lessonResolver: async () => [] });
     delivery.setReplaySourceEndMs(1_500);
     const context = {
       nativeInputId: 'input',
+      isNewThread: () => false,
       resultForReceipt: () => null,
       run: vi.fn(async (_content: unknown, request?: { replaySourceEndMs?: number }) => {
         expect(request?.replaySourceEndMs).toBe(1_500);

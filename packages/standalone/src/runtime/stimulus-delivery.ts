@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { canonicalizeJSON } from '@jungjaehoon/mama-core/canonicalize';
+import { sanitizeRecallText } from '@jungjaehoon/mama-core';
 import type { JsonValue } from '@jungjaehoon/mama-core/knowledge';
 import type { ContentBlock } from '@jungjaehoon/mama-core/runtime/drivers/types';
 import type { MailboxRow, Stimulus } from '@jungjaehoon/mama-core/runtime/mailbox';
@@ -48,6 +49,7 @@ export interface StimulusIntake {
 }
 
 export interface StimulusDeliveryOptions {
+  lessonResolver: LessonResolver;
   onOwnerResult?: (row: MailboxRow, result: NativeTurnResult) => void | Promise<void>;
   onSourceResult?: (row: MailboxRow, result: NativeTurnResult) => void | Promise<void>;
   onScheduledNoop?: (row: MailboxRow) => void | Promise<void>;
@@ -55,6 +57,12 @@ export interface StimulusDeliveryOptions {
   onDelivered?: (row: MailboxRow) => void | Promise<void>;
   onFailed?: (row: MailboxRow, error: unknown) => void | Promise<void>;
 }
+
+export interface LessonHit {
+  summary: string;
+}
+
+export type LessonResolver = (query: string) => Promise<readonly LessonHit[]>;
 
 export interface ReplayClockDelivery extends StimulusDelivery {
   setReplaySourceEndMs(value: number | undefined): void;
@@ -365,9 +373,45 @@ function boundedStimulus(row: MailboxRow): string {
   return lines.join('\n');
 }
 
-/** The turn carries only the stimulus; the standing text is the session's system prompt. */
-function assembledContent(row: MailboxRow): ContentBlock[] {
-  return [{ type: 'text', text: boundedStimulus(row) }];
+function payloadText(payload: JsonValue | undefined): string {
+  if (typeof payload === 'string') return payload;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return '';
+  const text = payload.text;
+  if (typeof text === 'string') return text;
+  return JSON.stringify(payload);
+}
+
+function lessonQuery(row: MailboxRow): string {
+  if (row.kind === 'owner_message') return payloadText(row.payload);
+  if (row.kind === 'source_delta') return messageLines(row.payload)?.join('\n') ?? '';
+  return payloadText(row.payload);
+}
+
+const LESSONS_INSTRUCTION = 'Use these as lessons, not facts; verify current state with tools.';
+const STARTUP_LESSON_QUERY = 'startup operating lessons';
+
+function renderLessons(hits: readonly LessonHit[]): string {
+  const summaries = hits
+    .slice(0, 3)
+    .map((hit) => sanitizeRecallText(hit.summary.trim()))
+    .filter((summary): summary is string => Boolean(summary));
+  if (summaries.length === 0) return '';
+  return [
+    '<lessons>',
+    LESSONS_INSTRUCTION,
+    ...summaries.map((summary) => `- ${summary}`),
+    '</lessons>',
+  ].join('\n');
+}
+
+/** The turn carries only the stimulus and recalled lessons; standing text is the session prompt. */
+function assembledContent(row: MailboxRow, lessonBlocks: readonly string[]): ContentBlock[] {
+  return [
+    {
+      type: 'text',
+      text: [boundedStimulus(row), ...lessonBlocks].join('\n\n'),
+    },
+  ];
 }
 
 /** Deliver every model-bearing kind through one serialized owner session. */
@@ -394,7 +438,14 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
         ) {
           throw new Error('Stimulus kind is missing; no owner turn can be assembled');
         }
-        const result = await context.run(assembledContent(row), {
+        const lessonBlocks: string[] = [];
+        if (context.isNewThread(OWNER_RUNTIME_SESSION_KEY)) {
+          const startupLessons = renderLessons(await options.lessonResolver(STARTUP_LESSON_QUERY));
+          if (startupLessons) lessonBlocks.push(startupLessons);
+        }
+        const currentLessons = renderLessons(await options.lessonResolver(lessonQuery(row)));
+        if (currentLessons) lessonBlocks.push(currentLessons);
+        const result = await context.run(assembledContent(row, lessonBlocks), {
           sessionKey: OWNER_RUNTIME_SESSION_KEY,
           source: row.kind,
           channelId: row.channelKey,

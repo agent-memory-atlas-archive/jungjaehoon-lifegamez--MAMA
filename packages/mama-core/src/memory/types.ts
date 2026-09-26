@@ -111,6 +111,7 @@ export interface MemoryRecord {
 }
 
 export type RecallMemoryOptions = SearchQualityOptions & {
+  kind?: MemoryKind;
   scopes?: MemoryScopeRef[];
   includeProfile?: boolean;
   includeHistory?: boolean;

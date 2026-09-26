@@ -112,6 +112,8 @@ export interface NativeInvocationOptions {
 export interface NativeSessionHandle {
   /** One request to the native harness; model/tool iteration remains inside that harness. */
   runTurn?(content: ContentBlock[], request?: NativeInvocationOptions): Promise<NativeTurnResult>;
+  /** Read the runner's next-thread state without claiming or consuming a turn. */
+  isNewThread?(sessionKey: string): boolean;
   /** Add input to the exact active turn; the runtime journals this input separately. */
   steer?(
     content: string,
@@ -155,6 +157,8 @@ export class StimulusQuarantine extends Error {
  */
 export interface NativeDeliveryContext {
   nativeInputId: string;
+  /** Read the native runner's explicit next-thread state before assembling content. */
+  isNewThread(sessionKey: string): boolean;
   /** Read the one final result for a shared turn under this input's principal. */
   resultForReceipt(receipt: NativeInputReceipt): NativeTurnResultRecord | null;
   run<TRequest extends object>(
@@ -537,6 +541,12 @@ export async function startRuntime(options: StartRuntimeOptions): Promise<Runtim
       let nativeSteer: Promise<NativeInputReceipt> | null = null;
       const context: NativeDeliveryContext = {
         nativeInputId: inputId,
+        isNewThread: (sessionKey) => {
+          if (!options.nativeSession?.isNewThread) {
+            throw new Error('Native session new-thread signal is not configured');
+          }
+          return options.nativeSession.isNewThread(sessionKey);
+        },
         resultForReceipt: (receipt) =>
           mailbox!.nativeInputs.resultForReceipt(receipt, row.principalId),
         onInputDispatch: (input) => mailbox!.nativeInputs.dispatch(row.id, input),

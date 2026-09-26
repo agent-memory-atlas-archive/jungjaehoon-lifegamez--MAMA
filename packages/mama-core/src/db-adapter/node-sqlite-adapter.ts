@@ -258,6 +258,7 @@ export class NodeSQLiteAdapter implements DatabaseInstance {
   private db: NodeSQLiteConnection | null = null;
   private vectorCache: Map<number, Float32Array> = new Map();
   private topicCache: Map<number, string> = new Map();
+  private kindCache: Map<number, string> = new Map();
   // Effective status (status, falling back to outcome) per decision rowid. Used as a
   // search-time optimization only - recallMemory's post-filter stays the authority
   // (this cache can lag a status UPDATE until the next reloadVectorCache).
@@ -352,21 +353,26 @@ export class NodeSQLiteAdapter implements DatabaseInstance {
     if (!this.isConnected()) {
       throw new Error('Database not connected');
     }
-    if (!this.decisionsColumnInfoChecked) {
-      this.refreshDecisionColumnInfo();
-    }
+    const decisionCols = this.refreshDecisionColumnInfo();
+    const kindSelect = decisionCols.has('kind') ? 'kind' : 'NULL AS kind';
     const cacheSelect = this.decisionsHasStatusColumns
-      ? 'SELECT topic, status, outcome FROM decisions WHERE rowid = ?'
-      : 'SELECT topic, NULL AS status, NULL AS outcome FROM decisions WHERE rowid = ?';
+      ? `SELECT topic, ${kindSelect}, status, outcome FROM decisions WHERE rowid = ?`
+      : `SELECT topic, ${kindSelect}, NULL AS status, NULL AS outcome FROM decisions WHERE rowid = ?`;
     const row = this.prepare(cacheSelect).get(rowid) as
-      | { topic: string; status: string | null; outcome: string | null }
+      | { topic: string; kind: string | null; status: string | null; outcome: string | null }
       | undefined;
     if (!row) {
       this.statusCache.delete(rowid);
       this.topicCache.delete(rowid);
+      this.kindCache.delete(rowid);
       return;
     }
     this.topicCache.set(rowid, row.topic);
+    if (row.kind) {
+      this.kindCache.set(rowid, row.kind);
+    } else {
+      this.kindCache.delete(rowid);
+    }
     const effectiveStatus = row.status || row.outcome;
     if (effectiveStatus) {
       this.statusCache.set(rowid, effectiveStatus);
@@ -399,6 +405,7 @@ export class NodeSQLiteAdapter implements DatabaseInstance {
     if (tableCheck.length === 0) {
       this.vectorCache.clear();
       this.topicCache.clear();
+      this.kindCache.clear();
       this.statusCache.clear();
       return;
     }
@@ -425,20 +432,26 @@ export class NodeSQLiteAdapter implements DatabaseInstance {
     // A missing column just leaves statusCache empty; the api-layer post-filter
     // remains the authority.
     this.topicCache.clear();
+    this.kindCache.clear();
     this.statusCache.clear();
     const decisionCols = this.refreshDecisionColumnInfo();
+    const kindSelect = decisionCols.has('kind') ? 'kind' : 'NULL AS kind';
     const statusSelect = decisionCols.has('status') ? 'status' : 'NULL AS status';
     const outcomeSelect = decisionCols.has('outcome') ? 'outcome' : 'NULL AS outcome';
     const topicRows = this.db
-      .prepare(`SELECT rowid, topic, ${statusSelect}, ${outcomeSelect} FROM decisions`)
+      .prepare(
+        `SELECT rowid, topic, ${kindSelect}, ${statusSelect}, ${outcomeSelect} FROM decisions`
+      )
       .all() as Array<{
       rowid: number;
       topic: string;
+      kind: string | null;
       status: string | null;
       outcome: string | null;
     }>;
     for (const row of topicRows) {
       this.topicCache.set(row.rowid, row.topic);
+      if (row.kind) this.kindCache.set(row.rowid, row.kind);
       const effectiveStatus = row.status || row.outcome;
       if (effectiveStatus) {
         this.statusCache.set(row.rowid, effectiveStatus);
@@ -496,6 +509,7 @@ export class NodeSQLiteAdapter implements DatabaseInstance {
     const depth = this.transactionDepth;
     const vectorSnapshot = new Map(this.vectorCache);
     const topicSnapshot = new Map(this.topicCache);
+    const kindSnapshot = new Map(this.kindCache);
     const statusSnapshot = new Map(this.statusCache);
     const savepoint = `mama_nested_${depth}`;
     this.exec(
@@ -520,6 +534,7 @@ export class NodeSQLiteAdapter implements DatabaseInstance {
     } catch (error) {
       this.vectorCache = vectorSnapshot;
       this.topicCache = topicSnapshot;
+      this.kindCache = kindSnapshot;
       this.statusCache = statusSnapshot;
       this.transactionDepth = depth;
       let cleanupError: unknown;
@@ -552,7 +567,8 @@ export class NodeSQLiteAdapter implements DatabaseInstance {
     embedding: Float32Array | number[],
     limit = 5,
     topicPrefix?: string,
-    excludeStatuses?: readonly string[]
+    excludeStatuses?: readonly string[],
+    kind?: string
   ): VectorSearchResult[] | null {
     if (!this.isConnected()) {
       throw new Error('Database not connected');
@@ -575,6 +591,10 @@ export class NodeSQLiteAdapter implements DatabaseInstance {
         const topic = this.topicCache.get(rowid);
         if (!topic || !topic.startsWith(topicPrefix)) continue;
       }
+
+      // Pre-filter by memory kind so unrelated records cannot consume the top-K
+      // candidate slots before the recall layer applies its requested kind.
+      if (kind !== undefined && this.kindCache.get(rowid) !== kind) continue;
 
       // Pre-filter by effective status so superseded history does not occupy
       // top-K slots (the api-layer post-filter remains the authority)

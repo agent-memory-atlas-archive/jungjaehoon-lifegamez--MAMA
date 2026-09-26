@@ -8,6 +8,7 @@
  */
 
 import type { DatabaseInstance, DecisionRecord } from '../db-manager.js';
+import type { MemoryKind } from '../memory/types.js';
 
 /**
  * Brute-force cosine similarity search over stored embeddings.
@@ -21,6 +22,7 @@ import type { DatabaseInstance, DecisionRecord } from '../db-manager.js';
  * @param threshold - Minimum similarity
  * @param topicPrefix - Optional topic prefix pre-filter
  * @param excludeStatuses - Optional decision statuses to pre-filter out
+ * @param kind - Optional memory kind pre-filter
  */
 export async function vectorSearch(
   adapter: DatabaseInstance,
@@ -28,13 +30,15 @@ export async function vectorSearch(
   limit = 5,
   threshold = 0.7,
   topicPrefix?: string,
-  excludeStatuses?: readonly string[]
+  excludeStatuses?: readonly string[],
+  kind?: MemoryKind
 ): Promise<DecisionRecord[]> {
   const results = await adapter.vectorSearch(
     queryEmbedding,
     limit * 3,
     topicPrefix,
-    excludeStatuses
+    excludeStatuses,
+    kind
   );
 
   if (!results || results.length === 0) {
@@ -81,7 +85,8 @@ export async function vectorSearch(
 export async function fts5Search(
   adapter: DatabaseInstance,
   query: string,
-  limit = 10
+  limit = 10,
+  kind?: MemoryKind
 ): Promise<{ id: string; rank: number }[]> {
   // An absent FTS table is a real answer - no rows. A failing adapter is not,
   // so this lookup is left unguarded and its errors reach the caller.
@@ -91,13 +96,18 @@ export async function fts5Search(
   if (!tableCheck) return [];
 
   // Query execution - let errors propagate to the caller
+  const kindClause = kind === undefined ? '' : 'AND d.kind = ?';
   const stmt = adapter.prepare(`
     SELECT d.id, rank
     FROM decisions_fts
     JOIN decisions d ON decisions_fts.rowid = d.rowid
     WHERE decisions_fts MATCH ?
+      ${kindClause}
     ORDER BY rank
     LIMIT ?
   `);
-  return stmt.all(query, limit) as { id: string; rank: number }[];
+  return (kind === undefined ? stmt.all(query, limit) : stmt.all(query, kind, limit)) as {
+    id: string;
+    rank: number;
+  }[];
 }

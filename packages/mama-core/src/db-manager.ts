@@ -71,7 +71,8 @@ export interface DatabaseInstance extends DatabaseAdapter {
     embedding: Float32Array | number[],
     limit: number,
     topicPrefix?: string,
-    excludeStatuses?: readonly string[]
+    excludeStatuses?: readonly string[],
+    kind?: string
   ) => Promise<VectorSearchResult[] | null> | VectorSearchResult[] | null;
   reloadVectorCache?: () => void;
   refreshDecisionStatusCache?: (rowid: number) => void;

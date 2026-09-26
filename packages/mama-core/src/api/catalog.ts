@@ -528,6 +528,11 @@ const memorySearchSchema: ActionSchemaObject = {
       description: 'Memory text to recall, e.g. "release decision".',
     },
     limit: { type: 'integer', minimum: 1, description: 'Maximum memory results, e.g. 5.' },
+    kind: {
+      type: 'string',
+      enum: MEMORY_KINDS,
+      description: 'Optional memory record kind filter, e.g. "lesson".',
+    },
     scopes: {
       type: 'array',
       description: 'Optional admitted scope filter, e.g. [{"kind":"project","id":"project_123"}].',
@@ -1116,6 +1121,7 @@ export function coreActionRegistrations(
         const query = input as {
           query?: string;
           limit?: number;
+          kind?: (typeof MEMORY_KINDS)[number];
           scopes?: MemoryScopeRef[];
           threshold?: number;
           strict?: boolean;
@@ -1137,6 +1143,7 @@ export function coreActionRegistrations(
         if (typeof query.query !== 'string' || query.query.trim().length === 0) {
           const rows = await listDecisionsInAdapter(adapter, {
             limit: query.limit,
+            kind: query.kind,
             topicPrefix: query.topicPrefix,
             scopes,
           });
@@ -1145,6 +1152,7 @@ export function coreActionRegistrations(
         }
         const result = (await suggestInAdapter(adapter, query.query, {
           limit: query.limit,
+          kind: query.kind,
           threshold: query.threshold,
           strict: query.strict,
           strictness: query.strictness,

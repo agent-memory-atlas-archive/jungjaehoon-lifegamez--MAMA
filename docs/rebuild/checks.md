@@ -535,3 +535,31 @@ The implementation writes raw/index data during import only. Replay is the owner
   SSR1" and "<task-title-1>" rank their items first; a Korean transliteration shares no token and returns
   nothing, so the agent searches in the title's script (it already translated to katakana in C2 and
   failed only on the space). Standalone api+runtime 134/134, typecheck clean. Tests use synthetic names.
+- 2026-09-26 12:15 KST: R8/R9 live (daemon restarted). "<asset-2> SSR1 어떻게 됐지?" 18 s (C2 was 56 s):
+  the Korean query shared only "SSR1" (tied rows), the agent picked the item from them and read
+  view=detail — FIX, month-end on 9/17 13:56, assignee, due 9/30. "어떤 피드백?" 18 s: internal review
+  points, the client's side-hair note with its proposed mesh fix, the resubmission and FIX, and the 9/14
+  PDF whose items are not in the ledger — in order, no merged rounds. No ids. Two refusals the agent fixed
+  in one step (text_limit over 2000; a memory.save scope outside its access). The answer used Markdown
+  bold although TELEGRAM_FORMAT_GUIDE is in the standing text; the owner corrected it and a lesson was
+  saved in that turn (R2 working). R3 is what makes such a lesson reach the next session.
+- 2026-09-26 12:35 KST: owner asked the agent to download and read the 9/14 feedback PDF; it could not.
+  The file was a Chatwork attachment in the feedback message itself (9/14 15:28,
+  [download:<file id>] <customer-A>\_<file-1>.zip); Kagemusha's forward_feedback got the raw body
+  with that tag and forwarded the ZIP. MAMA lost the tag: the replay imported Kagemusha's
+  channel_messages text (tags stripped) — 0 of 156 Chatwork raw items carry a download tag — so the
+  agent concluded "the Chatwork message has no file" (false), looked on Trello instead, tried the Trello
+  attachment URL with Codex's built-in web tool without auth (Internal Error), and asked the owner to
+  upload it. Even with the id it has no download action and no shell. Kagemusha itself failed the same
+  way on 9/14 until the owner corrected it and it gained chatwork_file_download. Fix belongs to R6:
+  the attachment descriptor must survive import and live collection (Chatwork download tags from the raw
+  body, Slack file ids), then the download action, the shell to open the ZIP/PDF, and the file send.
+- 2026-09-26 12:50 KST: owner-reports R3 (Codex implemented; supervisor removed a dead empty-scope
+  guard). Core recall and memory.search take `kind`, applied in the vector and FTS candidate queries
+  before the limit; vector hits keep their stored kind (they were all stamped "decision"). Each owner
+  turn now recalls up to three lessons under the owner scopes with the stimulus text and appends a
+  <lessons> block ("Use these as lessons, not facts; verify current state with tools.", Kagemusha's
+  sentence); the first turn of a new native thread also gets the top three for startup lessons, from
+  an explicit runner signal. Core 525/525 (memory, knowledge, api, runtime), standalone 138/138,
+  typechecks clean. Live proof pending: restart, then ask for a full report — the report-format and
+  Telegram-formatting lessons must show in the stimulus and be followed.

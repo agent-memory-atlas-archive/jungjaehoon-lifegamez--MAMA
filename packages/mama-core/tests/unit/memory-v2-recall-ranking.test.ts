@@ -131,7 +131,8 @@ describe('memory v2 recall ranking', () => {
       20,
       0.6,
       undefined,
-      expect.arrayContaining(['superseded', 'quarantined', 'contradicted', 'stale'])
+      expect.arrayContaining(['superseded', 'quarantined', 'contradicted', 'stale']),
+      undefined
     );
     expect(bundle.memories).toEqual([]);
     expect((bundle as { fused_hits?: unknown[] }).fused_hits).toEqual([]);
