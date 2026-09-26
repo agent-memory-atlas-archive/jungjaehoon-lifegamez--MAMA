@@ -938,3 +938,12 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Evidence: package manifests, core exports/migrations, MCP tool advertising, plugin hooks and current check-log entries were compared; an independent read-only review corrected the core cache-default description.
 - Verification: 366 local/repository links across 47 files pass path and heading-anchor checks; Git-ignored local drafts and three external font URLs are outside this check. Website CSS, scripts, layout structure and images are preserved; released changelog entries are byte-identical. Added-line privacy patterns and diff whitespace checks pass.
 - Remaining: this documentation pass does not close live owner acceptance, fresh-machine onboarding or the D6 history-wide privacy gate. Historical checks are unchanged except the requested W0 back-reference; no runtime test, deployment or commit.
+- 2026-09-27 04:00 KST: D6 privacy gate. Term list built from the live data (authors, channel names and
+  ids, Trello board and card tokens, work titles, secrets in auth.env, tunnel hostnames; 636 terms) plus
+  the names seen in this session. Found only in the rebuild logs and one core test: customer, asset and
+  place names and a customer project code. Replaced with placeholders in the tree and in every commit on
+  the branch (git filter-repo limited to origin/main..HEAD, messages included; a local backup branch
+  kept and not pushed). Re-scan: 0 sensitive terms (case-insensitive) in the tree, added lines or
+  messages; gitleaks on 92 branch commits: no leaks; email/phone/id patterns only synthetic test values.
+  Full root build, typecheck, lint and tests pass after the rewrite (core 894, standalone 735, MCP 139,
+  plugin 166). The PR body scans clean.
