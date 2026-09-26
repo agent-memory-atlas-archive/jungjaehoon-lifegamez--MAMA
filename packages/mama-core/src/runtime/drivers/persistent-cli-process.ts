@@ -41,6 +41,7 @@ import {
   type ToolUseBlock,
 } from './types.js';
 import * as debugLogger from '@jungjaehoon/mama-core/debug-logger';
+import { claudeConfiguredSecrets, SecretRedactingStream } from './cli-secret-redaction.js';
 import { formatCliArgsForLog } from './cli-arg-redaction.js';
 
 const { DebugLogger } = debugLogger as {
@@ -255,6 +256,9 @@ interface BackgroundAgentState {
   completed: boolean;
   finalText: string;
   /** The spawning turn's callback; `currentCallbacks` is cleared when that turn ends. */
+  onToolUse?: PromptCallbacks['onToolUse'];
+  onToolComplete?: PromptCallbacks['onToolComplete'];
+  nativeItems: Map<string, { name: string; completed: boolean }>;
   onSubagentStart?: PromptCallbacks['onSubagentStart'];
   /** The spawning turn's follow-up sink: the CLI's own later answer goes back to that request. */
   onFollowUp?: PromptCallbacks['onFollowUp'];
@@ -470,6 +474,15 @@ export class PersistentClaudeProcess extends EventEmitter {
     if (!existsSync(headFile)) {
       writeFileSync(headFile, 'ref: refs/heads/main\n');
     }
+    const stderrRedactor = new SecretRedactingStream(
+      claudeConfiguredSecrets(this.options.mcpConfigPath, {
+        ...(this.options.processEnv ?? process.env),
+        ...this.options.env,
+      }),
+      (safe) => {
+        if (safe.trim()) console.error(`[PersistentCLI:stderr] ${safe.trim()}`);
+      }
+    );
     this.process = spawn('claude', args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       // ⚠️ NEVER spawn in the user's home directory — it breaks agent isolation.
@@ -482,8 +495,12 @@ export class PersistentClaudeProcess extends EventEmitter {
 
     // Set up event handlers
     this.process.stdout?.on('data', (chunk) => this.handleStdout(chunk));
-    this.process.stderr?.on('data', (chunk) => this.handleStderr(chunk));
-    this.process.on('close', (code) => this.handleClose(code));
+    this.process.stderr?.on('data', (chunk) => stderrRedactor.write(chunk));
+    this.process.stderr?.on('end', () => stderrRedactor.end());
+    this.process.on('close', (code) => {
+      stderrRedactor.end();
+      this.handleClose(code);
+    });
     this.process.on('error', (error) => this.handleError(error));
 
     // Don't wait for init - CLI only emits it after first user message
@@ -919,11 +936,11 @@ export class PersistentClaudeProcess extends EventEmitter {
               ? event.message.content
               : []) {
               if (block.type === 'tool_result' && block.tool_use_id) {
-                this.currentCallbacks?.onToolComplete?.(
-                  'subagent',
-                  block.tool_use_id,
-                  block.is_error === true
-                );
+                const tool = child.nativeItems.get(block.tool_use_id);
+                if (tool && !tool.completed) {
+                  tool.completed = true;
+                  child.onToolComplete?.(tool.name, block.tool_use_id, block.is_error === true);
+                }
               }
             }
             break;
@@ -1116,6 +1133,9 @@ export class PersistentClaudeProcess extends EventEmitter {
       notificationSeen: false,
       completed: false,
       finalText: '',
+      onToolUse: this.currentCallbacks?.onToolUse,
+      onToolComplete: this.currentCallbacks?.onToolComplete,
+      nativeItems: new Map(),
       onSubagentStart: this.currentCallbacks?.onSubagentStart,
       onFollowUp: this.currentCallbacks?.onFollowUp,
     };
@@ -1243,7 +1263,9 @@ export class PersistentClaudeProcess extends EventEmitter {
       } else if (block.type === 'tool_use') {
         // Observed, never counted as a parent tool use awaiting a host result. The call
         // itself already reached the MCP server under the parent's context key.
-        this.currentCallbacks?.onToolUse?.(block.name ?? 'unknown', {
+        if (!block.id || child.nativeItems.has(block.id)) continue;
+        child.nativeItems.set(block.id, { name: block.name ?? 'unknown', completed: false });
+        child.onToolUse?.(block.name ?? 'unknown', {
           ...(block.input ?? {}),
           nativeToolUseId: block.id,
           subagentItemId: child.itemId,
@@ -1321,6 +1343,15 @@ export class PersistentClaudeProcess extends EventEmitter {
   ): void {
     if (state.completed) return;
     state.completed = true;
+    for (const [callId, item] of state.nativeItems) {
+      if (item.completed) continue;
+      item.completed = true;
+      try {
+        state.onToolComplete?.(item.name, callId, true, 'unknown');
+      } catch {
+        console.warn('[PersistentCLI] native observation failed');
+      }
+    }
     const emitted: ClaudeSubagentStreamEvent = {
       kind: 'completed',
       agentThreadId: state.agentId ?? state.taskId ?? state.itemId,
@@ -1396,16 +1427,6 @@ export class PersistentClaudeProcess extends EventEmitter {
     const error = new ClaudeToolStreamProtocolError(message);
     this.currentCallbacks?.onError?.(error);
     this.handleError(error);
-  }
-
-  /**
-   * Handle stderr data
-   */
-  private handleStderr(chunk: Buffer): void {
-    const text = chunk.toString().trim();
-    if (text) {
-      console.error(`[PersistentCLI:stderr] ${text}`);
-    }
   }
 
   /**

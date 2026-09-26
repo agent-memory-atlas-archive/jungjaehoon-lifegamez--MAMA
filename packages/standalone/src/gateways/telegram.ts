@@ -328,10 +328,17 @@ export class TelegramGateway extends BaseGateway {
   }
 
   private async handleMessage(message: TelegramMessage): Promise<void> {
-    if (!message.chat || !message.from || message.from.is_bot) return;
+    if (!message.chat || !message.from) return;
     const chatId = String(message.chat.id);
     const userId = String(message.from.id);
-    if (!this.ownerAllowed(chatId, userId)) return;
+    if (message.from.is_bot || !this.ownerAllowed(chatId, userId)) {
+      const chatHash = createHash('sha256').update(`chat\0${chatId}`).digest('hex');
+      const senderHash = createHash('sha256').update(`sender\0${userId}`).digest('hex');
+      console.warn(
+        `telegram message dropped reason=non_owner chat_hash=${chatHash} sender_hash=${senderHash}`
+      );
+      return;
+    }
 
     const ref = sourceMessageRef(chatId, message.message_id);
     const now = Date.now();

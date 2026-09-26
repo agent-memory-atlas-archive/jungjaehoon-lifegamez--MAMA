@@ -198,6 +198,59 @@ describe('owner Telegram attachments', () => {
     expect(attachment()).toEqual({ name: 'large.zip', error: expect.stringContaining('20 MB') });
   });
 
+  it('cancels an oversized response header before reading any attachment bytes', async () => {
+    let pulled = false;
+    let cancelled = false;
+    download.mockResolvedValue(
+      new Response(
+        new ReadableStream(
+          {
+            pull() {
+              pulled = true;
+            },
+            cancel() {
+              cancelled = true;
+            },
+          },
+          { highWaterMark: 0 }
+        ),
+        { headers: { 'content-length': '20971521' } }
+      )
+    );
+    await send({ document: { ...file, file_name: 'large.zip' } });
+    expect(attachment()).toEqual({ name: 'large.zip', error: expect.stringContaining('20 MB') });
+    expect(pulled).toBe(false);
+    expect(cancelled).toBe(true);
+    expect(readdirSync(root)).not.toContain('files');
+  });
+
+  it('cancels an underreported stream at the Telegram limit without writing a partial file', async () => {
+    let chunks = 0;
+    let cancelled = false;
+    download.mockResolvedValue(
+      new Response(
+        new ReadableStream(
+          {
+            pull(controller) {
+              if (chunks++ === 0) controller.enqueue(new Uint8Array(20 * 1024 * 1024));
+              else if (chunks === 2) controller.enqueue(new Uint8Array(1));
+              else controller.close();
+            },
+            cancel() {
+              cancelled = true;
+            },
+          },
+          { highWaterMark: 0 }
+        ),
+        { headers: { 'content-length': '1' } }
+      )
+    );
+    await send({ document: { ...file, file_name: 'large.zip' } });
+    expect(attachment()).toEqual({ name: 'large.zip', error: expect.stringContaining('20 MB') });
+    expect(cancelled).toBe(true);
+    expect(readdirSync(root)).not.toContain('files');
+  });
+
   it('redacts a bot token from download errors passed to the owner agent', async () => {
     download.mockRejectedValue(
       new Error('request failed at https://api.telegram.org/file/botfixture-token/file.bin')

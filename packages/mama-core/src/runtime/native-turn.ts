@@ -1227,9 +1227,13 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
         }
       }
 
-      nativeEffects = new NativeEffectReplayBoundary(
-        host.createNativeEffectObserver?.(toolExecutionContext)
-      );
+      let nativeObserver: NativeEffectObserver | undefined;
+      try {
+        nativeObserver = host.createNativeEffectObserver?.(toolExecutionContext);
+      } catch {
+        logger.warn('[NativeTurn] native observation setup failed');
+      }
+      nativeEffects = new NativeEffectReplayBoundary(nativeObserver);
 
       // This run's bridge is ITS OWN: the loop guards, the emergency budget, the history
       // writes and the turn observers all belong to this run. A native child gets a

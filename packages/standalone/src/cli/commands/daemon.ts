@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  fchmodSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import type { MailboxRow } from '@jungjaehoon/mama-core/runtime/mailbox';
@@ -271,6 +279,14 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
     currentStage = 'config';
     stage(logger, 'config');
     config = options.config ?? loadConfig({ path: configPath, home: options.home });
+    // launchd may have created the redirected log already; preserve its contents and tighten it.
+    mkdirSync(dirname(config.logging.file), { recursive: true });
+    const logDescriptor = openSync(config.logging.file, 'a', 0o600);
+    try {
+      fchmodSync(logDescriptor, 0o600);
+    } finally {
+      closeSync(logDescriptor);
+    }
     declareModelCache();
     paths = pathsFor(configPath, config);
     currentStage = 'isolation';

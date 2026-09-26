@@ -60,7 +60,7 @@ export function scanForSecrets(text: string): SecretScanResult {
 
 /**
  * Scan every string reachable in a memory-write input (nested objects and
- * arrays included, depth-capped): open_files arrays, scope ids, and source
+ * arrays included, container-depth-capped): open_files arrays, scope ids, and source
  * objects are persisted too and must not smuggle secrets past a top-level
  * scan (review m1).
  */
@@ -71,14 +71,19 @@ export function scanMemoryWriteInput(input: Record<string, unknown>): SecretScan
     if (value === null || value === undefined) {
       return;
     }
+    // Scan leaves of the deepest supported container too. Recallable page
+    // batches carry evidence at pages[].sourceRefs[].id (a depth-five leaf).
+    if (typeof value === 'string') {
+      texts.push(value);
+      return;
+    }
+    if (typeof value !== 'object') {
+      return;
+    }
     if (depth > 4) {
       // Fail CLOSED: an abnormally deep memory-write payload is refused, never
       // silently under-scanned (a secret below the cap must not pass as clean).
       truncated = true;
-      return;
-    }
-    if (typeof value === 'string') {
-      texts.push(value);
       return;
     }
     if (Array.isArray(value)) {
@@ -98,4 +103,23 @@ export function scanMemoryWriteInput(input: Record<string, unknown>): SecretScan
     return { clean: false, matches: ['scan-depth-limit-exceeded'], warnings: [] };
   }
   return scanForSecrets(texts.join('\n'));
+}
+
+/** Mask the same credential shapes in observations without treating hashes as tokens. */
+export function redactSecretPatterns(text: string): string {
+  let redacted = text.replace(
+    new RegExp(
+      '-----BEGIN [A-Z ]*' +
+        'PRIVATE KEY-----[\\s\\S]*?(?:-----END [A-Z ]*' +
+        'PRIVATE KEY-----|$)',
+      'g'
+    ),
+    '[REDACTED]'
+  );
+  for (const { name, pattern } of SECRET_PATTERNS) {
+    if (name !== 'invisible-unicode') {
+      redacted = redacted.replace(new RegExp(pattern.source, 'g'), '[REDACTED]');
+    }
+  }
+  return redacted;
 }

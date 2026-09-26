@@ -58,13 +58,13 @@ async function jwks(issuer: string): Promise<Record<string, unknown>[]> {
 }
 
 /** Verify the signed assertion, never the unsigned identity headers. No credentials are logged. */
-export async function verifyCfAccessRequest(headers: IncomingHttpHeaders): Promise<boolean> {
+export async function verifiedCfAccessEmail(headers: IncomingHttpHeaders): Promise<string | null> {
   const settings = config();
   const token = headers['cf-access-jwt-assertion'];
-  if (!settings || typeof token !== 'string') return false;
+  if (!settings || typeof token !== 'string') return null;
   try {
     const parts = token.split('.');
-    if (parts.length !== 3 || parts.some((part) => !/^[A-Za-z0-9_-]+$/.test(part))) return false;
+    if (parts.length !== 3 || parts.some((part) => !/^[A-Za-z0-9_-]+$/.test(part))) return null;
     const header: unknown = JSON.parse(Buffer.from(parts[0]!, 'base64url').toString('utf8'));
     const claims: unknown = JSON.parse(Buffer.from(parts[1]!, 'base64url').toString('utf8'));
     if (
@@ -73,28 +73,28 @@ export async function verifyCfAccessRequest(headers: IncomingHttpHeaders): Promi
       header.alg !== 'RS256' ||
       typeof header.kid !== 'string'
     )
-      return false;
-    if (claims.iss !== settings.issuer) return false;
+      return null;
+    if (claims.iss !== settings.issuer) return null;
     if (
       claims.aud !== settings.audience &&
       !(Array.isArray(claims.aud) && claims.aud.includes(settings.audience))
     )
-      return false;
+      return null;
     const now = Math.floor(Date.now() / 1000);
     if (
       typeof claims.exp !== 'number' ||
       !Number.isFinite(claims.exp) ||
       claims.exp <= now - SKEW_SECONDS
     )
-      return false;
+      return null;
     for (const time of [claims.nbf, claims.iat]) {
       if (
         time !== undefined &&
         (typeof time !== 'number' || !Number.isFinite(time) || time > now + SKEW_SECONDS)
       )
-        return false;
+        return null;
     }
-    if (typeof claims.email !== 'string' || !/^[^\s@]+@[^\s@]+$/.test(claims.email)) return false;
+    if (typeof claims.email !== 'string' || !/^[^\s@]+@[^\s@]+$/.test(claims.email)) return null;
     const key = (await jwks(settings.issuer)).find(
       (item) =>
         item.kid === header.kid &&
@@ -102,15 +102,16 @@ export async function verifyCfAccessRequest(headers: IncomingHttpHeaders): Promi
         (item.alg === undefined || item.alg === 'RS256') &&
         (item.use === undefined || item.use === 'sig')
     );
-    if (!key) return false;
-    return verify(
+    if (!key) return null;
+    const valid = verify(
       'RSA-SHA256',
       Buffer.from(`${parts[0]}.${parts[1]}`),
       createPublicKey({ key: key as JsonWebKey, format: 'jwk' }),
       Buffer.from(parts[2]!, 'base64url')
     );
+    return valid ? claims.email : null;
   } catch {
     // Fetch errors may contain deployment details; authentication fails closed without logging them.
-    return false;
+    return null;
   }
 }

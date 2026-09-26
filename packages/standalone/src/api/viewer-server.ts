@@ -1,5 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  statSync,
+} from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { extname, join, relative, resolve } from 'node:path';
 import type {
@@ -10,8 +18,17 @@ import type {
   WorkGraphPage,
 } from '@jungjaehoon/mama-core';
 import type { JudgmentAccess } from '@jungjaehoon/mama-core/knowledge';
-import { requireViewerAuth } from './auth-middleware.js';
+import {
+  authenticateViewerRequest,
+  isTunnelRequest,
+  requireViewerAuth,
+} from './auth-middleware.js';
 import { logCfAccessConfiguration } from './cf-access.js';
+import {
+  isAllowedViewerHost,
+  logViewerInternalError,
+  viewerRequestAudit,
+} from './viewer-request-security.js';
 import type { ReportStore } from './report-handler.js';
 import {
   listWikiPages,
@@ -139,11 +156,12 @@ function json(res: ServerResponse, status: number, value: unknown): void {
 }
 
 function requestError(error: unknown): { status: number; code: string; message: string } {
+  // A ViewerHttpError carries a fixed host message; only unexpected errors are hidden from clients.
   if (error instanceof ViewerHttpError) {
     return { status: error.status, code: error.code, message: error.message };
   }
-  const message = error instanceof Error ? error.message : String(error);
-  return { status: 500, code: 'VIEWER_INTERNAL_ERROR', message };
+  logViewerInternalError(error);
+  return { status: 500, code: 'VIEWER_INTERNAL_ERROR', message: 'Internal server error' };
 }
 
 function parseLimit(params: URLSearchParams, defaultValue: number, maximum: number): number {
@@ -390,7 +408,9 @@ function readLogTail(
   logPath: string | undefined,
   params: URLSearchParams
 ): Record<string, unknown> {
-  const tail = parseLimit(params, 500, 2_000);
+  const tailParams = new URLSearchParams(params);
+  if (params.has('tail')) tailParams.set('limit', params.get('tail')!);
+  const tail = parseLimit(tailParams, 500, 2_000);
   if (logPath === undefined || !existsSync(logPath)) {
     return {
       lines: [],
@@ -402,20 +422,48 @@ function readLogTail(
       ...notAvailable(),
     };
   }
-  const metadata = statSync(logPath);
-  const source = readFileSync(logPath, 'utf8');
-  const allLines = source.split(/\r?\n/).filter((line) => line.length > 0);
-  const sinceRaw = params.get('since');
-  const since = sinceRaw === null ? 0 : Number(sinceRaw);
-  const lines = Number.isFinite(since) && metadata.mtimeMs <= since ? [] : allLines.slice(-tail);
-  return {
-    lines,
-    total: allLines.length,
-    totalBytes: metadata.size,
-    fileSize: metadata.size,
-    mtime: metadata.mtimeMs,
-    truncated: allLines.length > lines.length,
-  };
+  const fd = openSync(logPath, 'r');
+  try {
+    const metadata = fstatSync(fd);
+    const sinceRaw = params.get('since');
+    const since = sinceRaw === null ? 0 : Number(sinceRaw);
+    const base = { totalBytes: metadata.size, fileSize: metadata.size, mtime: metadata.mtimeMs };
+    if (Number.isFinite(since) && metadata.mtimeMs <= since) {
+      return { ...base, lines: [], total: null, truncated: false };
+    }
+    // Bound I/O even for a single enormous line. The first partial line is discarded.
+    const maxBytes = 256 * 1024;
+    const chunks: Buffer[] = [];
+    let position = metadata.size;
+    let bytesRead = 0;
+    let source = '';
+    let allLines: string[] = [];
+    while (position > 0 && bytesRead < maxBytes && allLines.length <= tail) {
+      const length = Math.min(16 * 1024, position, maxBytes - bytesRead);
+      position -= length;
+      const chunk = Buffer.allocUnsafe(length);
+      const count = readSync(fd, chunk, 0, length, position);
+      bytesRead += length;
+      const read = chunk.subarray(0, count);
+      chunks.unshift(read);
+      source = Buffer.concat(chunks).toString('utf8');
+      if (position > 0) {
+        const newline = source.indexOf('\n');
+        source = newline === -1 ? '' : source.slice(newline + 1);
+      }
+      allLines = source.split(/\r?\n/).filter((line) => line.length > 0);
+    }
+    const lines = allLines.slice(-tail);
+    return {
+      ...base,
+      lines,
+      // The full-file line count is unknown when only a tail was read.
+      total: position === 0 ? allLines.length : null,
+      truncated: position > 0 || allLines.length > lines.length,
+    };
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export function createViewerServer(options: ViewerServerOptions): ViewerServer {
@@ -434,7 +482,13 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
     const context: ActionContext = { access: options.ownerAccess, operationId };
     const result = await options.dispatch(call, context);
     if (result.status === 'completed') return result.data;
-    throw new ViewerHttpError(actionFailureStatus(result), result.error.code, result.error.message);
+    const status = actionFailureStatus(result);
+    if (status < 500) throw new ViewerHttpError(status, result.error.code, result.error.message);
+    // A server-side action failure may carry internal detail: log it, send the client a fixed message.
+    logViewerInternalError(
+      new Error(`${action} failed: ${result.error.code}: ${result.error.message}`)
+    );
+    throw new ViewerHttpError(status, 'VIEWER_INTERNAL_ERROR', 'Internal server error');
   };
 
   const listTasks = async (params: URLSearchParams): Promise<unknown> => {
@@ -791,7 +845,14 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
     pathname === '/graph/update';
 
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+    const audit = viewerRequestAudit(req, res);
+    if (!isAllowedViewerHost(req)) {
+      json(res, 421, { error: true, code: 'MISDIRECTED_REQUEST', message: 'Host is not allowed' });
+      return;
+    }
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    if (isTunnelRequest(req) || apiPath(url.pathname))
+      audit.identity = await authenticateViewerRequest(req);
     const origin = req.headers.origin;
     if (typeof origin === 'string' && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
       res.setHeader('Access-Control-Allow-Origin', origin);
@@ -819,10 +880,11 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
         });
         return;
       }
-      if (!(await requireViewerAuth(req, res))) return;
+      if (!(await requireViewerAuth(req, res, audit.identity))) return;
 
       if (url.pathname === '/api/report/events') {
         handleReportEvents(req, res);
+        audit.log();
         return;
       }
 

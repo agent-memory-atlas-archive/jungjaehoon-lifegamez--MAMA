@@ -38,44 +38,62 @@ it calls the daemon over `~/.mama/runtime.sock`; only the plugin hooks open `~/.
 - `CHANGELOG.md`: add an Unreleased section for this branch (latest entry 0.56.0 describes removed
   gateway operations).
 
-## D2 — new docs the rebuilt product needs
+## D2 — owner decision 2026-09-27: delete what is not current, reorganise around today's product
 
-Guides: owner setup on macOS (config.yaml required keys, connectors.json, owner-policy.md, start.sh PATH
-and token env vars, launchd, where files land); choosing Claude or Codex (auth per backend, `agent.*`
-keys, `codex_cwd` is the shared workspace, forced workspace-write, isolation); Telegram owner chat
-(`owner_chat_id`, `allowed_chats`, `owner_user_ids`, attachments, file delivery); connectors reference
-(roles, per-source credentials, Kagemusha bridge, calendar via `gws auth login`); reports and board;
-replay; wiki; corrections and learning (memory kinds, lessons, restart check); viewer and local API;
-owner troubleshooting.
+No archive folder: a document that does not describe the current product is deleted (git keeps the
+history). Everything reader-facing is rewritten into this tree; each page is checked against the code.
 
-Explanation/reference: the owner loop; the work ledger (commitments, revisions, evidence); memory and
-lessons; the host contract for Claude and Codex; the runtime socket and client; the owner action
-reference (replaces most of `docs/reference/api.md`); mama-core as a shared engine (public exports).
+```
+docs/index.md                         entry: what MAMA is, the two products, where to start
+docs/start/owner-setup.md             install, `mama init` onboarding (tokens typed by the owner), launchd, first turn
+docs/start/claude-code-plugin.md      development memory: plugin + public MCP server, commands, hooks
+docs/guides/backends.md               Claude or Codex, auth per backend, agent.* keys, isolation and credential boundary
+docs/guides/telegram.md               owner chat, owner check, attachments, file delivery
+docs/guides/connectors.md             connectors.json, roles, per-source credentials, Kagemusha bridge, calendar (gws)
+docs/guides/reports-and-board.md      [notify]/[ack] deltas, board turn, 8/13/18 full report, 9-21 reminder
+docs/guides/replay.md                 day windows, journal and wiki outputs, live fence
+docs/guides/wiki.md                   vault layout, manage.wiki.* actions
+docs/guides/corrections-and-learning.md  memory kinds, lessons and preferences, checking a correction survives restart
+docs/guides/viewer.md                 pages, local and remote access (Cloudflare Access + origin JWT, token, Host allowlist)
+docs/guides/security.md               threat model and defences (rewritten in security P2)
+docs/guides/troubleshooting.md        config errors, launchd loops, Telegram silent, connector auth, reading the traces
+docs/explanation/architecture.md      packages, data homes, one owner session, host contract, where records live
+docs/explanation/owner-loop.md        recognise, attach, answer, report, learn as the code runs them
+docs/explanation/work-ledger.md       commitments, revisions, evidence links, assignees
+docs/explanation/memory-and-search.md memory records, recall with kinds, source search, lessons injection
+docs/reference/cli.md                 mama init | secret | daemon | replay | status | stop
+docs/reference/configuration.md       config.yaml keys, connectors.json, environment variables, ignored keys
+docs/reference/actions.md             the owner action catalog
+docs/reference/viewer-api.md          GET routes, auth, stubs
+docs/reference/mcp-tools.md           public MCP tools, plugin commands and hooks, env switches
+docs/development/{contributing,testing,code-standards,release-process,intent-workflow}.md
+docs/rebuild/*                        work logs (plan, checks, owner-reports, window-pipeline, this list)
+```
 
-## D3 — rewrite or update existing docs
+Delete (content folded into the tree above where still true): every other file under docs/guides,
+docs/explanation, docs/reference, docs/tutorials, docs/architecture, docs/operations, docs/archive, and
+docs/development/{developer-playbook, one-mama-learning-anchor, 2026-09-08-one-mama-autonomy-audit,
+2026-08-26-one-front-team-work-agent-design}.md. Fix every inbound link (AGENTS.md, INTENT.md, READMEs,
+CHANGELOG, code comments). TODOS.md keeps only the items that still match INTENT. `docs/superpowers/`
+is untracked and never committed; it is left alone (deleting it cannot be undone).
 
-| Verdict | Files                                                                                                                                                                                                                                                                                                                                                   |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Rewrite | guides: standalone-setup, codex-backend, troubleshooting (keep Node/disk/integrity/model sections), standalone-troubleshooting, configuration (plugin; config.json is dead), security (keep localhost-first, secret filter, untrusted wrapping, isolation), gateway-config → Telegram owner chat, mobile-access (short); installation (standalone part) |
-| Rewrite | explanation: architecture, mama-os, semantic-search (real weights 0.7/0.3 Gaussian, FTS5 hybrid, e5-large ~560 MB, model fixed), data-privacy (three data stores)                                                                                                                                                                                       |
-| Rewrite | reference: api (action catalog; GET-only viewer routes, stubs marked), commands (CLI part), configuration-options, hooks (4 hooks, no UserPromptSubmit, kill switches exist)                                                                                                                                                                            |
-| Rewrite | tutorials: getting-started, hook-setup; architecture/package-structure; development: testing, developer-playbook (keep MCP/plugin sections), one-mama-learning-anchor (v7 terms)                                                                                                                                                                        |
-| Update  | guides/deployment (drop memorybench, `MAMA_TRUST_CLOUDFLARE_ACCESS`, `mama start`, envelope/workorder notes); tutorials/first-decision and explanation/decision-graph (topic reuse does not auto-supersede; `update` outcomes); development: release-process (checks.md, AGENTS.md release rules, dead bin), code-standards, contributing (pnpm)        |
+## D3 — onboarding with owner-typed tokens (owner decision 2026-09-27)
 
-## D4 — delete or archive
+`mama init` (TTY only) asks for the backend, the Telegram bot token, the owner chat and user ids and the
+connector tokens it needs; tokens are read with echo off and written only to ~/.mama/auth.env (0600),
+which the owner agent cannot read (Claude read denies and sandbox denyRead, Codex permission profile).
+`mama secret set <NAME>` rotates one. config.yaml and connectors.json carry no secrets: the Telegram bot
+token moves out of config.yaml into the environment the daemon reads. The agent never receives, asks for
+or writes a token, and both commands refuse to run without a TTY. Done when a fresh HOME is onboarded
+end to end with the tokens typed at the prompt and the daemon answers the owner on Telegram.
 
-- Delete: guides/cline-backend, guides/multi-agent-advanced, guides/code-act-sandbox,
-  explanation/tier-system (keep one line on `MAMA_FORCE_TIER_3` in semantic-search),
-  explanation/performance (no measurement behind any number).
-- Archive (move to `docs/archive/` with a banner): guides/procedure-corrections,
-  guides/performance-tuning (or cut to a VACUUM/ANALYZE note), guides/migration-v0-to-v1.1,
-  explanation/work-agent, operations/entity-substrate-runbook (banner: do not drop the tables; case code
-  still reads `entity_observations`), development/2026-09-08-one-mama-autonomy-audit,
-  development/2026-08-26-one-front-team-work-agent-design. Fix the inbound links.
-- `TODOS.md`: archive the items about deleted code; rewrite the five that still match INTENT (member
-  canary, artifact flow, provider continuity, Trello/Kagemusha lifecycle, recall-time provenance).
-- `docs/superpowers/` (114 files, gitignored, never in git): leave ignored; do not move into the repo.
-- Remove the 18 live links to `docs/archive/fr-mapping-v1.0.md`.
+## D4 — every record is traceable end to end
+
+After security P2 (native tool calls traced, tunnel requests logged): follow one owner turn and one
+source delta through every store and log by their ids — Telegram update → mailbox row → model run →
+tool traces (catalog and native, parent and child runs) → Telegram message ledger / board slot version →
+daemon.log lines → the viewer's log route; connector poll → connector index row → delta stimulus →
+route line → board turn → report.publish trace. Any hop without a shared id is a defect to fix.
 
 ## D5 — rebuild docs that went stale today
 
@@ -91,6 +109,14 @@ reference (replaces most of `docs/reference/api.md`); mama-core as a shared engi
 
 ## Order
 
-D0 → D1 → D2 (owner setup, backends, Telegram, connectors, reports first) → D3 → D4 → D5. D4 and D5
-can run alongside D1. Each item ends with a link check (no link to a deleted file) and the claims in
+D0 (done) → security P2 → external-access detection → D4 tracing check → D3 onboarding → D1 + D2
+(delete and rewrite in one pass, so the docs describe the onboarding that exists) → D5 → D6.
+
+## D6 — privacy gate before the PR (owner requirement 2026-09-27)
+
+Before any push: scan the whole working tree, the full git history of the branch (every commit's added
+lines and messages) and the PR body for personal names, channel/room/user ids, phone numbers, email
+addresses, customer and project names from the owner's business, tokens, keys, credential-shaped strings
+and hostnames. Anything found is removed (history rewritten if it is in a commit) and the scan is run
+again until clean. The push and the PR wait for the owner's go-ahead. Each item ends with a link check (no link to a deleted file) and the claims in
 the new text checked against the code, as in these audits.

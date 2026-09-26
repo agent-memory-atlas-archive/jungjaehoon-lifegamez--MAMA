@@ -27,6 +27,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import path from 'path';
 import * as debugLogger from '@jungjaehoon/mama-core/debug-logger';
 import type { PromptCallbacks, PromptResult, ToolUseBlock } from './types.js';
+import { claudeConfiguredSecrets, SecretRedactingStream } from './cli-secret-redaction.js';
 import { formatCliArgsForLog } from './cli-arg-redaction.js';
 
 const { DebugLogger } = debugLogger as {
@@ -240,6 +241,17 @@ export class ClaudeCLIWrapper {
       logger.debug(`Spawning: claude ${formatClaudeArgsForLog(args).join(' ')}`);
       logger.debug(`Args count: ${args.length}`);
 
+      let stderr = '';
+      const stderrRedactor = new SecretRedactingStream(
+        claudeConfiguredSecrets(this.options.mcpConfigPath, {
+          ...(this.options.processEnv ?? process.env),
+          ...this.options.env,
+        }),
+        (safe) => {
+          stderr = `${stderr}${safe}`.slice(-16_000);
+          if (safe.trim()) console.error(`[ClaudeCLI:stderr] ${safe.trim()}`);
+        }
+      );
       const claude = spawn('claude', args, {
         stdio: ['pipe', 'pipe', 'pipe'],
         // ⚠️ NEVER spawn in the user's home directory — it breaks agent isolation.
@@ -282,15 +294,10 @@ export class ClaudeCLIWrapper {
       }
 
       let stdout = '';
-      let stderr = '';
       let lastDelta = '';
       const toolUseBlocks: ToolUseBlock[] = [];
 
-      claude.stderr.on('data', (chunk) => {
-        const text = chunk.toString();
-        stderr += text;
-        console.error(`[ClaudeCLI:stderr] ${text.trim()}`);
-      });
+      claude.stderr.on('data', (chunk) => stderrRedactor.write(chunk));
 
       claude.stdout.on('data', (chunk) => {
         stdout += chunk.toString();
@@ -323,6 +330,7 @@ export class ClaudeCLIWrapper {
       });
 
       claude.on('close', (code) => {
+        stderrRedactor.end();
         if (code !== 0) {
           const error = new Error(`Claude CLI exited with code ${code}: ${stderr}`);
           callbacks?.onError?.(error);

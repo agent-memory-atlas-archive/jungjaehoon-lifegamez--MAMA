@@ -222,9 +222,15 @@ export async function runNativePrompt<TToolContext extends HostExecutionContext>
           nativeEffects.started(name, input);
           ext?.onToolUse?.(name, input);
         },
-        onToolComplete: (name: string, toolUseId: string, isError: boolean) => {
-          nativeEffects.settled(name, toolUseId, isError);
-          ext?.onToolComplete?.(name, toolUseId, isError);
+        onToolComplete: (
+          name: string,
+          toolUseId: string,
+          isError: boolean,
+          outcome?: 'unknown'
+        ) => {
+          nativeEffects.settled(name, toolUseId, isError, outcome);
+          if (outcome) ext?.onToolComplete?.(name, toolUseId, isError, outcome);
+          else ext?.onToolComplete?.(name, toolUseId, isError);
         },
         // A spawn is an admission, not an external effect: forwarded verbatim with NO
         // nativeEffects call, so it never writes a `native_tool` ledger row and never

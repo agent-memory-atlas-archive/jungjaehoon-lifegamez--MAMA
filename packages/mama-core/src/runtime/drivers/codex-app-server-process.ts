@@ -1,3 +1,4 @@
+import { configuredSecretValues, redactConfiguredSecrets } from './cli-secret-redaction.js';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import {
@@ -303,6 +304,7 @@ interface SubagentState extends ThreadContext {
   /** Exact final event held until the consumer accepts it into durable intake. */
   completionEvent?: SubagentEvent;
   completionRetryTimer?: NodeJS.Timeout;
+  nativeItems: Map<string, { name: string; completed: boolean }>;
 }
 
 const DEFAULT_TIMEOUT = 300_000;
@@ -565,45 +567,9 @@ function copyAuthAtomically(source: string, destination: string): void {
   chmodSync(destination, 0o600);
 }
 
-function configuredSecretValues(launch: CodexAppServerLaunchConfig): Set<string> {
-  const names = new Set<string>();
-  const addJsonString = (source: string): void => {
-    try {
-      const name = JSON.parse(source) as unknown;
-      if (typeof name === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-        names.add(name);
-      }
-    } catch (error: unknown) {
-      throw new Error('Codex app-server launch config contained malformed environment quoting', {
-        cause: error,
-      });
-    }
-  };
-
-  for (const argument of launch.args) {
-    for (const match of argument.matchAll(/env_vars\s*=\s*\[([^\]]*)\]/g)) {
-      for (const quoted of match[1].matchAll(/"(?:\\.|[^"\\])*"/g)) {
-        addJsonString(quoted[0]);
-      }
-    }
-    for (const match of argument.matchAll(/bearer_token_env_var\s*=\s*("(?:\\.|[^"\\])*")/g)) {
-      addJsonString(match[1]);
-    }
-    for (const match of argument.matchAll(/env_http_headers\s*=\s*\{([^}]*)\}/g)) {
-      for (const binding of match[1].matchAll(/=\s*("(?:\\.|[^"\\])*")/g)) {
-        addJsonString(binding[1]);
-      }
-    }
-  }
-
-  const values = new Set<string>();
-  for (const name of names) {
-    const value = launch.env[name];
-    if (typeof value === 'string' && value.length > 0) {
-      values.add(value);
-    }
-  }
-  return values;
+/** Item IDs are provider-local; this identifier is only for host observations. */
+function nativeObservationId(threadId: string, itemId: string): string {
+  return JSON.stringify([threadId, itemId]);
 }
 
 export class CodexAppServerProcess {
@@ -1725,28 +1691,13 @@ export class CodexAppServerProcess {
         this.refreshTurnIdleTimeout(turn);
         return;
       }
-      if (!['commandExecution', 'fileChange', 'collabAgentToolCall'].includes(item.type)) {
+      if (
+        !['commandExecution', 'fileChange', 'webSearch', 'collabAgentToolCall'].includes(item.type)
+      ) {
         return;
       }
       this.refreshTurnIdleTimeout(turn);
-      try {
-        let observed = turn.nativeItems.get(item.id);
-        if (!observed) {
-          observed = { name: item.type, completed: false };
-          turn.nativeItems.set(item.id, observed);
-          // Persist bounded identity only: command bodies and file diffs can contain secrets.
-          turn.onToolUse?.(item.type, { nativeToolUseId: item.id });
-        }
-        if (method === 'item/completed' && !observed.completed) {
-          observed.completed = true;
-          const isError =
-            item.status !== 'completed' ||
-            (typeof item.exitCode === 'number' && item.exitCode !== 0);
-          turn.onToolComplete?.(observed.name, item.id, isError);
-        }
-      } catch (error: unknown) {
-        this.failTurn(turn.threadId, this.toError(error));
-      }
+      this.observeNativeItem(turn, method, item, turn.threadId);
       return;
     }
     if (method === 'item/agentMessage/delta') {
@@ -1935,6 +1886,51 @@ export class CodexAppServerProcess {
   // and its calls are refused loudly.
 
   /** Returns true when this notification belongs to the subagent surface and was consumed. */
+  private observeNativeItem(
+    target: Pick<PendingTurn, 'nativeItems' | 'onToolUse' | 'onToolComplete'>,
+    method: string,
+    item: JsonObject,
+    threadId: string,
+    subagent = false
+  ): void {
+    if (
+      typeof item.id !== 'string' ||
+      typeof item.type !== 'string' ||
+      !['commandExecution', 'fileChange', 'webSearch', 'collabAgentToolCall'].includes(item.type)
+    )
+      return;
+    const observationId = nativeObservationId(threadId, item.id);
+    let observed = target.nativeItems.get(observationId);
+    if (!observed) {
+      observed = { name: item.type, completed: false };
+      target.nativeItems.set(observationId, observed);
+      const input: JsonObject = { nativeToolUseId: observationId, providerToolUseId: item.id };
+      if (subagent) input.subagentThreadId = threadId;
+      // Input only: stdout, results and file diffs are not diagnostic inputs.
+      for (const key of ['command', 'cwd', 'action', 'query', 'queries', 'url']) {
+        if (item[key] !== undefined) input[key] = item[key];
+      }
+      if (Array.isArray(item.changes))
+        input.paths = item.changes.map((change) => object(change)?.path);
+      try {
+        target.onToolUse?.(item.type, input);
+      } catch {
+        console.warn('[CodexAppServer] native observation failed');
+      }
+    }
+    if (method === 'item/completed' && !observed.completed) {
+      observed.completed = true;
+      const isError =
+        (item.status !== undefined && item.status !== 'completed') ||
+        (typeof item.exitCode === 'number' && item.exitCode !== 0);
+      try {
+        target.onToolComplete?.(observed.name, observationId, isError);
+      } catch {
+        console.warn('[CodexAppServer] native observation failed');
+      }
+    }
+  }
+
   private handleSubagentNotification(method: string, threadId: string, data: JsonObject): boolean {
     if (method === 'item/started' || method === 'item/completed') {
       const item = object(data.item);
@@ -1955,6 +1951,7 @@ export class CodexAppServerProcess {
         return false;
       }
       this.refreshParentTurnIdleTimeout(child);
+      if (item) this.observeNativeItem(child, method, item, threadId, true);
       if (
         method === 'item/completed' &&
         item?.type === 'agentMessage' &&
@@ -2091,6 +2088,7 @@ export class CodexAppServerProcess {
       agentPath,
       onToolUse: parent.onToolUse,
       onToolComplete: parent.onToolComplete,
+      nativeItems: new Map(),
       finalText: '',
       startedAt: Date.now(),
       toolCallQueue: Promise.resolve(),
@@ -2178,6 +2176,15 @@ export class CodexAppServerProcess {
       return;
     }
     if (!child.completionEvent) {
+      for (const [callId, item] of child.nativeItems) {
+        if (item.completed) continue;
+        item.completed = true;
+        try {
+          child.onToolComplete?.(item.name, callId, true, 'unknown');
+        } catch {
+          console.warn('[CodexAppServer] native observation failed');
+        }
+      }
       this.clearSubagentTimers(child);
       const finalText = child.finalText ? this.redact(child.finalText) : '';
       child.completionEvent = {
@@ -2388,7 +2395,8 @@ export class CodexAppServerProcess {
           }
           try {
             child.onToolUse?.(tool, {
-              nativeToolUseId: callId,
+              nativeToolUseId: nativeObservationId(agentThreadId, callId),
+              providerToolUseId: callId,
               subagentThreadId: agentThreadId,
               agentPath: child.agentPath,
             });
@@ -2414,14 +2422,24 @@ export class CodexAppServerProcess {
             typeof resultData.content !== 'string' ||
             typeof resultData.isError !== 'boolean'
           ) {
-            this.reportSubagentToolComplete(child, tool, callId, true);
+            this.reportSubagentToolComplete(
+              child,
+              tool,
+              nativeObservationId(agentThreadId, callId),
+              true
+            );
             return {
               result: this.toolResult(false, 'Host tool returned a malformed result'),
               stop: false,
               abortError: undefined,
             };
           }
-          this.reportSubagentToolComplete(child, tool, callId, resultData.isError);
+          this.reportSubagentToolComplete(
+            child,
+            tool,
+            nativeObservationId(agentThreadId, callId),
+            resultData.isError
+          );
           return {
             result: this.toolResult(!resultData.isError, resultData.content),
             stop: resultData.stop === true || resultData.abort === true,
@@ -2739,11 +2757,7 @@ export class CodexAppServerProcess {
   }
 
   private redact(value: string): string {
-    let result = value;
-    for (const secret of this.secrets) {
-      result = result.split(secret).join('[REDACTED]');
-    }
-    return result;
+    return redactConfiguredSecrets(value, this.secrets);
   }
 
   private toError(error: unknown): Error {

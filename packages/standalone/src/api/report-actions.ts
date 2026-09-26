@@ -80,6 +80,7 @@ export function reportActionRegistrations(ports: ReportPorts): ActionRegistratio
     {
       contract: {
         name: 'report.publish',
+        recallableWrite: true,
         summary: buildReportPublishToolContract(),
         inputSchema: {
           type: 'object',

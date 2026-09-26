@@ -365,6 +365,10 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
         ...(replaySourceEndMs === undefined ? {} : { replaySourceEndMs }),
       };
     },
+    createNativeEffectObserver: (context) => {
+      const { modelRunId } = toolContext(context);
+      return modelRunId ? options.actionSurface.createNativeEffectObserver(modelRunId) : undefined;
+    },
     hostToolDefinitions: () => tools,
     ...(options.modelRun === undefined ? {} : { modelRun: options.modelRun }),
     callTool: async (name, input, context) => {

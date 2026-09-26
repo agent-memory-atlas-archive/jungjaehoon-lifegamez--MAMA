@@ -1,1143 +1,141 @@
-# Security Guide
-
-**IMPORTANT:** MAMA is designed for local use on localhost (127.0.0.1). External access via tunnels (ngrok, Cloudflare, etc.) introduces security risks. Read this guide carefully before exposing MAMA to the internet.
-
----
-
-## Table of Contents
-
-- [Security Model](#security-model)
-- [Envelope Threat Model and Posture](#envelope-threat-model-and-posture)
-- [Built-in Detection and Response](#built-in-detection-and-response)
-- [Memory Provenance Foundation](#memory-provenance-foundation)
-- [Localhost-Only Mode (Default)](#localhost-only-mode-default)
-- [External Access via Tunnels](#external-access-via-tunnels)
-- [🌟 Cloudflare Zero Trust (Recommended for Production)](#cloudflare-zero-trust-recommended-for-production)
-- [Token Authentication (Testing Only)](#token-authentication-testing-only)
-- [Disabling Features](#disabling-features)
-- [Security Best Practices](#security-best-practices)
-- [Threat Scenarios](#threat-scenarios)
-- [Code-Act Sandbox Security](#code-act-sandbox-security)
-
----
-
-## Security Model
-
-### Design Principles
-
-MAMA follows a **localhost-first security model**:
-
-1. **Default: Localhost Only**
-   - HTTP server binds to `127.0.0.1` only
-   - No external network access without tunnels
-   - No authentication required for local use
-
-2. **Optional: External Access**
-   - Requires manual tunnel setup (ngrok, Cloudflare, etc.)
-   - **Requires either valid `MAMA_AUTH_TOKEN` bearer auth or validated Cloudflare Access identity
-     from a trusted local proxy**
-   - User must explicitly choose to expose MAMA
-
-3. **Defense in Depth**
-   - Token-based authentication for external requests
-   - Validated Cloudflare Access identity from trusted proxies for Zero Trust deployments
-   - Rate limiting on failed auth attempts
-   - Security warnings when external access detected
-
-### Built-in Detection and Response
-
-Recent MAMA OS builds add a defensive monitoring layer for exposed deployments:
-
-- Unauthorized API attempts are logged with client IP context
-- **Honeypot paths trigger immediate IP ban** (15min) — probes to `.git`, `.env`, `wp-login.php`, `mama-memory.db`, etc.
-- **Auth failure tracking** — 5 failures within 5 minutes → automatic IP ban (15min)
-- **Tarpit delays** — suspicious IPs receive escalating response delays (up to 5s)
-- **Banned IP rejection** — blocked at both middleware and requireAuth level
-- All API routes (except `/health`) require authentication for non-localhost access
-- SSRF and dangerous Bash patterns generate security events
-- Structured events are written to `~/.mama/logs/security-events.jsonl`
-- Incident evidence and abuse-report drafts are written under `~/.mama/logs/security-incidents/`
-
-To route alerts to chat, set:
-
-```bash
-export MAMA_SECURITY_ALERT_CHANNELS="discord:CHANNEL_ID,slack:C123456"
-```
-
-## Owner Console Trust Model (v0.22+)
-
-The `owner_console` role is the widest chat surface MAMA grants, and it is
-resolved per message by trust checks — never by static configuration:
-
-- **Escalation conditions (ALL required):** telegram gateway + a non-empty
-  `telegram.allowed_chats` allowlist + the message arrives in an allowlisted
-  chat's **1:1 private DM**. Groups/supergroups never escalate. A static
-  `roles.sourceMapping` entry pointing at `owner_console` is downgraded at
-  runtime and flagged as MAJOR by the deterministic code audit.
-- **`allowed_chats` is therefore the owner trust anchor** — every listed chat's
-  DM gets owner powers (artifact reads: `board_read`, `audit_findings_read`,
-  memory writes: `mama_save`, `mama_update`; task creation). List only chats
-  you trust with owner-level access. An empty allowlist disables the owner
-  console entirely and startup warns loudly that inbound is open.
-- **Memory-write secret filter:** `mama_save` / `mama_update` / `mama_add` /
-  `mama_ingest` REFUSE content matching secret shapes (API keys, bot tokens,
-  long credentials) with `code: secret_material_refused` — secrets never enter
-  memory, even when the owner pastes them. This is a behavior change visible to
-  users who previously saved such content.
-- **Telegram media fails closed:** photos and documents are accepted only when
-  `allowed_chats` is non-empty. Downloads have explicit size and timeout bounds,
-  prompt construction uses private transient files, and those files are deleted
-  before the message is routed onward.
-- **Forwarded-message provenance:** telegram forwards (including image-analysis
-  text) and connector-derived third-party data are wrapped in untrusted-content
-  delimiters before reaching any prompt, so injected instructions inside them
-  are treated as data.
-- **Tool advertising is role-filtered:** each role's system prompt advertises
-  only the tools that role can actually execute, so a prompt-injected tool name
-  outside the role's allowlist fails both advertisement and execution.
-
-## Envelope Threat Model and Posture
-
-M1R covers Reactive runtime issuance, gateway audit logging, and memory-scope
-mismatch visibility. It does not cover delegated memory workers or Autonomous
-Standing agents; those belong to M7 and M8. Code-task delegation is outside the
-memory-twin worker scope and must not gain memory mutation scope.
-
-### Covered Threats
-
-- Agent fabrication: gateway tools receive a signed envelope from the runtime,
-  not from model-authored text.
-- Durable audit tamper evidence: gateway tool calls record `envelope_hash`,
-  SHA-256 references for model-requested scope IDs, host-issued envelope scope
-  snapshots, and `scope_mismatch` in `agent_activity`.
-- Irreversible exfiltration: destination sends, raw connector reads, and tiered
-  write paths fail closed when the signed envelope does not authorize them.
-
-### Not Covered
-
-- Key extraction through process dumps, host compromise, or shell access.
-- Supply-chain compromise of runtime dependencies or local plugins.
-- Multi-tenant isolation. MAMA OS remains a localhost-first personal runtime.
-- Delegated memory-worker envelopes and Autonomous Standing envelopes.
-
-### Hybrid Enforcement
-
-M1R deliberately uses a hybrid posture:
-
-- Fail closed for destination, `raw_connector`, and tier violations
-
-### Connector Channel Grant
-
-The raw-read boundary is per CHANNEL within a connector, not per connector.
-`packages/mama-core/src/context-compile/channel-grant.ts` is the single definition, compiled
-to a boolean (`isChannelGranted`) and to a SQL clause (`channelGrantClause`) so the two forms
-cannot drift — three divergent copies of this rule previously existed, and the differential
-test guarding them never exercised the production branch.
-
-- A connector absent from the grant is denied.
-- A connector present with an EMPTY channel list is also denied; an empty list is never read
-  as a wildcard.
-- The grant derives from `~/.mama/connectors.json` via `grantFromConnectorConfig` /
-  `liveBoundaryChannels` (`packages/standalone/src/evidence/read.ts`), and is narrowed further
-  to the issuing envelope's own scopes for a per-run read. because a
-  wrong send or cross-boundary raw read cannot be unsent.
-- Log and alarm for memory-scope mismatch because memory writes are recoverable,
-  and hard denial can amplify hallucinated scope retries. The evidence is kept
-  for operator review instead.
-
-Industry pattern mapping:
-
-- Macaroons: caveat-style narrowing maps to M1R's scoped envelope fields.
-- Biscuit: decentralized capability tokens map to a possible future asymmetric
-  worker-envelope design.
-- Microsoft "Auditable Security Layer for Agentic AI": audit-first enforcement
-  maps to M1R's durable ledger plus fail-closed irreversible boundaries.
-
-### Mismatch Investigation
-
-Find memory-scope mismatches in these places:
-
-- `agent_activity` rows where `scope_mismatch=1`
-- `agent_activity.requested_scopes` and `envelope_scopes_snapshot`
-- `MetricsStore` counter `envelope_scope_mismatch`
-- `securityLogger.warn` lines containing envelope scope mismatch context
-- Authenticated `/api/envelope/status` field `recent_mismatch_count_24h`
-
-When mismatches spike, use the requested-scope kind and stable SHA-256 ID
-reference alongside `envelope_scopes_snapshot` for the same `envelope_hash`.
-Classify the cause as prompt injection, agent hallucination, or a legitimate
-caller-side scope derivation bug before changing policy. Raw model-requested
-scope IDs are deliberately not persisted.
-
-### Memory Provenance Foundation
-
-M2 provenance foundation records compact origin metadata on new memory writes:
-`agent_id`, `envelope_hash`, `gateway_call_id`, `model_run_id`, source refs, and
-the matching `memory_events(event_type='save')` row. This explains where a
-memory row came from and gives operators a stable join from standalone
-`agent_activity.gateway_call_id` to mama-core `decisions.gateway_call_id`.
-
-Caller-supplied provenance from MCP, LLM-visible gateway tool input, or public
-core APIs is ignored. Trusted provenance can only arrive through runtime-only
-options guarded by an in-process capability, so it is not a boundary against
-malicious arbitrary code running inside the same Node process.
-
-The compact provenance record intentionally excludes prompts, raw tool
-arguments, model completions, raw connector payloads, and other high-cardinality
-or sensitive payload bodies. For memory-scope visibility, provenance reads use
-`memory_scope_bindings` as the source of truth instead of trusting provenance
-JSON.
-
-`context_compile` applies the same rule to model-controlled diagnostics. Its
-task text, requested seed refs, and failure text are represented in model-run
-audit data by SHA-256 plus length (and seed-ref count), never by the submitted
-text. Envelope denials do not reflect rejected connector or destination values.
-Gateway activity, tool-trace, reasoning-header, and diagnostic-log failures are
-likewise bounded to status/code or digest references. A temporal worker's host
-authority is checked before envelope validation, so an already superseded
-attempt cannot create a denial audit as a side effect.
-
-M2 scope read/backfill adds two operational guarantees:
-
-- Legacy memory rows can be marked with explicit `legacy` provenance without
-  inventing envelope hashes, model run ids, source refs, or scope bindings.
-- Connector raw metadata keeps real evidence hashes and only fills
-  tenant/project/scope/cursor fields when those values are explicitly known.
-
-Admin memory provenance reads are exposed only through:
-
-```text
-GET /api/memory/provenance/:memoryId
-GET /api/memory/provenance?envelope_hash=...
-GET /api/memory/provenance?model_run_id=...
-GET /api/memory/provenance?gateway_call_id=...
-```
-
-These routes require `Authorization: Bearer <MAMA_ADMIN_TOKEN>`. Normal
-`MAMA_AUTH_TOKEN`, localhost-only access, and Cloudflare Access identity headers
-do not grant admin provenance access. If `MAMA_ADMIN_TOKEN` is unset, the route
-returns an explicit disabled/admin-token-required response. The response is a
-compact lineage view: memory id, topic, summary, envelope hash, model run id,
-gateway call id, tool name, latest save event, scope refs, and legacy caveats.
-It intentionally does not return prompt text, full tool arguments, raw tool
-results, or raw connector payloads.
-
-Scoped operator views remain out of scope until the API has an authenticated
-principal with memory scopes. The admin provenance endpoint rejects
-caller-supplied scope query params instead of pretending query-time scope
-narrowing is a security boundary.
-
----
-
-## Localhost-Only Mode (Default)
-
-### What It Means
-
-By default, MAMA OS listens on:
-
-```bash
-[MAMA OS] Operational API: http://127.0.0.1:3847
-```
-
-**This means:**
-
-- ✅ Only apps on your computer can connect
-- ✅ No external access possible
-- ✅ No authentication needed
-- ✅ Safe for development and local use
-- ✅ Sensitive `/api/*` routes stay blocked from non-local clients unless authenticated
-
-### Accessing MAMA
-
-```bash
-# Local runtime and connector status
-mama status
-mama connector status
-
-# Public liveness probe
-curl -fsS http://127.0.0.1:3847/health
-```
-
-Conversation, files, reports, and follow-up work use an authenticated messenger gateway such as
-Discord, Slack, Telegram, or Chatwork. Port 3847 retains operational API routes for automation and
-inspection; it does not serve a browser application.
-
----
-
-## External Access via Tunnels
-
-### ⚠️ CRITICAL Security Warning
-
-When you use a tunnel to expose MAMA to the internet, **an attacker with access can:**
-
-**Complete System Compromise:**
-
-- 🔓 Control your Claude Code sessions
-- 🔓 Read **ANY file** on your computer (via Read tool)
-- 🔓 Write **ANY file** on your computer (via Write tool)
-- 🔓 Execute **ANY command** on your machine (via Bash tool)
-- 🔓 Access your decision database (`~/.claude/mama-memory.db`)
-- 🔓 Steal API keys, SSH keys, passwords from config files
-- 🔓 Install persistent backdoors (crontab, systemd)
-- 🔓 Exfiltrate your entire hard drive
-
-**This is not just data theft - it's full remote code execution on your machine.**
-
-### Two Options for External Access
-
-**For PRODUCTION use (real deployment):**
-
-- ✅ **Use Cloudflare Zero Trust** (See below) - Google/GitHub account protection
-- ⛔ **DO NOT use token authentication alone**
-- ✅ Treat tunnel URLs, access policies, and `MAMA_AUTH_TOKEN` as secrets
-
-**For TESTING only (temporary access):**
-
-- ⚠️ **Token authentication** - Quick but less secure
-- ⛔ **Never use for long-term deployment**
-
----
-
-## 🌟 Cloudflare Zero Trust (Recommended for Production)
-
-**This is the ONLY recommended way to expose MAMA for real use.**
-
-### Why Cloudflare Zero Trust?
-
-**Security Benefits:**
-
-- ✅ **Google/GitHub/Microsoft account authentication** - Industry-standard OAuth
-- ✅ **2FA automatically enforced** - If you have 2FA on Google, it applies to MAMA
-- ✅ **Email restriction** - Only your email can access (e.g., `you@gmail.com`)
-- ✅ **No token management** - No need to generate/share/rotate tokens
-- ✅ **Enterprise-grade DDoS protection** - Cloudflare's infrastructure
-- ✅ **Automatic rate limiting** - Brute force attacks blocked
-- ✅ **Anomaly detection** - Cloudflare detects suspicious access patterns
-- ✅ **Session management** - Automatic timeout, revocation
-- ✅ **Zero Trust architecture** - Every request is verified
-
-**vs Token Authentication:**
-
-- Token alone: Anyone with token = full access
-- Zero Trust: Must have your Google account + password + 2FA code
-
-### How It Works
-
-```
-User → Cloudflare Zero Trust → Tunnel → MAMA (localhost)
-        ↑
-        Google/GitHub login required
-        Only allowed emails can pass
-```
-
-**MAMA sees all requests as localhost** - No code changes needed!
-
-That statement now has one important caveat for protected API routes:
-
-- Operational API access can pass through Cloudflare Access after identity verification
-- Protected `/api/*` routes still require MAMA to trust Cloudflare Access identity headers
-- Validated Access identity headers are accepted only from a trusted local proxy; no feature flag
-  or second bearer token is required
-
-### Cloudflare Access Trust Mode
-
-For Cloudflare Zero Trust deployments, start MAMA normally:
-
-```bash
-mama start
-```
-
-What this does:
-
-- Trusts Cloudflare Access identity headers only when the direct peer is a trusted proxy
-- Allows Access-authenticated tunnel requests to reach protected `/api/*` routes without adding a second Bearer token
-- Keeps direct remote requests, spoofed forwarded headers, and non-Access tunnel traffic blocked
-- `MAMA_TRUST_CLOUDFLARE_ACCESS` remains a legacy compatibility flag but is no longer required
-
-Use `MAMA_AUTH_TOKEN` instead when:
-
-- You are using temporary tunnels without Cloudflare Access
-- You are using ngrok or another provider that does not inject Cloudflare Access identity headers
-- You want temporary testing access rather than Zero Trust policy-based access
-
-### Step-by-Step Setup
-
-#### Prerequisites
-
-- Cloudflare account (free)
-- **Domain in Cloudflare** - Required for Zero Trust. Options:
-  - Transfer existing domain to Cloudflare DNS
-  - Purchase a cheap domain from Cloudflare Registrar (e.g., `.work` ~$7/year)
-  - Note: Team domains like `*.cloudflareaccess.com` cannot be used for tunnel hostnames
-
-#### Two Setup Methods
-
-You can create tunnels using either **CLI** or **Dashboard**:
-
-| Method    | Best For                 | Domain Required             |
-| --------- | ------------------------ | --------------------------- |
-| CLI       | Automation, scripting    | Need to authorize zone      |
-| Dashboard | First-time setup, visual | Just need domain in account |
-
-**Recommended:** Use Dashboard method for initial setup, then CLI for automation.
-
----
-
-### Method A: Dashboard Setup (Recommended for First-Time)
-
-#### Step A1: Install cloudflared
-
-```bash
-# Linux/Mac
-# Download from: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
-
-# Verify installation
-cloudflared --version
-```
-
-#### Step A2: Create Tunnel via Dashboard
-
-1. Go to [Zero Trust Dashboard](https://one.dash.cloudflare.com/)
-2. Navigate to **Networks** → **Tunnels**
-3. Click **Create a tunnel**
-4. Select **Cloudflared** → **Next**
-5. Name your tunnel (e.g., `mama-mobile`) → **Save tunnel**
-6. Copy the **tunnel token** (starts with `eyJ...`)
-
-#### Step A3: Run Tunnel with Token
-
-```bash
-# Run tunnel using token (no login required)
-cloudflared tunnel run --token YOUR_TUNNEL_TOKEN
-```
-
-#### Step A4: Configure Public Hostname
-
-In the Dashboard (after creating tunnel):
-
-1. Click **Configure** on your tunnel
-2. Go to **Public Hostname** tab
-3. Click **Add a public hostname**
-4. Configure:
-   - **Subdomain:** `mama` (or your choice)
-   - **Domain:** Select your domain from dropdown
-   - **Type:** `HTTP`
-   - **URL:** `localhost:3847`
-   - **Path:** Leave empty (routes all paths)
-5. Click **Save hostname**
-
-#### Step A5: Configure Zero Trust Access Policy
-
-1. Go to **Zero Trust** → **Access** → **Applications**
-2. Click **Add an application** → **Self-hosted**
-3. Configure:
-   - **Application name:** `MAMA Mobile`
-   - **Session Duration:** `24 hours`
-4. Click **Add public hostname**:
-   - **Subdomain:** `mama`
-   - **Domain:** Select your domain
-5. Under **Access policies**, click **Add a policy**:
-   - **Policy name:** `Owner Only`
-   - **Action:** `Allow`
-   - **Include** → **Emails** → Your email address
-6. Click through optional settings → **Add application**
-
-#### Step A6: Test
-
-Request `https://mama.yourdomain.com/api/runtime/status` with an authenticated API client.
-A request from the trusted local proxy carrying validated Cloudflare Access identity headers needs
-no second bearer token. Otherwise, the remote API client reads `MAMA_AUTH_TOKEN` from a protected
-environment or secret store and sends it as bearer authentication, never in the URL. Other
-identities are denied.
-
----
-
-### Method B: CLI Setup (Alternative)
-
-Use this method if you prefer command-line or need to automate tunnel creation.
-
-#### Step B1: Login to Cloudflare
-
-```bash
-cloudflared tunnel login
-
-# Opens browser → Login to Cloudflare
-# Select zone (domain) to authorize
-```
-
-#### Step B2: Create Named Tunnel
-
-```bash
-# Create tunnel
-cloudflared tunnel create mama-mobile
-
-# Output:
-# Tunnel credentials written to /home/user/.cloudflared/UUID.json
-# Tunnel mama-mobile created with ID: uuid-abc-123
-
-# Save the tunnel ID for next steps
-```
-
-#### Step 4: Configure Tunnel
-
-Create `~/.cloudflared/config.yml`:
-
-```yaml
-tunnel: uuid-abc-123 # Your tunnel ID from Step 3
-credentials-file: /home/user/.cloudflared/uuid-abc-123.json
-
-ingress:
-  - hostname: mama.yourdomain.com # Or use Cloudflare's free subdomain
-    service: http://localhost:3847
-  - service: http_status:404 # Catch-all
-```
-
-#### Step 5: Route DNS
-
-```bash
-# Create DNS record pointing to tunnel
-cloudflared tunnel route dns mama-mobile mama.yourdomain.com
-
-# Or use Cloudflare dashboard:
-# DNS → Add record → CNAME → mama → uuid-abc-123.cfargotunnel.com
-```
-
-#### Step 6: Configure Zero Trust Access Policy
-
-**Via Cloudflare Dashboard:**
-
-1. Go to **Zero Trust** → **Access** → **Applications**
-2. Click **Add an application** → **Self-hosted**
-
-**Application Configuration:**
-
-```yaml
-Application name: MAMA Mobile
-Session Duration: 24 hours (or your preference)
-Application domain: mama.yourdomain.com
-```
-
-**Identity Providers (Choose one or more):**
-
-- ✅ Google (Recommended)
-- ✅ GitHub (For developers)
-- ✅ Microsoft/Azure AD
-- ✅ Generic SAML/OIDC
-
-**Access Policy:**
-
-```yaml
-Policy name: Allow My Email Only
-Action: Allow
-Include:
-  - Emails: your-email@gmail.com  # YOUR email only
-
-# Optional: Add more rules
-Include:
-  - Emails ending in: @yourcompany.com  # For team access
-```
-
-**Example for Personal Use:**
-
-```yaml
-Policy: Allow Only Me
-Include:
-  - Emails: john.doe@gmail.com
-# That's it! Only your Google account can access
-```
-
-#### Step 7: Start Tunnel
-
-```bash
-# Start MAMA OS
-mama start &
-
-# Start Cloudflare tunnel
-cloudflared tunnel run mama-mobile
-
-# Output:
-# INF Connection established connIndex=0 location=SFO
-# INF Each HA connection's tunnel IDs will be identified by...
-```
-
-#### Step 8: Test the Operational API
-
-Request `https://mama.yourdomain.com/api/runtime/status` with an authenticated API client that
-passes the validated Access identity through the trusted local tunnel. That request needs no second
-bearer token. Otherwise, the client reads `MAMA_AUTH_TOKEN` from its protected environment or
-secret store and sends bearer authentication outside the URL.
-
-Cloudflare Access must admit the configured identity before the request reaches MAMA. Continue to
-use a messenger gateway for conversations and delivered work.
-
-### Testing Your Setup
-
-**1. Verify Zero Trust is Working:**
-
-```bash
-# Try accessing in incognito/private mode
-# Should redirect to Google login
-# After login with allowed email → Access granted
-# After login with non-allowed email → Access denied (403)
-# Protected /api/* routes should also return 200 without adding Authorization: Bearer ...
-```
-
-**2. Test with Different Accounts:**
-
-```bash
-# Your allowed email: ✅ Access granted
-# Your friend's email: ❌ Access denied
-# No login: ❌ Redirected to login page
-```
-
-**3. Test 2FA:**
-
-```bash
-# If you have 2FA on Google:
-# 1. Login shows Google login page
-# 2. After password → 2FA code required
-# 3. After 2FA → Access granted
-
-# Someone with stolen password but no 2FA device: ❌ Blocked
-```
-
-### Advantages Over Token Auth
-
-| Feature                | Token Auth            | Cloudflare Zero Trust             |
-| ---------------------- | --------------------- | --------------------------------- |
-| Brute Force Protection | Manual rate limiting  | ✅ Automatic                      |
-| 2FA Support            | Manual implementation | ✅ Automatic                      |
-| Account-based          | ❌ No                 | ✅ Yes                            |
-| Email restriction      | ❌ No                 | ✅ Yes                            |
-| Session management     | Manual                | ✅ Automatic                      |
-| DDoS protection        | ❌ No                 | ✅ Yes                            |
-| Audit logs             | Manual                | ✅ Built-in                       |
-| Revoke access          | Change token          | ✅ One click                      |
-| MAMA-side config       | `MAMA_AUTH_TOKEN`     | Validated Access identity headers |
-
-### Free vs Paid
-
-**Cloudflare Zero Trust Free Tier:**
-
-- ✅ Up to 50 users
-- ✅ Unlimited bandwidth
-- ✅ All authentication providers
-- ✅ Basic access policies
-- ✅ Perfect for personal/small team use
-
-**For Personal MAMA Use:**
-
-- Free tier is more than enough
-- No credit card required
-- No hidden fees
-
-### Troubleshooting
-
-**Issue: "Access Denied" after login**
-
-```bash
-# Check your email in Access Policy
-# Cloudflare Zero Trust → Access → Applications → MAMA Mobile → Policies
-# Ensure your Google email exactly matches
-```
-
-**Issue: Tunnel won't start**
-
-```bash
-# Check config.yml syntax
-cloudflared tunnel info mama-mobile
-
-# Check MAMA is running
-curl http://localhost:3847/health
-```
-
-**Issue: DNS not resolving**
-
-```bash
-# Check DNS record
-dig mama.yourdomain.com
-
-# Should show CNAME to uuid.cfargotunnel.com
-```
-
-### Security Best Practices with Zero Trust
-
-✅ **DO:**
-
-- Use your personal Google/GitHub account
-- Enable 2FA on your auth provider
-- Set short session durations (1-24 hours)
-- Review access logs regularly
-- Use email restriction (only your email)
-
-❌ **DON'T:**
-
-- Share your login credentials
-- Disable 2FA to "make it easier"
-- Allow `*@gmail.com` (too broad)
-- Use the same password for multiple services
-
----
-
-## Token Authentication (Testing Only)
-
-⚠️ **WARNING: This section is for TESTING/DEVELOPMENT only. DO NOT use for production deployment.**
-
-**Use cases for token auth:**
-
-- ✅ Quick testing of MAMA Mobile features
-- ✅ Temporary access for debugging
-- ✅ Local network access (same WiFi)
-
-**DO NOT use for:**
-
-- ❌ Long-term deployment
-- ❌ Public internet exposure
-- ❌ Untrusted networks
-
-### Quick Testing Setup
-
-**For Cloudflare Quick Tunnel (expires automatically):**
-
-```bash
-# Generate a strong random token
-export MAMA_AUTH_TOKEN="$(openssl rand -base64 32)"
-
-# Restart MAMA OS
-mama start
-```
-
-### Example: Cloudflare Quick Tunnel
-
-```bash
-# 1. Generate an authentication token
-export MAMA_AUTH_TOKEN="$(openssl rand -base64 32)"
-
-# 2. Start MAMA OS
-mama start &
-
-# 3. Start tunnel
-cloudflared tunnel --url http://localhost:3847
-
-# 4. Test /api/runtime/status with an authenticated API client.
-# The client reads MAMA_AUTH_TOKEN from its protected environment or secret store.
-```
-
-### Security Warnings
-
-When MAMA detects external access, it will show warnings:
-
-```
-⚠️  ========================================
-⚠️  SECURITY WARNING: External access detected!
-⚠️  ========================================
-⚠️
-⚠️  Your MAMA server is being accessed from outside localhost.
-⚠️  This likely means you are using a tunnel (ngrok, Cloudflare, etc.)
-⚠️
-⚠️  Unauthenticated non-local requests are rejected. A tunnel URL alone does not grant access.
-⚠️
-⚠️  External API access requires one authenticated path:
-⚠️    - a valid MAMA_AUTH_TOKEN bearer token, or
-⚠️    - validated Cloudflare Access identity headers from a trusted local proxy.
-⚠️
-⚠️  ========================================
-```
-
----
-
-## Authentication
-
-### How It Works
-
-MAMA uses simple token-based authentication:
-
-```javascript
-// Request from localhost -> Always allowed
-if (req.remoteAddress === '127.0.0.1') {
-  return true;
-}
-
-// A trusted local proxy plus validated Cloudflare Access identity needs no bearer.
-if (trustedProxyPeer && validatedCloudflareAccessIdentity(req.headers)) {
-  return true; // Allow via Cloudflare Access
-}
-
-// Other remote requests require a configured bearer token.
-if (validBearerFromAuthorizationHeader(req, MAMA_AUTH_TOKEN)) {
-  return true;
-}
-
-return false;
-```
-
-### Providing the Token
-
-**Method 1: Authorization Header (Recommended)**
-
-Use an authenticated API client for `/api/runtime/status`. It must read `MAMA_AUTH_TOKEN` from a
-protected environment or secret store and send bearer authentication outside the URL.
-
-### Token Requirements
-
-- **Length:** Minimum 16 characters (32+ recommended)
-- **Randomness:** Use cryptographically secure random generation
-- **Storage:** Store in environment variable, NOT in code
-- **Rotation:** Change token if compromised
-
-**Good token:**
-
-```bash
-export MAMA_AUTH_TOKEN="$(openssl rand -base64 32)"
-```
-
-**Bad token:**
-
-```bash
-export MAMA_AUTH_TOKEN="password123"  # ❌ Too weak
-export MAMA_AUTH_TOKEN="mama"         # ❌ Guessable
-```
-
----
-
-## Configuring API Authentication
-
-### Daemon Environment
-
-Generate the token in the environment that starts MAMA OS:
-
-```bash
-export MAMA_AUTH_TOKEN="$(openssl rand -base64 32)"
-mama start
-```
-
-The stdio MCP server does not own this token. Restart the MAMA OS daemon after changing its
-environment.
-
-## Security Best Practices
-
-### ✅ DO
-
-1. **Use localhost only** unless you absolutely need external access
-2. **Use strong `MAMA_AUTH_TOKEN` for non-Access tunnels; for Cloudflare Zero Trust, validate Access identity through the trusted local proxy**
-3. **Use HTTPS tunnels** (ngrok, Cloudflare provide this automatically)
-4. **Keep tunnel URLs private** - treat them like passwords
-5. **Close tunnels** when not in use
-6. **Rotate tokens** if you suspect compromise
-7. **Monitor logs** for suspicious access attempts
-8. **Use temporary tunnels** (Cloudflare Quick Tunnel expires automatically)
-9. **If using Cloudflare Zero Trust, accept validated Access identity only from the trusted local proxy**
-10. **Review security logs** (`~/.mama/logs/security-events.jsonl`) after any external probing
-11. **Wire alert channels** with `MAMA_SECURITY_ALERT_CHANNELS` before public exposure
-
-### ❌ DON'T
-
-1. **Never share tunnel URLs publicly** (GitHub, Slack, Twitter, etc.)
-2. **Never commit tokens to git** (use `.env` files with `.gitignore`)
-3. **Don't use weak tokens** ("password", "123456", your name, etc.)
-4. **Don't leave tunnels open 24/7** unless necessary
-5. **Don't disable authentication** when using tunnels
-6. **Don't expose to untrusted networks** without authentication
-7. **Don't share the same token** across multiple services
-
-### Example: Safe Tunnel Usage
-
-```bash
-# 1. Generate strong token
-export MAMA_AUTH_TOKEN="$(openssl rand -base64 32)"
-echo "Token: $MAMA_AUTH_TOKEN"  # Save this securely
-
-# 2. Start MAMA
-mama start &
-
-# 3. Start temporary tunnel
-cloudflared tunnel --url http://localhost:3847
-
-# 4. Share URL + token with ONLY trusted users
-# Send via encrypted channel (Signal, encrypted email, etc.)
-
-# 5. Close tunnel when done
-# Ctrl+C on cloudflared
-```
-
----
-
-## Threat Scenarios
-
-### Scenario 1: Exposed Tunnel Without Token
-
-**Mistake:**
-
-```bash
-# ❌ No authentication token set
-cloudflared tunnel --url http://localhost:3847
-# URL: https://abc123.trycloudflare.com
-```
-
-**Attack:**
-
-- Attacker finds your URL (leaked in screenshot, shared by mistake)
-- Calls the exposed operational API
-- Can reach powerful authenticated routes that inspect data or trigger local agent work
-- May read files or execute commands when an exposed route grants those capabilities
-
-**Protection:**
-
-```bash
-# ✅ Set authentication token FIRST
-export MAMA_AUTH_TOKEN="$(openssl rand -base64 32)"
-cloudflared tunnel --url http://localhost:3847
-
-# Now attacker needs token to access
-```
-
-### Scenario 2: Weak Token
-
-**Mistake:**
-
-```bash
-# ❌ Weak token
-export MAMA_AUTH_TOKEN="mama123"
-cloudflared tunnel --url http://localhost:3847
-```
-
-**Attack:**
-
-- Attacker tries common passwords
-- Repeatedly guesses the bearer token
-- Gains access
-
-**Protection:**
-
-```bash
-# ✅ Strong random token
-export MAMA_AUTH_TOKEN="$(openssl rand -base64 32)"
-```
-
-### Scenario 3: Token Leaked in Logs or Command History
-
-**Mistake:** copying a bearer token into a shared script, ticket, command, or URL. The token can
-remain in shared files, chat transcripts, or shell history.
-
-**Protection:**
-
-Keep the token in a protected environment or secret store. The authenticated API client reads it
-there and sends bearer authentication outside the URL.
-
-### Scenario 4: Public Repository Exposure
-
-**Mistake:**
-
-```bash
-# ❌ Committing .env file
-git add .env
-git commit -m "Add config"
-git push
-
-# .env contains:
-# MAMA_AUTH_TOKEN=my-secret-token
-```
-
-**Attack:**
-
-- Attacker scans GitHub for leaked tokens
-- Finds your token
-- Uses it to access your MAMA server
-
-**Protection:**
-
-```bash
-# ✅ Add .env to .gitignore
-echo ".env" >> .gitignore
-
-# ✅ Use environment-specific configs
-# Never commit secrets to git
-
-# If you already committed:
-# 1. Rotate token immediately
-# 2. Use git-filter-repo to remove from history
-```
-
----
-
-## Summary
-
-### Quick Security Checklist
-
-- [ ] Using localhost only? → No token needed
-- [ ] Using Cloudflare Zero Trust? → Validate Access identity headers arrive through the trusted local proxy
-- [ ] Using other tunnels? → **MUST set `MAMA_AUTH_TOKEN`**
-- [ ] Token is strong? → Minimum 32 characters, random
-- [ ] Tunnel URL private? → Don't share publicly
-- [ ] Using HTTPS tunnel? → ngrok/Cloudflare provide this
-- [ ] Monitoring logs? → Check for suspicious access
-- [ ] Close tunnel when done? → Don't leave open 24/7
-
-### Default Security Posture
-
-**MAMA is secure by default:**
-
-- ✅ Localhost-only binding
-- ✅ No external access without tunnels
-- ✅ Authentication warnings when needed
-- ✅ Can disable features via environment variables
-
-**You must actively choose** to expose MAMA externally, and when you do, MAMA will warn you to set up authentication.
-
----
-
-## Agent Process Isolation
-
-MAMA OS agents (Claude CLI subprocesses) must be **isolated to the `.mama` scope**. If global user settings leak into agents, it causes token waste and behavior contamination.
-
-### Isolation Architecture
-
-```text
-User's Claude Code Session         MAMA OS Agent
-─────────────────────              ─────────────────
-cwd: ~/project/                    cwd: ~/.mama/workspace/
-CLAUDE.md: ~/CLAUDE.md ✅          CLAUDE.md: none (blocked by git boundary)
-plugins: ~/.claude/plugins/ ✅     plugins: ~/.mama/.empty-plugins/ (empty directory)
-system-prompt: none                system-prompt: rules+skills+tools (injected once)
-```
-
-### Isolation Mechanisms
-
-| #   | Mechanism                             | File                                                 | Effect                                                                                                                                                           |
-| --- | ------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | `cwd: ~/.mama/workspace`              | `persistent-cli-process.ts`, `claude-cli-wrapper.ts` | Restricts agent working directory to MAMA workspace                                                                                                              |
-| 2   | `.git/HEAD` creation                  | Same as above                                        | Prevents Claude Code from searching for CLAUDE.md above git repo root                                                                                            |
-| 3   | `--plugin-dir ~/.mama/.empty-plugins` | Same as above                                        | Points plugin directory to an empty folder                                                                                                                       |
-| 4   | `--setting-sources project,local`     | Same as above                                        | Blocks loading `~/.claude/settings.json` (enabledPlugins). `--plugin-dir` alone is insufficient — it's additive, so global plugins are loaded from settings.json |
-
-### Why This Is Needed
-
-MAMA includes everything the managed runtime needs in `--system-prompt`:
-
-- Runtime identity and capability instructions (the owner runtime loads no persona files)
-- Skill catalog
-- Gateway tool definitions
-
-Without isolation, Claude Code CLI **additionally** injects the following every turn:
-
-- `~/CLAUDE.md` (user's personal settings)
-- Global plugin skills/hooks
-- Duplicates of content already in `--system-prompt`
-
-Result: **thousands of wasted tokens per turn** + agent behavior contaminated by user's personal settings.
-
-### File Access Scope
-
-`cwd` only restricts CLAUDE.md discovery. Agent file access is controlled separately:
-
-- `--dangerously-skip-permissions`: allows all file access (MAMA OS default)
-- `--add-dir`: allows access to specific directories (in permissions mode)
-
----
-
-## Code-Act Sandbox Security
-
-MAMA OS includes a **Code-Act sandbox** — a JavaScript execution environment powered by QuickJS (WebAssembly). This allows agents to run code without Node.js access.
-
-### Security Model
-
-```
-User Code → QuickJS WASM Sandbox → Host Bridge → Gateway Tools (Tier 2)
-             ↑                      ↑
-             No Node.js APIs        Read + memory-write tools
-             No file system         No Bash, no Write
-             No network access      No communication tools
-```
-
-**Isolation guarantees:**
-
-- **No Node.js APIs** — `require()`, `process`, `fs`, `child_process` are unavailable
-- **No network access** — No `fetch()`, no `XMLHttpRequest`, no sockets
-- **Execution timeout** — Default 30s, max 60s, enforced at engine level
-- **Memory limit** — QuickJS WASM heap is bounded (default ~256 MB, set by `quickjs-emscripten` WASM allocation)
-- **Tier 2 tools for `/api/code-act`** — The HTTP endpoint injects the host
-  bridge with tier 2 in `start.ts`, exposing read tools plus bounded memory-write
-  tools. `Bash`, `Write`, and communication tools remain unavailable. Set
-  `MAMA_CODE_ACT_READ_ONLY=1` to force the endpoint to inject tier 3 read-only
-  tools only.
-
-### Available Tools in Sandbox
-
-`POST /api/code-act` injects Tier 2 tools:
-
-- `mama_search`, `mama_load_checkpoint` — Memory read
-- `context_compile` — Trusted context-packet creation. Requires an active
-  worker envelope and persists an append-only packet for downstream
-  `context_packet_id` provenance.
-- `mama_save`, `mama_update`, `mama_add`, `mama_ingest` — Memory write, audited
-  through gateway envelope context when envelope issuance is enabled. Automated
-  coverage verifies Code-Act context propagation and memory-scope mismatch rows
-  in `tests/envelope/code-act-context.test.ts` and
-  `tests/envelope/memory-scope-mismatch-logging.test.ts`.
-- `report_publish`, `wiki_publish` — Dashboard/wiki publish helpers with
-  autosave audit behavior
-- `Read` — File read
-- `browser_get_text`, `browser_screenshot` — Browser read
-- `os_list_bots`, `os_get_config` — Status read
-- `pr_review_threads` — PR data read
-
-Agent-bound Code-Act sessions may expose additional role-scoped functions such
-as the owner Drive tools. Only a verified `owner_console` receives that surface;
-wildcard non-owner roles remain structurally blocked. The owner may select a
-Drive folder for the active request without predeclaring it in
-`~/.mama/connectors.json`. If a configured-root destination capability is
-supplied, it is still validated. Upload sources remain restricted to regular
-files inside the private MAMA workspace, and Drive-derived results are
-re-wrapped as untrusted data after Code-Act evaluation so JavaScript transforms
-cannot remove the trust boundary.
-
-### HTTP API Access
-
-The Code-Act sandbox is accessible via `POST /api/code-act`. This endpoint:
-
-- Is write-capable for memory surfaces by default via
-  `HostBridge.injectInto(sandbox, 2)` only after the request passes token auth
-  (`MAMA_AUTH_TOKEN`) or validated Cloudflare Access identity from a trusted proxy
-- Requires strong perimeter controls before any non-local exposure. Production
-  deployments must use Zero Trust access or mTLS/IP allowlisting plus bearer
-  token auth; token auth alone is not sufficient for internet exposure.
-- Remains unavailable to remote requests when neither valid bearer auth nor validated Cloudflare
-  Access identity from a trusted proxy is present
-- Can be forced read-only with `MAMA_CODE_ACT_READ_ONLY=1`, which injects
-  tier 3 tools instead after the same token-or-Cloudflare perimeter check
-- Has no access to agent persona or conversation context
-- Applies a per-client rate limit (`MAMA_CODE_ACT_RATE_LIMIT_PER_MINUTE`,
-  default 30) and structured logs for memory mutation attempts
-- Trusts forwarded client IP headers only when the socket peer is a configured
-  trusted proxy (`MAMA_TRUSTED_PROXY_IPS`, plus loopback defaults); otherwise
-  the socket peer is the rate-limit identity
-- Records gateway audit rows with envelope hash, SHA-256 references for
-  model-requested scope IDs, host-issued envelope scope snapshots, and
-  `scope_mismatch`. The signed envelope/audit row gives durable request
-  provenance, while the memory row stores compact M2 origin metadata for
-  operator lookup.
-
-### Risk Assessment
-
-| Risk                | Mitigation                                   |
-| ------------------- | -------------------------------------------- |
-| Code injection      | QuickJS WASM isolation, no eval of host code |
-| File system access  | Only via `Read` tool (read-only)             |
-| Command execution   | `Bash` tool not available in Tier 2          |
-| Memory mutation     | Tier 2 memory writes are envelope-audited    |
-| Data exfiltration   | No network access, no communication tools    |
-| Resource exhaustion | Timeout + WASM memory bounds                 |
-
----
-
-## Support
-
-If you have security concerns or found a vulnerability:
-
-1. **For general questions:** Open an issue on GitHub
-2. **For security vulnerabilities:** Email [security contact] (DO NOT open public issue)
-
----
-
-_Last updated: 2026-07-22_
-_MAMA OS v0.27.3_
+# Security guide
+
+This guide describes `rebuild/owner-flow`. MAMA runs one owner agent, stores its
+work history, and serves the owner's tasks, memory, wiki, reports and logs. The
+security boundary protects those records and connector credentials while keeping
+the owner's existing tools available.
+
+## Viewer access
+
+The viewer binds to the loopback interface by default. `MAMA_API_HOST` can override
+the bind address; keep the origin on loopback when using a Cloudflare tunnel.
+A direct loopback request without tunnel headers uses the local dashboard without
+a token. Local processes and other users able to reach that interface are inside
+this trust boundary.
+
+Every request must first pass a Host allowlist, including public routes. Loopback
+names and addresses are accepted. Add the public viewer's host names through
+`MAMA_VIEWER_HOSTNAMES`, a comma-separated environment variable containing host
+names only. An unrecognised or malformed Host receives 421 before authentication.
+The reason for this check is DNS rebinding: a remote page must not gain the local
+no-token path by resolving its own name to the loopback interface. An allowed
+Host is routing validation, not an authenticated identity.
+
+For remote access, place the viewer behind Cloudflare Tunnel and an Access
+application. Set `MAMA_CF_ACCESS_ISSUER` and `MAMA_CF_ACCESS_AUD` for that application
+in the daemon environment. The origin verifies the Access assertion's RS256
+signature against the issuer's signing keys, issuer, audience, time claims and
+email claim. Signing keys are cached for ten minutes. Missing configuration,
+invalid assertions and verification errors fail authentication. A forwarded email
+or tunnel header alone never establishes identity.
+
+`MAMA_AUTH_TOKEN` provides an alternative bearer credential for API clients.
+Send it in the Authorization header; never put it in a URL or a recallable record.
+It is compared with a timing-safe comparison. A valid token is independent of
+Access authentication. Keep it only with trusted clients and in the daemon's
+credential environment.
+
+API routes require authentication for nonlocal or tunnel-shaped requests. The
+health endpoint, static viewer assets and OPTIONS keep their existing public
+route semantics, but still pass the Host check. Cloudflare Access policy decides
+who can reach the tunnel. The origin verifies an assertion for the configured
+application; it does not maintain a second email allowlist.
+
+## Owner credential boundary
+
+The daemon's connectors retain the credentials needed to collect and deliver
+work. Before starting either native agent backend, standalone removes
+secret-shaped environment names. The shared core driver accepts that complete
+consumer-supplied environment, and native children inherit the same boundary.
+Noncredential runtime settings remain available.
+
+The Claude owner runs inside the workspace with project/local settings, an empty
+plugin directory and a Git boundary that prevents loading global instructions.
+Read-deny rules and Bash sandbox denyRead paths exclude `auth.env`, `config.yaml`,
+`runtime/` and the managed or configured Codex home. Writes stay inside the
+workspace; Bash remains sandboxed without an unsandboxed retry. Native web tools
+remain available. Subagents inherit these settings.
+
+The Codex owner uses a named workspace permission profile with those credential
+paths denied. Both thread start and resume select that profile. Workspace writes,
+native shell and web search remain available under the existing policy; shell
+network access is unchanged. Approval handling does not grant access to excluded
+credentials.
+
+These controls separate agent-readable work from connector authentication. They
+do not promise that a credential deliberately placed in an otherwise readable
+work file is invisible to the owner agent.
+
+## External evidence and recallable writes
+
+Model-facing results from source search/read, attachment list/download, wiki read
+and report read are quoted as untrusted content. Source delta stimuli use the
+same boundary. Stored originals and host receipts retain their structure.
+Quoting makes external instructions visibly distinct from an owner instruction;
+it is not a guarantee against all prompt injection.
+
+The dispatcher scans recallable writes before executing them. The contract is
+set on `memory.save`, `memory.update`, `work.create`, `work.revise`,
+`manage.wiki.publish`, `manage.wiki.update` and `report.publish`. Secret-shaped
+material is refused with `secret_material_refused`; errors name the pattern,
+never the matched value. Nested content and evidence references are scanned.
+Ordinary content hashes and version hashes remain valid. Instruction-shaped
+phrases produce observations rather than a new owner capability restriction.
+
+The scanner recognises specific credential shapes; it does not identify every
+possible secret or retroactively remove older stored content. Do not use tasks,
+memory, wiki pages or reports as a credential store.
+
+## Observation and logs
+
+Catalog calls and native owner/subagent tool calls are observed in `tool_traces`.
+Native traces contain the tool name, a bounded input summary with secret-shaped
+values masked, status, duration and the owning parent or child `model_run_id`.
+Native outputs are not copied into these summaries. This is observation, not a
+tool approval or blocking rule. Trace failures must not prevent native execution.
+A trace records a provider-reported call; it is not a complete operating-system
+audit of every subprocess or network packet.
+
+Each tunnel-shaped viewer request produces one log line with method, path without
+query, status, a bounded Cloudflare ray identifier, and a short hash of the
+verified Access email or `token`. Requests without verified credentials carry an
+unauthenticated marker. Failed API authentication is logged once. Ordinary direct
+loopback requests are not logged. Tokens, assertions, query strings and raw email
+addresses are not request-log fields.
+
+Viewer clients receive a generic internal-error response; diagnostic detail stays
+in the daemon log with sensitive values redacted. The daemon creates its log with
+mode 0600 and tightens an existing log's permissions on startup. The log viewer
+reads at most 256 KiB from the tail, with at most 2,000 returned lines. Native Claude stderr uses the same
+configured-secret redaction mechanism as the Codex driver.
+
+## Telegram and attachments
+
+Telegram ingress requires an allowlisted chat and an accepted owner sender.
+When explicit owner sender IDs are absent, the existing single-chat owner check
+requires the sender to match that chat. Messages rejected by this check stay
+rejected and now produce an observation containing hashes of the chat and sender
+IDs, without message content or raw identifiers.
+
+Shared connector attachment downloads are limited to 50 MiB. The downloader
+checks declared lengths and counts streamed bytes, so missing or understated
+Content-Length cannot bypass the cap. Oversize downloads fail clearly and remove
+partial files. Telegram's existing narrower 20 MiB download cap remains in place;
+the Bot API's 50 MB upload allowance does not enlarge its download allowance.
+Slack file requests attach the bot credential only to an approved HTTPS file
+origin and do not forward it through automatic redirects to another origin.
+These checks protect disk/memory use and prevent credential disclosure.
+
+## Limits of this threat model
+
+- A compromised owner account or stolen bearer credential carries the owner's
+  authority. These changes do not add a second approval gate to owner tools.
+- Access policy membership, account security and application scope are the
+  deployment owner's responsibility. Origin JWT verification does not correct an
+  overly broad Access policy.
+- A compromised operating system, privileged local process or daemon process can
+  access data and credentials outside the agent boundary.
+- Quoting and shape-based secret detection reduce specific exposure paths; they
+  do not provide complete content sanitisation or guaranteed injection immunity.
+- Hashed identifiers support correlation, not strong anonymity for guessable IDs.
+  Protect the logs and database as private owner data.

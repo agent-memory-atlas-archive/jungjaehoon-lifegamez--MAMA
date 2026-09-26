@@ -160,7 +160,8 @@ export interface PromptCallbacks {
   onAccepted?: (receipt: NativeInputReceipt) => void;
   onDelta?: (text: string) => void;
   onToolUse?: (name: string, input: Record<string, unknown>) => void;
-  onToolComplete?: (tool: string, toolUseId: string, isError: boolean) => void;
+  /** unknown means the child ended without a matching tool result. */
+  onToolComplete?: (tool: string, toolUseId: string, isError: boolean, outcome?: 'unknown') => void;
   /**
    * A native subagent was announced on this run's own thread. Admission, not an
    * external effect: it deliberately does NOT travel through onToolUse, because

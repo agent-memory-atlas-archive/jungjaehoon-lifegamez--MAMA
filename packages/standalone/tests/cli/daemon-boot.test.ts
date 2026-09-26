@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { StimulusReceipt } from '@jungjaehoon/mama-core/runtime/runtime';
@@ -79,6 +87,39 @@ function viewerDouble(order: string[]) {
 }
 
 describe('daemon bootstrap', () => {
+  it.each([false, true])(
+    'restricts the daemon log before starting runtime %#',
+    async (existing) => {
+      const root = mkdtempSync(join(tmpdir(), 'daemon-log-'));
+      roots.push(root);
+      const options = config(root);
+      options.logging.file = join(root, 'logs', 'daemon.log');
+      if (existing) {
+        mkdirSync(join(root, 'logs'));
+        writeFileSync(options.logging.file, 'retained\n', { mode: 0o644 });
+      }
+      const daemon = await bootDaemon({
+        config: options,
+        home: root,
+        configPath: join(root, 'config.yaml'),
+        mode: 'replay',
+        replay: async () => {},
+        logger: { info: () => {}, error: () => {} },
+        dependencies: {
+          ensureIsolation: () => {},
+          createOwnerRuntime: async () => {
+            expect(existsSync(options.logging.file)).toBe(true);
+            expect(statSync(options.logging.file).mode & 0o777).toBe(0o600);
+            if (existing) expect(readFileSync(options.logging.file, 'utf8')).toBe('retained\n');
+            return ownerDouble([]) as never;
+          },
+          createViewerServer: () => viewerDouble([]) as never,
+        },
+      });
+      await daemon.stop();
+    }
+  );
+
   it('authenticates MCP list and action calls with the credential written by Claude boot', async () => {
     // Short paths keep the Unix socket below the platform path-length limit.
     const root = mkdtempSync(join(tmpdir(), 'mcp-boot-'));

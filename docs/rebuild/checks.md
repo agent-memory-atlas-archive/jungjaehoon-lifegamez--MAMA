@@ -841,3 +841,31 @@ The implementation writes raw/index data during import only. Replay is the owner
 - 2026-09-27 01:05 KST: the owner opened the viewer through the Cloudflare domain and logged in: the board
   and task pages load. With forged Access headers refused at the origin (401), this is the verified-JWT
   path passing. Security P1 is live on the Codex backend; the Claude deny rules are still test-only.
+
+- 2026-09-27: Answer/Report security P2 — native owner and subagent tool notifications now enter the existing core observation path and `tool_traces`, with parent run attribution, provider call IDs, bounded masked inputs, status and duration.
+  Evidence: driver callback tests and real SQLite read-back cover read/web/write calls, concurrent identical names, interrupted calls, late child events and failed observation storage. Replay eligibility remains separate from read-only observation; storage errors do not block the owner.
+  Remaining: native backend/live daemon validation is not claimed. Detailed commands, results and per-file deltas are in security-p2-p3-2026-09-27.md.
+- 2026-09-27: Answer security P2 — every viewer request checks its Host before authentication to prevent DNS rebinding; MAMA_VIEWER_HOSTNAMES extends loopback names. Existing Access JWT verification and bearer authentication remain the identity boundary.
+  Evidence: handler tests reject malformed, duplicate and unapproved Hosts before auth, and log tunnel requests/auth failures exactly once with verified identity hashes or token/anonymous markers. Direct local requests remain quiet.
+  Remaining: socket-based and live tunnel checks are blocked or unperformed; no deployed configuration was read or changed.
+- 2026-09-27: Attach/Answer/Report security P2 — wiki publish/update and report publish now declare recallableWrite. The shared scan visits evidence-reference leaves without rejecting ordinary content/version hashes; rejected catalog writes also receive masked trace summaries.
+  Evidence: dispatcher tests prove rejected page/report writes leave existing files and slots unchanged; valid source references, section edits and hashes still persist. Existing credential patterns are reused without entropy-based token matching.
+  Remaining: this does not retrospectively scrub stored data or recognise arbitrary secret formats.
+- 2026-09-27: Answer security P2 — Claude stderr shares configured-value redaction with Codex, including split chunks. Viewer internal failures receive generic client responses and retain sanitized diagnostic detail in the log.
+  Evidence: shutdown/split-stderr tests, wrapped-action error tests, bounded log-tail file I/O tests, and daemon startup tests cover 0600 creation/tightening. The tail endpoint reads at most 256 KiB and reports an unknown full-file line count as null.
+  Remaining: the running daemon and existing live log permissions were not changed; startup enforcement applies on the next boot.
+- 2026-09-27: Recognise/Attach security P3 — rejected non-owner Telegram messages now log only chat/sender hashes. Shared downloads enforce 50 MiB across headers and streamed bytes; Slack credentials are restricted to the approved HTTPS file origin with redirects refused.
+  Evidence: connector/gateway tests cover exact-limit success, oversized or dishonest lengths, cancellation, cleanup, unchanged targets and credential destination checks. Telegram's existing narrower 20 MiB download limit remains intact.
+  Remaining: no live connector download or delivery was attempted. The security guide now describes this branch's actual boundaries and limitations.
+- 2026-09-27: Security P2/P3 decision recording — MCP save was attempted under the repository rule but returned “requires approval” while this session's approval policy is never.
+  The architecture/API/environment decisions are recorded in this check log and security-p2-p3-2026-09-27.md. No commit, daemon restart or live state mutation was performed.
+- 2026-09-27: Security P2/P3 validation — 367 focused tests passed, core compilation and standalone typecheck passed, and changed-file lint passed. No commit.
+  Full standalone retains 23 sandbox listener failures; full core retains listener/embedding failures and one graph pagination assertion that passed isolated reruns on current and unchanged baseline source. The report names every affected suite.
+  These are source/test results only; owner-facing live behavior, deployment and connector delivery remain unverified.
+- 2026-09-27 01:40 KST: security P2/P3 supervisor check: core 891/891, standalone 687/688 → fixed the one
+  failure (the generic-error change also hid fixed host messages such as 503 "Report store is not wired";
+  now only unexpected errors and server-side action failures are hidden, 4xx action messages kept).
+  API 182/182. Live after restart: loopback 200; Host evil.example 421 (DNS rebinding); tunnel Host with
+  forged Access header 401 and logged as a [viewer] line; a /.env probe logged; daemon.log 0600;
+  MAMA_VIEWER_HOSTNAMES set without printing the hostname. Not yet seen live: a native shell/web call
+  traced (no turn since the restart used the shell; unit tests only).

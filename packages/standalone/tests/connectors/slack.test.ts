@@ -115,7 +115,7 @@ describe('SlackConnector', () => {
         name: 'feedback-test.pdf',
         size: 1_234,
         created: 200,
-        url_private: 'https://files.example.test/F-901',
+        url_private: 'https://files.slack.com/F-901',
         channels: ['channel-key'],
         groups: [],
       },
@@ -153,7 +153,7 @@ describe('SlackConnector', () => {
         name: 'feedback-test.pdf',
         size: 9,
         created: 200,
-        url_private: 'https://files.example.test/F-901',
+        url_private: 'https://files.slack.com/F-901',
         channels: ['channel-key'],
         groups: [],
       },
@@ -170,12 +170,106 @@ describe('SlackConnector', () => {
 
     expect(result.size).toBe(9);
     expect(readFileSync(target, 'utf8')).toBe('file-data');
-    expect(http).toHaveBeenCalledWith('https://files.example.test/F-901', {
+    expect(http).toHaveBeenCalledWith('https://files.slack.com/F-901', {
       headers: { Authorization: 'Bearer fixture-slack-token' },
+      redirect: 'manual',
     });
     await expect(
       connector.listAttachments({ roomId: 'other-channel', fileIds: ['F-901'] })
     ).rejects.toThrow(/does not belong to observation room other-channel/);
+  });
+
+  function fileMetadata(url: string) {
+    slack.filesInfo.mockResolvedValue({
+      ok: true,
+      file: {
+        id: 'F-901',
+        name: 'fixture.pdf',
+        size: 9,
+        created: 200,
+        url_private: url,
+        channels: ['channel-key'],
+        groups: [],
+      },
+    });
+  }
+
+  it.each([
+    ['insecure scheme', 'http://files.slack.com/files-pri/fixture'],
+    ['arbitrary host', 'https://untrusted.invalid/fixture'],
+    ['suffix attack', 'https://files.slack.com.untrusted.invalid/fixture'],
+    ['prefix attack', 'https://untrusted-files.slack.com/fixture'],
+    ['user info attack', 'https://files.slack.com@untrusted.invalid/fixture'],
+    ['embedded credentials', 'https://fixture:private@files.slack.com/fixture'],
+    ['nonstandard port', 'https://files.slack.com:8443/fixture'],
+    ['unrelated service host', 'https://slack.com/fixture'],
+    ['malformed URL', 'not-a-url'],
+  ])('rejects %s before sending a bot token', async (_label, url) => {
+    fileMetadata(url);
+    const root = mkdtempSync(join(tmpdir(), 'slack-untrusted-'));
+    roots.push(root);
+    const http = vi.fn().mockResolvedValue(new Response('file-data'));
+    const connector = new SlackConnector(config, { fetch: http });
+    await connector.init();
+    await expect(
+      connector.downloadAttachment({
+        roomId: 'channel-key',
+        fileId: 'F-901',
+        targetPath: join(root, 'fixture.pdf'),
+      })
+    ).rejects.toThrow(/Slack file url_private/);
+    expect(http).not.toHaveBeenCalled();
+  });
+
+  it('refuses redirects without forwarding credentials or exposing the redirect URL', async () => {
+    fileMetadata('https://files.slack.com/files-pri/fixture');
+    const root = mkdtempSync(join(tmpdir(), 'slack-redirect-'));
+    roots.push(root);
+    let cancelled = false;
+    const outboundTokens: string[] = [];
+    const http = vi.fn(async (_url, options) => {
+      if (options?.redirect !== 'manual') {
+        outboundTokens.push(new Headers(options?.headers).get('Authorization') ?? '');
+        return new Response('untrusted-file');
+      }
+      return new Response(
+        new ReadableStream({
+          cancel() {
+            cancelled = true;
+          },
+        }),
+        {
+          status: 302,
+          headers: { location: 'https://untrusted.invalid/private-location' },
+        }
+      );
+    });
+    const connector = new SlackConnector(config, { fetch: http });
+    await connector.init();
+    await expect(
+      connector.downloadAttachment({
+        roomId: 'channel-key',
+        fileId: 'F-901',
+        targetPath: join(root, 'fixture.pdf'),
+      })
+    ).rejects.toThrow(/^Slack file download redirects are not allowed$/);
+    expect(outboundTokens).toEqual([]);
+    expect(http).toHaveBeenCalledTimes(1);
+    expect(cancelled).toBe(true);
+  });
+
+  it('does not expose request error details from the authenticated download', async () => {
+    fileMetadata('https://files.slack.com/files-pri/fixture');
+    const http = vi.fn().mockRejectedValue(new Error('fixture-slack-token private-request-detail'));
+    const connector = new SlackConnector(config, { fetch: http });
+    await connector.init();
+    await expect(
+      connector.downloadAttachment({
+        roomId: 'channel-key',
+        fileId: 'F-901',
+        targetPath: '/unused-target',
+      })
+    ).rejects.toThrow(/^Slack file download request failed$/);
   });
 
   it('skips bot messages and ignored channels', async () => {

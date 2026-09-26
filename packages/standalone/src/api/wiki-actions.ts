@@ -52,6 +52,7 @@ export function wikiActionRegistrations(ports: WikiPorts): ActionRegistration[] 
     {
       contract: {
         name: 'manage.wiki.publish',
+        recallableWrite: true,
         summary:
           'Publish wiki pages in the configured vault. pages is an array of page objects with relative path, title and Markdown content string. Read an existing page first and pass its expectedContentVersion to update it; use null for a new versioned file. sourceRefs can name exact raw observations.',
         inputSchema: {
@@ -122,6 +123,7 @@ export function wikiActionRegistrations(ports: WikiPorts): ActionRegistration[] 
     {
       contract: {
         name: 'manage.wiki.update',
+        recallableWrite: true,
         summary:
           'Update one existing wiki page by sections instead of republishing it: append a dated line to a section (created at the page end when absent) or replace a section body. Pass the expectedContentVersion from manage.wiki.read; title, type and evidence ids are kept, and sourceIds adds evidence ids to the page metadata.',
         inputSchema: {

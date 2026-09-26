@@ -1,3 +1,5 @@
+import { traceSummary } from '@jungjaehoon/mama-core/runtime/trace-summary';
+import { createNativeToolTraceObserver } from '@jungjaehoon/mama-core/runtime/native-tool-trace-observer';
 import {
   appendOperationToolTrace,
   appendToolTrace,
@@ -71,6 +73,7 @@ export interface ActionSurfaceOptions {
 }
 
 export interface ActionSurface {
+  createNativeEffectObserver(modelRunId: string): ReturnType<typeof createNativeToolTraceObserver>;
   catalog: ReturnType<typeof createCatalog>;
   dispatch: ActionDispatcher;
   ownerAccess: JudgmentAccess;
@@ -96,17 +99,6 @@ export function ownerMemoryScopes(
     scopes.push({ kind: 'channel', id: connector }, { kind: 'project', id: connector });
   }
   return [...new Map(scopes.map((scope) => [`${scope.kind}\0${scope.id}`, scope])).values()];
-}
-
-function traceSummary(value: unknown): string | null {
-  if (value === undefined) return null;
-  let serialized: string;
-  try {
-    serialized = JSON.stringify(value) ?? String(value);
-  } catch {
-    serialized = String(value);
-  }
-  return serialized.length <= 4_000 ? serialized : `${serialized.slice(0, 3_997)}...`;
 }
 
 export function createActionSurface(options: ActionSurfaceOptions): ActionSurface {
@@ -211,6 +203,8 @@ export function createActionSurface(options: ActionSurfaceOptions): ActionSurfac
   };
 
   return {
+    createNativeEffectObserver: (modelRunId) =>
+      createNativeToolTraceObserver(options.adapter, modelRunId),
     catalog,
     dispatch,
     ownerAccess,

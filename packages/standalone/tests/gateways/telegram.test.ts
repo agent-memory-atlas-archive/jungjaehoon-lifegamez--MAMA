@@ -103,6 +103,41 @@ describe('TelegramGateway', () => {
     await gateway.stop();
   });
 
+  it.each([false, true])(
+    'logs one hashed audit event for a dropped message without its content or identifiers (bot=%s)',
+    async (isBot) => {
+      const received: OwnerMessageInput[] = [];
+      const gateway = await gatewayFor(intakeFor(received));
+      const audit = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await seams.handlers.get('message')!({
+          message: message({
+            chat: { id: 876543210, type: 'private' },
+            from: { id: 987654321, is_bot: isBot, first_name: 'private-sender-label' },
+            text: 'private-message-body',
+          }),
+        });
+        expect(received).toEqual([]);
+        expect(audit).toHaveBeenCalledTimes(1);
+        const line = String(audit.mock.calls[0]?.[0]);
+        expect(line).toMatch(
+          /^telegram message dropped reason=non_owner chat_hash=[a-f0-9]{64} sender_hash=[a-f0-9]{64}$/
+        );
+        for (const privateValue of [
+          '876543210',
+          '987654321',
+          'private-sender-label',
+          'private-message-body',
+        ]) {
+          expect(line).not.toContain(privateValue);
+        }
+      } finally {
+        audit.mockRestore();
+        await gateway.stop();
+      }
+    }
+  );
+
   it('submits owner text to the runtime with the Telegram source reference', async () => {
     const received: OwnerMessageInput[] = [];
     const gateway = await gatewayFor(intakeFor(received));

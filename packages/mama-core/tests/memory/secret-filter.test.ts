@@ -1,5 +1,47 @@
 import { describe, expect, it } from 'vitest';
-import { scanForSecrets } from '../../src/memory/secret-filter.js';
+import {
+  redactSecretPatterns,
+  scanForSecrets,
+  scanMemoryWriteInput,
+} from '../../src/memory/secret-filter.js';
+
+describe('secret-shaped trace redaction', () => {
+  it('masks every provider-shaped credential while retaining ordinary version hashes', () => {
+    const credential = 'gh' + 'p_' + 'b'.repeat(30);
+    const hash = 'abcdef0123456789'.repeat(4);
+    const result = redactSecretPatterns(`${credential} ${hash} ${credential}`);
+    expect(result.includes(credential)).toBe(false);
+    expect(result).toBe(`[REDACTED] ${hash} [REDACTED]`);
+  });
+
+  it('preserves non-secret text including the Unicode warning input', () => {
+    expect(redactSecretPatterns('ordinary\u200bnote')).toBe('ordinary\u200bnote');
+  });
+
+  it('removes the body of a private-key block, including a truncated block', () => {
+    const begin = '-----BEGIN ' + 'PRIVATE KEY-----';
+    const end = '-----END ' + 'PRIVATE KEY-----';
+    const body = 'synthetic-key-material';
+    for (const block of [`${begin}\n${body}\n${end}`, `${begin}\n${body}`]) {
+      expect(redactSecretPatterns(`prefix ${block}`)).toBe('prefix [REDACTED]');
+    }
+  });
+});
+
+describe('recallable input nesting', () => {
+  it('scans leaf strings on nested evidence references without rejecting ordinary hashes', () => {
+    const payload = (id: string) => ({ pages: [{ sourceRefs: [{ kind: 'raw', id }] }] });
+    expect(scanMemoryWriteInput(payload('abcdef0123456789'.repeat(4))).clean).toBe(true);
+    const result = scanMemoryWriteInput(payload('gh' + 'p_' + 'a'.repeat(30)));
+    expect(result.clean).toBe(false);
+    expect(result.matches).toContain('github-token');
+  });
+
+  it('refuses containers deeper than the scan boundary instead of omitting their values', () => {
+    const result = scanMemoryWriteInput({ a: { b: { c: { d: { e: { f: 'nested' } } } } } });
+    expect(result).toMatchObject({ clean: false, matches: ['scan-depth-limit-exceeded'] });
+  });
+});
 
 describe('Task 10: memory write content warnings', () => {
   it.each([

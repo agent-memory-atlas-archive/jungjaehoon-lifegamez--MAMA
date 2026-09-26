@@ -3002,15 +3002,15 @@ it('TG-03/04/05/06 observes exact-turn native effects once without duplicating M
   const runtime = new CodexAppServerProcess(testFixture.options);
   const events: string[] = [];
   try {
-    await runtime.prompt('test', {
+    const result = await runtime.prompt('test', {
       onToolUse: (name, input) => events.push(`start:${name}:${input.nativeToolUseId}`),
       onToolComplete: (name, id, isError) => events.push(`end:${name}:${id}:${isError}`),
     });
     expect(events).toEqual([
-      'start:commandExecution:native-1',
-      'end:commandExecution:native-1:false',
-      'start:fileChange:native-2',
-      'end:fileChange:native-2:false',
+      `start:commandExecution:${JSON.stringify([result.session_id, 'native-1'])}`,
+      `end:commandExecution:${JSON.stringify([result.session_id, 'native-1'])}:false`,
+      `start:fileChange:${JSON.stringify([result.session_id, 'native-2'])}`,
+      `end:fileChange:${JSON.stringify([result.session_id, 'native-2'])}:false`,
     ]);
   } finally {
     await runtime.stop();

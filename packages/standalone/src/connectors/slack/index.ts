@@ -46,6 +46,19 @@ export function extractSlackFileIds(text: string): string[] {
   return [...ids];
 }
 
+function requireSlackFileUrl(value: unknown): string {
+  const parsed = new URL(requireHttpsUrl(value, 'Slack file url_private'));
+  if (
+    parsed.hostname !== 'files.slack.com' ||
+    parsed.port !== '' ||
+    parsed.username !== '' ||
+    parsed.password !== ''
+  ) {
+    throw new Error('Slack file url_private must use the trusted Slack file origin');
+  }
+  return parsed.href;
+}
+
 export class SlackConnector implements IConnector {
   readonly name = 'slack';
   readonly type = 'api' as const;
@@ -238,12 +251,25 @@ export class SlackConnector implements IConnector {
     const clientToken = this.token;
     if (!clientToken) throw new Error('SlackConnector not initialized');
     const fileInfo = await this.fetchFileInfo(request.fileId);
-    const downloadUrl = requireHttpsUrl(fileInfo.url_private, 'Slack file url_private');
-    const response = await this.http(downloadUrl, {
-      headers: { Authorization: `Bearer ${clientToken}` },
-    });
+    const downloadUrl = requireSlackFileUrl(fileInfo.url_private);
+    let response: Response;
+    try {
+      response = await this.http(downloadUrl, {
+        headers: { Authorization: `Bearer ${clientToken}` },
+        // Never let an authenticated request follow a server-supplied destination.
+        redirect: 'manual',
+      });
+    } catch {
+      throw new Error('Slack file download request failed');
+    }
     if (!response.ok) {
-      throw new Error(`Slack file ${request.fileId} download failed: HTTP ${response.status}`);
+      // Cleanup failures must not expose authenticated request details.
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error(
+        response.status >= 300 && response.status < 400
+          ? 'Slack file download redirects are not allowed'
+          : `Slack file download failed: HTTP ${response.status}`
+      );
     }
     const size = await saveResponseBody(response, request.targetPath);
     return { descriptor, size };

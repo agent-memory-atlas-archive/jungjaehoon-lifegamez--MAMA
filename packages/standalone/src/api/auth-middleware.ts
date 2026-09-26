@@ -1,6 +1,6 @@
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { verifyCfAccessRequest } from './cf-access.js';
+import { verifiedCfAccessEmail } from './cf-access.js';
 
 /** The archive's local-dashboard / remote-Bearer authentication boundary. */
 export function isLocalRequest(req: IncomingMessage): boolean {
@@ -10,7 +10,7 @@ export function isLocalRequest(req: IncomingMessage): boolean {
   );
 }
 
-function isTunnelRequest(req: IncomingMessage): boolean {
+export function isTunnelRequest(req: IncomingMessage): boolean {
   return Object.keys(req.headers).some(
     (name) => name === 'cf-connecting-ip' || name === 'cf-ray' || name.startsWith('cf-access-')
   );
@@ -33,19 +33,32 @@ function requestToken(req: IncomingMessage): string | null {
  * is remote for this decision and therefore needs either a token or Cloudflare
  * Access JWT verification.
  */
-export async function isAuthenticated(req: IncomingMessage): Promise<boolean> {
+export type ViewerIdentity = 'local' | 'token' | `access:${string}`;
+
+export async function authenticateViewerRequest(
+  req: IncomingMessage
+): Promise<ViewerIdentity | null> {
   const configured = process.env.MAMA_AUTH_TOKEN;
-  if (isLocalRequest(req) && !isTunnelRequest(req)) return true;
+  if (isLocalRequest(req) && !isTunnelRequest(req)) return 'local';
   const token = requestToken(req);
-  if (configured && token !== null && safeTokenEqual(token, configured)) return true;
-  return verifyCfAccessRequest(req.headers);
+  if (configured && token !== null && safeTokenEqual(token, configured)) return 'token';
+  const email = await verifiedCfAccessEmail(req.headers);
+  return email === null
+    ? null
+    : `access:${createHash('sha256').update(email).digest('hex').slice(0, 12)}`;
+}
+
+export async function isAuthenticated(req: IncomingMessage): Promise<boolean> {
+  return (await authenticateViewerRequest(req)) !== null;
 }
 
 export async function requireViewerAuth(
   req: IncomingMessage,
-  res: ServerResponse
+  res: ServerResponse,
+  identity?: ViewerIdentity | null
 ): Promise<boolean> {
-  if (await isAuthenticated(req)) return true;
+  if ((identity === undefined ? await authenticateViewerRequest(req) : identity) !== null)
+    return true;
   res.writeHead(401, {
     'Content-Type': 'application/json; charset=utf-8',
     'WWW-Authenticate': 'Bearer realm="MAMA API"',
