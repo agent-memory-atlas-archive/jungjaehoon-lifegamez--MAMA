@@ -903,3 +903,16 @@ The implementation writes raw/index data during import only. Replay is the owner
   (now model_run_id), security alerts not linked to their event (supervisor: event ids are the alert
   keys). Live: an alert's ledger entry carries its key and message id and the log shows it. Suites:
   core runtime 263/263, standalone 709/709. Open: a native shell call traced live.
+- 2026-09-27: D3 onboarding implementation adds owner-only TTY init/secret entry, atomic 0600 auth.env updates staged under denied runtime/, secret-free configuration and opt-in launchd files; bootstrap is only printed.
+  Evidence: 74/74 focused tests pass under temporary HOME; generated start.sh executes against a fake daemon, hidden input restores echo, and compiled CLI rejects piped init/set without writing state. Telegram uses only its environment token; legacy YAML is rejected. Trello now reads separate key/token variables.
+  Validation from packages/standalone: `pnpm exec env HOME="$d3_test_home" MAMA_DB_PATH="$d3_test_home/dev.db" vitest run --passWithNoTests` — 712 passed, 23 socket-listen EPERM failures across 8 suites; typecheck, isolated-output tsc compilation and changed-file lint pass.
+  Remaining: no real owner login or Telegram answer was exercised; live ~/.mama and the running service were untouched, so D3 remains open. No commit. MAMA MCP decision save was blocked by approval policy never; the contract is recorded in docs-cleanup.md D3.
+- 2026-09-27 03:10 KST: D3 onboarding supervisor check: standalone 734/735 → fixed the one failure (the
+  integration fixture still put the bot token in config; it now comes from MAMA_TELEGRAM_TOKEN). Live: the
+  running config's Telegram token moved into auth.env without printing it and removed from config.yaml;
+  the daemon boots and Telegram polling starts from the environment. A pseudo-terminal run of
+  `mama init` in a temporary HOME with fake tokens: token prompts do not echo; auth.env, config.yaml,
+  connectors.json 0600, start.sh 0700; no token in config.yaml, connectors.json or start.sh; auth.env
+  names MAMA_TELEGRAM_TOKEN, MAMA_SLACK_TOKEN, MAMA_AUTH_TOKEN (generated); `secret list` shows names only;
+  init and secret set refuse without a TTY; a second init refuses to overwrite. Not done live: onboarding a
+  real fresh machine through a Telegram reply.

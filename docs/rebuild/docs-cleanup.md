@@ -87,6 +87,13 @@ token moves out of config.yaml into the environment the daemon reads. The agent 
 or writes a token, and both commands refuse to run without a TTY. Done when a fresh HOME is onboarded
 end to end with the tokens typed at the prompt and the daemon answers the owner on Telegram.
 
+Implementation (2026-09-27): `mama init` and `mama secret set|list` are wired into the CLI.
+Telegram reads `MAMA_TELEGRAM_TOKEN`; any `telegram.token` key fails with the migration command.
+Trello reads separate `MAMA_TRELLO_KEY` and `MAMA_TRELLO_TOKEN` values (the carried connector had
+expected a combined value). Atomic auth.env writes stage inside the denied runtime directory.
+Temporary-HOME tests cover setup, rotation, hidden input and generated launch files. The fresh-HOME
+owner login and Telegram answer remain **unverified**; this implementation does not complete D3.
+
 ## D4 — every record is traceable end to end
 
 After security P2 (native tool calls traced, tunnel requests logged): follow one owner turn and one

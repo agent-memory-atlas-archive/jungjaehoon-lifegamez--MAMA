@@ -508,12 +508,16 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
 
     currentStage = 'telegram';
     if (config.telegram.enabled) {
-      if (config.telegram.token === undefined) throw new Error('Telegram token is required');
+      const token = process.env.MAMA_TELEGRAM_TOKEN;
+      if (!token?.trim())
+        throw new Error(
+          'MAMA_TELEGRAM_TOKEN is required; run mama secret set MAMA_TELEGRAM_TOKEN and restart through ~/.mama/start.sh'
+        );
       const telegramFactory =
         dependencies.createTelegramGateway ??
         ((gatewayOptions) => new TelegramGateway(gatewayOptions));
       gateway = telegramFactory({
-        token: config.telegram.token,
+        token,
         intake: loggedOwnerIntake(owner.intake, logger),
         config: {
           enabled: config.telegram.enabled,

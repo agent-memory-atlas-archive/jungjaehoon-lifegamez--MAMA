@@ -61,7 +61,6 @@ describe('W1 real owner configuration shape', () => {
         '  full_report_hours: 24',
         'telegram:',
         '  enabled: true',
-        '  token: placeholder-telegram-token',
         '  owner_chat_id: "123456789"',
         '  os_report_chat_id: 999999999',
         '  allowed_chats: ["123456789"]',

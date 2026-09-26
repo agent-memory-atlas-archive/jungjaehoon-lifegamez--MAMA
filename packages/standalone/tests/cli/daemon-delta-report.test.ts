@@ -69,6 +69,7 @@ async function boot(
   const root = mkdtempSync(join(tmpdir(), 'delta-'));
   roots.push(root);
   vi.stubEnv('HOME', root);
+  vi.stubEnv('MAMA_TELEGRAM_TOKEN', 'fixture-token');
   vi.stubEnv('MAMA_DB_PATH', join(root, 'development-memory.db'));
   // This test exercises delivery, not the socket transport (listen is sandbox-restricted).
   vi.spyOn(ipc, 'createActionIpcServer').mockResolvedValue({
@@ -100,7 +101,6 @@ async function boot(
       logging: { level: 'info', file: join(root, 'daemon.log') },
       telegram: {
         enabled: true,
-        token: 'fixture-token',
         allowed_chats: ['8', '7'],
         owner_chat_id: '7',
         owner_user_ids: ['9'],

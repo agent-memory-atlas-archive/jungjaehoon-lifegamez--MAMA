@@ -34,7 +34,6 @@ function validConfig(): W1Config {
     logging: { level: 'info', file: '/tmp/mama-test.log' },
     telegram: {
       enabled: false,
-      token: 'token-placeholder',
       allowed_chats: ['chat-test'],
       owner_user_ids: ['owner-test'],
       polling: false,
@@ -48,6 +47,30 @@ function validConfig(): W1Config {
 }
 
 describe('W1 runtime configuration', () => {
+  it.each(['fixture-obsolete', '', null])(
+    'rejects telegram.token without echoing it %#',
+    (token) => {
+      const path = join(testHome, 'config.yaml');
+      const base = validConfig();
+      writeFileSync(path, JSON.stringify({ ...base, telegram: { ...base.telegram, token } }));
+      expect(() => loadConfig({ path })).toThrow(
+        'run mama secret set MAMA_TELEGRAM_TOKEN and remove telegram.token'
+      );
+    }
+  );
+
+  it('does not include YAML source snippets in syntax errors', () => {
+    const path = join(testHome, 'config.yaml');
+    writeFileSync(path, 'telegram: [fixture-obsolete\n');
+    let message = '';
+    try {
+      loadConfig({ path });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toMatch(/Cannot load config/);
+    expect(message.includes('fixture-obsolete')).toBe(false);
+  });
   it('defaults report hours and accepts custom KST hours through YAML without ignoring them', () => {
     const { reports, ...base } = validConfig();
     expect(parseConfig(base).reports).toEqual(reports);

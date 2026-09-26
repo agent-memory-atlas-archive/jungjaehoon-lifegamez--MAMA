@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   existsSync,
   mkdirSync,
@@ -27,6 +27,10 @@ import {
 
 const roots: string[] = [];
 
+beforeEach(() => {
+  vi.stubEnv('MAMA_TELEGRAM_TOKEN', 'fixture-env-telegram');
+});
+
 afterEach(() => {
   vi.unstubAllEnvs();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -48,7 +52,6 @@ function config(root: string, backend: 'codex' | 'claude' = 'codex'): W1Config {
     logging: { level: 'info', file: join(root, 'daemon.log') },
     telegram: {
       enabled: true,
-      token: 'fixture-token',
       owner_chat_id: 'chat',
       allowed_chats: ['chat'],
       owner_user_ids: ['owner'],
@@ -91,6 +94,31 @@ function viewerDouble(order: string[]) {
 }
 
 describe('daemon bootstrap', () => {
+  it('refuses enabled Telegram without its environment token and never logs an injected config token', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'daemon-token-'));
+    roots.push(root);
+    vi.stubEnv('HOME', root);
+    vi.stubEnv('MAMA_TELEGRAM_TOKEN', '');
+    const options = config(root);
+    Object.assign(options.telegram, { token: 'fixture-obsolete-token' });
+    const logs: string[] = [];
+    await expect(
+      bootDaemon({
+        config: options,
+        home: root,
+        configPath: join(root, 'config.yaml'),
+        logger: { info: (line) => logs.push(line), error: (line) => logs.push(line) },
+        dependencies: {
+          ensureIsolation: () => {},
+          createOwnerRuntime: async () => ownerDouble([]) as never,
+          createViewerServer: () => viewerDouble([]) as never,
+          startConnectorRuntime: async () => ({ stop: async () => {} }) as never,
+        },
+      })
+    ).rejects.toThrow(/MAMA_TELEGRAM_TOKEN is required/);
+    expect(logs.join('\n').includes('fixture-obsolete-token')).toBe(false);
+  });
+
   it.each([false, true])(
     'restricts the daemon log before starting runtime %#',
     async (existing) => {
@@ -268,6 +296,7 @@ describe('daemon bootstrap', () => {
           return connectors as never;
         }),
         createTelegramGateway: vi.fn((options) => {
+          expect(options.token === 'fixture-env-telegram').toBe(true);
           expect(options.config?.ownerChatId).toBe('chat');
           expect(options.filesRoot).toBe(join(mamaRoot, 'workspace', 'files'));
           expect(options.workspaceDir).toBe(join(mamaRoot, 'workspace'));

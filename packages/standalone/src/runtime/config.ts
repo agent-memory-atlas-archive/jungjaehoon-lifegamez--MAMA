@@ -22,7 +22,6 @@ export interface W1AgentConfig {
 
 export interface W1TelegramConfig {
   enabled: boolean;
-  token?: string;
   owner_chat_id?: string;
   allowed_chats: string[];
   owner_user_ids: string[];
@@ -284,9 +283,12 @@ function parseConfigValue(
     throw new ConfigError('logging.level is not supported');
   }
   const telegramRaw = raw.telegram === undefined ? {} : object(raw.telegram, 'telegram');
+  if (Object.hasOwn(telegramRaw, 'token')) {
+    throw new ConfigError('run mama secret set MAMA_TELEGRAM_TOKEN and remove telegram.token');
+  }
   collectIgnoredKeys(
     telegramRaw,
-    ['enabled', 'token', 'owner_chat_id', 'allowed_chats', 'owner_user_ids', 'polling'],
+    ['enabled', 'owner_chat_id', 'allowed_chats', 'owner_user_ids', 'polling'],
     'telegram',
     state
   );
@@ -348,9 +350,6 @@ function parseConfigValue(
       },
       telegram: {
         enabled: telegramEnabled,
-        ...(telegramRaw.token === undefined
-          ? {}
-          : { token: text(telegramRaw.token, 'telegram.token') }),
         ...(ownerChatId === undefined ? {} : { owner_chat_id: ownerChatId }),
         allowed_chats: allowedChats,
         owner_user_ids: deriveTelegramOwnerIds(telegramRaw, allowedChats),
@@ -379,9 +378,9 @@ export function loadConfig(options: LoadConfigOptions = {}): W1Config {
   let parsed: unknown;
   try {
     parsed = yaml.load(readFileSync(path, 'utf8'));
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new ConfigError(`Cannot load config ${path}: ${message}`);
+  } catch {
+    // YAML parser messages contain source snippets, which can include obsolete inline secrets.
+    throw new ConfigError(`Cannot load config ${path}: check file access and YAML syntax`);
   }
   const loaded = parseConfigValue(parsed, { home: options.home });
   warnIgnored(loaded.ignored);

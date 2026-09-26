@@ -42,6 +42,7 @@ async function boot(
   const root = mkdtempSync(join(tmpdir(), 'scheduled-'));
   roots.push(root);
   vi.stubEnv('HOME', root);
+  vi.stubEnv('MAMA_TELEGRAM_TOKEN', 'fixture-token');
   vi.stubEnv('MAMA_DB_PATH', join(root, 'dev.db'));
   // Real owner mailbox, delivery and Telegram ledger; only socket listen and transport are external.
   vi.spyOn(ipc, 'createActionIpcServer').mockResolvedValue({
@@ -61,7 +62,6 @@ async function boot(
     logging: { level: 'info', file: join(root, 'daemon.log') },
     telegram: {
       enabled,
-      token: 'fixture-token',
       allowed_chats: ['7'],
       owner_chat_id: '7',
       polling: false,

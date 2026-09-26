@@ -1,6 +1,6 @@
 /**
  * TrelloConnector — polls Trello boards via native fetch.
- * Auth token format: "apiKey:token" read from the daemon environment.
+ * API key and token are separate values read from the daemon environment.
  * Emits kanban_card NormalizedItems for new/moved/updated cards.
  *
  * A card's operational state is more than its list: production boards track the
@@ -132,18 +132,15 @@ export class TrelloConnector implements IConnector {
   }
 
   async init(): Promise<void> {
-    const rawToken = process.env[this.config.auth.tokenName ?? 'TRELLO_TOKEN'];
-    if (!rawToken) {
+    const apiKey = process.env.MAMA_TRELLO_KEY;
+    const token = process.env[this.config.auth.tokenName ?? 'MAMA_TRELLO_TOKEN'];
+    if (!apiKey?.trim() || !token?.trim()) {
       throw new Error(
-        'Trello token not found. Set TRELLO_TOKEN environment variable (format: apiKey:token).'
+        'Trello credentials missing. Run mama secret set MAMA_TRELLO_KEY and mama secret set MAMA_TRELLO_TOKEN, then restart through ~/.mama/start.sh.'
       );
     }
-    const parts = rawToken.split(':');
-    if (parts.length < 2) {
-      throw new Error('Trello token format invalid. Expected "apiKey:token".');
-    }
-    this.apiKey = parts[0] ?? null;
-    this.token = parts.slice(1).join(':');
+    this.apiKey = apiKey;
+    this.token = token;
     this.loadState();
   }
 
@@ -168,9 +165,13 @@ export class TrelloConnector implements IConnector {
     return [
       {
         type: 'token',
-        tokenName: 'TRELLO_TOKEN',
-        description:
-          'Trello API credentials in format "apiKey:token". Get from https://trello.com/app-key',
+        tokenName: 'MAMA_TRELLO_KEY',
+        description: 'Trello API key. Enter it with mama secret set MAMA_TRELLO_KEY.',
+      },
+      {
+        type: 'token',
+        tokenName: this.config.auth.tokenName ?? 'MAMA_TRELLO_TOKEN',
+        description: 'Trello token. Enter it with mama secret set MAMA_TRELLO_TOKEN.',
       },
     ];
   }

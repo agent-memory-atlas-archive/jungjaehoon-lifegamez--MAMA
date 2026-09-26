@@ -7,7 +7,7 @@ import { TrelloConnector } from '../../src/connectors/trello/index.js';
 import type { ConnectorConfig } from '../../src/connectors/framework/types.js';
 
 let root: string;
-const envName = 'TRELLO_TOKEN';
+const envName = 'MAMA_TRELLO_TOKEN';
 const config: ConnectorConfig = {
   enabled: true,
   pollIntervalMinutes: 5,
@@ -22,13 +22,34 @@ function lists(cards: unknown[]): unknown[] {
 describe('TrelloConnector', () => {
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'trello-connector-'));
-    process.env[envName] = 'fixture-key:fixture-token';
+    vi.stubEnv('HOME', root);
+    vi.stubEnv('MAMA_TRELLO_KEY', 'fixture-key');
+    vi.stubEnv(envName, 'fixture-token');
   });
 
   afterEach(() => {
-    delete process.env[envName];
+    vi.unstubAllEnvs();
     vi.unstubAllGlobals();
     rmSync(root, { recursive: true, force: true });
+  });
+
+  it('uses separately stored MAMA_TRELLO_KEY and MAMA_TRELLO_TOKEN', async () => {
+    vi.stubEnv('MAMA_TRELLO_KEY', 'fixture-separate-key');
+    vi.stubEnv('MAMA_TRELLO_TOKEN', 'fixture-separate-token');
+    const fetchMock = vi.fn(async (url: string) => {
+      const parsed = new URL(url);
+      expect(parsed.searchParams.get('key') === 'fixture-separate-key').toBe(true);
+      expect(parsed.searchParams.get('token') === 'fixture-separate-token').toBe(true);
+      return { ok: true };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const connector = new TrelloConnector(
+      { ...config, auth: { type: 'token', tokenName: 'MAMA_TRELLO_TOKEN' } },
+      join(root, 'state.json')
+    );
+    await connector.init();
+    expect(await connector.authenticate()).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('requires an explicit state file path', () => {

@@ -19,10 +19,13 @@ import type { TurnIntake, OwnerMessageInput } from '../../src/gateways/turn-cont
 const roots: string[] = [];
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 function config(root: string): W1Config {
+  // The bot token comes from the environment the daemon's start.sh sources, never from config.yaml.
+  vi.stubEnv('MAMA_TELEGRAM_TOKEN', 'fixture-token');
   return {
     version: 1,
     agent: {
@@ -37,7 +40,6 @@ function config(root: string): W1Config {
     logging: { level: 'info', file: join(root, 'daemon.log') },
     telegram: {
       enabled: true,
-      token: 'fixture-token',
       owner_chat_id: 'chat',
       allowed_chats: ['chat'],
       owner_user_ids: ['owner'],
