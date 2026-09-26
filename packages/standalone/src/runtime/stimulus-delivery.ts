@@ -407,7 +407,9 @@ function payloadText(payload: JsonValue | undefined): string {
 
 function lessonQuery(row: MailboxRow): string {
   if (row.kind === 'owner_message') return payloadText(row.payload);
-  if (row.kind === 'source_delta') return messageLines(row.payload)?.join('\n') ?? '';
+  // Collector deltas without per-ref contentPreview carry their text only in the row preview.
+  if (row.kind === 'source_delta')
+    return messageLines(row.payload)?.join('\n') ?? row.preview.join('\n');
   return payloadText(row.payload);
 }
 

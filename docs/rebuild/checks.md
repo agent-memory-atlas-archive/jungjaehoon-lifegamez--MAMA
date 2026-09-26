@@ -707,3 +707,16 @@ The implementation writes raw/index data during import only. Replay is the owner
   WebSearch, mcp**mama**\*, Agent]; the host-owned settings keep only hooks, sandbox and env. Final probe:
   Write inside allowed / outside denied, Bash inside allowed / outside denied, WebFetch allowed, python
   openpyxl+PyMuPDF load. Codex: web search on for the owner runtime (core default off).
+- 2026-09-26 18:40 KST: R10 (f) live owner turns on the Claude backend (claude-sonnet-5). Result: the file
+  flow and the correction flow work. Five owner turns: a repeat of the earlier translation request was
+  recognised from the carried exchanges; "find the first feedback" ran work.show → memory provenance →
+  source.read → attachment list/download → Read of the image → Bash/openpyxl → deliver.telegram.file and
+  answered with the right dates, sender and resubmission (about 85 s, 17 tools). The owner correction
+  "the Excel style differs" was redone against the reference file cell by cell, and "why, did you forget
+  the workflow" produced memory.save kind=lesson with the host-set source_message_ref, model_run_id and
+  the tool_use id. Every agent tool trace carries a model_run_id; the unattributed work.list rows every 30 s
+  are the viewer's operation-scoped reads. Still failing: "make it again and send" resent the old file
+  instead of remaking it; the first new Excel ignored the reference layout until corrected. Found and
+  fixed: collector deltas without per-ref contentPreview queried lessons with an empty text ("Text
+  cannot be empty" warning each delta); the lesson query now uses the row preview (test red→green).
+  Not yet seen: lesson applied after a restart, subagent child runs on Claude.

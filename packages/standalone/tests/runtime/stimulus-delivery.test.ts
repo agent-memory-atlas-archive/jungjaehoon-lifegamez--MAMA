@@ -238,6 +238,49 @@ describe('one stimulus intake and delivery', () => {
     expect(prompt).not.toContain('<lessons>');
   });
 
+  it('queries lessons with the row preview when delta refs carry no message text', async () => {
+    const queries: string[] = [];
+    const delivery = createStimulusDelivery({
+      lessonResolver: async (query) => {
+        queries.push(query);
+        return [];
+      },
+    });
+    const context = {
+      nativeInputId: 'input-delta',
+      resultForReceipt: () => null,
+      run: vi.fn(async (_content: unknown, request?: NativeInvocationOptions) => {
+        await request?.prepareSessionContent?.({ sessionId: 'test-session', isNewSession: false });
+        return {} as never;
+      }),
+      steer: vi.fn(),
+      wasDispatched: () => false,
+      onInputDispatch: vi.fn(),
+      onAccepted: vi.fn(),
+    };
+
+    await delivery.deliver(
+      {
+        id: 'delta-preview',
+        stimulusId: 'delta-preview',
+        principalId: 'owner',
+        kind: 'source_delta',
+        channelKey: 'synthetic-channel',
+        occurredAt: 1,
+        refs: [],
+        preview: ['synthetic delta text'],
+        status: 'claimed',
+        attempts: 1,
+        createdAt: 1,
+        payload: { refs: [{ observationRef: 'obs_synthetic' }] },
+        coalesceKey: null,
+      },
+      context as never
+    );
+
+    expect(queries).toContain('synthetic delta text');
+  });
+
   it('adds startup lessons only when the native session reports a new thread', async () => {
     const queries: string[] = [];
     const delivery = createStimulusDelivery({
