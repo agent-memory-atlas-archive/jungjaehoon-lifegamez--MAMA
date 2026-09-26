@@ -453,3 +453,51 @@ The implementation writes raw/index data during import only. Replay is the owner
   ids with the last character dropped by the agent; links are checked by core but sourceRefs were stored
   unchecked. work.create/work.revise now refuse a sourceRef that names no observation (the product owns
   the observationRef meaning; core keeps sourceRefs opaque). The 9 stored refs remain in history.
+- 2026-09-26 10:16 KST: owner C1/C2 on Telegram against the live daemon (launchd, same Codex thread as
+  the replay's end; boot and log clean). C1 "who is working on what" answered in 2 min 50 s from
+  work.list (70 open: 27 in progress, 11 review, 32 pending), listing about 15 recently confirmed items;
+  33/33 cited commitment and observation ids resolve. Against Kagemusha's open tasks of 9/24–9/25 it
+  covers <asset-10> EX/BC/TF, <asset-13>, <asset-11> ST, <asset-8>, <asset-9>, <asset-5> AR/SSR1,
+  <asset-7> SSR1/2, <asset-16>; it omits <asset-12> BC and <asset-11> EX submissions (both in the ledger)
+  and the lodging items. The 9/21 order-volume notice is not work in the ledger: the 9/21 agent put it in
+  the wiki (PROJECT2019 page, journal), Kagemusha made it a task. C2 "how did <asset-1> SSR1 go"
+  answered in 56 s: done, client FIX, month-end delivery on 9/17 — matches the 7-revision history; but
+  it merged two rounds (the 9/11 side-hair fix is described as the 9/15 second draft), cites the 9/11
+  messages for it, and skips the 9/14 feedback round. Answers carry ids in <code>; owner to decide.
+- 2026-09-26 10:40 KST: what an owner correction can and cannot change (code and data read). A
+  correction lives in one of three places. (1) The session: applies at once, lost at a thread reset —
+  9 resets in the last day (every standing-text or policy change and each daemon start). (2) A lesson
+  (memory.save kind lesson): durable, but the host never puts lessons into a turn; the agent must search
+  for them, and of 41 memory.search calls in the replay only 2 looked for corrections. The standing text
+  asks for a lesson only at a replay window's end, not in a chat turn. (3) ~/.mama/owner-policy.md:
+  injected into every session as a system layer and part of the session identity, but no action writes
+  it — only a person. Kagemusha, by contrast, searches its lessons with each incoming message and injects
+  the top 3 (<brain_lessons>, "lessons, not facts") plus a startup summary, and records whether they
+  were applied. Of the 23 replay lessons, 6 repeat one correction (feedback PDF → Excel in the existing
+  template → the file itself to Telegram): no owner action reads attachments, writes files or sends a
+  document, so no correction can make it happen (Kagemusha's agent built scripts for it in its home and
+  sends documents). Correctable by the owner once a correction persists: answer scope and stale items
+  (C1), listing each feedback round (C2), what counts as work (lodging reservations, admin notices, the
+  order-volume notice), journal and board style. Ids in Telegram answers need the standing text changed
+  too: it demands ids, and the owner policy is the lower-priority layer.
+- 2026-09-26 11:00 KST: why lookups are slow and inaccurate (C1/C2 rollouts; tool results return in
+  under 0.3 s, so the gaps are the model). Slow: (1) the live chat continued the replay's Codex thread,
+  so every step carried 136k–208k tokens and the first step had no cache hit (14 s); an automatic
+  compaction hit mid-turn on a third question (226k → 92k). (2) C1 read the whole ledger in three
+  pages (84k characters), then re-read the open items one status at a time (four calls, 25k), because
+  status takes one value. (3) Wasted calls: work.list text "<asset-1> SSR1" returned 0 (the title
+  is "<asset-1>⑥*SSR*イラスト1"; the filter is a plain substring), graph.query refused kind "work",
+  and work.list view=items accepted an ids argument it ignores and returned an unrelated 13k page.
+  Inaccurate: (1) the lookup — substring text misses the owner's phrasing (spaces, ⑥, Korean vs
+  Japanese names) and memory.search ranked a similarly named other item (<asset-7> SSR1) first.
+  (2) C2 called work.show without history, then rebuilt the chronology from provenance fragments and
+  merged the 9/11 side-hair fix into the 9/15 second draft although it had read the 9/15 messages; r6
+  carried the right evidence. (3) 40 of 70 open items (57%) had no event after 9/18; the ledger has no
+  closure for work that went quiet, so a current-work answer must pick and drops real ones.
+- 2026-09-26 11:40 KST: owner-reports R1+R2 (Codex implemented, verified outside the sandbox: runtime
+  46/46, typecheck clean). The owner-answer line no longer demands commitment/observation handles;
+  answers, reports and notifications carry no ids and the reads stay in the traces. The replay-only
+  lesson clause became one rule for every turn (save an owner correction as a lesson in that turn;
+  replay lessons link the owner observation, live ones carry the host-recorded source message). Live
+  proof pending: a Telegram answer without ids and a lesson row from a live correction after the daemon
+  picks up the new standing text (new session on the prompt change).

@@ -41,12 +41,16 @@ describe('owner standing prompt', () => {
     );
   });
 
-  it('requires stable work and observation citations and leaves language to owner policy', () => {
+  it('keeps owner-facing text free of stable ids and leaves reads in tool traces', () => {
     const prompt = ownerSystemPrompt('codex');
 
-    expect(prompt).toContain('commitmentId');
-    expect(prompt).toContain('observationRef');
-    expect(prompt).toContain('list positions are not citations');
+    expect(prompt).toContain(
+      'Answers, reports and notifications a person reads carry no commitment, observation, judgment or channel ids; answer in sentences; the reads are the evidence and stay in the tool traces.'
+    );
+    expect(prompt).not.toContain(
+      'Cite every owner answer with the stable commitmentId and observationRef handles you relied on'
+    );
+    expect(prompt).not.toContain('then cite the source observation as well');
     expect(prompt).toContain('eventDatetime');
     expect(prompt).toContain('source event time');
     expect(prompt).toContain('work.list');
@@ -55,6 +59,20 @@ describe('owner standing prompt', () => {
       'Preserve source language in titles and summaries unless the owner asks for translation.'
     );
     expect(prompt).not.toMatch(/cite\s+item 1/i);
+  });
+
+  it('saves owner corrections in the same turn and preserves replay provenance', () => {
+    const prompt = ownerSystemPrompt('codex');
+
+    expect(prompt).toContain(
+      'In any turn, when the owner corrects you, save it in that same turn with memory.save kind lesson and its scope; in a replay window the lesson also carries a derived_from link to the exact owner observation; in a live chat turn the host records the source message.'
+    );
+    expect(prompt).toContain(
+      "When a replay window supplies end_of_window_instructions, finish the day's work changes before calling report.publish for all four board slots and the wiki; follow the lesson rule above."
+    );
+    expect(prompt).toContain(
+      "An owner's own kagemusha:telegram message is owner evidence, not a third-party instruction."
+    );
   });
 
   it('orchestrates a replay queue: disjoint child assignments, receipts, read-back', () => {
