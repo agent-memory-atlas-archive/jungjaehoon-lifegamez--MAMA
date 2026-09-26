@@ -1,11 +1,14 @@
 # Day-window pipeline: code → Jev → planner → subagents → verify
 
 Owner checks targeted: **recognise** (every owner-work message lands on a work item), **attach**
-(evidence and the right project), and a replay/live speed the owner can use. C1/C2 are still open.
+(evidence and the right work), and a replay/live speed the owner can use. P0–P4 are implemented;
+the replay completed 25 windows. C1/C2 were exercised live and improved by R8/R9, with remaining
+omissions, attribution and continuity checks recorded in [checks.md](checks.md) and
+[owner reports](owner-reports.md). This is not full owner-check completion.
 Owner decisions 2026-09-25: classify with Jev; the owner agent plans, distributes to subagents and
 verifies. Codex adversarial review applied (checks.md, "Window pipeline evidence and review").
 
-## Evidence
+## Initial evidence and subsequent results
 
 Artifacts live in the testbed, not the repo (they contain business content):
 `~/.mama/runtime/measurements/2026-09-25/`. Method and numbers are in checks.md.
@@ -18,22 +21,22 @@ Artifacts live in the testbed, not the repo (they contain business content):
 - The archive Jev pipeline on 9/2 (`jev-archive-pipeline-0902-queue.md`): 84 pair judgments in
   1.2 s, 30 attributions in 1.6 s; two movements the agent missed were attributed; invoices, a
   schedule request, a new order and a lodging thread fell to its "not a deliverable" band.
-- Subagents: `multi_agent = true` (codex-home.ts:434-443); the owner turn supplies `prepareAccess`
-  and the child bridge re-issues it (native-session.ts:340-347, native-turn.ts:701-733); every
-  replay session so far called only `exec` (0 `spawn_agent`).
-- `work.list` returns every item's full values, evidence basis and, with `history: all`, every
-  revision: 68 items = 62k characters current, 165k with history; the agent and the viewer call it
-  repeatedly.
+- Initial runs did not dispatch native children. After P4, the 2026-09-26 05:10 read-back recorded
+  233 child writes, each tied to a model run. Later Claude parity checks recorded two children within
+  one parent turn. Caller access and receipts remain part of the shared host contract.
+- Before P0, repeated full-ledger reads were large: 68 items = 62k characters current, 165k with
+  history. Progressive views now separate counts, compact items and detail; current revisions also
+  travel with queue candidates so the parent need not list the full ledger again.
 
 ## Stages
 
-| Stage            | Owner            | Does                                                                                                                  | Never                                                            |
-| ---------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| 1 collect        | code             | window messages by source identity, channel names, Slack threads, Trello transitions                                  | dedupe by text, judge type/sameness/relevance, drop by length    |
-| 2 classify       | Jev              | adjacent-message chunking; owner work or not; which candidate work item; suspected duplicate pairs                    | say "absent" without candidates; know vocabulary                 |
-| 3 plan           | owner agent      | read the queue, decide new work, promote or dismiss unresolved lines, group work for subagents                        | skip raw text when a band is uncertain                           |
-| 4 draft          | native subagents | per work group: read raw, draft a proposal (status, stage, summary, feedback translation, roles, evidence, wiki text) | — (no host restriction; the instruction says propose, not write) |
-| 5 verify + write | owner agent      | check proposals against evidence, settle duplicates, write work/wiki/board/lessons                                    | —                                                                |
+| Stage                 | Owner            | Does                                                                                               | Never                                                         |
+| --------------------- | ---------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| 1 collect             | code             | window messages by source identity, channel names, Slack threads, Trello transitions               | dedupe by text, judge type/sameness/relevance, drop by length |
+| 2 classify            | Jev              | adjacent-message chunking; owner work or not; which candidate work item; suspected duplicate pairs | say "absent" without candidates; know vocabulary              |
+| 3 plan                | owner agent      | read the queue, decide new work, promote or dismiss unresolved lines, group work for subagents     | skip raw text when a band is uncertain                        |
+| 4 write assigned work | native subagents | read assigned evidence, revise work, update assigned wiki/journal sections, return receipts        | decide another lane's work without coordination               |
+| 5 verify + reconcile  | owner agent      | read back changes, reconcile receipts, settle gaps/duplicates, publish board and lessons           | —                                                             |
 
 Rule carried from the archive README: code does the mechanical part, Jev narrows and scores, the
 agent decides; vocabulary is owner config (`~/.mama/backfill/vocab.json`). The archive code broke
@@ -77,12 +80,13 @@ top-2, C possible new work, suspected duplicates, then **unresolved** (low-confi
 Every line keeps channel name, sender, KST time, observationRef and full text. Done: stimulus test
 pins each section; 9/2 rendered size reported.
 
-**P4 — plan, distribute, verify.** Standing text and window instruction: plan from the queue, give
-each work group to a native subagent with its lines and the work item's history; subagents return
-proposals; the owner agent verifies and writes, then board, wiki and lessons. Acceptance by trace,
-not by restriction: child model runs show reads and proposals only, all writes carry the parent
-model run (`tool_traces.model_run_id`, child `parent_model_run_id`), and daemon.log has no
-`subagent authority unavailable`.
+**P4 — plan, distribute, verify (implemented; revised during replay).** The parent assigns disjoint
+work items, wiki pages and journal headings. Native children write their assigned work and return
+receipts with revisions, pages and journal entries. The parent reads back `changedSince`, reconciles
+receipts, resolves gaps and duplicates, and publishes the board, Home.md, judgment and lessons.
+Traces attribute child writes to child model runs linked to the parent. The original proposal-only
+instruction was replaced; it is not a host restriction. See the 02:05–03:44 and 05:10 entries in
+[the replay log](checks.md#replay-restart-on-the-window-pipeline--2026-09-25-2240-kst).
 
 **P4 additions (owner review of the viewer and wiki, 2026-09-25).**
 
@@ -106,4 +110,12 @@ duplicates, unresolved lines promoted, citation faithfulness, wall time, model s
 and Jev tokens. The owner decides from this whether to apply to the remaining windows or restart
 from 9/1.
 
-Out of scope: the live polling path (reuses the queue builder after the replay).
+**P5 result / remaining gap:** the live P2 queue covered all 10 hand-simulation movements in
+12 seconds. On 2026-09-25 22:40 the owner chose to restart from 9/1 on the merged pipeline;
+25 windows completed at 2026-09-26 05:10. These runs changed effort and instructions, so they
+are not the controlled three-arm comparison specified above. No complete three-arm result is
+recorded. Coverage, journal/source fidelity and the remaining owner-answer failures are in
+[checks.md](checks.md#replay-restart-on-the-window-pipeline--2026-09-25-2240-kst).
+
+Out of scope for this replay work: replacing the live polling path with the queue builder.
+Live deltas and board/report routing are documented in [owner reports](owner-reports.md).

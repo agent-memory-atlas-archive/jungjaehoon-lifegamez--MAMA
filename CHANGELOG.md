@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+The `rebuild/owner-flow` branch rebuilds the product around one owner agent on Claude or Codex.
+Start from the [owner setup guide](docs/start/owner-setup.md); published versions below describe
+earlier releases.
+
+- Telegram is the owner chat. Five source connectors collect Chatwork, Slack, Trello,
+  the read-only Kagemusha bridge and Google Calendar through `gws`.
+- Tasks retain revisions and evidence; the agent maintains the board, wiki and daily journals,
+  recalls corrections, and answers from stored work and similar cases.
+- Live delta reports, full reports at 08/13/18 KST, hourly reminders and historical day-window
+  replay use the owner runtime. The viewer exposes work, memory, wiki, reports and logs.
+- Terminal onboarding lets the owner type tokens with echo off into mode-0600 `auth.env`;
+  configuration stays secret-free. Token rotation also requires the owner's terminal.
+- Both backends keep workspace write boundaries and credential-read exclusions. External evidence
+  is quoted as untrusted; recallable writes reject recognised secret shapes. Remote viewer data
+  access requires a bearer token or verified Access JWT, with Host checks, security-event recording
+  and Telegram alerts for suspicious request classes.
+- The public MCP server again calls core in-process with its separate development-memory database.
+  Claude Code commands and hooks use that memory without the MAMA OS daemon.
+
+Implementation and live proof are recorded separately in [checks.md](docs/rebuild/checks.md).
+Fresh-machine onboarding, scheduled-report delivery and remaining owner checks are still open.
+
 ## mama-core [3.2.0] / mcp-server [2.2.0] / mama-os [0.56.0] - 2026-09-13
 
 Connector polls and authenticated owner turns now create immutable observation versions and carry

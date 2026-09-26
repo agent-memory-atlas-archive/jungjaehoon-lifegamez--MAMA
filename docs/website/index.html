@@ -3,10 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>MAMA — memory store on your computer, assistant that works from it</title>
+    <title>MAMA — owner agent, development memory and shared engine</title>
     <meta
       name="description"
-      content="MAMA is a memory store that runs on your own computer, and an AI assistant that works from it. MAMA runs no hosted service; the record stays on your machine. Only the content a run needs leaves it, through the AI CLI and the connectors you configured."
+      content="MAMA is one owner agent on Claude or Codex, development memory for coding sessions, and a shared engine for task history, evidence and search. The owner-flow rebuild runs locally with Telegram, five connectors, reports, replay and a viewer."
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -1127,15 +1127,15 @@
           <span>MAMA</span>
         </a>
         <div class="nav-links" id="nav-links">
-          <a href="#why">Why</a>
-          <a href="#principles">Principles</a>
+          <a href="#why">Who it is for</a>
+          <a href="#principles">Owner checks</a>
           <a href="#how-it-works">How it works</a>
           <a href="#getting-started">Getting started</a>
           <a href="#security">Security</a>
-          <a href="#status-and-roadmap">Roadmap</a>
+          <a href="#status-and-roadmap">Status</a>
           <a href="#documentation">Docs</a>
         </div>
-        <span class="nav-cta">0.52.x</span>
+        <span class="nav-cta">0.56.0 · rebuild</span>
         <button
           class="nav-toggle"
           type="button"
@@ -1152,29 +1152,29 @@
     <section class="hero" id="top">
       <div class="container">
         <div class="hero-copy">
-          <span class="eyebrow">A memory store on your computer</span>
-          <h1>No hosted service. <em>The record stays on your machine.</em></h1>
+          <span class="eyebrow">Owner agent · development memory · shared engine</span>
+          <h1>Work that carries over. <em>History you can return to.</em></h1>
           <p>
-            MAMA is a memory store that runs on your own computer, and an AI assistant that works
-            from it. It keeps what flows through your connected messengers, mail, documents, and
-            calendars as-is, and the assistant reads that record to tell you what changed and do
-            what you ask.
+            MAMA runs one owner agent on Claude or Codex: it watches connected work, keeps task
+            history and evidence, answers on Telegram, publishes reports and recalls corrections.
+            Development memory gives Claude Code decisions and checkpoints. Both use mama-core, the
+            shared engine for storage, revisions, evidence and search.
           </p>
         </div>
         <div class="hero-image">
           <img
             src="assets/mama-os-hero-briefing.png"
-            alt="An illustration of work signals flowing through MAMA into an evidence-backed briefing artifact on the owner's phone."
+            alt="Work signals flowing through MAMA into an evidence-backed briefing on the owner's phone."
           />
         </div>
         <div class="hero-actions">
-          <a href="#getting-started" class="btn btn-primary">Install locally</a>
+          <a href="#getting-started" class="btn btn-primary">Choose a start path</a>
           <a
-            href="https://github.com/jungjaehoon-lifegamez/MAMA"
+            href="https://github.com/jungjaehoon-lifegamez/MAMA/blob/rebuild/owner-flow/README.md"
             class="btn btn-ghost"
             target="_blank"
             rel="noreferrer"
-            >GitHub</a
+            >README</a
           >
           <a href="#documentation" class="btn btn-ghost">Docs</a>
         </div>
@@ -1185,16 +1185,16 @@
     <section class="section section-tint" id="why">
       <div class="container">
         <div class="section-head">
-          <span class="eyebrow">Why</span>
-          <h2>Memory kept on your own computer.</h2>
+          <span class="eyebrow">Who it is for</span>
+          <h2>Owners following work. Developers carrying decisions.</h2>
         </div>
         <div class="prose">
           <p>
-            An AI assistant is only useful with memory, and memory kept on a company's server
-            disappears when the service changes or shuts down. MAMA keeps the record of what you did
-            and decided on your own computer, in the original form, so a better model can read the
-            same record tomorrow. The memory layer is fixed; which sources you connect and what work
-            you hand over is up to you.
+            Follow work across conversations and work tools, or retain decisions across coding
+            sessions. Task history and similar-case search are the focus. Records and the embedding
+            index stay local; model requests, configured connectors and native web tools can send
+            content to external services. There is no hosted MAMA service. Team use comes after the
+            owner checks pass on real data.
           </p>
         </div>
       </div>
@@ -1204,50 +1204,39 @@
     <section class="section" id="principles">
       <div class="container">
         <div class="section-head">
-          <span class="eyebrow">Principles</span>
-          <h2>In order of importance.</h2>
+          <span class="eyebrow">Owner checks</span>
+          <h2>What carrying the work means.</h2>
         </div>
         <div class="honesty-grid">
           <article class="honesty-card">
             <span class="num">01</span>
-            <h3>Never lose the record.</h3>
-            <p>Original text, time, source, and later changes are kept, not overwritten.</p>
+            <h3>Recognise the work.</h3>
+            <p>Read originals and changes. The agent decides which work and stage they concern.</p>
           </article>
           <article class="honesty-card">
             <span class="num">02</span>
-            <h3>Know why it changed.</h3>
-            <p>
-              Every change the assistant makes names the message or event behind it, or is marked
-              "no cause".
-            </p>
+            <h3>Attach the history.</h3>
+            <p>Keep revisions, feedback, materials, roles and evidence together on the task.</p>
           </article>
           <article class="honesty-card">
             <span class="num">03</span>
-            <h3>Act only where allowed.</h3>
-            <p>
-              Sending messages, paying, deleting: anything with outside effect requires prior
-              permission for that target.
-            </p>
+            <h3>Answer from evidence.</h3>
+            <p>Read stored work and sources progressively, and search similar past cases.</p>
           </article>
           <article class="honesty-card">
             <span class="num">04</span>
-            <h3>Remember corrections.</h3>
-            <p>
-              Say "keep reports short" or "cards on the dashboard" once; it is stored as a rule and
-              applied from then on.
-            </p>
+            <h3>Report the same state.</h3>
+            <p>The agent's board and scheduled reports must agree with the task history.</p>
           </article>
           <article class="honesty-card">
             <span class="num">05</span>
-            <h3>Stay independent of the model vendor.</h3>
-            <p>
-              The assistant's brain (Claude, Codex, Cline) is swappable; the record's format is not.
-            </p>
+            <h3>Learn from corrections.</h3>
+            <p>Verify a correction changes the next related request and survives a restart.</p>
           </article>
           <article class="honesty-card">
             <span class="num">06</span>
-            <h3>Everything else.</h3>
-            <p>Speed and convenience improve only within the five above.</p>
+            <h3>Share the engine.</h3>
+            <p>Other products use core's public exports with their own data and work vocabulary.</p>
           </article>
         </div>
       </div>
@@ -1258,30 +1247,31 @@
       <div class="container">
         <div class="section-head">
           <span class="eyebrow">How it works</span>
-          <h2>Three layers.</h2>
+          <h2>Two start paths. One shared engine.</h2>
         </div>
         <div class="doc-table-wrap">
           <table class="doc-table">
             <thead>
               <tr>
-                <th scope="col">Layer</th>
-                <th scope="col">What it holds</th>
+                <th scope="col">Part</th>
+                <th scope="col">Purpose and data</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <th scope="row">What you add</th>
-                <td>sources to connect · work to hand over · rules you correct</td>
+                <th scope="row">MAMA OS · 0.56.0</th>
+                <td>One owner agent · Telegram · task history · reports · state in ~/.mama/</td>
               </tr>
               <tr>
-                <th scope="row">The assistant</th>
-                <td>one assistant · a tool catalog · permission scopes · a rule store</td>
-              </tr>
-              <tr>
-                <th scope="row">The memory store</th>
+                <th scope="row">Development memory</th>
                 <td>
-                  SQLite on your machine: originals · decision history · change causes · run logs ·
-                  local search index
+                  Plugin 2.0.0 + MCP 2.2.0 · decisions and checkpoints · ~/.claude/mama-memory.db
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">mama-core · 3.2.0</th>
+                <td>
+                  Storage · revisions · evidence links · memory · local search · runtime drivers
                 </td>
               </tr>
             </tbody>
@@ -1289,25 +1279,21 @@
         </div>
         <div class="prose mt-lg">
           <p>
-            <strong>Memory store.</strong> Per-source originals live in
-            <code>~/.mama/connectors/&lt;name&gt;/raw.db</code>; decisions and change logs under
-            <code>~/.mama/</code>. Changing a decision adds a "this replaced that" link instead of
-            deleting the old one. Each change log row holds what changed and what caused it; a row
-            with a faked cause is rejected at write time. The search index (embeddings) is built
-            locally.
+            <strong>Collect and attach.</strong> Five connectors retain originals and changes:
+            Chatwork, Slack, Trello, the Kagemusha read-only bridge and Google Calendar through
+            <code>gws</code>. The agent updates tasks, wiki pages and daily journals from evidence.
           </p>
           <p>
-            <strong>Assistant.</strong> Your messages, scheduled reports, new source content, and
-            timed jobs all reach one assistant. It picks tools from the catalog and hands long reads
-            and background work to helper agents, taking back only the result. Every run carries a
-            permission scope saying what it may touch and until when. Your corrections are stored as
-            rules and offered as candidates in similar situations. Reports and the board are edited
-            from the last published version, not rebuilt.
+            <strong>Answer and report.</strong> Owner messages, source deltas and scheduled reports
+            enter the owner runtime. Live changes become a notification or acknowledgement, followed
+            by a board refresh. Full reports default to 08:00, 13:00 and 18:00 KST; hourly reminders
+            run 09:00–21:00. Historical replay processes day windows through the same runtime.
           </p>
           <p>
-            <strong>What you add.</strong> A new source is one <code>IConnector</code>
-            implementation; polling and storage are handled. A new kind of work is one entry in the
-            tool catalog. A new rule is one message.
+            <strong>Recall and verify.</strong> Relevant lessons, preferences and constraints reach
+            the next turn. The viewer shows work, board, memory graph, wiki and logs. The agent
+            judges; the host collects, stores, searches, executes and retains traces and delivery
+            receipts. Package versions above are manifest versions, not a release of this rebuild.
           </p>
         </div>
       </div>
@@ -1319,40 +1305,46 @@
         <div class="section-head">
           <span class="eyebrow">Getting started</span>
           <h2>
-            Requires Node 22.13+ and a logged-in <code>claude</code> or <code>codex</code> CLI.
+            Build the unreleased <code>rebuild/owner-flow</code> checkout with Node.js 22.13+.
           </h2>
         </div>
         <div class="prose">
           <pre class="cc-code">
-claude auth login                   # or: codex login
-npm install -g @jungjaehoon/mama-os
-mama --help                         # tells you the next step
-mama status                         # setup is done when the first report arrives</pre
+pnpm install
+pnpm build
+node packages/standalone/dist/cli/index.js init</pre
           >
           <ul class="plain-list">
             <li>
-              Messenger: <code>mama gateway telegram --token-stdin</code> (Slack and Discord work
-              the same way)
+              <a
+                href="https://github.com/jungjaehoon-lifegamez/MAMA/blob/rebuild/owner-flow/docs/start/owner-setup.md"
+                >Owner setup:</a
+              >
+              authenticate Claude or Codex, then run <code>mama init</code> in your terminal. Type
+              tokens with echo off.
             </li>
             <li>
-              Sources: <code>mama connector add &lt;name&gt;</code>, then
-              <code>mama connector status</code>
+              <a
+                href="https://github.com/jungjaehoon-lifegamez/MAMA/blob/rebuild/owner-flow/docs/start/claude-code-plugin.md"
+                >Development memory:</a
+              >
+              install the Claude Code plugin or configure a stdio MCP client. No OS daemon is
+              required.
             </li>
             <li>
-              Health/liveness: <code>http://localhost:3847/health</code>; authenticated operational
-              routes remain under <code>/api</code>
+              Owner status: <code>mama status</code> reports running/stopped;
+              <code>127.0.0.1:3847/health</code> reports liveness.
             </li>
             <li>
-              For scripted installs, follow the <code>missing</code> list from
-              <code>mama status --json</code> in order; it is finished only when
-              <code>complete: true</code>.
+              Keep the two data homes separate. Confirm a real owner answer or a memory
+              save-and-retrieve round trip; process status alone does not prove success.
             </li>
           </ul>
           <p class="mt-sm">
-            Claude Code plugin: <code>/plugin install mama</code>. MCP:
-            <code
-              >{"mcpServers":{"mama":{"command":"npx","args":["@jungjaehoon/mama-server"]}}}</code
-            >.
+            Local plugin: <code>/plugin marketplace add /path/to/MAMA</code>, then
+            <code>/plugin install mama@mama-dev</code>. Its manifest still launches the published
+            MCP package; use the setup guide's local stdio configuration to test this branch's
+            server. Published packages may lag the rebuild.
           </p>
         </div>
       </div>
@@ -1363,56 +1355,63 @@ mama status                         # setup is done when the first report arrive
       <div class="container">
         <div class="section-head">
           <span class="eyebrow">Security</span>
-          <h2>The server answers only on your machine by default.</h2>
+          <h2>Local access by default. Explicit credential boundaries.</h2>
         </div>
         <div class="prose">
           <ul class="plain-list">
-            <li>The server answers only on your machine (<code>127.0.0.1</code>) by default.</li>
             <li>
-              Sending, uploading, paying, and deleting happen only toward allowed targets.
-              Unattended work (scheduled reports, incoming-content handling) has no send permission.
+              The viewer binds to <code>127.0.0.1</code> by default; data routes are read-only.
             </li>
             <li>
-              Only allow-listed chats are accepted from messengers (<code>allowedChatIds</code> for
-              Telegram).
+              Telegram accepts an allowed chat and owner sender. File delivery uses the configured
+              owner destination.
             </li>
-            <li>Values that look like passwords or keys are not stored in memory.</li>
             <li>
-              Outbound connections go only to the services you connected and the AI CLI you logged
-              into. There is no MAMA company server; you run it yourself.
+              The owner enters tokens in a terminal. <code>auth.env</code> is mode 0600 and outside
+              the agent's readable files; both backends receive an environment without secret-shaped
+              variables and keep writes inside the workspace.
+            </li>
+            <li>
+              External evidence is quoted as untrusted; recallable writes reject recognised secret
+              shapes. These controls do not guarantee complete secret detection or injection
+              immunity.
+            </li>
+            <li>
+              Security events are recorded, and suspicious request classes alert the owner on
+              Telegram. Protect data homes and logs as private owner data.
             </li>
           </ul>
           <p class="mt-md">
-            <strong>Running on another host or reaching it from outside.</strong> The operational
-            API reaches a runtime that can read and write files and run commands. Exposing the
-            server exposes that machine. If you open it up:
+            <strong>Remote viewer access.</strong> Configure authentication before exposing owner
+            data. The health route checks liveness, not answer quality or report delivery.
           </p>
           <ol class="rule-list">
             <li>
-              Set <code>MAMA_AUTH_TOKEN</code>. Never expose the server without it, and treat the
-              token and tunnel URL as secrets.
+              Use <code>MAMA_AUTH_TOKEN</code> as a bearer credential, or a verified Cloudflare
+              Access JWT.
             </li>
             <li>
-              For anything beyond a short test, put it behind Cloudflare Zero Trust (or mTLS / IP
-              allow-listing) in addition to the token. Token-only access is for temporary testing.
+              Configure the Access issuer and audience when using a tunnel. Tunnel headers alone
+              never establish identity.
             </li>
             <li>
-              Keep the messenger allow-list, and restrict <code>~/.mama/</code> to the operating
-              account.
+              Set the viewer Host allowlist; it applies to public routes too. Keep the origin on
+              loopback when tunnelling.
             </li>
             <li>
-              Back up <code>~/.mama/</code> together with <code>~/.claude/mama-memory.db</code>.
+              Keep OS state in <code>~/.mama/</code> separate from development memory in
+              <code>~/.claude/mama-memory.db</code>.
             </li>
           </ol>
           <p class="mt-xs">
             Details:
             <a
-              href="https://github.com/jungjaehoon-lifegamez/MAMA/blob/main/docs/guides/security.md"
+              href="https://github.com/jungjaehoon-lifegamez/MAMA/blob/rebuild/owner-flow/docs/guides/security.md"
               >Security guide</a
             >,
             <a
-              href="https://github.com/jungjaehoon-lifegamez/MAMA/blob/main/docs/guides/mobile-access.md"
-              >Remote access</a
+              href="https://github.com/jungjaehoon-lifegamez/MAMA/blob/rebuild/owner-flow/docs/guides/viewer.md"
+              >Viewer access</a
             >.
           </p>
         </div>
@@ -1424,55 +1423,68 @@ mama status                         # setup is done when the first report arrive
       <div class="container">
         <div class="section-head">
           <span class="eyebrow">Status and roadmap</span>
-          <h2>What is done, and what is next.</h2>
+          <h2>Implemented mechanisms. Owner checks still in progress.</h2>
         </div>
         <div class="doc-table-wrap">
           <table class="doc-table">
             <thead>
               <tr>
-                <th scope="col">Stage</th>
+                <th scope="col">Area</th>
                 <th scope="col">What</th>
                 <th scope="col">Status</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <th scope="row">Memory store</th>
-                <td>Originals kept, decision history, change causes, local search</td>
-                <td>done</td>
+                <th scope="row">Owner product</th>
+                <td>One agent, five connectors, Telegram, reports, replay and viewer</td>
+                <td>Rebuilt on this branch</td>
               </tr>
               <tr>
-                <th scope="row">Single-owner assistant</th>
-                <td>Scheduled reports, board and journal, corrections become rules</td>
-                <td>done</td>
+                <th scope="row">Development memory</th>
+                <td>Decisions, checkpoints, plugin hooks and in-process MCP</td>
+                <td>Available independently</td>
               </tr>
               <tr>
-                <th scope="row">Helpers and continuation</th>
-                <td>Long work to helper agents; reports continue from the last version</td>
-                <td>done (0.52.0)</td>
+                <th scope="row">Owner checks</th>
+                <td>Recognise, attach, answer, report and learn on real data</td>
+                <td>Remaining checks in the log</td>
               </tr>
               <tr>
-                <th scope="row">Team members</th>
-                <td>Verified people share the same memory within their own permissions</td>
-                <td>next</td>
+                <th scope="row">Team use</th>
+                <td>Real member canary after the owner loop is proven</td>
+                <td>Deferred</td>
               </tr>
               <tr>
-                <th scope="row">File work</th>
-                <td>Request → read → new version → approval → delivery → follow-up</td>
-                <td>next</td>
+                <th scope="row">Artifact flow</th>
+                <td>Request, original, new version, delivery and follow-up</td>
+                <td>Remaining lifecycle work</td>
               </tr>
               <tr>
-                <th scope="row">Extension guide</th>
-                <td>How to add your own sources, tools, and rules</td>
-                <td>next</td>
+                <th scope="row">Shared engine</th>
+                <td>Another consumer's records, revisions, evidence and search</td>
+                <td>Packed-consumer proof remains</td>
               </tr>
             </tbody>
           </table>
         </div>
         <div class="prose mt-md">
           <p>
-            Before 1.0, config and storage format changes ship with automatic migration; APIs may
-            change.
+            Follow
+            <a
+              href="https://github.com/jungjaehoon-lifegamez/MAMA/blob/rebuild/owner-flow/INTENT.md"
+              >INTENT.md</a
+            >,
+            <a
+              href="https://github.com/jungjaehoon-lifegamez/MAMA/blob/rebuild/owner-flow/docs/rebuild/plan.md"
+              >the rebuild plan</a
+            >
+            and
+            <a
+              href="https://github.com/jungjaehoon-lifegamez/MAMA/blob/rebuild/owner-flow/docs/rebuild/checks.md"
+              >the check log</a
+            >. Fresh-machine onboarding, scheduled-report delivery and continuity checks remain
+            open. Passing implementation checks does not complete the owner's work.
           </p>
         </div>
       </div>
@@ -1487,44 +1499,45 @@ mama status                         # setup is done when the first report arrive
         </div>
         <ul class="doc-links">
           <li>
-            <a href="https://github.com/jungjaehoon-lifegamez/MAMA/blob/main/INTENT.md"
-              >Intent<span>INTENT.md</span></a
+            <a
+              href="https://github.com/jungjaehoon-lifegamez/MAMA/blob/rebuild/owner-flow/docs/index.md"
+              >Documentation index<span>Start paths, guides and references</span></a
             >
           </li>
           <li>
             <a
-              href="https://github.com/jungjaehoon-lifegamez/MAMA/blob/main/docs/explanation/architecture.md"
-              >Architecture<span>docs/explanation/architecture.md</span></a
+              href="https://github.com/jungjaehoon-lifegamez/MAMA/blob/rebuild/owner-flow/docs/explanation/architecture.md"
+              >Architecture<span>Owner loop and shared engine</span></a
             >
           </li>
           <li>
             <a
-              href="https://github.com/jungjaehoon-lifegamez/MAMA/blob/main/docs/guides/security.md"
-              >Security guide<span>docs/guides/security.md</span></a
+              href="https://github.com/jungjaehoon-lifegamez/MAMA/blob/rebuild/owner-flow/docs/guides/security.md"
+              >Security guide<span>Credentials, evidence and remote access</span></a
             >
           </li>
           <li>
             <a
-              href="https://github.com/jungjaehoon-lifegamez/MAMA/blob/main/docs/guides/mobile-access.md"
-              >Remote access<span>docs/guides/mobile-access.md</span></a
+              href="https://github.com/jungjaehoon-lifegamez/MAMA/blob/rebuild/owner-flow/docs/guides/viewer.md"
+              >Viewer<span>Board, work, memory, wiki and logs</span></a
             >
           </li>
           <li>
             <a
-              href="https://github.com/jungjaehoon-lifegamez/MAMA/blob/main/docs/guides/procedure-corrections.md"
-              >Correcting rules<span>docs/guides/procedure-corrections.md</span></a
+              href="https://github.com/jungjaehoon-lifegamez/MAMA/blob/rebuild/owner-flow/docs/guides/corrections-and-learning.md"
+              >Corrections and learning<span>Verify changed behavior after restart</span></a
             >
           </li>
           <li>
             <a
-              href="https://github.com/jungjaehoon-lifegamez/MAMA/blob/main/docs/reference/configuration-options.md"
-              >Configuration<span>docs/reference/configuration-options.md</span></a
+              href="https://github.com/jungjaehoon-lifegamez/MAMA/blob/rebuild/owner-flow/docs/reference/configuration.md"
+              >Configuration<span>Backend, sources and reports</span></a
             >
           </li>
           <li>
             <a
-              href="https://github.com/jungjaehoon-lifegamez/MAMA/blob/main/docs/development/developer-playbook.md"
-              >Developer playbook<span>docs/development/developer-playbook.md</span></a
+              href="https://github.com/jungjaehoon-lifegamez/MAMA/blob/rebuild/owner-flow/docs/development/contributing.md"
+              >Contributing<span>Build, test and owner evidence</span></a
             >
           </li>
         </ul>
@@ -1537,14 +1550,21 @@ mama status                         # setup is done when the first report arrive
         <div class="footer-brand">
           <img src="assets/mama-icon.svg" alt="" />
           <span>MAMA</span>
-          <span class="footer-version">0.52.x</span>
+          <span class="footer-version">0.56.0 · rebuild</span>
         </div>
         <div class="footer-links">
-          <a href="https://github.com/jungjaehoon-lifegamez/MAMA">GitHub</a>
-          <a href="https://www.npmjs.com/package/@jungjaehoon/mama-os">npm</a>
-          <a href="https://github.com/jungjaehoon-lifegamez/MAMA/issues">Issues</a>
+          <a href="https://github.com/jungjaehoon-lifegamez/MAMA/blob/rebuild/owner-flow/README.md"
+            >README</a
+          >
+          <a
+            href="https://github.com/jungjaehoon-lifegamez/MAMA/blob/rebuild/owner-flow/docs/index.md"
+            >Documentation</a
+          >
+          <a href="https://github.com/jungjaehoon-lifegamez/MAMA/blob/rebuild/owner-flow/TODOS.md"
+            >TODOs</a
+          >
         </div>
-        <p class="footer-legal">MIT © jungjaehoon</p>
+        <p class="footer-legal">MIT License</p>
       </div>
     </footer>
     <script>

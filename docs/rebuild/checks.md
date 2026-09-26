@@ -13,6 +13,7 @@ One entry per work item: result, evidence, what still fails. 3-5 lines each.
   kept, integrity ok. The original was only read.
 - Still open: release/publish jobs would publish the stub standalone if a release tag is pushed. The daemon
   is stopped until the W1 cutover.
+  Later state: see [W1 cutover](#w1-cutover) and [current product facts](product-facts.md); this is the W0 snapshot, not the current standalone or daemon status.
 
 ## W1 slice 3 — 2026-09-25
 
@@ -930,3 +931,10 @@ The implementation writes raw/index data during import only. Replay is the owner
   users to run plain `codex login` although the runtime reads its own Codex home (now prints
   CODEX_HOME=<root>/.codex codex login; the test fails without the fix). The new pages carry no personal,
   customer or project names; the rebuild logs (checks.md, owner-reports.md) still do — D6.
+
+## D1/D5 documentation pass 2 — 2026-09-27
+
+- Result: root and four package READMEs, website text, Unreleased notes and current TODOs now describe the owner rebuild; report/replay plans distinguish implemented mechanisms from open owner checks.
+- Evidence: package manifests, core exports/migrations, MCP tool advertising, plugin hooks and current check-log entries were compared; an independent read-only review corrected the core cache-default description.
+- Verification: 366 local/repository links across 47 files pass path and heading-anchor checks; Git-ignored local drafts and three external font URLs are outside this check. Website CSS, scripts, layout structure and images are preserved; released changelog entries are byte-identical. Added-line privacy patterns and diff whitespace checks pass.
+- Remaining: this documentation pass does not close live owner acceptance, fresh-machine onboarding or the D6 history-wide privacy gate. Historical checks are unchanged except the requested W0 back-reference; no runtime test, deployment or commit.
