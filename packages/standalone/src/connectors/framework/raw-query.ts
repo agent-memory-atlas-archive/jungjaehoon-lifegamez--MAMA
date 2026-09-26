@@ -13,8 +13,7 @@ import type {
 type RawQueryAdapter = Pick<DatabaseAdapter, 'prepare'>;
 
 interface RawCursor {
-  rank: number;
-  timestampMs: number;
+  captureTimeMs: number;
   rawId: string;
   maxSourceMs: number | null;
 }
@@ -27,7 +26,6 @@ interface RawListCursor {
 }
 
 interface RawSearchRow extends Record<string, unknown> {
-  rank: number;
   capture_timestamp_ms: number;
   observation_observed_at: number | null;
 }
@@ -89,20 +87,18 @@ function normalizeMaxSourceMs(value: number | null | undefined): number | null {
   return value;
 }
 
-function escapeFtsQuery(query: string): string {
-  return `"${query.replace(/"/g, '""')}"`;
+function substringPattern(term: string): string {
+  return `%${term.replace(/[\\%_]/g, '\\$&')}%`;
 }
 
 function encodeCursor(row: {
-  rank: number;
   capture_timestamp_ms: number;
   event_index_id: string;
   maxSourceMs: number | null;
 }): string {
   return Buffer.from(
     JSON.stringify({
-      rank: row.rank,
-      timestampMs: row.capture_timestamp_ms,
+      captureTimeMs: row.capture_timestamp_ms,
       rawId: row.event_index_id,
       maxSourceMs: row.maxSourceMs,
     }),
@@ -119,18 +115,15 @@ function decodeCursor(cursor: string | undefined): RawCursor | null {
       Buffer.from(cursor, 'base64url').toString('utf8')
     ) as Partial<RawCursor>;
     if (
-      typeof parsed.rank !== 'number' ||
-      !Number.isFinite(parsed.rank) ||
-      typeof parsed.timestampMs !== 'number' ||
-      !Number.isFinite(parsed.timestampMs) ||
+      typeof parsed.captureTimeMs !== 'number' ||
+      !Number.isFinite(parsed.captureTimeMs) ||
       typeof parsed.rawId !== 'string' ||
       parsed.rawId.length === 0
     ) {
       throw new Error('invalid shape');
     }
     return {
-      rank: parsed.rank,
-      timestampMs: parsed.timestampMs,
+      captureTimeMs: parsed.captureTimeMs,
       rawId: parsed.rawId,
       maxSourceMs: normalizeMaxSourceMs(parsed.maxSourceMs),
     };
@@ -218,18 +211,8 @@ function appendCursorFilter(clauses: string[], params: unknown[], cursor: RawCur
   if (!cursor) {
     return;
   }
-  clauses.push(
-    `(rank > ? OR (rank = ? AND capture_timestamp_ms < ?) OR ` +
-      `(rank = ? AND capture_timestamp_ms = ? AND event_index_id > ?))`
-  );
-  params.push(
-    cursor.rank,
-    cursor.rank,
-    cursor.timestampMs,
-    cursor.rank,
-    cursor.timestampMs,
-    cursor.rawId
-  );
+  clauses.push(`(capture_timestamp_ms < ? OR (capture_timestamp_ms = ? AND event_index_id > ?))`);
+  params.push(cursor.captureTimeMs, cursor.captureTimeMs, cursor.rawId);
 }
 
 function parseMetadata(metadataJson: string | null): Record<string, unknown> {
@@ -251,10 +234,6 @@ function parseMetadata(metadataJson: string | null): Record<string, unknown> {
 function contentPreview(content: string): string {
   const compact = content.replace(/\s+/g, ' ').trim();
   return compact.length > 240 ? `${compact.slice(0, 237)}...` : compact;
-}
-
-function scoreFromRank(rank: number): number {
-  return Number.isFinite(rank) ? 1 / (1 + Math.exp(rank)) : 0;
 }
 
 function timestampToIso(timestampMs: number | null): string | null {
@@ -285,7 +264,8 @@ function toRawHit(row: RawSearchRow): RawSearchHit {
       typeof row.observation_observed_at === 'number' ? row.observation_observed_at : null
     ),
     content_preview: contentPreview(record.content),
-    score: scoreFromRank(Number(row.rank)),
+    // Substring hits have equal weight, as unranked browse results already did.
+    score: 0.5,
     source_ref: record.source_locator ?? record.artifact_locator,
     metadata: parseMetadata(record.metadata_json),
   };
@@ -327,37 +307,42 @@ function runSearch(adapter: RawQueryAdapter, input: RawSearchInput): RawSearchRe
     return { hits: [], next_cursor: null };
   }
 
-  const params: unknown[] = [escapeFtsQuery(query)];
+  const params: unknown[] = [];
   const clauses: string[] = [];
+  for (const term of query.split(/\s+/)) {
+    clauses.push(
+      `(${['title', 'content', 'author', 'channel']
+        .map((field) => `e.${field} LIKE ? ESCAPE '\\'`)
+        .join(' OR ')})`
+    );
+    const pattern = substringPattern(term);
+    params.push(pattern, pattern, pattern, pattern);
+  }
   const captureTime = captureTimestampSql('e');
-  appendFilters(clauses, params, input, 'e', captureTime);
+  // from/to name when something was said, as in listRaw; capture time only orders and pages.
+  appendFilters(clauses, params, input, 'e', 'COALESCE(e.event_datetime, e.source_timestamp_ms)');
   const cursor = decodeCursor(input.cursor);
   if (cursor) assertCursorCeiling(cursor, input);
 
   const outerClauses: string[] = [];
   const outerParams: unknown[] = [];
   appendCursorFilter(outerClauses, outerParams, cursor);
-  const whereSql = clauses.length > 0 ? `AND ${clauses.join(' AND ')}` : '';
   const cursorSql = outerClauses.length > 0 ? `WHERE ${outerClauses.join(' AND ')}` : '';
   const rows = adapter
     .prepare(
       `
-        WITH ranked AS (
+        WITH matched AS (
           SELECT e.*, o.observed_at AS observation_observed_at,
-                 ${captureTime} AS capture_timestamp_ms,
-                 bm25(connector_event_index_fts) AS rank
-          FROM connector_event_index_fts
-          JOIN connector_event_index e
-            ON e.event_index_id = connector_event_index_fts.event_index_id
+                 ${captureTime} AS capture_timestamp_ms
+          FROM connector_event_index e
           LEFT JOIN observation_versions o
             ON o.observation_id = e.current_observation_id
-          WHERE connector_event_index_fts MATCH ?
-            ${whereSql}
+          WHERE ${clauses.join(' AND ')}
         )
         SELECT *
-        FROM ranked
+        FROM matched
         ${cursorSql}
-        ORDER BY rank ASC, capture_timestamp_ms DESC, event_index_id ASC
+        ORDER BY capture_timestamp_ms DESC, event_index_id ASC
         LIMIT ?
       `
     )
@@ -371,7 +356,6 @@ function runSearch(adapter: RawQueryAdapter, input: RawSearchInput): RawSearchRe
     hits: pageRows.map(toRawHit),
     next_cursor: nextRow
       ? encodeCursor({
-          rank: Number(nextRow.rank),
           capture_timestamp_ms: Number(nextRow.capture_timestamp_ms),
           event_index_id: String(nextRow.event_index_id),
           maxSourceMs: normalizeMaxSourceMs(input.maxSourceMs),
@@ -429,7 +413,7 @@ export function listRaw(adapter: RawQueryAdapter, input: RawSearchInput): RawSea
   const limit = normalizeLimit(input.limit);
   const rows = adapter
     .prepare(
-      `SELECT e.*, 0 AS rank, ${timingSelectSql('e')}
+      `SELECT e.*, ${timingSelectSql('e')}
        FROM connector_event_index e
        WHERE ${clauses.join(' AND ')}
        ORDER BY e.source_timestamp_ms DESC, e.event_index_id ASC
@@ -469,7 +453,7 @@ export function getRawById(
   const row = adapter
     .prepare(
       `
-        SELECT e.*, 0 AS rank, ${timingSelectSql('e')}
+        SELECT e.*, ${timingSelectSql('e')}
         FROM connector_event_index e
         WHERE ${clauses.join(' AND ')}
         LIMIT 1
@@ -500,7 +484,7 @@ export function getRawWindow(
   const targetRow = adapter
     .prepare(
       `
-        SELECT e.*, 0 AS rank, ${timingSelectSql('e')}
+        SELECT e.*, ${timingSelectSql('e')}
         FROM connector_event_index e
         WHERE ${targetClauses.join(' AND ')}
         LIMIT 1
@@ -558,7 +542,7 @@ function beforeWindowRows(
   return adapter
     .prepare(
       `
-        SELECT e.*, 0 AS rank, ${timingSelectSql('e')}
+        SELECT e.*, ${timingSelectSql('e')}
         FROM connector_event_index e
         WHERE ${clauses.join(' AND ')}
         ORDER BY capture_timestamp_ms DESC, e.event_index_id DESC
@@ -601,7 +585,7 @@ function afterWindowRows(
   return adapter
     .prepare(
       `
-        SELECT e.*, 0 AS rank, ${timingSelectSql('e')}
+        SELECT e.*, ${timingSelectSql('e')}
         FROM connector_event_index e
         WHERE ${clauses.join(' AND ')}
         ORDER BY capture_timestamp_ms ASC, e.event_index_id ASC
@@ -774,7 +758,7 @@ export function getRawHistory(adapter: RawQueryAdapter, input: RawHistoryInput):
   const rows = adapter
     .prepare(
       `
-        SELECT e.*, 0 AS rank, ${timingSelectSql('e')}
+        SELECT e.*, ${timingSelectSql('e')}
         FROM connector_event_index e
         WHERE ${clauses.join(' AND ')}
         ORDER BY capture_timestamp_ms ASC, e.event_index_id ASC

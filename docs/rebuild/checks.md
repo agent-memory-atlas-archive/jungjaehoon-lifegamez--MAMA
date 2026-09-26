@@ -753,3 +753,14 @@ The implementation writes raw/index data during import only. Replay is the owner
   named the likely artist with the evidence level stated and asked before revising (73 s, 13 tools).
   Still failing: that correction was not saved (no memory.save in the turn) despite the any-turn lesson
   rule; the earlier correction in this session was saved. Agent compliance, not host; watch it on Codex.
+- 2026-09-26: Answer/Recognise — stored source search now ANDs escaped literal substring terms across title/content/author/channel; capture-time DESC and event-index-id ASC replace rank in ordering and cursors, preserving visibility filters and source-ceiling assertions.
+  Evidence: standalone connector/source/replay tests 78 passed; core migration/DB tests 50 passed; both package typechecks, changed-file lint and diff check passed. Regressions cover Japanese/Korean substrings, literal LIKE characters, term order, paging, filters and retained rows/writes after migration.
+  Reader audit: owner-runtime -> action-surface -> sourceActionRegistrations -> stored-source-reader -> searchRaw is the source path; MCP memory tools use the core memory action path. No other connector FTS reader remains; core migration 096 drops its table/three triggers, and standalone 001 no longer recreates them on a fresh DB.
+  Still unverified: live owner answers after deployment; no daemon restart or commit. The pre-existing owner-system-prompt.ts content is unchanged. MAMA MCP decision save was blocked because the tool requires approval while approval policy is never.
+- 2026-09-26 21:00 KST: supervisor check of the substring search outside the sandbox: standalone connectors,
+  source actions and replay 102/102, core migration chain and database instances 15/15, typecheck clean.
+  Also fixed: search from/to filtered capture time while browse used source time, so a 9/22 chat backfilled
+  on 9/25 vanished from a date-bounded search; both now filter source time (test red without the fix).
+  Live-DB replay of the 60 distinct zero-hit agent searches of the last 3 days: 24 now return hits; the
+  rest are queries in another script than the source (Korean names for Japanese chats) or absent content.
+  The asset number finds the uploader's files at once (7 hits, 2 ms).

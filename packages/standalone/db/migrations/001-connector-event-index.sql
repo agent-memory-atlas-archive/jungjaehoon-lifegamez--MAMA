@@ -48,15 +48,6 @@ CREATE TABLE connector_event_index_cursors (
   indexed_count INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE VIRTUAL TABLE connector_event_index_fts USING fts5(
-  event_index_id UNINDEXED,
-  title,
-  content,
-  author,
-  channel,
-  tokenize = 'unicode61 remove_diacritics 2'
-);
-
 CREATE TABLE connector_event_index_observation_cursors (
   source_connector TEXT PRIMARY KEY,
   next_seq INTEGER NOT NULL CHECK (next_seq >= 1)
@@ -108,27 +99,6 @@ CREATE INDEX idx_connector_event_source_cursor
 
 CREATE INDEX idx_connector_event_source_entity
   ON connector_event_index(source_connector, source_entity_id);
-
-CREATE TRIGGER trg_connector_event_index_ad
-AFTER DELETE ON connector_event_index
-BEGIN
-  DELETE FROM connector_event_index_fts WHERE event_index_id = OLD.event_index_id;
-END;
-
-CREATE TRIGGER trg_connector_event_index_ai
-AFTER INSERT ON connector_event_index
-BEGIN
-  INSERT INTO connector_event_index_fts(event_index_id, title, content, author, channel)
-  VALUES (NEW.event_index_id, NEW.title, NEW.content, NEW.author, NEW.channel);
-END;
-
-CREATE TRIGGER trg_connector_event_index_au
-AFTER UPDATE OF title, content, author, channel ON connector_event_index
-BEGIN
-  DELETE FROM connector_event_index_fts WHERE event_index_id = OLD.event_index_id;
-  INSERT INTO connector_event_index_fts(event_index_id, title, content, author, channel)
-  VALUES (NEW.event_index_id, NEW.title, NEW.content, NEW.author, NEW.channel);
-END;
 
 CREATE TRIGGER trg_connector_event_index_legacy_content_refresh_au
 AFTER UPDATE OF content_hash, metadata_json, source_timestamp_ms, source_type, channel
