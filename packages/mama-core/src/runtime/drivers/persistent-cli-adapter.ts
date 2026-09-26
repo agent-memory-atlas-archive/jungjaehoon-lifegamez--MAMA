@@ -85,6 +85,7 @@ export class PersistentCLIAdapter extends EventEmitter implements IModelRunner {
       dangerouslySkipPermissions: options.dangerouslySkipPermissions,
       permissionMode: options.permissionMode,
       env: options.env,
+      processEnv: options.processEnv,
       useGatewayTools: options.useGatewayTools,
       requestTimeout: options.requestTimeout,
       tools: options.tools,

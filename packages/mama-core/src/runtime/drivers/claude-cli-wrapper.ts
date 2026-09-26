@@ -83,6 +83,8 @@ export interface ClaudeCLIWrapperOptions {
    */
   dangerouslySkipPermissions?: boolean;
   env?: Record<string, string>;
+  /** Complete inherited environment supplied by the consumer; env is applied afterward. */
+  processEnv?: NodeJS.ProcessEnv;
   /** Noninteractive consumers use dontAsk with explicit permission rules. */
   permissionMode?: 'default' | 'acceptEdits' | 'dontAsk' | 'plan';
   /** If true, use GatewayToolExecutor instead of MCP (default: false) */
@@ -242,7 +244,7 @@ export class ClaudeCLIWrapper {
         stdio: ['pipe', 'pipe', 'pipe'],
         // ⚠️ NEVER spawn in the user's home directory — it breaks agent isolation.
         cwd: mamaWorkspace,
-        ...(this.options.env ? { env: { ...process.env, ...this.options.env } } : {}),
+        env: { ...(this.options.processEnv ?? process.env), ...this.options.env },
       });
 
       // Handle stdin: write content if using stdin mode, otherwise close immediately

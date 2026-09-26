@@ -11,6 +11,7 @@ import type {
 } from '@jungjaehoon/mama-core';
 import type { JudgmentAccess } from '@jungjaehoon/mama-core/knowledge';
 import { requireViewerAuth } from './auth-middleware.js';
+import { logCfAccessConfiguration } from './cf-access.js';
 import type { ReportStore } from './report-handler.js';
 import {
   listWikiPages,
@@ -418,6 +419,7 @@ function readLogTail(
 }
 
 export function createViewerServer(options: ViewerServerOptions): ViewerServer {
+  logCfAccessConfiguration();
   const port = options.port ?? resolveApiPort(process.env.MAMA_API_PORT);
   const host = options.host ?? process.env.MAMA_API_HOST ?? '127.0.0.1';
   const root = options.viewerDirectory ?? viewerDirectory();
@@ -817,7 +819,7 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
         });
         return;
       }
-      if (!requireViewerAuth(req, res)) return;
+      if (!(await requireViewerAuth(req, res))) return;
 
       if (url.pathname === '/api/report/events') {
         handleReportEvents(req, res);

@@ -131,9 +131,14 @@ describe('W1 owner question integration', () => {
             modelRunId: modelRun.model_run_id,
             gatewayCallId: 'fixture-source-delta',
           };
-          const payloadLine = text.split('\n').find((line) => line.startsWith('payload: '));
-          if (!payloadLine) throw new Error('fixture source delta omitted its payload');
-          const payload = JSON.parse(payloadLine.slice('payload: '.length)) as {
+          // The delta payload arrives quoted as untrusted content: its JSON is the first line
+          // after the payload label that opens an object.
+          const lines = text.split('\n');
+          const labelIndex = lines.findIndex((line) => line.startsWith('payload: '));
+          if (labelIndex < 0) throw new Error('fixture source delta omitted its payload');
+          const payloadJson = lines.slice(labelIndex + 1).find((line) => line.startsWith('{'));
+          if (!payloadJson) throw new Error('fixture source delta payload carried no JSON');
+          const payload = JSON.parse(payloadJson) as {
             refs?: Array<{ connector?: unknown; observationRef?: unknown }>;
           };
           if (!Array.isArray(payload.refs)) throw new Error('fixture source delta omitted refs');

@@ -51,6 +51,10 @@ export interface CodexRuntimeProcessOptions {
   webSearch?: boolean;
   /** Explicit shell environment overrides supplied by the consumer. */
   shellEnvironment?: Record<string, string>;
+  /** Complete backend environment; omitted retains normal process inheritance. */
+  processEnv?: NodeJS.ProcessEnv;
+  /** Absolute credential paths the native command sandbox must not read. */
+  deniedReadPaths?: string[];
   allowLoginShell?: boolean;
   auxiliaryToolPolicy?: CodexAuxiliaryToolPolicy;
   /**
@@ -120,6 +124,8 @@ export class CodexRuntimeProcess extends EventEmitter implements AgentRuntimePro
       shellTool: options.shellTool,
       webSearch: options.webSearch,
       shellEnvironment: options.shellEnvironment,
+      processEnv: options.processEnv,
+      deniedReadPaths: options.deniedReadPaths,
       allowLoginShell: options.allowLoginShell,
       // A completed child is accepted by the consumer's durable intake before the
       // driver forgets it. Started events remain observational.

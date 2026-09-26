@@ -182,7 +182,7 @@ import fs from 'node:fs';
 import readline from 'node:readline';
 const mode = ${JSON.stringify(mode)};
 const capture = ${JSON.stringify(capture)};
-fs.appendFileSync(capture, JSON.stringify({argv:process.argv.slice(2),home:process.env.HOME,codexHome:process.env.CODEX_HOME,secret:process.env.TEST_SECRET,pid:process.pid})+'\\n');
+fs.appendFileSync(capture, JSON.stringify({argv:process.argv.slice(2),home:process.env.HOME,codexHome:process.env.CODEX_HOME,secret:process.env.TEST_SECRET,privateEnvPresent:Object.hasOwn(process.env,'PRIVATE_PASSWORD'),pid:process.pid})+'\\n');
 if (${JSON.stringify(secret)}) process.stderr.write(${JSON.stringify(secret)}+'\\n');
 const send = value => { const wire = mode === 'no-jsonrpc' ? Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'jsonrpc')) : value; process.stdout.write(JSON.stringify(wire)+'\\n'); };
 let thread = 0;
@@ -223,7 +223,7 @@ rl.on('line', line => {
     if (mode === 'unknown-response') setTimeout(()=>send({jsonrpc:'2.0',id:999,result:{}}),5);
     return;
   }
-  const threadResult = (id,params) => { const sandbox=params.sandbox === 'workspace-write'?{type:'workspaceWrite',writableRoots:[params.cwd],networkAccess:false,excludeTmpdirEnvVar:false,excludeSlashTmp:false}:params.sandbox === 'read-only'?{type:'readOnly',networkAccess:false}:{type:'dangerFullAccess'}; const instructionSources=mode==='symlink-source'?[params.cwd+'/AGENTS.md']:fs.existsSync(${JSON.stringify(join(root, 'bad-source'))})?['/outside/AGENTS.md']:[]; const result={...${JSON.stringify(responseFixture)},thread:fullThread(id),model:mode === 'bad-policy'?'unexpected-model':params.model,cwd:params.cwd,instructionSources,sandbox}; if(mode==='bad-thread-schema') delete result.thread.sessionId; return result; };
+  const threadResult = (id,params) => { const sandbox=(params.sandbox === 'workspace-write'||params.permissions === 'host-workspace')?{type:'workspaceWrite',writableRoots:[params.cwd],networkAccess:false,excludeTmpdirEnvVar:false,excludeSlashTmp:false}:params.sandbox === 'read-only'?{type:'readOnly',networkAccess:false}:{type:'dangerFullAccess'}; const instructionSources=mode==='symlink-source'?[params.cwd+'/AGENTS.md']:fs.existsSync(${JSON.stringify(join(root, 'bad-source'))})?['/outside/AGENTS.md']:[]; const result={...${JSON.stringify(responseFixture)},thread:fullThread(id),model:mode === 'bad-policy'?'unexpected-model':params.model,cwd:params.cwd,instructionSources,sandbox}; if(mode==='bad-thread-schema') delete result.thread.sessionId; return result; };
   if (message.method === 'thread/start') return send({jsonrpc:'2.0',id:message.id,result:threadResult('thread-'+(++thread),message.params)});
   if (message.method === 'thread/resume' && mode === 'resume-missing') return send({jsonrpc:'2.0',id:message.id,error:{code:-32600,message:'no rollout found for thread id'}});
   if (message.method === 'thread/resume') return send({jsonrpc:'2.0',id:message.id,result:threadResult(message.params.threadId,message.params)});
@@ -485,6 +485,47 @@ afterEach(() => {
 });
 
 describe('Story: Codex app-server process', () => {
+  it('keeps the sanitized process environment and deny-read profile on spawn, start and resume', async () => {
+    const item = fixture();
+    vi.stubEnv('PRIVATE_PASSWORD', 'synthetic');
+    const options = {
+      ...item.options,
+      processEnv: { PATH: process.env.PATH },
+      deniedReadPaths: [join(item.root, 'private')],
+    };
+    const first = new CodexAppServerProcess(options);
+    try {
+      await first.prompt('first');
+    } finally {
+      await first.stop();
+    }
+    const second = new CodexAppServerProcess(options);
+    try {
+      await second.prompt('second');
+      const sent = messages(item.capture);
+      const launches = sent.filter((entry) => entry.argv);
+      expect(launches).toHaveLength(2);
+      for (const launch of launches) expect(launch.privateEnvPresent).toBe(false);
+      const starts = sent.filter(
+        (entry) => entry.method === 'thread/start' || entry.method === 'thread/resume'
+      );
+      expect(starts.map((entry) => entry.method)).toEqual(['thread/start', 'thread/resume']);
+      for (const start of starts) {
+        expect(start.params).toMatchObject({
+          permissions: 'host-workspace',
+          approvalPolicy: 'never',
+        });
+        expect(start.params).not.toHaveProperty('sandbox');
+      }
+      const config = readFileSync(join(item.options.codexHome!, 'config.toml'), 'utf8');
+      expect(config).toContain('default_permissions = "host-workspace"');
+      expect(config).toContain(`${JSON.stringify(join(item.root, 'private'))} = "deny"`);
+    } finally {
+      await second.stop();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('does not send turn/start when the durable dispatch write fails', async () => {
     const item = fixture('held-for-steer');
     const driver = new CodexAppServerProcess(item.options);

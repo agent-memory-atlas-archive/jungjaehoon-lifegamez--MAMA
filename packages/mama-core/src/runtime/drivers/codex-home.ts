@@ -423,13 +423,18 @@ export function buildMAMACodexAppServerConfig(
     /** Enable live web search; disabled unless the consumer opts in. */
     webSearch?: boolean;
     shellEnvironment?: Record<string, string>;
+    deniedReadPaths?: string[];
     allowLoginShell?: boolean;
   } = {}
 ): string {
   return [
     ...(options.webSearch ? ['web_search = "live"'] : []),
-    'approval_policy = "on-request"',
-    'sandbox_mode = "workspace-write"',
+    options.deniedReadPaths?.length
+      ? 'approval_policy = "never"'
+      : 'approval_policy = "on-request"',
+    ...(options.deniedReadPaths?.length
+      ? ['default_permissions = "host-workspace"']
+      : ['sandbox_mode = "workspace-write"']),
     `model_reasoning_effort = ${tomlString(resolveCodexReasoningEffort(effort))}`,
     'instructions = ""',
     'developer_instructions = ""',
@@ -448,6 +453,17 @@ export function buildMAMACodexAppServerConfig(
           ),
         ]),
     '',
+    ...(options.deniedReadPaths?.length
+      ? [
+          '[permissions.host-workspace]',
+          'extends = ":workspace"',
+          '[permissions.host-workspace.filesystem]',
+          ...options.deniedReadPaths.map((path) => `${tomlString(path)} = "deny"`),
+          '[permissions.host-workspace.network]',
+          'enabled = false',
+          '',
+        ]
+      : []),
     '[analytics]',
     'enabled = false',
     '',

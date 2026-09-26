@@ -319,9 +319,12 @@ describe('connector runtime', () => {
         resultForReceipt: () => null,
         run: async (content): Promise<NativeTurnResult> => {
           const text = content[0]?.type === 'text' ? (content[0].text ?? '') : '';
-          const payloadLine = text.split('\n').find((line) => line.startsWith('payload: '));
+          const quoted = text.slice(text.indexOf('payload: '));
+          expect(quoted).toContain('<<<UNTRUSTED-CONTENT source=source_delta>>>');
+          // The agent reads the quoted JSON body; source handles remain intact inside the boundary.
+          const payloadLine = quoted.split('\n').find((line) => line.startsWith('{'));
           if (!payloadLine) throw new Error('rendered source delta omitted payload');
-          const payload = JSON.parse(payloadLine.slice('payload: '.length)) as {
+          const payload = JSON.parse(payloadLine) as {
             refs?: Array<{ connector?: unknown; observationRef?: unknown }>;
           };
           if (!Array.isArray(payload.refs)) throw new Error('rendered source delta omitted refs');

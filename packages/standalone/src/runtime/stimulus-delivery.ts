@@ -1,3 +1,4 @@
+import { wrapUntrustedContent } from '../utils/untrusted-content.js';
 import { createHash } from 'node:crypto';
 
 import { canonicalizeJSON } from '@jungjaehoon/mama-core/canonicalize';
@@ -320,7 +321,7 @@ export function renderWindowQueue(queue: WindowQueue): string {
       ...queueLines(entry.lines)
     );
   }
-  return lines.join('\n');
+  return wrapUntrustedContent('source_delta', lines.join('\n'));
 }
 
 function boundedStimulus(row: MailboxRow, liveSourceDelta: boolean): string {
@@ -332,7 +333,7 @@ function boundedStimulus(row: MailboxRow, liveSourceDelta: boolean): string {
     `stimulus_id: ${row.stimulusId}`,
     `channel: ${row.channelKey}`,
     `occurred_at: ${new Date(row.occurredAt).toISOString()}`,
-    `preview: ${JSON.stringify(row.preview)}`,
+    `preview: ${row.kind === 'source_delta' ? wrapUntrustedContent('source_delta', JSON.stringify(row.preview)) : JSON.stringify(row.preview)}`,
   ];
   if (row.kind === 'owner_message') {
     const payload = row.payload;
@@ -393,12 +394,15 @@ function boundedStimulus(row: MailboxRow, liveSourceDelta: boolean): string {
         `current_work (commitmentId | revision | title | stage | status | assignee | lastEventTime), ${String(work.length)} items:`,
         ...work,
         `messages (KST, channel · sender · observationRef: text), ${String(messages.length)} lines:`,
-        ...messages
+        ...messages.map((message) => wrapUntrustedContent('source_delta', message))
       );
       return lines.join('\n');
     }
   }
-  if (row.payload !== undefined) lines.push(`payload: ${JSON.stringify(row.payload)}`);
+  if (row.payload !== undefined)
+    lines.push(
+      `payload: ${row.kind === 'source_delta' ? wrapUntrustedContent('source_delta', JSON.stringify(row.payload)) : JSON.stringify(row.payload)}`
+    );
   return lines.join('\n');
 }
 

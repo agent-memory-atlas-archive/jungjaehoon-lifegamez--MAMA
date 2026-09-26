@@ -122,6 +122,19 @@ retry), a workspace-only `Edit(//<workspace>/**)` rule passed with `--allowedToo
 WebFetch/WebSearch, MAMA MCP tools and Agent. Subagents inherit the same boundary and run inside
 the owner turn (background tasks off). Any other widening needs an owner decision recorded here.
 
+## Owner credential boundary — 2026-09-27
+
+- Standalone removes secret-shaped environment names before launching either backend; core accepts
+  a complete consumer-supplied environment. Native children inherit it; daemon connectors keep theirs.
+- Claude CLI Read denies and Bash sandbox denyRead exclude auth.env, config.yaml, runtime/ and the
+  managed Codex home. Codex uses a named workspace permission profile with those paths denied;
+  thread start/resume select that profile instead of the legacy sandbox override.
+- Viewer tunnel headers never establish identity. Remote access requires MAMA_AUTH_TOKEN or a verified
+  Access JWT configured with MAMA_CF_ACCESS_ISSUER and MAMA_CF_ACCESS_AUD. Unconfigured verification
+  fails closed. Direct loopback without tunnel headers remains available.
+- External evidence is quoted at model-facing tool results and delta stimuli; stored source data and
+  host receipts retain their original structure. These changes protect the Answer and Report checks.
+
 ## References
 
 - Release: [docs/development/release-process.md](docs/development/release-process.md). A release

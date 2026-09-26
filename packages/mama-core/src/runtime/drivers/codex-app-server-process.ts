@@ -77,6 +77,10 @@ export interface CodexAppServerProcessOptions {
   webSearch?: boolean;
   /** Explicit shell environment overrides; does not replace the app-server's isolated HOME. */
   shellEnvironment?: Record<string, string>;
+  /** Complete backend environment; omitted retains normal process inheritance. */
+  processEnv?: NodeJS.ProcessEnv;
+  /** Absolute credential paths the native command sandbox must not read. */
+  deniedReadPaths?: string[];
   allowLoginShell?: boolean;
   /** Stable identity/rules fingerprint; dynamic conversation context must be excluded. */
   policyFingerprint?: string;
@@ -626,6 +630,8 @@ export class CodexAppServerProcess {
     /** Enable live web search; disabled unless the consumer opts in. */
     webSearch?: boolean;
     shellEnvironment?: Record<string, string>;
+    processEnv?: NodeJS.ProcessEnv;
+    deniedReadPaths?: string[];
     allowLoginShell?: boolean;
     onSubagentEvent?: (event: SubagentEvent) => void;
     createSubagentBridge?: (info: SubagentBridgeRequest) => Promise<SubagentBridge | null>;
@@ -698,7 +704,10 @@ export class CodexAppServerProcess {
         if (this.stopped) {
           throw new Error('Codex app-server process is stopped');
         }
-        const launch = buildCodexAppServerLaunchConfig(this.options.mcpConfigPath, process.env);
+        const launch = buildCodexAppServerLaunchConfig(
+          this.options.mcpConfigPath,
+          this.options.processEnv ?? process.env
+        );
         if (overrides.resumeSession === false) {
           this.discardSessionThreadState(session.sessionKey, 'session was restarted');
           this.registry.remove(session.sessionKey);
@@ -875,7 +884,10 @@ export class CodexAppServerProcess {
     if (!record) {
       return 'missing';
     }
-    const launch = buildCodexAppServerLaunchConfig(this.options.mcpConfigPath, process.env);
+    const launch = buildCodexAppServerLaunchConfig(
+      this.options.mcpConfigPath,
+      this.options.processEnv ?? process.env
+    );
     return this.registryPolicyMatches(record, session, launch) ? 'compatible' : 'mismatch';
   }
 
@@ -1072,6 +1084,7 @@ export class CodexAppServerProcess {
       shellTool: this.options.shellTool,
       webSearch: this.options.webSearch,
       shellEnvironment: this.options.shellEnvironment,
+      deniedReadPaths: this.options.deniedReadPaths,
       allowLoginShell: this.options.allowLoginShell,
     });
     const configFingerprint = fingerprintText(config);
@@ -1214,7 +1227,9 @@ export class CodexAppServerProcess {
         model: session.model,
         cwd: session.cwd,
         approvalPolicy: 'never',
-        sandbox: session.sandbox,
+        ...(this.options.deniedReadPaths?.length
+          ? { permissions: 'host-workspace' }
+          : { sandbox: session.sandbox }),
         config: this.threadConfig(session),
       };
       if (resumeInstructions) {
@@ -1248,7 +1263,9 @@ export class CodexAppServerProcess {
       model: session.model,
       cwd: session.cwd,
       approvalPolicy: 'never',
-      sandbox: session.sandbox,
+      ...(this.options.deniedReadPaths?.length
+        ? { permissions: 'host-workspace' }
+        : { sandbox: session.sandbox }),
       baseInstructions: session.systemPrompt,
       config: this.threadConfig(session),
     };
@@ -1276,7 +1293,10 @@ export class CodexAppServerProcess {
   }
 
   private policyFingerprint(session: SessionPolicy): string {
-    const base = session.policyFingerprint ?? fingerprintText(session.systemPrompt);
+    const original = session.policyFingerprint ?? fingerprintText(session.systemPrompt);
+    const base = this.options.deniedReadPaths?.length
+      ? fingerprintText(JSON.stringify([original, this.options.deniedReadPaths]))
+      : original;
     const tools = session.hostToolBridge?.tools;
     const roots = session.restrictedReadRoots;
     if (!tools?.length && !roots) {

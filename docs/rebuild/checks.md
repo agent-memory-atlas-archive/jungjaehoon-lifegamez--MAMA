@@ -815,3 +815,26 @@ The implementation writes raw/index data during import only. Replay is the owner
   case_timeline_range; save, search, save type=checkpoint, load_checkpoint and update all succeed. The
   server and hook default honours the older MAMA_DATABASE_PATH name the core still reads (Codex had
   dropped it, which would have switched such users to the default database silently).
+
+- 2026-09-27: Answer/Report security P1 — standalone now removes all secret-shaped environment names before either CLI starts; the shared drivers accept a complete consumer-provided processEnv. Connectors retain the daemon environment.
+  Evidence: environment-name tests, a mocked Claude spawn and a real synthetic app-server subprocess show no inherited test credential; Codex start and restart/resume use the same filtered environment. No secret-shaped backend exception was necessary; CLI authentication remains in its managed home.
+  Boundary: native children inherit the backend environment. This is repository/test evidence, not a new live daemon process; deployment and a fresh owner session remain unverified.
+- 2026-09-27: Answer security P1 — Claude gets CLI Read denies plus sandbox denyRead for auth.env, config.yaml, runtime/ and managed/custom Codex homes; Codex gets a named workspace profile with denied paths and network disabled, selected on both thread/start and thread/resume.
+  Evidence: settings and process-argument tests, config tests and synthetic app-server restart/resume tests pass; removing the environment/file restrictions makes their regression tests fail. Installed Codex package version is 0.156.1; static binary fields and official config/app-server documentation support the named profile path.
+  Limit: automatic approval review rejected shell-launched Codex help; no real CLI sandbox read attempt was run. These profiles constrain model tools, not the trusted backend's own authentication reads. No service restart.
+- 2026-09-27: Recognise/Answer security P1 — both model-result choke points quote source.read/search, source.attachment.list/download, manage.wiki.read and report.read, including errors. The JSON envelope remains valid; data is delimited text containing the original serialized data. Host receipts retain their structure.
+  Delta messages, preview, fallback payload and replay queue are quoted; embedded end markers are neutralized. Unused stripping/instruction helpers were deleted. The connector reader regression still reads every quoted source handle successfully.
+  Evidence: MCP/dynamic-tool tests cover all six actions; delta tests cover message refs and fallback payload. Removing the wrappers makes the boundary regressions fail. Real model resistance to hostile instructions is not claimed from delimiters alone.
+- 2026-09-27: Report/viewer security P1 — removed identity-header trust and the retired server-token alias. Authentication awaits RS256 signature/JWKS verification (10-minute cache), issuer/audience, expiry/clock skew and email; all tunnel-header requests require a verified assertion or MAMA_AUTH_TOKEN.
+  Missing/invalid Access configuration fails closed and logs one value-free startup message. Direct loopback without tunnel headers still works. Synthetic RSA tests cover signatures, claims, forged/empty headers, cache expiry, fetch failure and token fallback; no real credentials or deployment details were used.
+  Validation and per-file line counts are in security-p1-2026-09-27.md. Core compilation, standalone typecheck and changed-file lint pass. Full-suite socket/HTTP tests are blocked by listen EPERM; MAMA decision search/save requires unavailable approval, so the decision is recorded here and in AGENTS.md only. No commit.
+- 2026-09-27 00:45 KST: security P1 live check (Codex backend). Supervisor fix: the environment filter
+  kept dropping MAX_THINKING_TOKENS (a Claude budget, not a credential); it is now kept by name. Suites
+  outside the sandbox: core runtime 251/251, standalone runtime/api/cli/agent 408/408. After restart:
+  the daemon still holds the six connector secrets, its Codex children hold none; Codex sandbox under the
+  generated profile denies reads of auth.env, config.yaml and runtime/session-credential, reads the
+  workspace, denies writes outside it; the first turn ran under the profile and its rollout shows tool
+  results and delta text wrapped (report.read 10, source.read 4, source_delta 4). Viewer origin: plain
+  loopback 200; tunnel-shaped requests with forged Access headers or no credentials 401; bearer 200. Access
+  issuer and audience were taken from the live Access app and placed in auth.env without printing them.
+  Not yet seen: a logged-in browser passing the JWT check; the Claude deny rules live (backend is Codex).

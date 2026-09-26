@@ -1,3 +1,4 @@
+import { untrustedToolData } from '../utils/untrusted-content.js';
 /**
  * The owner agent's door into the daemon's action catalog, spoken as stdio MCP
  * because that is how the CLI backends take tools.
@@ -78,15 +79,15 @@ function textResult(value: unknown, isError: boolean): ToolResult {
   };
 }
 
-function resultContent(result: ActionResult): ToolResult {
+function resultContent(name: string, result: ActionResult): ToolResult {
   if (result.status === 'completed') {
-    return textResult({ success: true, data: result.data ?? null }, false);
+    return textResult({ success: true, data: untrustedToolData(name, result.data ?? null) }, false);
   }
   return textResult(
     {
       success: false,
       status: result.status,
-      error: result.error ?? null,
+      error: untrustedToolData(name, result.error ?? null),
       ...(result.operationId !== undefined ? { operationId: result.operationId } : {}),
     },
     true
@@ -111,6 +112,7 @@ async function callTool(client: Client, params: Record<string, unknown>): Promis
         unknown
       >;
       return resultContent(
+        name,
         await client.call({
           action: name,
           input: argumentsWithoutCaller,
@@ -121,7 +123,10 @@ async function callTool(client: Client, params: Record<string, unknown>): Promis
     throw new Error('Claude MCP call is missing hook caller metadata');
   } catch (error) {
     return textResult(
-      { success: false, error: error instanceof Error ? error.message : String(error) },
+      {
+        success: false,
+        error: untrustedToolData(name, error instanceof Error ? error.message : String(error)),
+      },
       true
     );
   }

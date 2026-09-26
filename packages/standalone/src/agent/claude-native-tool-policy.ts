@@ -50,6 +50,11 @@ export function claudeOwnerAllowedTools(workspaceDir: string): string[] {
   ];
 }
 
+/** CLI deny rules also govern native children; project permission rules are ignored in -p. */
+export function claudeOwnerDisallowedTools(paths: readonly string[]): string[] {
+  return paths.flatMap((path) => [`Read(/${path})`, `Read(/${path}/**)`]);
+}
+
 export interface ClaudeToolRole {
   allowedTools?: readonly string[];
   blockedTools?: readonly string[];

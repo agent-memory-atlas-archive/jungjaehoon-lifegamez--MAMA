@@ -6,7 +6,10 @@ export function resolveCallerHookPath(): string {
 }
 
 /** Owner workspace project settings; the CLI still reads project,local only. */
-export function ensureClaudeCallerHook(workspaceDir: string): void {
+export function ensureClaudeCallerHook(
+  workspaceDir: string,
+  deniedReadPaths: readonly string[] = []
+): void {
   workspaceDir = resolve(workspaceDir);
   const directory = join(workspaceDir, '.claude');
   const path = join(directory, 'settings.json');
@@ -44,7 +47,7 @@ export function ensureClaudeCallerHook(workspaceDir: string): void {
       autoAllowBashIfSandboxed: true,
       allowUnsandboxedCommands: false,
       excludedCommands: [],
-      filesystem: { allowWrite: [workspaceDir] },
+      filesystem: { allowWrite: [workspaceDir], denyRead: [...deniedReadPaths] },
     };
     file.settings.env = {
       ...file.settings.env,

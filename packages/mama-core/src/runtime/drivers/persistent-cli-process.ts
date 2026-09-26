@@ -131,6 +131,8 @@ export interface PersistentProcessOptions {
   pendingToolUseTimeoutMs?: number;
   /** Environment variables to pass to the Claude CLI process */
   env?: Record<string, string>;
+  /** Complete inherited environment supplied by the consumer; env is applied afterward. */
+  processEnv?: NodeJS.ProcessEnv;
   /** Structurally allowed tools (--allowedTools CLI flag) */
   allowedTools?: string[];
   /** Structurally disallowed tools (--disallowedTools CLI flag) */
@@ -422,7 +424,7 @@ export class PersistentClaudeProcess extends EventEmitter {
     );
 
     // Clean environment: Remove conflicting MAMA_* variables before merging
-    const cleanEnv = { ...process.env };
+    const cleanEnv = { ...(this.options.processEnv ?? process.env) };
     const processOptionsEnv = { ...(this.options.env || {}) };
     if (this.options.env) {
       // If we're setting MAMA_DISABLE_HOOKS, remove MAMA_HOOK_FEATURES

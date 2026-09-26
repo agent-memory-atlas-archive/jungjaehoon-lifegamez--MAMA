@@ -1,3 +1,5 @@
+import { backendEnvironment, credentialReadPaths } from './backend-security.js';
+import { untrustedToolData } from '../utils/untrusted-content.js';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type {
@@ -32,6 +34,7 @@ import type {
 } from '@jungjaehoon/mama-core/runtime/runtime-process';
 import {
   claudeOwnerAllowedTools,
+  claudeOwnerDisallowedTools,
   projectClaudeNativeTools,
   type ClaudeToolRole,
 } from '../agent/claude-native-tool-policy.js';
@@ -55,6 +58,8 @@ export interface NativeDriverOptions {
   webSearch?: boolean;
   permissionMode?: 'dontAsk';
   shellEnvironment?: Record<string, string>;
+  processEnv: NodeJS.ProcessEnv;
+  deniedReadPaths: string[];
   allowLoginShell?: boolean;
   requestTimeout: number;
   effort: RuntimeEffort;
@@ -145,14 +150,17 @@ function toolContext(value: HostExecutionContext | null): {
   };
 }
 
-function modelToolResult(result: Awaited<ReturnType<ActionSurface['hostToolCall']>>): unknown {
+function modelToolResult(
+  name: string,
+  result: Awaited<ReturnType<ActionSurface['hostToolCall']>>
+): unknown {
   if (result.status === 'completed') {
-    return { success: true, data: result.data };
+    return { success: true, data: untrustedToolData(name, result.data) };
   }
   return {
     success: false,
     status: result.status,
-    error: result.error,
+    error: untrustedToolData(name, result.error),
   };
 }
 
@@ -166,6 +174,8 @@ function driverOptions(
   }
   return {
     backend: options.backend,
+    processEnv: backendEnvironment(),
+    deniedReadPaths: credentialReadPaths(options.runtimeRoot, options.codexHome),
     model: options.model,
     workspaceDir: options.workspaceDir,
     cwd: options.workspaceDir,
@@ -206,6 +216,8 @@ function createDriver(
       shellTool: nativeOptions.shellTool,
       webSearch: nativeOptions.webSearch,
       shellEnvironment: nativeOptions.shellEnvironment,
+      processEnv: nativeOptions.processEnv,
+      deniedReadPaths: nativeOptions.deniedReadPaths,
       allowLoginShell: nativeOptions.allowLoginShell,
       requestTimeout: nativeOptions.requestTimeout,
       codexHome: options.codexHome,
@@ -226,6 +238,8 @@ function createDriver(
     mcpConfigPath,
     permissionMode: nativeOptions.permissionMode,
     allowedTools: claudeOwnerAllowedTools(options.workspaceDir),
+    disallowedTools: claudeOwnerDisallowedTools(nativeOptions.deniedReadPaths),
+    processEnv: nativeOptions.processEnv,
     env: { CLAUDE_CODE_TMPDIR: join(options.workspaceDir, '.tmp') },
     pluginDir: nativeOptions.pluginDir,
     requestTimeout: nativeOptions.requestTimeout,
@@ -246,7 +260,11 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
     throw new Error('The owner Codex session requires the workspace-write sandbox');
   }
   mkdirSync(options.workspaceDir, { recursive: true });
-  if (options.backend === 'claude') ensureClaudeCallerHook(options.workspaceDir);
+  if (options.backend === 'claude')
+    ensureClaudeCallerHook(
+      options.workspaceDir,
+      credentialReadPaths(options.runtimeRoot, options.codexHome)
+    );
   const tools = actionToolDefinitions(options.actionSurface);
   const runnerRef: { current?: NativeSessionRunner<HostExecutionContext> } = {};
   const bridge: NativeDriverOptions['createSubagentBridge'] = (info) =>
@@ -355,6 +373,7 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
         throw new Error('Native action call is missing its tool-call identity');
       }
       return modelToolResult(
+        name,
         await options.actionSurface.hostToolCall(name, input, facts.gatewayCallId, {
           session: {
             ...(facts.modelRunId === undefined ? {} : { modelRunId: facts.modelRunId }),

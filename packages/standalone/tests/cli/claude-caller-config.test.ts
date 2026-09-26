@@ -70,7 +70,7 @@ describe('owner Claude workspace settings', () => {
       autoAllowBashIfSandboxed: true,
       allowUnsandboxedCommands: false,
       excludedCommands: [],
-      filesystem: { allowWrite: [workspace] },
+      filesystem: { allowWrite: [workspace], denyRead: [] },
     });
     expect(settings.permissions).toBeUndefined();
     expect(settings.env.CLAUDE_CODE_TMPDIR).toBe(join(workspace, '.tmp'));

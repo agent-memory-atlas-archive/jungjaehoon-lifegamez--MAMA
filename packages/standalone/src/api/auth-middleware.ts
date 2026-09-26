@@ -1,5 +1,6 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { verifyCfAccessRequest } from './cf-access.js';
 
 /** The archive's local-dashboard / remote-Bearer authentication boundary. */
 export function isLocalRequest(req: IncomingMessage): boolean {
@@ -10,24 +11,15 @@ export function isLocalRequest(req: IncomingMessage): boolean {
 }
 
 function isTunnelRequest(req: IncomingMessage): boolean {
-  return Boolean(req.headers['cf-connecting-ip'] || req.headers['cf-ray']);
-}
-
-function hasCloudflareAccessIdentity(req: IncomingMessage): boolean {
-  return Boolean(
-    req.headers['cf-access-jwt-assertion'] ||
-    req.headers['cf-access-authenticated-user-email'] ||
-    req.headers['cf-access-authenticated-user-uuid']
+  return Object.keys(req.headers).some(
+    (name) => name === 'cf-connecting-ip' || name === 'cf-ray' || name.startsWith('cf-access-')
   );
 }
 
-function isTrustedCloudflareAccessRequest(req: IncomingMessage): boolean {
-  return isLocalRequest(req) && hasCloudflareAccessIdentity(req);
-}
-
 function safeTokenEqual(token: string, configured: string): boolean {
-  if (token.length !== configured.length) return false;
-  return timingSafeEqual(Buffer.from(token), Buffer.from(configured));
+  const provided = Buffer.from(token);
+  const expected = Buffer.from(configured);
+  return provided.length === expected.length && timingSafeEqual(provided, expected);
 }
 
 function requestToken(req: IncomingMessage): string | null {
@@ -39,21 +31,21 @@ function requestToken(req: IncomingMessage): string | null {
 /**
  * Direct localhost is the no-token dashboard path. A tunneled localhost request
  * is remote for this decision and therefore needs either a token or Cloudflare
- * Access identity headers, matching the archived server behavior.
+ * Access JWT verification.
  */
-export function isAuthenticated(req: IncomingMessage): boolean {
-  const configured = process.env.MAMA_AUTH_TOKEN || process.env.MAMA_SERVER_TOKEN;
-  if (!configured) {
-    return isTrustedCloudflareAccessRequest(req) || (isLocalRequest(req) && !isTunnelRequest(req));
-  }
+export async function isAuthenticated(req: IncomingMessage): Promise<boolean> {
+  const configured = process.env.MAMA_AUTH_TOKEN;
   if (isLocalRequest(req) && !isTunnelRequest(req)) return true;
-  if (isTrustedCloudflareAccessRequest(req)) return true;
   const token = requestToken(req);
-  return token !== null && safeTokenEqual(token, configured);
+  if (configured && token !== null && safeTokenEqual(token, configured)) return true;
+  return verifyCfAccessRequest(req.headers);
 }
 
-export function requireViewerAuth(req: IncomingMessage, res: ServerResponse): boolean {
-  if (isAuthenticated(req)) return true;
+export async function requireViewerAuth(
+  req: IncomingMessage,
+  res: ServerResponse
+): Promise<boolean> {
+  if (await isAuthenticated(req)) return true;
   res.writeHead(401, {
     'Content-Type': 'application/json; charset=utf-8',
     'WWW-Authenticate': 'Bearer realm="MAMA API"',
