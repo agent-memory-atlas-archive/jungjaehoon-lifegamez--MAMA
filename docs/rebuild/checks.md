@@ -838,3 +838,6 @@ The implementation writes raw/index data during import only. Replay is the owner
   loopback 200; tunnel-shaped requests with forged Access headers or no credentials 401; bearer 200. Access
   issuer and audience were taken from the live Access app and placed in auth.env without printing them.
   Not yet seen: a logged-in browser passing the JWT check; the Claude deny rules live (backend is Codex).
+- 2026-09-27 01:05 KST: the owner opened the viewer through the Cloudflare domain and logged in: the board
+  and task pages load. With forged Access headers refused at the origin (401), this is the verified-JWT
+  path passing. Security P1 is live on the Codex backend; the Claude deny rules are still test-only.
