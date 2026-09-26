@@ -174,3 +174,16 @@ Claude replaces `--dangerously-skip-permissions` with a sandboxed Bash and works
 keeping WebFetch/WebSearch, within the AGENTS.md isolation rules. (f) Live proof on Claude: an owner question,
 a correction saved and applied after restart, and an attachment turned into a delivered file. Done: (f) with
 native input receipts, action traces, DB read-back, Telegram receipt and a clean daemon.log.
+
+**Architecture decision (owner discussion 2026-09-26) — replaces the per-backend approach of R10.** Each
+backend CLI keeps its own harness (agent loop, native shell/read/subagents, context management): a host-side
+loop under subscription access means a fresh process per turn (the Hermes model) and loses the tools the
+model was trained on. MAMA owns one thin common host — intake and push into the session, answer delivery, a
+one-turn-at-a-time queue with recovery, per-turn context (lessons, recent turns), policy and records
+(isolation, write boundary, turn attribution, receipts). Tool calls: one entry for every backend, MCP (Codex's
+dynamicTools moves to MCP), with turn attribution done once in the daemon (owner turns are serialized). Push
+direction: each CLI's session protocol (Claude persistent stream-json, Codex app-server turn/start); ACP only
+when a third backend arrives. Evidence (checks.md 15:35): on Claude, MCP upfront, CLI and deferred MCP gave the
+same answers in ~20 s; only schema tokens differed, and deferred loading and a CLI's --help are the same
+progressive-disclosure idea. Gate before switching Codex: measure Codex over MCP against dynamicTools (turns,
+time, accuracy, code-mode batching).

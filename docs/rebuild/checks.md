@@ -628,3 +628,19 @@ The implementation writes raw/index data during import only. Replay is the owner
   Evidence: both backend prompt tests pass through real replay stimulus assembly and compare every mentioned host action with tools/list exposure, including Claude CLI name normalization; Claude text has no spawn_agent/wait_agent requirement.
   Preserved the interactive-owner-only administration boundary while removing nonexistent action names from its text; delegation, journal ownership, receipts and read-back requirements remain explicit.
   Still unverified: live Claude answer/file delivery and R10(b), (d), (e), (f); this run implements only (a)/(c), without committing or deploying.
+- 2026-09-26 15:35 KST: MCP vs CLI for the Claude backend, measured (claude -p, sonnet, project settings
+  only, empty plugins, read-only owner questions against the live daemon, 2 runs each). Baseline context
+  per request: MCP with every schema upfront ~28.5k tokens (built-in tools off also removed tool search),
+  CLI (Bash + a prototype `mama-act` over the daemon socket) ~14.0k, MCP with deferred tool search ~10.7k.
+  Real questions (one asset's progress and feedback history; one client's open work with assignees), mean context tokens / turns /
+  seconds / list cost: CLI 62k·86k / 3·5 / 19·28 / $0.08; MCP upfront 108k·63k / 3·2 / 19·22 / $0.10;
+  MCP deferred 69k·40k / 4·3 / 24·21 / $0.075. All answers correct and near-identical. Time and accuracy do
+  not separate the three; the only real difference is schema tokens, which deferred loading removes. The
+  literature's "CLI 100% vs MCP 72%" compared a remote 43-tool GitHub MCP whose failures were network
+  timeouts — not our local bridge. Codex's managed config has tool_search = false; its 19 dynamic tool
+  schemas are ~42k characters per session. Small sample (n=2), read-only questions.
+- 2026-09-26 15:55 KST: architecture decision recorded (owner-reports.md, MAMA decision
+  owner_runtime_harness_and_entry): backend CLIs keep their harness; one thin common host owns intake, push,
+  delivery, queue/recovery, per-turn context and records; MCP is the single tool entry for all backends
+  (Codex dynamicTools to move), turn attribution once in the daemon; push stays per-CLI session protocol.
+  Next: measure Codex over MCP vs dynamicTools before switching.
