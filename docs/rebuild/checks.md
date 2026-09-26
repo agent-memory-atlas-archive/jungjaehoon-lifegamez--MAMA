@@ -586,3 +586,15 @@ The implementation writes raw/index data during import only. Replay is the owner
   Regression evidence: 5 core config/driver tests and 19 standalone native-session/prompt tests pass; both requested package typechecks pass. Core was compiled first because standalone consumes its dist exports.
   Requested runtime suites: core 171 passed, 44 failed plus 3 setup-blocked suites (21 tests not run); standalone 48 passed, 5 failed. Socket `listen EPERM` caused the failures; core IPC teardown also tried `close` on its uninitialized server. Logs: `/private/tmp/mama-r6-{core,standalone}-runtime.log`.
   Still unverified: the live feedback ZIP/PDF to Excel delivery owner turn; no daemon restart or commit. MCP decision save was blocked because the tool requires approval while this session's approval policy is never.
+- 2026-09-26 13:40 KST: R6 live, first try. "9/14 <asset-2> SSR1 피드백 첨부 받아서 … 엑셀로 보내줘": lessons
+  injected; the agent found the 9/14 message and called source.attachment.list — success, but files []
+  — then checked the workspace with the new shell and told the owner to upload the file. Cause
+  (measured with the MAMA Chatwork token): GET /rooms/{room}/files returns the room's 100 oldest files
+  (2020–2021 in this room), so a recent attachment never matches; ?account_id=<uploader> returns that
+  uploader's files including the 9/14 ZIP (upload 15:28:54, message 15:28:56 — the time window is right),
+  and GET /rooms/{room}/files/{id} returns it directly. Fix in progress: known ids by direct GET,
+  otherwise the uploader-filtered list (account id from metadata, or the room members by exact name).
+- 2026-09-26: R6 attachment lookup fix (Attach): known Chatwork file ids and download membership checks now use room-scoped direct GETs; 404s surface as errors.
+  Without file ids, list only with the uploader account id from observation metadata or exact room-member name; report an unmatched author explicitly. Match by message id or the existing five-minute upload window when the file omits message id.
+  Synthetic fake-fetch evidence: all 28 attachment action/Chatwork tests pass, covering direct reads, filtered lists, member resolution, errors, downloads, and no unfiltered file listing; standalone typecheck and ESLint on all five changed TypeScript files pass.
+  Requested connectors/API run: 141 passed, 14 failed across viewer-archive-routes, viewer-records, and viewer-server because sandbox socket binding raises `listen EPERM 127.0.0.1`. Live owner-turn verification remains pending; no daemon restart or commit.

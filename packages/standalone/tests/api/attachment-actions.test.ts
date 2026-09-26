@@ -7,11 +7,14 @@ import {
   truncateSync,
   writeFileSync,
   realpathSync,
+  readFileSync,
+  existsSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { ActionContext } from '@jungjaehoon/mama-core';
 import type { StoredSourceReader } from '../../src/api/stored-source-reader.js';
+import { ChatworkConnector } from '../../src/connectors/chatwork/index.js';
 import {
   createAttachmentActionRegistrations,
   type AttachmentActionPorts,
@@ -20,6 +23,7 @@ import {
 const roots: string[] = [];
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -64,7 +68,7 @@ function action(
 function portsFor(
   workspaceDir: string,
   storedObservation: Record<string, unknown>,
-  connector: Record<string, unknown>,
+  connector: object,
   telegram?: Record<string, unknown>
 ): AttachmentActionPorts {
   const stored = {
@@ -81,7 +85,157 @@ function portsFor(
   };
 }
 
+async function chatwork(http: typeof fetch): Promise<ChatworkConnector> {
+  vi.stubEnv('CHATWORK_ATTACHMENT_TEST_TOKEN', 'fixture-token');
+  const connector = new ChatworkConnector(
+    {
+      enabled: true,
+      pollIntervalMinutes: 5,
+      channels: { '501': { role: 'hub', name: 'room-test' } },
+      auth: { type: 'token', tokenName: 'CHATWORK_ATTACHMENT_TEST_TOKEN' },
+    },
+    { fetch: http }
+  );
+  await connector.init();
+  return connector;
+}
+
+const chatworkFile = {
+  file_id: 901,
+  filename: 'fixture.pdf',
+  filesize: 5,
+  upload_time: 598,
+};
+
 describe('attachment actions', () => {
+  it.each([
+    {
+      metadata: { roomId: '501', chatworkFileIds: [901] },
+      content: 'message body',
+      rule: 'metadata_file_id',
+    },
+    { metadata: { roomId: '501' }, content: '[download:901] fixture.pdf', rule: 'text_marker' },
+  ])('fetches a Chatwork attachment directly from $rule', async ({ metadata, content, rule }) => {
+    const http = vi.fn(async (input: string | URL | Request) => {
+      if (String(input) !== 'https://api.chatwork.com/v2/rooms/501/files/901') {
+        throw new Error(`Unexpected URL: ${input}`);
+      }
+      return Response.json(chatworkFile);
+    });
+    const stored = { ...observation('chatwork', metadata), content };
+    const list = action(portsFor(root(), stored, await chatwork(http)), 'source.attachment.list');
+
+    const result = await list({ observationRef: 'obs-test' }, { access, operationId: 'op-list' });
+
+    expect(result).toMatchObject({
+      files: [{ fileId: '901', name: 'fixture.pdf', matchedBy: rule }],
+    });
+    expect(http).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the stored uploader account id for Chatwork time matching', async () => {
+    const http = vi.fn(async (input: string | URL | Request) => {
+      if (String(input) !== 'https://api.chatwork.com/v2/rooms/501/files?account_id=3') {
+        throw new Error(`Unexpected URL: ${input}`);
+      }
+      return Response.json([chatworkFile, { ...chatworkFile, file_id: 902, upload_time: 299 }]);
+    });
+    const stored = {
+      ...observation('chatwork', { roomId: '501', accountId: 3, messageId: 'message-test' }),
+      author: 'actor-test',
+    };
+    const list = action(portsFor(root(), stored, await chatwork(http)), 'source.attachment.list');
+
+    const result = await list({ observationRef: 'obs-test' }, { access, operationId: 'op-list' });
+
+    expect(result).toMatchObject({ files: [{ fileId: '901', matchedBy: 'upload_time' }] });
+    expect(http).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([true, false])(
+    'resolves an imported Chatwork author with matching member=%s',
+    async (matches) => {
+      const http = vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url === 'https://api.chatwork.com/v2/rooms/501/members') {
+          return Response.json([
+            { account_id: 3, name: matches ? 'actor-imported' : 'actor-other' },
+          ]);
+        }
+        if (url === 'https://api.chatwork.com/v2/rooms/501/files?account_id=3') {
+          return Response.json([chatworkFile]);
+        }
+        throw new Error(`Unexpected URL: ${url}`);
+      });
+      const stored = {
+        ...observation('chatwork', { originalChannel: 'chatwork:501' }),
+        author: 'actor-imported',
+      };
+      const list = action(portsFor(root(), stored, await chatwork(http)), 'source.attachment.list');
+      const result = list({ observationRef: 'obs-test' }, { access, operationId: 'op-list' });
+
+      if (matches) {
+        await expect(result).resolves.toMatchObject({
+          files: [{ fileId: '901', matchedBy: 'upload_time' }],
+        });
+      } else {
+        await expect(result).rejects.toThrow(/No Chatwork room member.*actor-imported/);
+      }
+      expect(http).toHaveBeenCalledTimes(matches ? 2 : 1);
+    }
+  );
+
+  it('downloads a Chatwork file using direct room checks without listing files', async () => {
+    const workspace = root();
+    const http = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === 'https://api.chatwork.com/v2/rooms/501/files/901')
+        return Response.json(chatworkFile);
+      if (url === 'https://api.chatwork.com/v2/rooms/501/files/901?create_download_url=1') {
+        return Response.json({
+          ...chatworkFile,
+          download_url: 'https://download.example.test/901',
+        });
+      }
+      if (url === 'https://download.example.test/901') return new Response('bytes');
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    const download = action(
+      portsFor(workspace, observation('chatwork', { roomId: '501' }), await chatwork(http)),
+      'source.attachment.download'
+    );
+
+    const result = await download(
+      { observationRef: 'obs-test', fileId: '901' },
+      { access, operationId: 'op-download' }
+    );
+
+    const expectedPath = join(workspace, 'files', 'chatwork', '501', '901_fixture.pdf');
+    expect(result).toMatchObject({ path: expectedPath, size: 5 });
+    expect(readFileSync(expectedPath, 'utf8')).toBe('bytes');
+    expect(http).toHaveBeenCalledTimes(3);
+  });
+
+  it('surfaces a room lookup 404 before creating a Chatwork download', async () => {
+    const workspace = root();
+    const http = vi.fn().mockResolvedValue(new Response(null, { status: 404 }));
+    const download = action(
+      portsFor(workspace, observation('chatwork', { roomId: '502' }), await chatwork(http)),
+      'source.attachment.download'
+    );
+
+    await expect(
+      download(
+        { observationRef: 'obs-test', fileId: '901' },
+        { access, operationId: 'op-download' }
+      )
+    ).rejects.toThrow(/file 901.*not available in room 502.*404/);
+    expect(http.mock.calls.map(([url]) => url)).toEqual([
+      'https://api.chatwork.com/v2/rooms/502/files/901',
+    ]);
+    expect(existsSync(join(workspace, 'files'))).toBe(false);
+  });
+
   it('lists Slack attachments from the observation metadata and room', async () => {
     const workspace = root();
     const connector = {

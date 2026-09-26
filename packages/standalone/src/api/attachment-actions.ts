@@ -77,6 +77,7 @@ type StoredAttachmentObservation = {
   source: string;
   sourceAt?: number | null;
   channel?: string | null;
+  author?: string | null;
   metadata?: Record<string, unknown>;
   content?: string;
 };
@@ -217,6 +218,10 @@ export function createAttachmentActionRegistrations(
         const files = await provider.listAttachments({
           roomId,
           sourceAtMs: observation.sourceAt ?? null,
+          ...(observation.metadata?.accountId === undefined
+            ? {}
+            : { accountId: String(observation.metadata.accountId) }),
+          ...(typeof observation.author === 'string' ? { author: observation.author } : {}),
           ...(observation.metadata?.messageId === undefined
             ? {}
             : { messageId: String(observation.metadata.messageId) }),

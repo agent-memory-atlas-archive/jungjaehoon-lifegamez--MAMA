@@ -12,6 +12,8 @@ export interface AttachmentDescriptor {
 
 export interface AttachmentListRequest {
   roomId: string;
+  accountId?: string;
+  author?: string;
   messageId?: string;
   sourceAtMs?: number | null;
   fileIds?: readonly string[];

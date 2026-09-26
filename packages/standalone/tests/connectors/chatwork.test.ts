@@ -112,6 +112,7 @@ describe('ChatworkConnector', () => {
 
     const files = await connector.listAttachments({
       roomId: 'room-key',
+      accountId: '3',
       messageId: 'message-attachment',
       sourceAtMs: 200_000,
     });
@@ -126,7 +127,7 @@ describe('ChatworkConnector', () => {
       },
     ]);
     expect(http).toHaveBeenCalledWith(
-      'https://api.chatwork.com/v2/rooms/room-key/files',
+      'https://api.chatwork.com/v2/rooms/room-key/files?account_id=3',
       expect.objectContaining({ headers: { 'X-ChatWorkToken': 'fixture-chatwork-token' } })
     );
   });
@@ -154,6 +155,7 @@ describe('ChatworkConnector', () => {
 
     const files = await connector.listAttachments({
       roomId: 'room-key',
+      accountId: '3',
       sourceAtMs: 600_000,
     });
 
@@ -166,6 +168,194 @@ describe('ChatworkConnector', () => {
         matchedBy: 'upload_time',
       },
     ]);
+    expect(http.mock.calls.map(([url]) => url)).toEqual([
+      'https://api.chatwork.com/v2/rooms/room-key/files?account_id=3',
+    ]);
+  });
+
+  it('fetches every known file id directly without needing uploader or time metadata', async () => {
+    const http = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      const id = url.match(/\/rooms\/room-key\/files\/(901|902)$/)?.[1];
+      if (!id) throw new Error(`Unexpected URL: ${url}`);
+      return Response.json({
+        file_id: Number(id),
+        filename: `fixture-${id}.pdf`,
+        filesize: 12,
+        upload_time: 600,
+      });
+    });
+    const connector = new ChatworkConnector(config, { fetch: http });
+    await connector.init();
+
+    const files = await connector.listAttachments({
+      roomId: 'room-key',
+      fileIds: ['901', '902', '901'],
+      fileIdRule: 'text_marker',
+    });
+
+    expect(files).toEqual([
+      {
+        fileId: '901',
+        name: 'fixture-901.pdf',
+        size: 12,
+        uploadTime: 600_000,
+        matchedBy: 'text_marker',
+      },
+      {
+        fileId: '902',
+        name: 'fixture-902.pdf',
+        size: 12,
+        uploadTime: 600_000,
+        matchedBy: 'text_marker',
+      },
+    ]);
+    expect(http.mock.calls.map(([url]) => url)).toEqual([
+      'https://api.chatwork.com/v2/rooms/room-key/files/901',
+      'https://api.chatwork.com/v2/rooms/room-key/files/902',
+    ]);
+  });
+
+  it('uses the upload window when the filtered API file omits message_id', async () => {
+    const http = vi.fn().mockResolvedValue(
+      Response.json([
+        { file_id: 901, filename: 'near-test.pdf', filesize: 12, upload_time: 300 },
+        {
+          file_id: 902,
+          filename: 'other-test.pdf',
+          filesize: 12,
+          upload_time: 600,
+          message_id: 'other-message',
+        },
+        { file_id: 903, filename: 'far-test.pdf', filesize: 12, upload_time: 901 },
+      ])
+    );
+    const connector = new ChatworkConnector(config, { fetch: http });
+    await connector.init();
+
+    const files = await connector.listAttachments({
+      roomId: 'room-key',
+      accountId: '3',
+      messageId: 'message-attachment',
+      sourceAtMs: 600_000,
+    });
+
+    expect(files).toEqual([
+      {
+        fileId: '901',
+        name: 'near-test.pdf',
+        size: 12,
+        uploadTime: 300_000,
+        matchedBy: 'upload_time',
+      },
+    ]);
+    expect(http.mock.calls.map(([url]) => url)).toEqual([
+      'https://api.chatwork.com/v2/rooms/room-key/files?account_id=3',
+    ]);
+  });
+
+  it('surfaces a direct lookup 404 instead of returning an empty attachment list', async () => {
+    const http = vi.fn().mockResolvedValue(new Response(null, { status: 404 }));
+    const connector = new ChatworkConnector(config, { fetch: http });
+    await connector.init();
+
+    await expect(
+      connector.listAttachments({ roomId: 'other-room', fileIds: ['901'] })
+    ).rejects.toThrow(/file 901.*not available in room other-room.*404/);
+    expect(http.mock.calls.map(([url]) => url)).toEqual([
+      'https://api.chatwork.com/v2/rooms/other-room/files/901',
+    ]);
+  });
+
+  it('rejects a direct lookup response for a different file', async () => {
+    const http = vi.fn().mockResolvedValue(
+      Response.json({
+        file_id: 902,
+        filename: 'other-test.pdf',
+        filesize: 12,
+        upload_time: 600,
+      })
+    );
+    const connector = new ChatworkConnector(config, { fetch: http });
+    await connector.init();
+
+    await expect(
+      connector.listAttachments({ roomId: 'room-key', fileIds: ['901'] })
+    ).rejects.toThrow(/does not match requested file 901/);
+  });
+
+  it('resolves the exact member name before listing that uploader files', async () => {
+    const http = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith('/rooms/room-key/members')) {
+        return Response.json([
+          { account_id: 4, name: 'actor-imported-extra' },
+          { account_id: 3, name: 'actor-imported' },
+        ]);
+      }
+      if (url.endsWith('/rooms/room-key/files?account_id=3')) {
+        return Response.json([
+          { file_id: 901, filename: 'near-test.pdf', filesize: 12, upload_time: 598 },
+          { file_id: 902, filename: 'far-test.pdf', filesize: 12, upload_time: 299 },
+        ]);
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    const connector = new ChatworkConnector(config, { fetch: http });
+    await connector.init();
+
+    const files = await connector.listAttachments({
+      roomId: 'room-key',
+      author: 'actor-imported',
+      sourceAtMs: 600_000,
+    });
+
+    expect(files).toEqual([
+      {
+        fileId: '901',
+        name: 'near-test.pdf',
+        size: 12,
+        uploadTime: 598_000,
+        matchedBy: 'upload_time',
+      },
+    ]);
+    expect(http.mock.calls.map(([url]) => url)).toEqual([
+      'https://api.chatwork.com/v2/rooms/room-key/members',
+      'https://api.chatwork.com/v2/rooms/room-key/files?account_id=3',
+    ]);
+  });
+
+  it('names an unmatched author and never tries the unfiltered file list', async () => {
+    const http = vi.fn().mockResolvedValue(
+      Response.json([
+        { account_id: 4, name: 'actor-imported-extra' },
+        { account_id: 5, name: 'Actor-imported' },
+      ])
+    );
+    const connector = new ChatworkConnector(config, { fetch: http });
+    await connector.init();
+
+    await expect(
+      connector.listAttachments({
+        roomId: 'room-key',
+        author: 'actor-imported',
+        sourceAtMs: 600_000,
+      })
+    ).rejects.toThrow(/No Chatwork room member.*actor-imported/);
+    expect(http.mock.calls.map(([url]) => url)).toEqual([
+      'https://api.chatwork.com/v2/rooms/room-key/members',
+    ]);
+  });
+
+  it('fails without uploader information instead of listing the room files', async () => {
+    const http = vi.fn();
+    const connector = new ChatworkConnector(config, { fetch: http });
+    await connector.init();
+
+    await expect(
+      connector.listAttachments({ roomId: 'room-key', sourceAtMs: 600_000 })
+    ).rejects.toThrow(/requires.*accountId.*author/);
+    expect(http).not.toHaveBeenCalled();
   });
 
   it('downloads a room file through the signed URL without exposing the token', async () => {
@@ -197,6 +387,10 @@ describe('ChatworkConnector', () => {
 
     expect(result.size).toBe(9);
     expect(readFileSync(target, 'utf8')).toBe('file-data');
+    expect(http.mock.calls.map(([url]) => url)).toEqual([
+      'https://api.chatwork.com/v2/rooms/room-key/files/901?create_download_url=1',
+      'https://download.example.test/file-901',
+    ]);
     expect(http.mock.calls[0]?.[1]).toMatchObject({
       headers: { 'X-ChatWorkToken': 'fixture-chatwork-token' },
     });
@@ -214,7 +408,10 @@ describe('ChatworkConnector', () => {
         fileId: '901',
         targetPath: '/tmp/unused',
       })
-    ).rejects.toThrow(/not available in room other-room/);
+    ).rejects.toThrow(/not available in room other-room.*404/);
+    expect(http.mock.calls.map(([url]) => url)).toEqual([
+      'https://api.chatwork.com/v2/rooms/other-room/files/901?create_download_url=1',
+    ]);
   });
 
   it('does not poll ignored rooms', async () => {

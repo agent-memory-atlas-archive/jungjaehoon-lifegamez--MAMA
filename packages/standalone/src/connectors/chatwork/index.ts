@@ -39,6 +39,11 @@ interface ChatworkFile {
   download_url?: string;
 }
 
+interface ChatworkMember {
+  account_id: number;
+  name: string;
+}
+
 export interface ChatworkConnectorOptions {
   fetch?: typeof fetch;
 }
@@ -212,8 +217,26 @@ export class ChatworkConnector implements IConnector {
     if (!this.token) throw new Error('ChatworkConnector not initialized');
     if (request.roomId.trim() === '') throw new Error('Chatwork attachment roomId is required');
 
+    const requestedIds = new Set(
+      (request.fileIds ?? []).map((fileId) => String(fileId).trim()).filter(Boolean)
+    );
+    if (requestedIds.size > 0) {
+      const files: AttachmentDescriptor[] = [];
+      for (const fileId of requestedIds) {
+        const { descriptor } = await this.readFile(request.roomId, fileId);
+        files.push({ ...descriptor, matchedBy: request.fileIdRule ?? 'metadata_file_id' });
+      }
+      return files;
+    }
+
+    // The unfiltered endpoint returns the room's 100 oldest files (measured 2026-09-26).
+    // Resolve the uploader before listing so recent attachments can be found.
+    const accountId = await this.uploaderAccountId(request);
+    if (request.messageId === undefined && !Number.isFinite(request.sourceAtMs)) {
+      throw new Error('Chatwork attachment upload-time matching requires sourceAtMs');
+    }
     const response = await this.http(
-      `${this.baseUrl}/rooms/${encodeURIComponent(request.roomId)}/files`,
+      `${this.baseUrl}/rooms/${encodeURIComponent(request.roomId)}/files?account_id=${encodeURIComponent(accountId)}`,
       { headers: { 'X-ChatWorkToken': this.token } }
     );
     if (!response.ok) {
@@ -224,31 +247,50 @@ export class ChatworkConnector implements IConnector {
     const files = (await response.json()) as unknown;
     if (!Array.isArray(files)) throw new Error('Chatwork file list response must be an array');
 
-    const requestedIds = new Set(
-      (request.fileIds ?? []).map((fileId) => String(fileId).trim()).filter(Boolean)
-    );
-    const matchedBy =
-      requestedIds.size > 0
-        ? (request.fileIdRule ?? 'metadata_file_id')
-        : request.messageId !== undefined
-          ? 'message_id'
-          : 'upload_time';
-    if (matchedBy === 'upload_time' && !Number.isFinite(request.sourceAtMs)) {
-      throw new Error('Chatwork attachment upload-time matching requires sourceAtMs');
-    }
+    return files.flatMap((value: unknown) => {
+      const file = this.chatworkFileDescriptor(value, 'upload_time');
+      const raw = value as ChatworkFile;
+      if (
+        request.messageId !== undefined &&
+        raw.message_id !== undefined &&
+        raw.message_id !== null
+      ) {
+        return String(raw.message_id) === request.messageId
+          ? [{ ...file, matchedBy: 'message_id' as const }]
+          : [];
+      }
+      if (!Number.isFinite(request.sourceAtMs)) {
+        throw new Error('Chatwork attachment upload-time matching requires sourceAtMs');
+      }
+      return Math.abs(file.uploadTime - Number(request.sourceAtMs)) <= CHATWORK_FILE_TIME_WINDOW_MS
+        ? [file]
+        : [];
+    });
+  }
 
-    return files
-      .map((value) => this.chatworkFileDescriptor(value, matchedBy))
-      .filter((file, index) => {
-        const raw = files[index] as ChatworkFile;
-        if (requestedIds.size > 0) return requestedIds.has(file.fileId);
-        if (request.messageId !== undefined) {
-          return String(raw.message_id ?? '') === request.messageId;
-        }
-        return (
-          Math.abs(file.uploadTime - Number(request.sourceAtMs)) <= CHATWORK_FILE_TIME_WINDOW_MS
-        );
-      });
+  private async uploaderAccountId(request: AttachmentListRequest): Promise<string> {
+    if (request.accountId?.trim()) return request.accountId.trim();
+    if (!request.author?.trim()) {
+      throw new Error('Chatwork attachment lookup requires uploader accountId or author');
+    }
+    const response = await this.http(
+      `${this.baseUrl}/rooms/${encodeURIComponent(request.roomId)}/members`,
+      { headers: { 'X-ChatWorkToken': this.token! } }
+    );
+    if (!response.ok) {
+      throw new Error(
+        `Chatwork member list failed for room ${request.roomId}: HTTP ${response.status}`
+      );
+    }
+    const members = (await response.json()) as unknown;
+    if (!Array.isArray(members)) throw new Error('Chatwork member list response must be an array');
+    const member = (members as ChatworkMember[]).find((entry) => entry.name === request.author);
+    if (!member) {
+      throw new Error(
+        `No Chatwork room member matches author "${request.author}" in room ${request.roomId}`
+      );
+    }
+    return String(member.account_id);
   }
 
   async downloadAttachment(
@@ -258,30 +300,36 @@ export class ChatworkConnector implements IConnector {
     if (request.roomId.trim() === '' || request.fileId.trim() === '') {
       throw new Error('Chatwork attachment roomId and fileId are required');
     }
-    const response = await this.http(
-      `${this.baseUrl}/rooms/${encodeURIComponent(request.roomId)}/files/${encodeURIComponent(request.fileId)}?create_download_url=1`,
-      { headers: { 'X-ChatWorkToken': this.token } }
-    );
-    if (!response.ok) {
-      throw new Error(
-        `Chatwork file ${request.fileId} is not available in room ${request.roomId}: HTTP ${response.status}`
-      );
-    }
-    const value = (await response.json()) as unknown;
-    const file = this.chatworkFileDescriptor(value, 'metadata_file_id');
-    if (file.fileId !== request.fileId) {
-      throw new Error(`Chatwork file response does not match requested file ${request.fileId}`);
-    }
-    const downloadUrl = requireHttpsUrl(
-      (value as ChatworkFile).download_url,
-      'Chatwork download_url'
-    );
-    const download = await this.http(downloadUrl);
+    const { descriptor, downloadUrl } = await this.readFile(request.roomId, request.fileId, true);
+    const download = await this.http(requireHttpsUrl(downloadUrl, 'Chatwork download_url'));
     if (!download.ok) {
       throw new Error(`Chatwork file ${request.fileId} download failed: HTTP ${download.status}`);
     }
     const size = await saveResponseBody(download, request.targetPath);
-    return { descriptor: file, size };
+    return { descriptor, size };
+  }
+
+  private async readFile(
+    roomId: string,
+    fileId: string,
+    createDownloadUrl = false
+  ): Promise<{ descriptor: AttachmentDescriptor; downloadUrl?: string }> {
+    const query = createDownloadUrl ? '?create_download_url=1' : '';
+    const response = await this.http(
+      `${this.baseUrl}/rooms/${encodeURIComponent(roomId)}/files/${encodeURIComponent(fileId)}${query}`,
+      { headers: { 'X-ChatWorkToken': this.token! } }
+    );
+    if (!response.ok) {
+      throw new Error(
+        `Chatwork file ${fileId} is not available in room ${roomId}: HTTP ${response.status}`
+      );
+    }
+    const value = (await response.json()) as unknown;
+    const descriptor = this.chatworkFileDescriptor(value, 'metadata_file_id');
+    if (descriptor.fileId !== fileId) {
+      throw new Error(`Chatwork file response does not match requested file ${fileId}`);
+    }
+    return { descriptor, downloadUrl: (value as ChatworkFile).download_url };
   }
 
   private chatworkFileDescriptor(
