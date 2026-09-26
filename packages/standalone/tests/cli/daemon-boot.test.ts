@@ -164,7 +164,7 @@ describe('daemon bootstrap', () => {
     }
   });
 
-  it('starts producers after the owner runtime and stops them in reverse order', async () => {
+  it('starts producers after the owner runtime and keeps Telegram until owner results drain', async () => {
     const root = mkdtempSync(join(tmpdir(), 'mama-daemon-boot-'));
     roots.push(root);
     const mamaRoot = join(root, 'mama');
@@ -189,6 +189,7 @@ describe('daemon bootstrap', () => {
         order.push('telegram:stop');
       }),
       deliverResponse: vi.fn(async () => {}),
+      sendToOwner: vi.fn(async () => {}),
       sendFile: vi.fn(async () => ({ sentAs: 'document' as const, size: 0 })),
     };
     const daemon = await bootDaemon({
@@ -229,10 +230,10 @@ describe('daemon bootstrap', () => {
       'viewer:start',
       'connectors:start',
       'telegram:start',
-      'telegram:stop',
       'connectors:stop',
       'viewer:stop',
       'owner:stop',
+      'telegram:stop',
     ]);
     expect(logs.some((line) => line.includes('boot stage=owner_runtime'))).toBe(true);
     expect(logs.some((line) => line.includes('boot stage=connectors'))).toBe(true);
@@ -258,6 +259,7 @@ describe('daemon bootstrap', () => {
       start: vi.fn(async () => {}),
       stop: vi.fn(async () => {}),
       deliverResponse: vi.fn(async () => {}),
+      sendToOwner: vi.fn(async () => {}),
       sendFile: vi.fn(async () => ({ sentAs: 'document' as const, size: 0 })),
     };
     let policyContent: string | null | undefined;
@@ -347,6 +349,7 @@ describe('daemon bootstrap', () => {
       start: vi.fn(async () => {}),
       stop: vi.fn(async () => {}),
       deliverResponse: vi.fn(async () => {}),
+      sendToOwner: vi.fn(async () => {}),
       sendFile: vi.fn(async () => ({ sentAs: 'document' as const, size: 0 })),
     };
     const daemon = await bootDaemon({

@@ -291,11 +291,18 @@ describe('W1 owner question integration', () => {
     ).toBe(true);
 
     const database = owner!.database.adapter;
-    expect(database.prepare('SELECT COUNT(*) AS count FROM mailbox_inputs').get()).toEqual({
-      count: 2,
-    });
+    // The source delta, the owner question, and the board pass the delta turn queued.
+    expect(
+      database
+        .prepare('SELECT kind, COUNT(*) AS count FROM mailbox_inputs GROUP BY kind ORDER BY kind')
+        .all()
+    ).toEqual([
+      { kind: 'native_event', count: 1 },
+      { kind: 'owner_message', count: 1 },
+      { kind: 'source_delta', count: 1 },
+    ]);
     expect(database.prepare('SELECT COUNT(*) AS count FROM model_runs').get()).toEqual({
-      count: 2,
+      count: 3,
     });
     expect(database.prepare('SELECT COUNT(*) AS count FROM tool_traces').get()).toEqual({
       count: 4,

@@ -47,9 +47,10 @@ describe('owner standing prompt', () => {
     expect(prompt).toContain(
       "Other systems' task rows or statuses (for example, task rows or cards) are evidence to cite, not the owner's work ledger."
     );
-    expect(prompt).toContain(
-      'If the owner should know about the delta, say so in the final answer.'
-    );
+    expect(prompt).toContain('[notify] <Telegram text>');
+    expect(prompt).toContain('[ack]');
+    expect(prompt).toContain('live source delta');
+    expect(prompt).toContain('owner');
   });
 
   it('explains the attachment list, download, and Telegram file delivery actions', () => {

@@ -1,0 +1,329 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
+import type { NativeTurnResult } from '@jungjaehoon/mama-core/runtime/native-turn';
+import type { SourceDelta } from '../../src/connectors/framework/polling-scheduler.js';
+import { bootDaemon, type DaemonHandle } from '../../src/cli/commands/daemon.js';
+import { createOwnerRuntime, type OwnerRuntimeOptions } from '../../src/runtime/owner-runtime.js';
+import { sourceDeltaStimulusId } from '../../src/runtime/stimulus-delivery.js';
+
+const telegram = vi.hoisted(() => ({ sendMessage: vi.fn() }));
+vi.mock('grammy', () => ({
+  Bot: vi.fn(() => ({
+    on: vi.fn(),
+    catch: vi.fn(),
+    init: vi.fn(),
+    start: vi.fn(),
+    stop: vi.fn(async () => {}),
+    botInfo: { id: 101, username: 'fixture_bot' },
+    api: telegram,
+  })),
+}));
+vi.mock('@jungjaehoon/mama-core', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@jungjaehoon/mama-core')>()),
+  recallMemory: async () => ({ memories: [] }),
+}));
+
+const roots: string[] = [];
+const daemons: DaemonHandle[] = [];
+const ipc = createRequire(import.meta.url)(
+  '@jungjaehoon/mama-core/client/ipc'
+) as typeof import('@jungjaehoon/mama-core/client/ipc');
+afterEach(async () => {
+  for (const daemon of daemons.splice(0)) await daemon.stop();
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  vi.unstubAllEnvs();
+  vi.clearAllMocks();
+  vi.restoreAllMocks();
+});
+
+function delta(): SourceDelta {
+  return {
+    kind: 'source_delta',
+    collector: 'slack',
+    channel: 'slack:fixture-room',
+    coalesceKey: 'slack:fixture-room',
+    preview: ['The revised file arrived.'],
+    refs: [
+      {
+        connector: 'slack',
+        observationRef: 'fixture-observation',
+        sourceId: 'fixture-source',
+        sourceEntityId: 'fixture-entity',
+        sourceAt: '2026-01-01T00:00:00.000Z',
+        observedAt: '2026-01-01T00:00:01.000Z',
+        contentHash: null,
+      },
+    ],
+  };
+}
+
+async function boot(response: string, mode: 'live' | 'replay' = 'live', earlyDelta = false) {
+  const root = mkdtempSync(join(tmpdir(), 'delta-'));
+  roots.push(root);
+  vi.stubEnv('HOME', root);
+  vi.stubEnv('MAMA_DB_PATH', join(root, 'development-memory.db'));
+  // This test exercises delivery, not the socket transport (listen is sandbox-restricted).
+  vi.spyOn(ipc, 'createActionIpcServer').mockResolvedValue({
+    socketPath: join(root, 'runtime.sock'),
+    close: async () => {},
+  } as never);
+  telegram.sendMessage.mockReset().mockResolvedValue({ message_id: 101 });
+  const logs: string[] = [];
+  const prompts: Array<{ source: string | undefined; text: string }> = [];
+  const failures = vi.fn();
+  let ownerOptions!: OwnerRuntimeOptions;
+  let ownerRuntime!: Awaited<ReturnType<typeof createOwnerRuntime>>;
+  let promptsBeforeGatewayStart = 0;
+  const daemon = await bootDaemon({
+    home: root,
+    configPath: join(root, 'config.yaml'),
+    mode,
+    replay: async () => {},
+    config: {
+      version: 1,
+      agent: {
+        backend: 'codex',
+        model: 'fixture-model',
+        effort: 'medium',
+        max_turns: 10,
+        timeout: 1000,
+      },
+      database: { path: join(root, 'memory.db') },
+      logging: { level: 'info', file: join(root, 'daemon.log') },
+      telegram: {
+        enabled: true,
+        token: 'fixture-token',
+        allowed_chats: ['8', '7'],
+        owner_chat_id: '7',
+        owner_user_ids: ['9'],
+        polling: false,
+      },
+    },
+    logger: { info: (line) => logs.push(line), error: (line) => logs.push(line) },
+    dependencies: {
+      ensureIsolation: () => {},
+      createOwnerRuntime: async (options) => {
+        ownerOptions = options;
+        ownerRuntime = await createOwnerRuntime({
+          ...options,
+          embedder: { embed: async () => new Float32Array(1024).fill(0.25) },
+          onStimulusFailed: (row, reason) => {
+            failures(row, reason);
+            return options.onStimulusFailed?.(row, reason);
+          },
+          nativeSession: {
+            stop: async () => {},
+            runTurn: async (content, request) => {
+              content =
+                (await request?.prepareSessionContent?.({
+                  sessionId: 'fixture-session',
+                  isNewSession: false,
+                })) ?? content;
+              prompts.push({ source: request?.source, text: JSON.stringify(content) });
+              request?.streamCallbacks?.onInputDispatch?.({
+                backend: 'codex',
+                sessionId: 'fixture-session',
+                inputId: request.nativeInputId!,
+              });
+              request?.streamCallbacks?.onAccepted?.({
+                backend: 'codex',
+                sessionId: 'fixture-session',
+                turnId: `turn-${prompts.length}`,
+              });
+              return {
+                response: request?.source === 'source_delta' ? response : '[ack]',
+                turns: 1,
+                history: [],
+                totalUsage: { input_tokens: 0, output_tokens: 0 },
+                stopReason: 'end_turn',
+                modelRunId: null,
+                modelRunProvenance: 'backend_no_run',
+              } as NativeTurnResult;
+            },
+          },
+        });
+        return ownerRuntime;
+      },
+      createViewerServer: () => ({ start: async () => {}, stop: async () => {}, port: 0 }) as never,
+      startConnectorRuntime: async () => {
+        if (earlyDelta) {
+          ownerRuntime.acceptSourceDelta(delta());
+          await ownerRuntime.runtime.drainOnce();
+          promptsBeforeGatewayStart = prompts.length;
+        }
+        return { stop: async () => {} } as never;
+      },
+    },
+  });
+  daemons.push(daemon);
+  return { daemon, logs, prompts, failures, ownerOptions, promptsBeforeGatewayStart };
+}
+
+describe('live delta reports', () => {
+  it('holds boot-time deltas until the Telegram gateway is ready', async () => {
+    const { daemon, promptsBeforeGatewayStart } = await boot(
+      '[notify] startup update',
+      'live',
+      true
+    );
+    expect(promptsBeforeGatewayStart).toBe(0);
+    await daemon.owner.runtime.drainOnce();
+    const id = sourceDeltaStimulusId(delta());
+    await vi.waitFor(() =>
+      expect(daemon.owner.runtime.mailbox?.readInput(id, 'owner')?.status).toBe('acked')
+    );
+    expect(telegram.sendMessage).toHaveBeenCalledOnce();
+    expect(telegram.sendMessage).toHaveBeenCalledWith(7, 'startup update');
+  });
+
+  it('finishes an in-flight delta send before closing Telegram on shutdown', async () => {
+    const { daemon, failures } = await boot(`[notify] ${'x'.repeat(5000)}`);
+    let releaseChunk!: () => void;
+    const chunk = new Promise<void>((resolve) => {
+      releaseChunk = resolve;
+    });
+    telegram.sendMessage.mockImplementationOnce(async () => {
+      await chunk;
+      return { message_id: 101 };
+    });
+    daemon.owner.acceptSourceDelta(delta());
+    await vi.waitFor(() => expect(telegram.sendMessage).toHaveBeenCalledOnce());
+    const stopping = daemon.stop();
+    // Let teardown reach the active outbox writer before the first chunk finishes.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    releaseChunk();
+    await stopping;
+    expect(telegram.sendMessage).toHaveBeenCalledTimes(2);
+    expect(failures.mock.calls.filter(([row]) => row.kind === 'source_delta')).toEqual([]);
+  });
+  it.each([
+    ['notify', '[notify] The file arrived.', 'The file arrived.', 'notify'],
+    ['ack', '[ack] recorded', null, 'ack'],
+    ['untagged', 'The file arrived.', null, 'untagged'],
+    ['tag mid-text', 'Working notes\n[notify] The file arrived.', 'The file arrived.', 'notify'],
+    ['last ack wins', '[notify] earlier\n[ack] quiet', null, 'ack'],
+    ['last notify wins', '[ack] earlier\n[notify] final', 'final', 'notify'],
+    ['last repeated notify wins', '[notify] earlier\n[notify] final', 'final', 'notify'],
+    ['empty notify', '[notify]  ', null, 'notify'],
+  ])('routes %s and enqueues exactly one board pass', async (_name, response, sent, route) => {
+    const { daemon, logs, prompts, ownerOptions } = await boot(response!);
+    const input = delta();
+    const id = sourceDeltaStimulusId(input);
+    daemon.owner.acceptSourceDelta(input);
+    await vi.waitFor(() => expect(prompts).toHaveLength(2));
+    await vi.waitFor(() =>
+      expect(daemon.owner.runtime.mailbox?.readInput(`delta-board:${id}`, 'owner')?.status).toBe(
+        'acked'
+      )
+    );
+    expect(prompts.map((prompt) => prompt.source)).toEqual(['source_delta', 'native_event']);
+    expect(prompts[0]!.text).toContain('[notify]');
+    expect(prompts[0]!.text).toContain('[ack]');
+    const board = prompts[1]!.text;
+    for (const instruction of [
+      'work.list',
+      'report.read',
+      'report.publish',
+      'briefing',
+      'action_required',
+      'decisions',
+      'pipeline',
+      '[ack]',
+    ]) {
+      expect(board).toContain(instruction);
+    }
+    expect(logs).toContain(`delta report route=${route} id=${id}`);
+    if (sent === null) expect(telegram.sendMessage).not.toHaveBeenCalled();
+    else {
+      expect(telegram.sendMessage).toHaveBeenCalledOnce();
+      expect(telegram.sendMessage).toHaveBeenCalledWith(7, sent);
+    }
+
+    // Same result callback cannot enqueue another board turn or resend the text.
+    const row = daemon.owner.runtime.mailbox!.readInput(id, 'owner')!;
+    await ownerOptions.onSourceResult!(row, { response } as NativeTurnResult);
+    await daemon.owner.runtime.drainOnce();
+    expect(prompts).toHaveLength(2);
+    expect(telegram.sendMessage).toHaveBeenCalledTimes(sent === null ? 0 : 1);
+  });
+
+  it('keeps a failed send uncertain, reports a bounded reason, and still runs the board pass', async () => {
+    const { daemon, prompts, logs, failures } = await boot('[notify] The file arrived.');
+    telegram.sendMessage.mockRejectedValue(new Error(`send failed\n${'x'.repeat(900)}`));
+    const id = sourceDeltaStimulusId(delta());
+    daemon.owner.acceptSourceDelta(delta());
+    await vi.waitFor(() =>
+      expect(daemon.owner.runtime.mailbox?.readInput(id, 'owner')?.nativeDelivery?.state).toBe(
+        'uncertain'
+      )
+    );
+    await vi.waitFor(() => expect(prompts).toHaveLength(2));
+    expect(failures).toHaveBeenCalledOnce();
+    const reason = failures.mock.calls[0]![1];
+    expect(typeof reason).toBe('string');
+    expect(reason).toMatch(/^send failed /);
+    expect(reason.length).toBeLessThanOrEqual(500);
+    expect(reason).not.toContain('\n');
+    expect(logs).toContain(`stimulus failed kind=source_delta id=${id} reason=${reason}`);
+    await daemon.owner.runtime.drainOnce();
+    expect(telegram.sendMessage).toHaveBeenCalledOnce();
+    expect(prompts).toHaveLength(2);
+    expect(daemon.owner.runtime.mailbox?.readInput(id, 'owner')?.status).toBe('claimed');
+    // Restarting Telegram must not recover an outbound delta as an owner reply.
+    await daemon.gateway!.stop();
+    await daemon.gateway!.start();
+    expect(telegram.sendMessage).toHaveBeenCalledOnce();
+  });
+
+  it('enqueues a board pass for each distinct completed delta turn', async () => {
+    const { daemon, prompts } = await boot('[ack]');
+    const first = delta();
+    daemon.owner.acceptSourceDelta(first);
+    await vi.waitFor(() => expect(prompts).toHaveLength(2));
+    const second = delta();
+    second.refs = [
+      { ...second.refs[0]!, observationRef: 'next-observation', sourceId: 'next-source' },
+    ];
+    daemon.owner.acceptSourceDelta(second);
+    await vi.waitFor(() => expect(prompts).toHaveLength(4));
+    expect(prompts.map((prompt) => prompt.source)).toEqual([
+      'source_delta',
+      'native_event',
+      'source_delta',
+      'native_event',
+    ]);
+    expect(telegram.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it.each(['replay daemon', 'replay payload', 'replay clock'])(
+    'does not route or enqueue a live board pass for %s',
+    async (replayCase) => {
+      const { daemon, prompts, logs } = await boot(
+        '[notify] historical update',
+        replayCase === 'replay daemon' ? 'replay' : 'live'
+      );
+      const input = delta();
+      if (replayCase !== 'replay clock')
+        input.replay = {
+          runId: 'fixture-run',
+          windowId: 'fixture-window',
+          windowStartMs: 0,
+          windowEndMs: 1000,
+        };
+      else daemon.owner.setReplaySourceEndMs(1000);
+      const id = sourceDeltaStimulusId(input);
+      daemon.owner.acceptSourceDelta(input);
+      await vi.waitFor(() =>
+        expect(daemon.owner.runtime.mailbox?.readInput(id, 'owner')?.status).toBe('acked')
+      );
+      await daemon.owner.runtime.drainOnce();
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]!.text).not.toContain('[notify]');
+      expect(telegram.sendMessage).not.toHaveBeenCalled();
+      expect(logs.some((line) => line.startsWith('delta report'))).toBe(false);
+    }
+  );
+});

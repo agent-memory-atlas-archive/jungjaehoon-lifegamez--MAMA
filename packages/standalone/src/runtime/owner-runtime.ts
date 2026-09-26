@@ -76,6 +76,8 @@ export interface OwnerRuntimeOptions {
   onNativeEventResult?: StimulusDeliveryOptions['onNativeEventResult'];
   onStimulusDelivered?: StimulusDeliveryOptions['onDelivered'];
   onStimulusFailed?: StimulusDeliveryOptions['onFailed'];
+  /** Keep accepted inputs queued while product delivery ports are starting. */
+  deliveryReady?: () => boolean;
   maxTurns: number;
   attachmentPorts?: Pick<AttachmentActionPorts, 'connectors' | 'telegram'>;
 }
@@ -306,7 +308,10 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       },
       mailbox: { adapter: database.adapter },
       nativeSession,
-      delivery,
+      delivery: {
+        ...delivery,
+        ...(options.deliveryReady === undefined ? {} : { ready: options.deliveryReady }),
+      },
       reclaimStaleSocket: true,
     });
     const intake = createStimulusIntake(intakeRuntime, options.ownerPrincipalId);

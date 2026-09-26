@@ -6,7 +6,11 @@ import type { NativeTurnResult } from '@jungjaehoon/mama-core/runtime/native-tur
 import type { StimulusReceipt } from '@jungjaehoon/mama-core/runtime/runtime';
 import type { OwnerMessageInput, TurnIntake } from '../../gateways/turn-contract.js';
 import { TelegramGateway, type TelegramGatewayOptions } from '../../gateways/telegram.js';
-import { sourceDeltaStimulusId, type StimulusIntake } from '../../runtime/stimulus-delivery.js';
+import {
+  sourceDeltaStimulusId,
+  stimulusFailureReason,
+  type StimulusIntake,
+} from '../../runtime/stimulus-delivery.js';
 import {
   createOwnerRuntime,
   type OwnerRuntime,
@@ -33,6 +37,7 @@ import {
 } from '../../api/viewer-server.js';
 import { resolvePackageVersion } from '../../package-version.js';
 import type { TelegramFileDeliveryResult } from '../../api/file-delivery.js';
+import { buildBoardPublishLines } from '../../operator/board-slot-instructions.js';
 
 const OWNER_PRINCIPAL_ID = 'owner';
 const OWNER_AGENT_ID = 'owner-agent';
@@ -49,6 +54,7 @@ export interface DaemonGateway {
   start(): Promise<void>;
   stop(): Promise<void>;
   deliverResponse(sourceRef: string, response: string): Promise<void>;
+  sendToOwner(text: string, idempotencyKey: string): Promise<void>;
   sendFile(
     path: string,
     caption: string | undefined,
@@ -145,8 +151,8 @@ function stimulusAccepted(
   logger.info(`stimulus accepted kind=${kind} id=${id} state=${receipt.state}`);
 }
 
-function stimulusFailed(logger: DaemonLogger, kind: string, id: string): void {
-  logger.error(`stimulus failed kind=${kind} id=${id}`);
+function stimulusFailed(logger: DaemonLogger, kind: string, id: string, error: unknown): void {
+  logger.error(`stimulus failed kind=${kind} id=${id} reason=${stimulusFailureReason(error)}`);
 }
 
 function stimulusDelivered(logger: DaemonLogger, row: MailboxRow): void {
@@ -205,7 +211,7 @@ function loggedOwnerIntake(intake: StimulusIntake, logger: DaemonLogger): TurnIn
         stimulusAccepted(logger, 'owner_message', input.id, receipt);
         return receipt;
       } catch (error) {
-        stimulusFailed(logger, 'owner_message', input.id);
+        stimulusFailed(logger, 'owner_message', input.id, error);
         throw error;
       }
     },
@@ -239,6 +245,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
   let connectors: ConnectorRuntime | undefined;
   let gateway: DaemonGateway | null = null;
   let stopped = false;
+  let deliveryReady = options.mode === 'replay';
   const startedAt = Date.now();
   let currentStage = 'config';
 
@@ -246,10 +253,11 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
     if (stopped) return;
     stopped = true;
     const errors: unknown[] = [];
-    if (gateway) await stopOne(logger, 'telegram', () => gateway!.stop(), errors);
     if (connectors) await stopOne(logger, 'connectors', () => connectors!.stop(), errors);
     if (viewer) await stopOne(logger, 'viewer', () => viewer!.stop(), errors);
     if (owner) await stopOne(logger, 'owner_runtime', () => owner!.stop(), errors);
+    // The owner drains active result writers before their delivery port closes.
+    if (gateway) await stopOne(logger, 'telegram', () => gateway!.stop(), errors);
     if (errors.length > 0) throw new AggregateError(errors, 'Daemon shutdown failed');
   };
 
@@ -279,6 +287,46 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
       if (gateway === null)
         throw new Error('Telegram gateway is not available for an owner response');
       await gateway.deliverResponse(row.stimulusId, result.response);
+    };
+    const deliverSourceResponse = async (
+      row: MailboxRow,
+      result: NativeTurnResult
+    ): Promise<void> => {
+      // Queue before sending: a delivery failure must not leave the board stale.
+      const boardId = `delta-board:${row.stimulusId}`;
+      const receipt = owner!.intake.acceptNativeEvent({
+        id: boardId,
+        channelKey: row.channelKey,
+        occurredAt: row.occurredAt,
+        payload: {
+          text: [
+            'Reconcile the board after the source delta turn.',
+            'Read current work with work.list and the current board with report.read; read source context as needed.',
+            'Write all four slots from current work so the board and the work ledger show the same state.',
+            ...buildBoardPublishLines(),
+            'Owner-facing text carries no commitment, observation, judgment or channel ids.',
+            'Finish with [ack]. Do not use [notify].',
+          ].join('\n'),
+          sourceStimulusId: row.stimulusId,
+          refs: row.refs.map((ref) => ({ ...ref })),
+        },
+      });
+      stimulusAccepted(logger, 'native_event', boardId, receipt);
+
+      const text = result.response.trim();
+      const tagIndex = Math.max(text.lastIndexOf('[notify]'), text.lastIndexOf('[ack]'));
+      const routed = tagIndex >= 0 ? text.slice(tagIndex) : '';
+      const route = routed.startsWith('[notify]')
+        ? 'notify'
+        : routed.startsWith('[ack]')
+          ? 'ack'
+          : 'untagged';
+      logger.info(`delta report route=${route} id=${row.stimulusId}`);
+      if (route !== 'notify') return;
+      const content = routed.slice('[notify]'.length).trim();
+      if (!content) return;
+      if (gateway === null) throw new Error('Telegram gateway is not available for a delta report');
+      await gateway.sendToOwner(content, row.stimulusId);
     };
     const ownerFactory = dependencies.createOwnerRuntime ?? createOwnerRuntime;
     owner = await ownerFactory({
@@ -316,10 +364,14 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
           }
         : {}),
       ownerPolicyProvider,
+      deliveryReady: () => deliveryReady,
       recentDeliveredOwnerMessages: () => gateway?.recentDeliveredMessageRefs() ?? [],
-      ...(options.mode === 'replay' ? {} : { onOwnerResult: deliverOwnerResponse }),
+      ...(options.mode === 'replay'
+        ? {}
+        : { onOwnerResult: deliverOwnerResponse, onSourceResult: deliverSourceResponse }),
       onStimulusDelivered: (row) => stimulusDelivered(logger, row),
-      onStimulusFailed: (row) => stimulusFailed(logger, row.kind ?? 'unknown', row.stimulusId),
+      onStimulusFailed: (row, reason) =>
+        stimulusFailed(logger, row.kind ?? 'unknown', row.stimulusId, reason),
     });
     stage(logger, 'owner_runtime');
 
@@ -389,7 +441,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
         const receipt = owner!.acceptSourceDelta(delta);
         stimulusAccepted(logger, 'source_delta', id, receipt);
       } catch (error) {
-        stimulusFailed(logger, 'source_delta', id);
+        stimulusFailed(logger, 'source_delta', id, error);
         throw error;
       }
     };
@@ -430,6 +482,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
     } else {
       stage(logger, 'telegram:disabled');
     }
+    deliveryReady = true;
 
     return {
       config,

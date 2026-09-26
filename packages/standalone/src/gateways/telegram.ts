@@ -249,6 +249,12 @@ export class TelegramGateway extends BaseGateway {
     await this.runInChatQueue(chatId, () => this.sendMessageNow(chatId, trimmed, idempotencyKey));
   }
 
+  async sendToOwner(text: string, idempotencyKey: string): Promise<void> {
+    const ownerChatId = this.config.ownerChatId?.trim();
+    if (!ownerChatId) throw new Error('telegram.owner_chat_id is required for delta delivery');
+    await this.sendMessage(ownerChatId, text, idempotencyKey);
+  }
+
   async sendFile(
     path: string,
     caption: string | undefined,

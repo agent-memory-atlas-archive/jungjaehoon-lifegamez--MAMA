@@ -14,6 +14,7 @@ import type { NativeTurnResult } from '@jungjaehoon/mama-core/runtime/native-tur
 import type { SourceDelta } from '../connectors/framework/polling-scheduler.js';
 import type { QueueCandidateScore, QueueLine, WindowQueue } from '../replay/window-queue.js';
 import { renderRecentOwnerExchanges, type OwnerExchange } from './recent-owner-exchanges.js';
+import { LIVE_DELTA_ROUTING_INSTRUCTION } from './owner-system-prompt.js';
 
 export const OWNER_RUNTIME_SESSION_KEY = 'owner:runtime';
 
@@ -59,7 +60,7 @@ export interface StimulusDeliveryOptions {
   onScheduledNoop?: (row: MailboxRow) => void | Promise<void>;
   onNativeEventResult?: (row: MailboxRow, result: NativeTurnResult) => void | Promise<void>;
   onDelivered?: (row: MailboxRow) => void | Promise<void>;
-  onFailed?: (row: MailboxRow, error: unknown) => void | Promise<void>;
+  onFailed?: (row: MailboxRow, reason: string) => void | Promise<void>;
 }
 
 export interface LessonHit {
@@ -321,7 +322,7 @@ export function renderWindowQueue(queue: WindowQueue): string {
   return lines.join('\n');
 }
 
-function boundedStimulus(row: MailboxRow): string {
+function boundedStimulus(row: MailboxRow, liveSourceDelta: boolean): string {
   const lines = [
     '## Bounded stimulus',
     `kind: ${row.kind ?? 'unknown'}`,
@@ -353,6 +354,7 @@ function boundedStimulus(row: MailboxRow): string {
   const messages = row.kind === 'source_delta' ? messageLines(row.payload) : null;
   if (messages === null) lines.push(`refs: ${JSON.stringify(row.refs)}`);
   if (row.kind === 'source_delta') {
+    if (liveSourceDelta) lines.push(`response_routing: ${LIVE_DELTA_ROUTING_INSTRUCTION}`);
     lines.push(
       row.refs.length === 0
         ? 'source_read: this replay window has no source messages.'
@@ -431,13 +433,24 @@ function renderLessons(hits: readonly LessonHit[]): string {
 }
 
 /** The turn carries only the stimulus and recalled lessons; standing text is the session prompt. */
-function assembledContent(row: MailboxRow, lessonBlocks: readonly string[]): ContentBlock[] {
+function assembledContent(
+  row: MailboxRow,
+  lessonBlocks: readonly string[],
+  liveSourceDelta: boolean
+): ContentBlock[] {
   return [
     {
       type: 'text',
-      text: [...lessonBlocks, boundedStimulus(row)].join('\n\n'),
+      text: [...lessonBlocks, boundedStimulus(row, liveSourceDelta)].join('\n\n'),
     },
   ];
+}
+
+/** One bounded log line; preserve the original thrown error for runtime settlement. */
+export function stimulusFailureReason(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error))
+    .replace(/\s+/g, ' ')
+    .slice(0, 500);
 }
 
 /** Deliver every model-bearing kind through one serialized owner session. */
@@ -453,6 +466,14 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
     });
     await previous;
     const replaySourceEndMs = activeReplaySourceEndMs;
+    const payload = row.payload;
+    const hasReplayPayload =
+      payload !== null &&
+      typeof payload === 'object' &&
+      !Array.isArray(payload) &&
+      payload.replay !== undefined;
+    const liveSourceDelta =
+      row.kind === 'source_delta' && replaySourceEndMs === undefined && !hasReplayPayload;
     try {
       if (row.kind === 'scheduled') {
         await options.onScheduledNoop?.(row);
@@ -464,7 +485,7 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
         ) {
           throw new Error('Stimulus kind is missing; no owner turn can be assembled');
         }
-        const result = await context.run(assembledContent(row, []), {
+        const result = await context.run(assembledContent(row, [], liveSourceDelta), {
           prepareSessionContent: async ({ isNewSession }) => {
             const lessonBlocks: string[] = [];
             if (isNewSession) {
@@ -479,7 +500,7 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
             }
             const currentLessons = renderLessons(await options.lessonResolver(lessonQuery(row)));
             if (currentLessons) lessonBlocks.push(currentLessons);
-            return assembledContent(row, lessonBlocks);
+            return assembledContent(row, lessonBlocks, liveSourceDelta);
           },
           sessionKey: OWNER_RUNTIME_SESSION_KEY,
           source: row.kind,
@@ -488,12 +509,12 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
           ...(replaySourceEndMs === undefined ? {} : { replaySourceEndMs }),
         });
         if (row.kind === 'owner_message') await options.onOwnerResult?.(row, result);
-        if (row.kind === 'source_delta') await options.onSourceResult?.(row, result);
+        if (liveSourceDelta) await options.onSourceResult?.(row, result);
         if (row.kind === 'native_event') await options.onNativeEventResult?.(row, result);
       }
       await options.onDelivered?.(row);
     } catch (error) {
-      await options.onFailed?.(row, error);
+      await options.onFailed?.(row, stimulusFailureReason(error));
       throw error;
     } finally {
       if (activeReplaySourceEndMs === replaySourceEndMs) activeReplaySourceEndMs = undefined;
