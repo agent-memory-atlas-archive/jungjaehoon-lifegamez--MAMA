@@ -33,6 +33,7 @@ async function assembledPrompt(backend: 'codex' | 'claude', connectors: string[]
       ['fixture-archive', null],
       ['fixture-direct', 'room-four'],
       ['fixture-hidden', 'fixture-hidden:family-secret:room-five'],
+      ['calendar', 'calendar'],
     ];
     for (const [index, [source, channel]] of rows.entries()) {
       upsertConnectorEventIndex(db.adapter, {
@@ -74,6 +75,15 @@ async function assembledPrompt(backend: 'codex' | 'claude', connectors: string[]
 }
 
 describe('readable sources at owner session startup', () => {
+  it.each(['codex', 'claude'] as const)(
+    'includes stored calendar events in the %s owner prompt',
+    async (backend) => {
+      const prompt = await assembledPrompt(backend, ['calendar']);
+      expect(prompt).toContain('Readable sources: calendar (1)');
+      expect(prompt).not.toContain('fixture-hidden');
+    }
+  );
+
   it.each(['codex', 'claude'] as const)(
     'gives %s granted stored connectors and family row counts without rooms',
     async (backend) => {

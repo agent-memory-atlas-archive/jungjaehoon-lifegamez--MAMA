@@ -28,6 +28,7 @@ import { sessionCredentialPath } from '../../runtime/session-credential.js';
 import { ensureMamaMcpConfig, resolveActionServerPath } from '../runtime/action-mcp-config.js';
 import { ensureClaudeCallerHook } from '../runtime/claude-caller-config.js';
 import type { SourceDelta } from '../../connectors/framework/polling-scheduler.js';
+import { LOADABLE_CONNECTORS as OWNER_CONNECTORS } from '../../connectors/index.js';
 import { createOwnerPolicyProvider } from '../../runtime/owner-policy.js';
 import {
   createViewerServer as createDefaultViewerServer,
@@ -43,7 +44,6 @@ import { createReportScheduler, type ReportScheduler } from '../../runtime/repor
 
 const OWNER_PRINCIPAL_ID = 'owner';
 const OWNER_AGENT_ID = 'owner-agent';
-const OWNER_CONNECTORS = ['chatwork', 'slack', 'trello', 'kagemusha'] as const;
 const OWNER_MEMORY_SCOPES = ownerMemoryScopes(OWNER_PRINCIPAL_ID, OWNER_CONNECTORS);
 
 export interface DaemonLogger {

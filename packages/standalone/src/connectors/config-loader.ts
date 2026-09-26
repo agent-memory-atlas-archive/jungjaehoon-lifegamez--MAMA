@@ -40,7 +40,7 @@ const ROLES = new Set<ChannelConfig['role']>([
 
 class ConfigValidationError extends Error {}
 
-const W1_CONNECTOR_NAMES = new Set<string>(LOADABLE_CONNECTORS);
+const CONNECTOR_NAMES = new Set<string>(LOADABLE_CONNECTORS);
 
 interface ValidationState {
   readonly ignored: string[];
@@ -103,12 +103,16 @@ function channels(
 
 function auth(value: unknown, field: string, state: ValidationState): AuthConfig {
   const raw = record(value, field);
-  collectIgnoredKeys(raw, ['type', 'tokenName'], field, state);
-  if (raw.type !== 'token' && raw.type !== 'none') {
-    throw new ConfigValidationError(`${field}.type must be token or none`);
+  collectIgnoredKeys(raw, ['type', 'tokenName', 'cli', 'cliAuthCommand'], field, state);
+  if (raw.type !== 'token' && raw.type !== 'cli' && raw.type !== 'none') {
+    throw new ConfigValidationError(`${field}.type must be token, cli or none`);
   }
   const result: AuthConfig = { type: raw.type };
   if (raw.tokenName !== undefined) result.tokenName = text(raw.tokenName, `${field}.tokenName`);
+  if (raw.cli !== undefined) result.cli = text(raw.cli, `${field}.cli`);
+  if (raw.cliAuthCommand !== undefined) {
+    result.cliAuthCommand = text(raw.cliAuthCommand, `${field}.cliAuthCommand`);
+  }
   return result;
 }
 
@@ -144,7 +148,7 @@ function validate(value: unknown): { config: ConnectorsConfig; ignored: readonly
   let index = 0;
   for (const [name, value] of Object.entries(raw)) {
     const key = name.toLowerCase();
-    if (!W1_CONNECTOR_NAMES.has(key)) {
+    if (!CONNECTOR_NAMES.has(key)) {
       ignored.push(name);
       continue;
     }

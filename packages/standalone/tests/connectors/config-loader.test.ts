@@ -1,13 +1,14 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { loadConnectorConfig } from '../../src/connectors/config-loader.js';
 
 const roots: string[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -27,6 +28,26 @@ const valid = {
 };
 
 describe('connector config loader', () => {
+  it.each([false, true])(
+    'loads calendar CLI auth without ignoring or enabling it (%s)',
+    (enabled) => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const calendar = {
+        enabled,
+        pollIntervalMinutes: 5,
+        channels: { calendar: { role: 'reference' } },
+        auth: { type: 'cli', cli: 'gws', cliAuthCommand: 'gws auth login' },
+      };
+      const result = loadConnectorConfig(writeConfig({ calendar }));
+      expect(result).toEqual({
+        ok: true,
+        config: { calendar },
+        enabledNames: enabled ? ['calendar'] : [],
+      });
+      expect(warn).not.toHaveBeenCalled();
+    }
+  );
+
   it('normalizes connector names and returns only enabled names', () => {
     const result = loadConnectorConfig(
       writeConfig({ Slack: valid, Trello: { ...valid, enabled: false } })

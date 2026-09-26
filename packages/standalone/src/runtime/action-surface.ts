@@ -26,6 +26,7 @@ import {
 import type { StoredSourceReader } from '../api/stored-source-reader.js';
 import { wikiActionRegistrations, type WikiPorts } from '../api/wiki-actions.js';
 import type { BoardSlots } from '../operator/board-read-views.js';
+import { LOADABLE_CONNECTORS as OWNER_CONNECTORS } from '../connectors/index.js';
 
 const OWNER_ACTIONS = [
   'graph.query',
@@ -48,8 +49,6 @@ const OWNER_ACTIONS = [
   'source.attachment.download',
   'deliver.telegram.file',
 ] as const;
-
-const OWNER_CONNECTORS = ['chatwork', 'slack', 'trello', 'kagemusha'] as const;
 
 export interface HostToolDefinition {
   name: string;

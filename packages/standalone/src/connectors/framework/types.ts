@@ -9,13 +9,13 @@ export interface ChannelConfig {
 }
 
 export interface AuthConfig {
-  type: 'token' | 'none';
+  type: 'token' | 'cli' | 'none';
   tokenName?: string;
+  cli?: string;
+  cliAuthCommand?: string;
 }
 
-export interface AuthRequirement {
-  type: 'token' | 'none';
-  tokenName?: string;
+export interface AuthRequirement extends AuthConfig {
   description: string;
 }
 

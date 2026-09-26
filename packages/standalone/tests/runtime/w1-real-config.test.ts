@@ -173,6 +173,7 @@ describe('W1 real owner configuration shape', () => {
     const warningText = warn.mock.calls.flat().join(' ');
     expect(warningText).toContain('roles');
     expect(warningText).toContain('gmail');
+    expect(warningText).not.toContain('calendar');
     expect(warningText).toContain('historicalBackfill');
     expect(warningText).not.toContain('agent.max_turns');
     expect(warningText).not.toContain('placeholder-telegram-token');

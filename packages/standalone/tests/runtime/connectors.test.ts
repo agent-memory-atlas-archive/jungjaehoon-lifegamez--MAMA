@@ -75,7 +75,7 @@ describe('connector runtime', () => {
     });
   });
 
-  it('initializes only the four supported enabled connectors and freezes the one-day window', async () => {
+  it('initializes only supported enabled connectors and freezes the one-day window', async () => {
     const root = mkdtempSync(join(tmpdir(), 'connector-runtime-'));
     roots.push(root);
     const configPath = join(root, 'connectors.json');

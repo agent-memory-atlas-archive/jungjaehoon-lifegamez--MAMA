@@ -203,7 +203,8 @@ describe('daemon bootstrap', () => {
       config: config(mamaRoot),
       logger,
       dependencies: {
-        createOwnerRuntime: vi.fn(async () => {
+        createOwnerRuntime: vi.fn(async (options) => {
+          expect(options.connectors).toContain('calendar');
           order.push('owner:start');
           return owner as never;
         }),

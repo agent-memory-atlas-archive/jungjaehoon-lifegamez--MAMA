@@ -3,6 +3,23 @@ import type { DatabaseInstance, Knowledge } from '@jungjaehoon/mama-core';
 import { createActionSurface } from '../../src/runtime/action-surface.js';
 
 describe('W1 action surface', () => {
+  it('grants calendar reads and memory scopes to the owner by default', () => {
+    const surface = createActionSurface({
+      adapter: {} as DatabaseInstance,
+      knowledge: {} as Knowledge,
+      ownerPrincipalId: 'owner-test',
+      agentId: 'agent-test',
+    });
+    expect(surface.ownerAccess.connectors).toContain('calendar');
+    expect(surface.ownerAccess.connectorWideRead).toContain('calendar');
+    expect(surface.ownerAccess.scopes).toEqual(
+      expect.arrayContaining([
+        { kind: 'channel', id: 'calendar' },
+        { kind: 'project', id: 'calendar' },
+      ])
+    );
+  });
+
   it('exposes the read-only viewer action and derives host tools from the catalog', () => {
     const surface = createActionSurface({
       adapter: {} as DatabaseInstance,
