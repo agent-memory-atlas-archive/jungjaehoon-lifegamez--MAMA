@@ -722,3 +722,17 @@ The implementation writes raw/index data during import only. Replay is the owner
   fixed: collector deltas without per-ref contentPreview queried lessons with an empty text ("Text
   cannot be empty" warning each delta); the lesson query now uses the row preview (test red→green).
   Not yet seen: lesson applied after a restart, subagent child runs on Claude.
+- 2026-09-26 19:40 KST: R10 (f) second round on Claude, after a restart. Recall: the new session got the
+  startup block and recent exchanges; the Excel-format lesson was not among the 3 lessons of either turn
+  ("<asset-4> … 보내줘" ranks it 8th; an Excel-format phrasing ranks it 1st), which is the top-3 design,
+  same as Kagemusha. Read-back of the files made after the correction: fills, widths and font colours now
+  match the owner template; the subagent-made files also match alignment (one also borders).
+  Failure found: "use two subagents" produced two files and zero deliveries. Claude 2.1.282 runs Agent in
+  the background by default, so the parent turn ended first; the children's later host calls and the
+  CLI's own follow-up turn hit "Native tool caller has no matching active turn" (the host never listened
+  to autonomousTurn, and attachSubagentWake was removed in the rebuild). Fix: the host-written workspace
+  settings set CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 (undocumented; measured on 2.1.282 via project
+  settings env with --setting-sources project: two Agents in parallel, one turn, one answer, 22 s vs 28 s
+  split into three answers). Re-check this on every CLI bump: the symptom is files made, nothing delivered.
+  Not done: the now-unreachable background/autonomous-turn code in persistent-cli-process (39 refs) is
+  left for a separate deletion with tests because the driver is exported under ./runtime/\*.

@@ -74,6 +74,7 @@ describe('owner Claude workspace settings', () => {
     });
     expect(settings.permissions).toBeUndefined();
     expect(settings.env.CLAUDE_CODE_TMPDIR).toBe(join(workspace, '.tmp'));
+    expect(settings.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe('1');
   });
 
   it('allows writes only under the workspace by one absolute Edit rule, plus web and MAMA tools', () => {

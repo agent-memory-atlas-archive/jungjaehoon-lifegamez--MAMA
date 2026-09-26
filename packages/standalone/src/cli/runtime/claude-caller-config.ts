@@ -49,6 +49,9 @@ export function ensureClaudeCallerHook(workspaceDir: string): void {
     file.settings.env = {
       ...file.settings.env,
       CLAUDE_CODE_TMPDIR: join(workspaceDir, '.tmp'),
+      // Children run inside the owner turn (parallel, one answer). A background child finishes
+      // after the turn closed, where its host calls have no run and its answer no delivery.
+      CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1',
     };
     writeFileSync(file.path, `${JSON.stringify(file.settings, null, 2)}\n`, { mode: 0o600 });
   }
