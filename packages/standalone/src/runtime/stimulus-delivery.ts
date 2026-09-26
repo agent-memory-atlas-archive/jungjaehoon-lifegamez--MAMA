@@ -353,8 +353,8 @@ function boundedStimulus(row: MailboxRow): string {
       row.refs.length === 0
         ? 'source_read: this replay window has no source messages.'
         : messages !== null
-          ? 'source_read: each message line below carries its full text (a Trello action rendered from its record); call source.read with observationRefs only for a raw record or attachment you need, batched per connector (the first segment of the channel) with source set to that connector.'
-          : 'source_read: read these delta refs in one batched source.read call with observationRefs; content remains bounded per ref.'
+          ? 'source_read: each message line below carries its full text (a Trello action rendered from its record); use the source read action named in your standing instructions with observationRefs only for a raw record or attachment you need, batched per connector (the first segment of the channel) with source set to that connector.'
+          : 'source_read: read these delta refs with the source read action named in your standing instructions, in one batched call with observationRefs; content remains bounded per ref.'
     );
     const payload = row.payload;
     const replay =

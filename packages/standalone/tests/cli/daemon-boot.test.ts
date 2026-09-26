@@ -10,10 +10,13 @@ import {
   type DaemonLogger,
 } from '../../src/cli/commands/daemon.js';
 import type { W1Config } from '../../src/runtime/config.js';
+import { createOwnerRuntime } from '../../src/runtime/owner-runtime.js';
+import { actionMcpSession } from '../helpers/action-mcp-session.js';
 
 const roots: string[] = [];
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -76,6 +79,84 @@ function viewerDouble(order: string[]) {
 }
 
 describe('daemon bootstrap', () => {
+  it('authenticates MCP list and action calls with the credential written by Claude boot', async () => {
+    // Short paths keep the Unix socket below the platform path-length limit.
+    const root = mkdtempSync(join(tmpdir(), 'mcp-boot-'));
+    roots.push(root);
+    vi.stubEnv('HOME', root);
+    const daemon = await bootDaemon({
+      home: root,
+      configPath: join(root, 'config.yaml'),
+      config: config(root, 'claude'),
+      mode: 'replay',
+      // Boot the owner runtime and action socket without collectors or Telegram.
+      replay: async () => {},
+      logger: { info: () => {}, error: () => {} },
+      dependencies: {
+        createOwnerRuntime: (options) =>
+          createOwnerRuntime({
+            ...options,
+            embedder: { embed: async () => new Float32Array(1024).fill(0.25) },
+            nativeSession: { stop: async () => {} },
+          }),
+        createViewerServer: () => viewerDouble([]) as never,
+      },
+    });
+    let mcp: ReturnType<typeof actionMcpSession> | undefined;
+    try {
+      const credential = readFileSync(daemon.paths.credentialPath, 'utf8').trim();
+      expect(credential.length).toBeGreaterThan(0);
+      expect(daemon.paths.credentialPath).toBe(join(root, 'runtime', 'session-credential'));
+      expect(existsSync(join(root, 'session-credential'))).toBe(false);
+      const registration = JSON.parse(readFileSync(daemon.paths.mcpConfigPath, 'utf8')) as {
+        mcpServers: { mama: { env: { MAMA_HOME: string } } };
+      };
+      vi.stubEnv('MAMA_HOME', registration.mcpServers.mama.env.MAMA_HOME);
+      mcp = actionMcpSession();
+      const listed = await mcp.request('tools/list');
+      expect(listed.error).toBeUndefined();
+      expect((listed.result as { tools: Array<{ name: string }> }).tools).toEqual(
+        expect.arrayContaining([expect.objectContaining({ name: 'work.create' })])
+      );
+      const called = await mcp.request('tools/call', {
+        name: 'work.create',
+        arguments: {
+          topic: 'fixture-work',
+          summary: 'Fixture evidence',
+          set: { title: 'Fixture work' },
+        },
+      });
+      expect(called.error).toBeUndefined();
+      const result = called.result as { isError?: boolean; content: Array<{ text: string }> };
+      expect(result.isError).toBeUndefined();
+      const payload = JSON.parse(result.content[0]!.text) as {
+        success: boolean;
+        data: { commitmentId: string };
+      };
+      expect(payload.success).toBe(true);
+      const readBack = await daemon.owner.surface.hostToolCall(
+        'work.show',
+        {
+          commitmentId: payload.data.commitmentId,
+        },
+        'fixture-readback'
+      );
+      expect(readBack.status).toBe('completed');
+      expect(readBack.data).toMatchObject({
+        items: [
+          {
+            commitmentId: payload.data.commitmentId,
+            values: { title: 'Fixture work' },
+          },
+        ],
+      });
+      expect(JSON.stringify([listed, called]).includes(credential)).toBe(false);
+    } finally {
+      mcp?.close();
+      await daemon.stop();
+    }
+  });
+
   it('starts producers after the owner runtime and stops them in reverse order', async () => {
     const root = mkdtempSync(join(tmpdir(), 'mama-daemon-boot-'));
     roots.push(root);

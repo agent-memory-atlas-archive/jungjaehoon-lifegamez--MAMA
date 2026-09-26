@@ -20,6 +20,7 @@ import {
 } from '../../runtime/connectors.js';
 import { defaultConfigPath, loadConfig, type W1Config } from '../../runtime/config.js';
 import { declareModelCache } from '../../runtime/model-cache.js';
+import { sessionCredentialPath } from '../../runtime/session-credential.js';
 import { ensureMamaMcpConfig, resolveActionServerPath } from '../runtime/action-mcp-config.js';
 import type { SourceDelta } from '../../connectors/framework/polling-scheduler.js';
 import { createOwnerPolicyProvider } from '../../runtime/owner-policy.js';
@@ -164,7 +165,7 @@ function pathsFor(configPath: string, config: W1Config): DaemonPaths {
     pluginDir,
     mcpConfigPath,
     socketPath: join(mamaRoot, 'runtime.sock'),
-    credentialPath: join(runtimeRoot, 'session-credential'),
+    credentialPath: sessionCredentialPath(mamaRoot),
     connectorsConfigPath: join(mamaRoot, 'connectors.json'),
     connectorsRoot,
     trelloStatePath: join(connectorsRoot, 'trello-state.json'),

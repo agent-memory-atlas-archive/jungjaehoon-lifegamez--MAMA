@@ -3,10 +3,114 @@
  * runtime socket, tools/call is one client.call. Carried from the archive's
  * handleRequest unit surface (tests/mcp/action-server.test.ts).
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { createCatalog, createDispatcher, startRuntime } from '@jungjaehoon/mama-core';
+import { createClient } from '@jungjaehoon/mama-core/client/client';
 import type { ActionContract, ActionResult } from '@jungjaehoon/mama-core';
 import { resolveActionServerPath } from '../../src/cli/runtime/action-mcp-config.js';
 import { handleRequest } from '../../src/runtime/action-mcp-server.js';
+import { actionMcpSession } from '../helpers/action-mcp-session.js';
+import { readSessionCredential } from '../../src/runtime/session-credential.js';
+
+afterEach(() => vi.unstubAllEnvs());
+
+describe('mama action MCP server — credential rotation', () => {
+  it('reads the runtime credential afresh and never uses the legacy root file', () => {
+    const home = mkdtempSync(join(tmpdir(), 'mcp-reader-'));
+    const credentialPath = join(home, 'runtime', 'session-credential');
+    try {
+      mkdirSync(join(home, 'runtime'));
+      writeFileSync(join(home, 'session-credential'), 'fixture-legacy');
+      expect(readSessionCredential(home)).toBeUndefined();
+      writeFileSync(credentialPath, 'fixture-first\n');
+      expect(readSessionCredential(home)).toBe('fixture-first');
+      writeFileSync(credentialPath, 'fixture-rotated\n');
+      expect(readSessionCredential(home)).toBe('fixture-rotated');
+      writeFileSync(credentialPath, ' \n');
+      expect(readSessionCredential(home)).toBeUndefined();
+      rmSync(credentialPath);
+      expect(readSessionCredential(home)).toBeUndefined();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('re-reads the credential on every stdio request and rejects the revoked token', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'mcp-rotation-'));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('MAMA_HOME', home);
+    const credentialPath = join(home, 'runtime', 'session-credential');
+    const socketPath = join(home, 'runtime.sock');
+    const catalog = createCatalog([
+      {
+        contract: {
+          name: 'fixture.echo',
+          summary: 'Echo fixture input',
+          inputSchema: { type: 'object' },
+        },
+        exec: (input, context) => ({ input, principalId: context.access.principalId }),
+      },
+    ]);
+    const principal = {
+      access: { principalId: 'owner', agentId: 'agent', scopes: [], actions: ['fixture.echo'] },
+      credentialPath,
+    };
+    let runtime: Awaited<ReturnType<typeof startRuntime>> | undefined;
+    let mcp: ReturnType<typeof actionMcpSession> | undefined;
+    try {
+      runtime = await startRuntime({
+        paths: { socketPath },
+        catalog,
+        dispatch: createDispatcher(catalog),
+        principals: [principal],
+      });
+      const first = readFileSync(credentialPath, 'utf8').trim();
+      const staleClient = createClient({
+        socketPath,
+        credential: first,
+        journalPath: join(home, 'stale.jsonl'),
+      });
+      // A legacy file must never be consulted, including after rotation/removal.
+      writeFileSync(join(home, 'session-credential'), first);
+      mcp = actionMcpSession();
+      const listed = { result: { tools: [expect.objectContaining({ name: 'fixture.echo' })] } };
+      expect(await mcp.request('tools/list')).toMatchObject(listed);
+      runtime.unservePrincipal('owner');
+      const missing = await mcp.request('tools/list');
+      expect(missing.error?.message).toContain('unresolved session credential');
+      runtime.servePrincipal(principal);
+      const second = readFileSync(credentialPath, 'utf8').trim();
+      expect(second === first).toBe(false);
+      await expect(staleClient.describe()).rejects.toThrow('unresolved session credential');
+      expect(await mcp.request('tools/list')).toMatchObject(listed);
+      // Rotate again before tools/call, so a refresh only on tools/list cannot pass.
+      runtime.unservePrincipal('owner');
+      runtime.servePrincipal(principal);
+      const called = await mcp.request('tools/call', {
+        name: 'fixture.echo',
+        arguments: { value: 'fixture' },
+      });
+      expect(called.error).toBeUndefined();
+      const payload = JSON.parse(
+        (called.result as { content: Array<{ text: string }> }).content[0]!.text
+      );
+      expect(payload).toEqual({
+        success: true,
+        data: { input: { value: 'fixture' }, principalId: 'owner' },
+      });
+      expect(JSON.stringify(called).includes(readFileSync(credentialPath, 'utf8').trim())).toBe(
+        false
+      );
+    } finally {
+      mcp?.close();
+      await runtime?.stop();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('mama action MCP server — handleRequest unit surface', () => {
   const contracts: ActionContract[] = [

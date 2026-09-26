@@ -126,8 +126,12 @@ that session through the driver's existing reset (`codex-app-server-process.ts:8
 `NativeSessionHandle` next to `stop` (`mama-core/src/runtime/runtime.ts:112-124`), and drops the
 `SessionPool` entry; mailbox rows, ledger, wiki, reports and lessons stay. The reset is called after the fence
 is reached and before `daemon.stop()`; for the Claude backend the equivalent is dropping its session
-record — the reset is exposed per backend, not assumed. Done: after a replay, the first live
-owner turn logs a new thread whose first prompt carries only the standing text, policy and stimulus.
+record — the reset is exposed per backend, not assumed. A new thread also receives the last owner exchanges (Kagemusha
+`src/agent/agent-loop.ts` passes the last 10 turns as `<이전 대화>`): the first delivery on a new thread
+renders the last few owner messages and replies from the Telegram ledger. Evidence: after a restart the
+agent re-translated the wrong asset because the previous request was gone (checks.md 14:30). Done: after a
+replay, the first live owner turn logs a new thread whose first prompt carries the standing text, policy,
+recent owner exchanges and the stimulus.
 
 **R8 — work lookup finds what the owner names.** Replace the substring filter
 (`api/work-actions.ts:291-305`) with ranked retrieval over title and description: exact and token
@@ -152,3 +156,21 @@ re-asked tells the rounds in order (9/11 side-hair fix, 9/14 feedback, 9/15 seco
 Order: R1, R2 (prompt, one commit; done 120516c06), R9, R8, R3, R7, then R4, R5, R6. The daemon
 restart for R1/R2 already dropped the replay context, so R7 follows the accuracy items. Each item adds 3–5 lines to
 checks.md with its live evidence.
+
+**R10 — the Claude backend has parity with Codex (owner decision 2026-09-26).** Audit (Codex astra, read-only)
+found the Claude owner path unproven and broken in the normal daemon. Work list, in order:
+(a) MCP credential path: the daemon writes `<home>/runtime/session-credential` (`cli/commands/daemon.ts:167`)
+while the action MCP server reads `<home>/session-credential` (`runtime/action-mcp-server.ts:53`), so every
+owner action fails authentication on Claude; one path, and a test that runs the real stdio→socket auth.
+(b) Turn attribution: MCP action calls carry no model run, gateway call, source message or channel
+(`action-mcp-server.ts:100-106`, compare `native-session.ts:333`); Codex's child bridge (child access, parent
+model run, receipts) is not wired for Claude children (`native-turn.ts:690-839`, `persistent-cli-adapter.ts`).
+(c) Standing and replay text per backend: no `spawn_agent` requirement for Claude (`replay-source-catalog.ts:
+385`); images and PDFs through Read. (d) New-thread signal decided before assembling content for both
+backends (the Claude process replacement is detected after lessons are assembled, `stimulus-delivery.ts:461`),
+and R7's reset exposed for both (`persistent-cli-adapter.ts:298` resetSession). (e) Boundary (owner choice):
+both backends write only inside `~/.mama/workspace` and both have web access — Codex turns on `web_search`;
+Claude replaces `--dangerously-skip-permissions` with a sandboxed Bash and workspace-only file permissions,
+keeping WebFetch/WebSearch, within the AGENTS.md isolation rules. (f) Live proof on Claude: an owner question,
+a correction saved and applied after restart, and an attachment turned into a delivered file. Done: (f) with
+native input receipts, action traces, DB read-back, Telegram receipt and a clean daemon.log.

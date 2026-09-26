@@ -4,16 +4,17 @@
  *
  * tools/list is the catalog's own describe over the runtime socket; tools/call
  * is one client.call on the same socket. No database, no second execution path.
- * The session credential is re-read per request, so a rotation denies the next
- * call instead of pinning a stale one; it never appears in tool output.
+ * The session credential is re-read per request, so rotation takes effect on
+ * the next call instead of pinning a stale one; it never appears in tool output.
  *
  * MCP servers log to stderr (stdout is JSON-RPC).
  */
-import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import readline from 'node:readline';
+import type { Readable, Writable } from 'node:stream';
 import type { ActionContract, ActionResult } from '@jungjaehoon/mama-core';
 import { createClient, type Client } from '@jungjaehoon/mama-core/client/client';
+import { readSessionCredential } from './session-credential.js';
 
 export interface JsonRpcRequest {
   jsonrpc: '2.0';
@@ -49,18 +50,11 @@ function mamaHome(): string {
   return home;
 }
 
-function sessionCredential(home: string): string | undefined {
-  const credentialPath = join(home, 'session-credential');
-  if (!existsSync(credentialPath)) return undefined;
-  const credential = readFileSync(credentialPath, 'utf8').trim();
-  return credential === '' ? undefined : credential;
-}
-
 function runtimeClient(home: string): Client {
   return createClient({
     socketPath: join(home, 'runtime.sock'),
     journalPath: join(home, 'runtime', 'client-journal.jsonl'),
-    credential: sessionCredential(home),
+    credential: readSessionCredential(home),
   });
 }
 
@@ -152,14 +146,16 @@ export async function handleRequest(
   }
 }
 
-function write(response: JsonRpcResponse): void {
-  process.stdout.write(`${JSON.stringify(response)}\n`);
-}
-
-export function runStdioMcpServer(): void {
+export function runStdioMcpServer(
+  streams: { input?: Readable; output?: Writable } = {}
+): readline.Interface {
   const home = mamaHome();
+  const output = streams.output ?? process.stdout;
+  const write = (response: JsonRpcResponse): void => {
+    output.write(`${JSON.stringify(response)}\n`);
+  };
   log(`starting — MAMA_HOME=${home}`);
-  const lines = readline.createInterface({ input: process.stdin });
+  const lines = readline.createInterface({ input: streams.input ?? process.stdin });
   lines.on('line', (line) => {
     const trimmed = line.trim();
     if (!trimmed) return;
@@ -182,6 +178,7 @@ export function runStdioMcpServer(): void {
         });
       });
   });
+  return lines;
 }
 
 if (require.main === module) {

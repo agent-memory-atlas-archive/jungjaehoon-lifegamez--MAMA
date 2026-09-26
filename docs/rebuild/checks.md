@@ -611,3 +611,20 @@ The implementation writes raw/index data during import only. Replay is the owner
   Exact reader cause: app-server inherits daemon PATH but isolates HOME; macOS login zsh runs /etc/zprofile path_helper, selecting system Python before Homebrew, while isolated HOME hides the host user site. Owner-only shell_environment_policy.set.PATH plus allow_login_shell=false fixes resolution; core defaults, isolated HOME, workspace-write, approvals never and network policy remain unchanged.
   Evidence: standalone gateways/runtime 87 passed, 5 socket-listen EPERM failures; standalone tsc --noEmit and changed-file ESLint pass; core config/driver 6 passed and core tsc passed; adjacent attachment/daemon suites 17 passed. Isolated-HOME non-login shell imported openpyxl/fitz/pdfplumber/PIL and round-tripped XLSX/PDF. Logs: /private/tmp/mama-telegram-{suites,typecheck,eslint,adjacent}.log and /private/tmp/mama-shell-green.log.
   Still unverified: a live Telegram attachment owner turn after deployment; no daemon restart or commit. MAMA MCP decision save was blocked because the tool requires approval and this session's approval policy is never.
+- 2026-09-26 14:30 KST: owner files end to end (504df3f8e live). The owner sent an existing translation
+  workbook (782 KB) with a caption; it was downloaded into files/telegram and listed in the stimulus with
+  path, name and size. The shell's python3 now loads openpyxl and PyMuPDF (Codex config: host PATH set,
+  allow_login_shell false). The first answer re-translated the sent workbook's own asset — the restart
+  had opened a new thread and the previous Kings Cross request was gone. After the owner's correction
+  (saved as a lesson in that turn), the agent read the template's widths and merges, rendered the Kings
+  Cross PDF with PyMuPDF, built the workbook in that style and sent it (6.6 KB), and revised the work
+  item — about 2.7 min, no ids. Gap: a new thread carries no recent owner turns (Kagemusha passes the last
+  turns as <이전 대화>); add it with R7.
+- 2026-09-26: R10(a), Answer/Attach: daemon boot and stdio MCP now share runtime/session-credential.ts; the reader uses runtime/session-credential under the configured home, freshly on each request, without a second environment/config field.
+  Evidence: filesystem tests pass for replacement, deletion, empty credentials and rejection of the legacy root path; added in-process JSON-lines → real socket-client tests for Claude daemon boot tools/list + work.create/read-back and credential rotation/revocation.
+  Standalone CLI/runtime/replay: 86 passed, 7 failed exclusively at sandbox listen EPERM (2 new integration cases, 5 existing cases); tsc --noEmit and changed-file ESLint pass. Results: /private/tmp/mama-r10-tests.json, /private/tmp/mama-r10-{typecheck,eslint}.log.
+  Still unverified: socket authentication assertions cannot run past listen in this sandbox; no live owner turn or daemon restart. Required MAMA MCP decision save was blocked by approval policy never. Production code across (a)/(c): +43/-37 lines, excluding tests.
+- 2026-09-26: R10(c), Answer/Report: replay window and source-read instructions now defer action names and native dispatch to the standing prompt; Claude uses Read for images/PDFs and Bash/python for spreadsheets/archives, while Codex keeps its shell/python and direct subagent guidance.
+  Evidence: both backend prompt tests pass through real replay stimulus assembly and compare every mentioned host action with tools/list exposure, including Claude CLI name normalization; Claude text has no spawn_agent/wait_agent requirement.
+  Preserved the interactive-owner-only administration boundary while removing nonexistent action names from its text; delegation, journal ownership, receipts and read-back requirements remain explicit.
+  Still unverified: live Claude answer/file delivery and R10(b), (d), (e), (f); this run implements only (a)/(c), without committing or deploying.

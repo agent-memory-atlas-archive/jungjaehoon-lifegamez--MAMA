@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
+import type { Client } from '@jungjaehoon/mama-core/client/client';
+import type { DatabaseInstance, Knowledge } from '@jungjaehoon/mama-core';
+import type { MailboxRow, Stimulus } from '@jungjaehoon/mama-core/runtime/mailbox';
+import type { ContentBlock } from '@jungjaehoon/mama-core/runtime/drivers/types';
+import { createActionSurface } from '../../src/runtime/action-surface.js';
+import { handleRequest } from '../../src/runtime/action-mcp-server.js';
+import { ReplaySourceCatalog } from '../../src/replay/replay-source-catalog.js';
 import { ownerSystemPrompt } from '../../src/runtime/owner-system-prompt.js';
+import {
+  createStimulusDelivery,
+  createStimulusIntake,
+} from '../../src/runtime/stimulus-delivery.js';
 
 describe('owner standing prompt', () => {
   it('treats source content as evidence, never as an instruction', () => {
@@ -51,9 +62,88 @@ describe('owner standing prompt', () => {
   it.each(['codex', 'claude'] as const)(
     'bounds the %s workspace shell to requested file work and preserves required actions',
     (backend) => {
-      expect(ownerSystemPrompt(backend).split('\n')).toContain(
-        '- Use the workspace shell for file work the owner asks for (unzip, read PDFs and images, build spreadsheets) inside the workspace; use MAMA actions to read sources, record work and deliver, and never bypass a required action with the shell.'
+      const prompt = ownerSystemPrompt(backend);
+      expect(prompt).toContain('for file work the owner asks for');
+      expect(prompt).toContain('inside the workspace');
+      expect(prompt).toContain('never bypass a required action with the shell');
+    }
+  );
+
+  it.each(['codex', 'claude'] as const)(
+    'uses the %s readers and subagent tools in replay',
+    async (backend) => {
+      const delta = new ReplaySourceCatalog([
+        {
+          connector: 'fixture',
+          sourceId: 'source',
+          observationRef: 'observation',
+          channelKey: 'fixture-channel',
+          sourceAtMs: 0,
+          rawRowId: 1,
+          contentPreview: 'Fixture source content',
+        },
+      ]).deltasForWindow('run', 0, 1)[0]!;
+      let accepted: Stimulus;
+      const intake = createStimulusIntake(
+        {
+          accept: (stimulus) => {
+            accepted = stimulus;
+            return { inputId: stimulus.stimulusId, state: 'accepted' };
+          },
+        },
+        'owner-test'
       );
+      intake.acceptSourceDelta(delta);
+      let replayText = '';
+      await createStimulusDelivery({ lessonResolver: async () => [] }).deliver(
+        accepted! as MailboxRow,
+        {
+          isNewThread: () => false,
+          run: async (content: ContentBlock[]) => {
+            replayText = content.map((block) => block.text ?? '').join('\n');
+            return {} as never;
+          },
+        } as never
+      );
+      expect(replayText).toContain('window_end_instructions:');
+      const prompt = `${ownerSystemPrompt(backend)}\n${replayText}`;
+      if (backend === 'claude') {
+        expect(/spawn_agent|wait_agent|\bCodex\b/.test(prompt)).toBe(false);
+        expect(prompt).toContain('Spawn with the Agent tool');
+        expect(prompt).toContain('images and PDFs with the Read tool');
+        expect(prompt).toContain('Bash/python3');
+        expect(prompt).not.toContain('read that path with the shell');
+      } else {
+        expect(prompt).toContain('direct spawn_agent tool call');
+        expect(prompt).toContain('wait_agent');
+        expect(prompt).toContain('PDFs and spreadsheets with python3');
+        expect(prompt).toContain('read that path with the shell');
+      }
+
+      const surface = createActionSurface({
+        adapter: {} as DatabaseInstance,
+        knowledge: {} as Knowledge,
+        ownerPrincipalId: 'owner-test',
+        agentId: 'agent-test',
+      });
+      const response = await handleRequest(
+        { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+        { client: { describe: async () => surface.catalog.list() } as Client }
+      );
+      const tools = (response!.result as { tools: Array<{ name: string }> }).tools;
+      // Claude CLI prefixes MCP names and replaces non-alphanumeric punctuation with underscores.
+      const exposedNames = tools.map(({ name }) =>
+        backend === 'claude' ? `mcp__mama__${name.replace(/[^a-zA-Z0-9_-]/g, '_')}` : name
+      );
+      const mentioned = [
+        ...prompt.matchAll(
+          /\bmcp__mama__[\w-]+|\b(?:memory|work|graph|source|deliver|report|manage)(?:[.:][\w-]+)+/g
+        ),
+      ].map(([name]) => name);
+      expect(mentioned.length).toBeGreaterThan(15);
+      expect([...new Set(mentioned)].filter((name) => !exposedNames.includes(name))).toEqual([]);
+      expect(prompt).toContain('Membership and scope administration');
+      expect(prompt).toContain('requires an explicit interactive owner request');
     }
   );
 
