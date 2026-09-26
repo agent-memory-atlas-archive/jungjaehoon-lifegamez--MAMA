@@ -568,7 +568,7 @@ export class NodeSQLiteAdapter implements DatabaseInstance {
     limit = 5,
     topicPrefix?: string,
     excludeStatuses?: readonly string[],
-    kind?: string
+    kind?: string | [string, ...string[]]
   ): VectorSearchResult[] | null {
     if (!this.isConnected()) {
       throw new Error('Database not connected');
@@ -594,7 +594,13 @@ export class NodeSQLiteAdapter implements DatabaseInstance {
 
       // Pre-filter by memory kind so unrelated records cannot consume the top-K
       // candidate slots before the recall layer applies its requested kind.
-      if (kind !== undefined && this.kindCache.get(rowid) !== kind) continue;
+      if (
+        kind !== undefined &&
+        (Array.isArray(kind)
+          ? !kind.some((value) => value === this.kindCache.get(rowid))
+          : this.kindCache.get(rowid) !== kind)
+      )
+        continue;
 
       // Pre-filter by effective status so superseded history does not occupy
       // top-K slots (the api-layer post-filter remains the authority)

@@ -736,3 +736,12 @@ The implementation writes raw/index data during import only. Replay is the owner
   split into three answers). Re-check this on every CLI bump: the symptom is files made, nothing delivered.
   Not done: the now-unreachable background/autonomous-turn code in persistent-cli-process (39 refs) is
   left for a separate deletion with tests because the driver is exported under ./runtime/\*.
+- 2026-09-26: Learn — recall kind accepts a scalar or non-empty tuple; vector, FTS5, lexical and graph re-checks include each requested kind. Owner recall requests lesson/preference/constraint; no new fallback or guard.
+  Evidence: core recall/ranking/graph tests 11 passed; owner resolver unit 1 passed (each new regression failed before its fix); both package typechecks, changed-file lint and diff check passed.
+  FTS5 source assertions prevent lexical fallback from masking a failed filter; scalar-kind regressions pass. SQL in suggestInAdapter/listDecisionsInAdapter is outside recall's call path and unchanged.
+  Still unverified: live owner behavior after restart. Existing owner-runtime and stimulus-delivery socket tests fail with listen EPERM in this sandbox; no service restart or commit.
+  MAMA MCP API-contract save was attempted but blocked: tool requires approval and approval policy is never.
+- 2026-09-26 20:05 KST: supervisor check of the kind-array recall outside the sandbox: core recall tests
+  11/11, standalone runtime 72/72, both typechecks clean. Live-DB probe with the owner resolver's kinds:
+  the work-assignment rule, the hourly delta rule and the deadline-reminder rule (all saved as preference,
+  never injected before) now rank in the top 3 for questions on their subject.

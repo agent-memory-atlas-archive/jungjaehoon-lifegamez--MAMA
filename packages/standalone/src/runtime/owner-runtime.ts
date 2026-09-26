@@ -247,7 +247,7 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
         ),
       lessonResolver: async (query) => {
         const bundle = await recallMemory(database.adapter, query, {
-          kind: 'lesson',
+          kind: ['lesson', 'preference', 'constraint'],
           scopes: [...options.scopes],
           limit: 3,
           includeRelated: false,

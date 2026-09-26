@@ -976,6 +976,11 @@ export async function recallMemory(
 ): Promise<RecallBundle> {
   const bundle = createEmptyRecallBundle(query);
   const searchOptions = normalizeSearchQualityOptions(options);
+  const matchesKind = (kind: string | undefined): boolean =>
+    options.kind === undefined ||
+    (Array.isArray(options.kind)
+      ? options.kind.some((value) => value === kind)
+      : kind === options.kind);
   const diagnostics: RecallSearchDiagnostics = {
     candidate_counts: {
       vector: 0,
@@ -1207,7 +1212,7 @@ export async function recallMemory(
           if (searchOptions.topicPrefix && !record.topic.startsWith(searchOptions.topicPrefix))
             continue;
 
-          if (options.kind !== undefined && record.kind !== options.kind) continue;
+          if (!matchesKind(record.kind)) continue;
 
           // Scope filtering
           if (options.scopes && options.scopes.length > 0) {
@@ -1262,7 +1267,7 @@ export async function recallMemory(
       }
 
       if (options.kind !== undefined) {
-        lexicalRecords = lexicalRecords.filter((r) => r.kind === options.kind);
+        lexicalRecords = lexicalRecords.filter((r) => matchesKind(r.kind));
       }
 
       lexicalCandidates = buildLexicalCandidates(lexicalRecords, query);
@@ -1545,17 +1550,14 @@ export async function recallMemory(
             .prepare(`SELECT kind, status FROM decisions WHERE id = ?`)
             .get(e.id) as { kind?: string; status?: string } | undefined;
           const status = row?.status || '';
-          return (
-            (options.kind === undefined || row?.kind === options.kind) &&
-            (!status || !EXCLUDED_STATUSES.has(status))
-          );
+          return matchesKind(row?.kind) && (!status || !EXCLUDED_STATUSES.has(status));
         });
       } else if (options.kind !== undefined) {
         expandedOnly = expandedOnly.filter((e) => {
           const row = adapter.prepare(`SELECT kind FROM decisions WHERE id = ?`).get(e.id) as
             | { kind?: string }
             | undefined;
-          return row?.kind === options.kind;
+          return matchesKind(row?.kind);
         });
       }
       if (options.scopes && options.scopes.length > 0) {

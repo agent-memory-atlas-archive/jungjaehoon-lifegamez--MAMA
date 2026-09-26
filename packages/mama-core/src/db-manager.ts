@@ -72,7 +72,7 @@ export interface DatabaseInstance extends DatabaseAdapter {
     limit: number,
     topicPrefix?: string,
     excludeStatuses?: readonly string[],
-    kind?: string
+    kind?: string | [string, ...string[]]
   ) => Promise<VectorSearchResult[] | null> | VectorSearchResult[] | null;
   reloadVectorCache?: () => void;
   refreshDecisionStatusCache?: (rowid: number) => void;

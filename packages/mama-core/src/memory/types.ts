@@ -33,6 +33,7 @@ export type MemoryScopeKind = string;
  */
 export const MEMORY_KINDS = ['decision', 'preference', 'constraint', 'lesson', 'fact'] as const;
 export type MemoryKind = (typeof MEMORY_KINDS)[number];
+export type MemoryKindFilter = MemoryKind | [MemoryKind, ...MemoryKind[]];
 
 export const MEMORY_STATUSES = ['active', 'superseded', 'contradicted', 'stale'] as const;
 export type MemoryStatus = (typeof MEMORY_STATUSES)[number];
@@ -111,7 +112,7 @@ export interface MemoryRecord {
 }
 
 export type RecallMemoryOptions = SearchQualityOptions & {
-  kind?: MemoryKind;
+  kind?: MemoryKindFilter;
   scopes?: MemoryScopeRef[];
   includeProfile?: boolean;
   includeHistory?: boolean;

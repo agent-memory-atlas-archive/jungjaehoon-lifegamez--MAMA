@@ -8,7 +8,7 @@
  */
 
 import type { DatabaseInstance, DecisionRecord } from '../db-manager.js';
-import type { MemoryKind } from '../memory/types.js';
+import type { MemoryKindFilter } from '../memory/types.js';
 
 /**
  * Brute-force cosine similarity search over stored embeddings.
@@ -31,7 +31,7 @@ export async function vectorSearch(
   threshold = 0.7,
   topicPrefix?: string,
   excludeStatuses?: readonly string[],
-  kind?: MemoryKind
+  kind?: MemoryKindFilter
 ): Promise<DecisionRecord[]> {
   const results = await adapter.vectorSearch(
     queryEmbedding,
@@ -86,7 +86,7 @@ export async function fts5Search(
   adapter: DatabaseInstance,
   query: string,
   limit = 10,
-  kind?: MemoryKind
+  kind?: MemoryKindFilter
 ): Promise<{ id: string; rank: number }[]> {
   // An absent FTS table is a real answer - no rows. A failing adapter is not,
   // so this lookup is left unguarded and its errors reach the caller.
@@ -96,7 +96,11 @@ export async function fts5Search(
   if (!tableCheck) return [];
 
   // Query execution - let errors propagate to the caller
-  const kindClause = kind === undefined ? '' : 'AND d.kind = ?';
+  const kindClause = Array.isArray(kind)
+    ? `AND d.kind IN (${kind.map(() => '?').join(', ')})`
+    : kind === undefined
+      ? ''
+      : 'AND d.kind = ?';
   const stmt = adapter.prepare(`
     SELECT d.id, rank
     FROM decisions_fts
@@ -106,7 +110,13 @@ export async function fts5Search(
     ORDER BY rank
     LIMIT ?
   `);
-  return (kind === undefined ? stmt.all(query, limit) : stmt.all(query, kind, limit)) as {
+  return (
+    Array.isArray(kind)
+      ? stmt.all(query, ...kind, limit)
+      : kind === undefined
+        ? stmt.all(query, limit)
+        : stmt.all(query, kind, limit)
+  ) as {
     id: string;
     rank: number;
   }[];
