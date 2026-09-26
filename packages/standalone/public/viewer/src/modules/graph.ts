@@ -66,7 +66,6 @@ type GraphInput = {
 
 const logger = new DebugLogger('Graph');
 const INITIAL_GRAPH_LIMIT = 2000;
-const PHYSICS_NODE_THRESHOLD = 1200;
 
 /**
  * Graph Module Class
@@ -213,14 +212,15 @@ export class GraphModule {
         width: 2,
       },
       physics: {
-        enabled: data.nodes.length <= PHYSICS_NODE_THRESHOLD,
+        // The initial layout always runs; the stabilized handler turns physics off afterwards.
+        enabled: true,
         barnesHut: {
           gravitationalConstant: -8000,
           centralGravity: 0.3,
           springLength: 150,
           springConstant: 0.04,
           damping: 0.09,
-          avoidOverlap: 0.5,
+          avoidOverlap: 1,
         },
         stabilization: {
           enabled: true,
@@ -285,6 +285,11 @@ export class GraphModule {
       } catch {
         /* ignore */
       }
+    });
+
+    // A large graph may never reach vis-network's 'stabilized'; stop when the bounded iterations end.
+    this.network.on('stabilizationIterationsDone', () => {
+      this.network?.setOptions?.({ physics: { enabled: false } });
     });
 
     this.network.on('stabilized', () => {
