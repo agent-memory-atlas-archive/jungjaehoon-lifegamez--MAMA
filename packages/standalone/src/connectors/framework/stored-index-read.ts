@@ -10,6 +10,39 @@ export function listStoredConnectorNames(adapter: Reader): string[] {
   return rows.map((row) => row.source_connector);
 }
 
+export interface StoredSourceFamily {
+  source: string;
+  family: string | null;
+  count: number;
+}
+
+/** Owner inventory: aggregate only granted connectors, never return room names. */
+export function storedSourceFamilies(
+  adapter: Reader,
+  connectors: readonly string[]
+): StoredSourceFamily[] {
+  return adapter
+    .prepare(
+      `WITH families AS (
+         SELECT source_connector AS source,
+                CASE WHEN substr(channel, 1, length(source_connector) + 1) = source_connector || ':'
+                     THEN substr(channel, length(source_connector) + 2)
+                     ELSE NULL END AS family_path
+         FROM connector_event_index
+         WHERE source_connector IN (${connectors.map(() => '?').join(', ')})
+       )
+       SELECT source,
+              CASE WHEN instr(family_path, ':') > 0
+                   THEN substr(family_path, 1, instr(family_path, ':') - 1)
+                   ELSE family_path END AS family,
+              COUNT(*) AS count
+       FROM families
+       GROUP BY source, family
+       ORDER BY source, family`
+    )
+    .all(...connectors) as StoredSourceFamily[];
+}
+
 export function hasStoredConnector(adapter: Reader, source: string): boolean {
   return Boolean(
     adapter

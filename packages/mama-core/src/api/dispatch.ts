@@ -139,13 +139,13 @@ export function createDispatcher(
       // reading allowanceFromAccess gives the memory window below.
       const grantedConnectors = context.access.connectors ?? [];
       if (!grantedConnectors.includes(named)) {
-        // The connector NAME came from the call or the contract; the rest of
-        // the grant is not echoed back.
+        // Return the caller's own connector grant to that caller, so it can correct
+        // the source name without exposing another principal's grant.
         return fail(
           call,
           'denied',
           'connector_out_of_scope',
-          `principal ${context.access.principalId} may not read ${named}`
+          `principal ${context.access.principalId} may not read ${named}; readable connectors: ${[...grantedConnectors].sort().join(', ') || 'none'}`
         );
       }
     }

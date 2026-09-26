@@ -37,6 +37,70 @@ const baseAccess = {
   actions: ['test.context'],
 };
 
+describe('connector refusal explains only the calling principal grant', () => {
+  const dispatch = createDispatcher(
+    createCatalog(
+      ['source.search', 'source.read'].map((name) => ({
+        contract: {
+          name,
+          summary: 'Read a synthetic source.',
+          readsConnector: { fromInput: 'source' },
+          inputSchema: {
+            type: 'object' as const,
+            properties: { source: { type: 'string' as const } },
+          },
+        },
+        exec: () => {
+          throw new Error('An ungranted source must not execute');
+        },
+      }))
+    )
+  );
+
+  it.each(['source.search', 'source.read'])(
+    '%s returns the caller grant, not another principal grant',
+    async (action) => {
+      for (const [principalId, connectors, readable] of [
+        ['owner', ['fixture-b', 'fixture-a'], 'fixture-a, fixture-b'],
+        ['member', ['fixture-c'], 'fixture-c'],
+      ] as const) {
+        const result = await dispatch(
+          { action, input: { source: 'fixture-family' } },
+          {
+            access: { ...baseAccess, principalId, actions: [action], connectors },
+            readAllowance: { connectors: ['fixture-unrelated'], tenantId: 'fixture-tenant' },
+          }
+        );
+        expect(result).toMatchObject({
+          status: 'failed',
+          error: {
+            kind: 'denied',
+            code: 'connector_out_of_scope',
+            message: `principal ${principalId} may not read fixture-family; readable connectors: ${readable}`,
+          },
+        });
+      }
+    }
+  );
+
+  it.each([{ connectors: undefined }, { connectors: [] }])(
+    'states none for an absent or empty connector grant ($connectors)',
+    async ({ connectors }) => {
+      const result = await dispatch(
+        { action: 'source.read', input: { source: 'fixture-family' } },
+        { access: { ...baseAccess, actions: ['source.read'], connectors } }
+      );
+      expect(result).toMatchObject({
+        status: 'failed',
+        error: {
+          code: 'connector_out_of_scope',
+          message: 'principal p may not read fixture-family; readable connectors: none',
+        },
+      });
+    }
+  );
+});
+
 describe('dispatch composes a read window from the principal grant', () => {
   it('carries the grant connectors, channels, projects and tenant', async () => {
     const { dispatch, read } = catalogSeeingItsContext();

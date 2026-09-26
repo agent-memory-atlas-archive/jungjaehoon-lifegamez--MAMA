@@ -764,3 +764,13 @@ The implementation writes raw/index data during import only. Replay is the owner
   Live-DB replay of the 60 distinct zero-hit agent searches of the last 3 days: 24 now return hits; the
   rest are queries in another script than the source (Korean names for Japanese chats) or absent content.
   The asset number finds the uploader's files at once (7 hits, 2 ms).
+- 2026-09-26: Answer/Recognise — owner session startup now supplies one readable-source line from the stored index filtered by the actual owner connector grant; SQL aggregates channel families/counts without room names. Core connector refusals return only the caller's own connector grant; no aliases or fallback reads.
+  Evidence: new regressions failed before the fix; core dispatch 11/11 and standalone source/prompt/native-session/raw-query tests 44/44 pass. Both backends exercise real DB -> owner grant -> prompt assembly with synthetic families, bare rows, hidden connectors and empty grants. Core build, both typechecks, changed-file lint/format and diff check pass.
+  Full core suite under temporary HOME: 805 passed, 44 failed in experience-read-over-socket, intake-is-the-runtimes, ipc-actions, native-input-delivery, principal-grants, replay-session-facts and runtime-lifecycle; socket listen EPERM blocks all seven files, and ipc-actions also fails cleanup after server creation fails.
+  Full standalone suite under temporary HOME: 473 passed, 23 failed in viewer-archive-routes, viewer-records, viewer-server, daemon-boot, w1-owner-q1, action-mcp-server, owner-runtime and stimulus-delivery; all eight files are blocked by socket/HTTP listen EPERM.
+  Still unverified: live owner answers after deployment; no daemon restart or commit. MAMA MCP decision save was blocked because the tool requires approval while approval policy is never.
+- 2026-09-26 21:10 KST: supervisor check outside the sandbox: core dispatch 11/11, standalone runtime,
+  source actions and connectors 148/148, typecheck clean. The live-DB source line reads: chatwork (156),
+  kagemusha (4089; feedback 75, kakao 3771, line 183, telegram 60), slack (190), trello (1290). Cause it
+  answers: the assignee re-check subagent asked for source "kakao", got "may not read kakao" and gave up on
+  the 66% of stored rows that are kakao chats under kagemusha.

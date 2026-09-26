@@ -27,6 +27,7 @@ import { createActionSurface, type ActionSurface } from './action-surface.js';
 import { createNativeSession, type NativeSession } from './native-session.js';
 import type { ActionDispatcher } from '@jungjaehoon/mama-core/api/dispatch';
 import { ownerSystemPrompt } from './owner-system-prompt.js';
+import { storedSourceFamilies } from '../connectors/framework/stored-index-read.js';
 import { createOwnerPolicyProvider, type OwnerPolicyProvider } from './owner-policy.js';
 import { readRecentOwnerExchanges } from './recent-owner-exchanges.js';
 import {
@@ -211,7 +212,11 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       },
     });
     const access: JudgmentAccess = surface.ownerAccess;
-    const standingText = ownerSystemPrompt(options.backend);
+    const standingText = ownerSystemPrompt(
+      options.backend,
+      null,
+      storedSourceFamilies(database.adapter, access.connectors!)
+    );
     const ownerPolicyProvider =
       options.ownerPolicyProvider ?? createOwnerPolicyProvider(options.runtimeRoot);
     if (nativeSession === undefined) {

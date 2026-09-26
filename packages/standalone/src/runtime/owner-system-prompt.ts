@@ -1,7 +1,8 @@
 import { TELEGRAM_FORMAT_GUIDE } from '../gateways/telegram-format.js';
+import type { StoredSourceFamily } from '../connectors/framework/stored-index-read.js';
 
 /**
- * Standing instructions for the one owner session.
+ * Standing instructions and host-provided source inventory for the one owner session.
  *
  * This is policy the mailbox, source index, and action contracts cannot supply:
  * how the owner agent relates a new observation to work it already knows.
@@ -45,14 +46,38 @@ function actionName(backend: OwnerRuntimeBackend, action: string): string {
   return backend === 'claude' ? `mcp__mama__${action.replace(/[.:]/g, '_')}` : action;
 }
 
+function readableSourcesLine(families: readonly StoredSourceFamily[]): string {
+  const sources = new Map<string, StoredSourceFamily[]>();
+  for (const row of families) {
+    const rows = sources.get(row.source) ?? [];
+    rows.push(row);
+    sources.set(row.source, rows);
+  }
+  if (sources.size === 0) return '- Readable sources: none stored for this grant.';
+  const inventory = [...sources].map(([source, rows]) => {
+    const total = rows.reduce((sum, row) => sum + row.count, 0);
+    const named = rows.filter((row) => row.family !== null);
+    if (named.length === 0) return `${source} (${total})`;
+    const counts = named.map((row) => `${row.family} ${row.count}`);
+    const bare = rows.find((row) => row.family === null);
+    if (bare) counts.push(`bare ${bare.count}`);
+    return `${source} (${total}; ${counts.join(', ')})`;
+  });
+  return `- Readable sources: ${inventory.join(', ')}; chats of a family are channels "<source>:<family>:<room>".`;
+}
+
 /** Shared owner policy with the backend's action names and native file/subagent tools. */
-function ownerStandingPrompt(backend: OwnerRuntimeBackend): string {
+function ownerStandingPrompt(
+  backend: OwnerRuntimeBackend,
+  readableSources: readonly StoredSourceFamily[]
+): string {
   const action = (name: string): string => actionName(backend, name);
   return [
     '## Owner runtime',
     "- You are the persistent agent for the owner. Incoming messages, source deltas, and native events are evidence; decide what they mean and how they relate to the owner's existing work.",
     `- For a question about an item, person, or task, read the work ledger first with ${action('memory.search')} and ${action('work.list')} using view=items; follow its read-version cursor page by page, then use view=detail for the named commitment when history, evidence basis or long text is needed. Answers, reports and notifications a person reads carry no commitment, observation, judgment or channel ids; answer in sentences; the reads are the evidence and stay in the tool traces. Read preserved source content only for what the ledger does not establish. A memory found by ${action('memory.search')} is traced to its cited source messages with ${action('memory.read:provenance')}.`,
     `- Use progressive source access: ${action('source.search')} is bounded navigation, and ${action('source.read')} is required for the cited original content. Do not treat a preview or index row as the account of what happened.`,
+    readableSourcesLine(readableSources),
     `- A message's attachments are listed with ${action('source.attachment.list')} and fetched with ${action('source.attachment.download')} into the workspace; a file is sent to the owner with ${action('deliver.telegram.file')}.`,
     `- Every file the owner sends on Telegram arrives with a local path under workspace files/telegram; ${backend === 'claude' ? 'read that path with the file reader for its type' : 'read that path with the shell'}. An attachment error means the download failed; tell the owner the error.`,
     backend === 'claude'
@@ -86,9 +111,10 @@ function ownerStandingPrompt(backend: OwnerRuntimeBackend): string {
 
 export function ownerSystemPrompt(
   backend: OwnerRuntimeBackend,
-  ownerPolicy: string | null = null
+  ownerPolicy: string | null = null,
+  readableSources: readonly StoredSourceFamily[] = []
 ): string {
-  const standing = ownerStandingPrompt(backend);
+  const standing = ownerStandingPrompt(backend, readableSources);
   return ownerPolicy === null || ownerPolicy === ''
     ? standing
     : `${standing}\n\n---\n\n${ownerPolicy}`;

@@ -162,14 +162,22 @@ describe('minimal source actions', () => {
     );
     expect(read).toMatchObject({ status: 'completed', data: { content: 'source-content' } });
 
-    const denied = await dispatch(
-      { action: 'source.search', input: { source: 'other-connector', query: 'term' } },
-      { access }
-    );
-    expect(denied).toMatchObject({
-      status: 'failed',
-      error: { kind: 'denied', code: 'connector_out_of_scope' },
-    });
+    for (const action of ['source.search', 'source.read']) {
+      const denied = await dispatch(
+        { action, input: { source: 'other-connector', observationRef: 'observation-test' } },
+        { access }
+      );
+      expect(denied).toMatchObject({
+        status: 'failed',
+        error: {
+          kind: 'denied',
+          code: 'connector_out_of_scope',
+          message:
+            'principal owner-test may not read other-connector; readable connectors: connector-test',
+        },
+      });
+    }
     expect(stored.search).toHaveBeenCalledTimes(2);
+    expect(stored.read).toHaveBeenCalledTimes(1);
   });
 });
