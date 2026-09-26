@@ -74,7 +74,7 @@ embedding startup path — embeddings are the runtime's concern.
 ## DEPENDENCIES
 
 **Runtime boundary:** `runtime-client.js` resolves `MAMA_HOME` for
-`runtime.sock`, `runtime/client-journal.jsonl`, and `session-credential`, then binds
+`runtime.sock`, `runtime/client-journal.jsonl`, and `runtime/session-credential`, then binds
 `createClient` from `@jungjaehoon/mama-core`. The runtime owns the store and the
 embedding model; a missing credential means calls are denied — that is the honest
 answer when no session exists.

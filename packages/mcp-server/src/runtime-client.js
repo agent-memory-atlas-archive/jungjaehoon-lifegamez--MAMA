@@ -33,7 +33,7 @@ function runtimeClientPaths(home = mamaHome()) {
   return {
     socketPath: join(home, 'runtime.sock'),
     journalPath: join(home, 'runtime', 'client-journal.jsonl'),
-    credentialPath: join(home, 'session-credential'),
+    credentialPath: join(home, 'runtime', 'session-credential'),
   };
 }
 
@@ -69,7 +69,7 @@ async function callAction(client, action, input) {
   const failure = result.error || {};
   const hint =
     failure.code === 'ipc_unavailable'
-      ? ' — the MAMA runtime is not serving this socket; start it with `mama start`'
+      ? ' — the MAMA runtime is not serving this socket; start it with `mama daemon`'
       : '';
   const error = new Error(
     `[${failure.code || result.status}] ${failure.message || 'action call failed'}${hint}`
