@@ -91,6 +91,8 @@ export interface NativeTurnRequest extends NativePromptRequest {
   lanePriority?: number;
   /** Best-effort notification that an earlier turn already occupies this session lane. */
   onQueued?: () => void;
+  /** Trace identity as soon as the run exists, including turns that never return a result. */
+  onModelRunStarted?: (modelRunId: string) => void;
   cliSessionId?: string | null;
   procedureRefs?: unknown;
   streamCallbacks?: StreamCallbacks;
@@ -1217,6 +1219,7 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
     try {
       if (!callerOwnsModelRun && runnerReportsRuns && host.modelRun) {
         ownedModelRunId = await host.modelRun.begin(request, resolvedCliSessionId);
+        request?.onModelRunStarted?.(ownedModelRunId);
         if (ownedModelRunId) {
           toolExecutionContext = withRunLocals(
             host.executionContext({
@@ -1226,6 +1229,7 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
           );
         }
       }
+      if (callerOwnsModelRun) request?.onModelRunStarted?.(request.modelRunId!);
 
       let nativeObserver: NativeEffectObserver | undefined;
       try {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -42,6 +42,8 @@ afterEach(() => {
   seams.api.sendDocument.mockClear();
   seams.api.editMessageText.mockClear();
   seams.api.deleteMessage.mockClear();
+  if (vi.isMockFunction(console.log)) console.log.mockRestore();
+  vi.unstubAllEnvs();
   for (const root of temporaryRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -72,6 +74,7 @@ async function gatewayFor(
 ): Promise<TelegramGateway> {
   const root = mkdtempSync(join(tmpdir(), 'mama-telegram-fixture-'));
   temporaryRoots.push(root);
+  vi.stubEnv('HOME', root);
   const gateway = new TelegramGateway({
     token: 'fixture-token',
     intake,
@@ -89,6 +92,72 @@ async function gatewayFor(
 }
 
 describe('TelegramGateway', () => {
+  it('persists outbound keys and every chunk receipt, logs once, and suppresses sends after restart', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'outbound-receipts-'));
+    temporaryRoots.push(root);
+    const ledgerPath = join(root, 'ledger.json');
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const gateway = await gatewayFor(intakeFor([]), ledgerPath);
+    seams.api.sendMessage
+      .mockResolvedValueOnce({ message_id: 201 })
+      .mockResolvedValueOnce({ message_id: 202 });
+    const body = 'private-body '.repeat(400);
+    await gateway.sendToOwner(body, 'source_delta:fixture');
+    const saved = JSON.parse(readFileSync(ledgerPath, 'utf8'));
+    expect(saved.version).toBe(3);
+    expect(saved.entries).toEqual([
+      expect.objectContaining({
+        key: expect.stringMatching(/^outbound:[a-f0-9]{64}$/),
+        state: 'delivered',
+        idempotencyKey: 'source_delta:fixture',
+        messageIds: [201, 202],
+      }),
+    ]);
+    const reopened = new TelegramMessageLedger(ledgerPath);
+    expect(reopened.get(saved.entries[0].key)).toMatchObject({ messageIds: [201, 202] });
+    await gateway.stop();
+    const restarted = await gatewayFor(intakeFor([]), ledgerPath);
+    await restarted.sendToOwner(body, 'source_delta:fixture');
+    expect(seams.api.sendMessage).toHaveBeenCalledTimes(2);
+    const lines = log.mock.calls
+      .map(([line]) => String(line))
+      .filter((line) => line.startsWith('telegram outbound delivered'));
+    expect(lines).toEqual([
+      'telegram outbound delivered idempotency_key="source_delta:fixture" message_ids=[201,202]',
+    ]);
+    expect(lines.join('')).not.toContain('private-body');
+    await restarted.stop();
+  });
+
+  it('keeps confirmed chunk ids when a later send fails and the gateway reopens', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'outbound-partial-'));
+    temporaryRoots.push(root);
+    const ledgerPath = join(root, 'ledger.json');
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const gateway = await gatewayFor(intakeFor([]), ledgerPath);
+    seams.api.sendMessage
+      .mockResolvedValueOnce({ message_id: 301 })
+      .mockRejectedValueOnce(new Error('send failed'));
+    await expect(gateway.sendToOwner('x'.repeat(5000), 'scheduled:fixture')).rejects.toThrow(
+      'send failed'
+    );
+    const entry = JSON.parse(readFileSync(ledgerPath, 'utf8')).entries[0];
+    expect(new TelegramMessageLedger(ledgerPath).get(entry.key)).toMatchObject({
+      state: 'ready',
+      idempotencyKey: 'scheduled:fixture',
+      messageIds: [301],
+      nextChunkIndex: 1,
+      deliveryUncertain: true,
+    });
+    expect(
+      log.mock.calls.filter(([line]) => String(line).startsWith('telegram outbound delivered'))
+    ).toEqual([]);
+    await gateway.stop();
+    const restarted = await gatewayFor(intakeFor([]), ledgerPath);
+    expect(seams.api.sendMessage).toHaveBeenCalledTimes(2);
+    await restarted.stop();
+  });
+
   it('rejects messages outside the configured owner allowlist', async () => {
     const received: OwnerMessageInput[] = [];
     const gateway = await gatewayFor(intakeFor(received));

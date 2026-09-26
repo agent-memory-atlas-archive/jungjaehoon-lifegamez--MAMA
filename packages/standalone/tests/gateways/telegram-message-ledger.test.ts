@@ -1,11 +1,43 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { TelegramMessageLedger } from '../../src/gateways/telegram-message-ledger.js';
 
 describe('TelegramMessageLedger', () => {
+  it('loads pre-trace outbound receipts without inventing ids or allowing a duplicate', () => {
+    const root = mkdtempSync(join(tmpdir(), 'legacy-ledger-'));
+    try {
+      const path = join(root, 'ledger.json');
+      const binding = { deliveryTarget: 'telegram:7', payloadIdentity: 'a'.repeat(64) };
+      writeFileSync(
+        path,
+        JSON.stringify({
+          version: 3,
+          entries: [
+            {
+              key: 'outbound:legacy',
+              state: 'delivered',
+              updatedAt: Date.now(),
+              ownerId: 'previous-process',
+              ...binding,
+            },
+          ],
+        })
+      );
+      const ledger = new TelegramMessageLedger(path);
+      expect(ledger.claim('outbound:legacy', binding)).toMatchObject({
+        claimed: false,
+        entry: { state: 'delivered' },
+      });
+      expect(ledger.get('outbound:legacy')?.idempotencyKey).toBeUndefined();
+      expect(ledger.get('outbound:legacy')?.messageIds).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('persists completion and suppresses a repeated delivery after reopen', () => {
     const root = mkdtempSync(join(tmpdir(), 'mama-telegram-ledger-'));
     try {

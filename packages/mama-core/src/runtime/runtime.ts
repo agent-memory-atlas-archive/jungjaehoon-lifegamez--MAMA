@@ -106,6 +106,7 @@ export interface RuntimePrincipal {
  */
 export interface NativeInvocationOptions {
   nativeInputId?: string;
+  onModelRunStarted?: (modelRunId: string) => void;
   prepareSessionContent?: (
     session: import('./drivers/types.js').NativeSessionState
   ) => Promise<ContentBlock[]>;

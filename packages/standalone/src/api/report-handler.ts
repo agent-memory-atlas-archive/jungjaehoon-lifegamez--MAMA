@@ -11,12 +11,17 @@ export interface ReportSlot {
   updatedAt: number;
   /** Task-ledger basis of authored analysis, never inferred from publish time. */
   basisRevision?: string | null;
+  /** The action that last wrote this slot; absent on snapshots predating trace attribution. */
+  operationId?: string | null;
+  modelRunId?: string | null;
   currentBasisRevision?: string;
   freshness?: 'current' | 'stale' | 'unknown';
 }
 
 export interface ReportUpdateOptions {
   basisRevision?: string | null;
+  operationId?: string | null;
+  modelRunId?: string | null;
 }
 
 export interface ReportStore {
@@ -79,6 +84,10 @@ export function createReportStore(
       priority,
       updatedAt: Date.now(),
       ...(updateOptions?.basisRevision !== undefined ? { basisRevision: basis } : {}),
+      ...(updateOptions?.operationId === undefined
+        ? {}
+        : { operationId: updateOptions.operationId }),
+      ...(updateOptions?.modelRunId === undefined ? {} : { modelRunId: updateOptions.modelRunId }),
     };
   };
 

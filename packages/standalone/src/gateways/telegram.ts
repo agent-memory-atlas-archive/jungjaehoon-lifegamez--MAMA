@@ -50,6 +50,7 @@ export interface TelegramGatewayOptions {
   messageLedgerPath?: string;
   filesRoot?: string;
   workspaceDir?: string;
+  log?: (line: string) => void;
 }
 
 function entityOptions<T>(entities: TelegramFormattedText['entities']): T {
@@ -132,6 +133,7 @@ export class TelegramGateway extends BaseGateway {
   private readonly config: TelegramGatewayConfig;
   private readonly filesRoot?: string;
   private readonly workspaceDir?: string;
+  private readonly log: (line: string) => void;
   private readonly messageLedger: TelegramMessageLedger;
   private readonly chatTails = new Map<string, Promise<void>>();
   private readonly activePresenters = new Map<string, TelegramResponsePresenter>();
@@ -161,6 +163,7 @@ export class TelegramGateway extends BaseGateway {
     };
     this.filesRoot = options.filesRoot;
     this.workspaceDir = options.workspaceDir;
+    this.log = options.log ?? ((line) => console.log(line));
     const ledgerPath = options.messageLedgerPath ?? process.env.MAMA_TELEGRAM_MESSAGE_LEDGER_PATH;
     if (!ledgerPath?.trim()) {
       throw new Error('Telegram message ledger path is required');
@@ -494,6 +497,7 @@ export class TelegramGateway extends BaseGateway {
     const binding = {
       deliveryTarget: `telegram:${chatId}`,
       payloadIdentity: createHash('sha256').update(text).digest('hex'),
+      idempotencyKey,
     };
     const existing = this.messageLedger.claim(key, binding).entry;
     if (existing.state === 'delivered') return;
@@ -501,10 +505,13 @@ export class TelegramGateway extends BaseGateway {
     if (existing.state !== 'ready') this.messageLedger.markReady(key, text, 'html-v1');
     for (let index = start; index < chunks.length; index += 1) {
       this.messageLedger.markDeliveryProgress(key, index, true);
-      await sendFormattedMessage(this.bot.api, Number(chatId), chunks[index]!);
-      this.messageLedger.markDeliveryProgress(key, index + 1, false);
+      const sent = await sendFormattedMessage(this.bot.api, Number(chatId), chunks[index]!);
+      this.messageLedger.markDeliveryProgress(key, index + 1, false, sent.message_id);
     }
     this.messageLedger.markDelivered(key);
+    this.log(
+      `telegram outbound delivered idempotency_key=${JSON.stringify(idempotencyKey)} message_ids=${JSON.stringify(this.messageLedger.get(key)!.messageIds ?? [])}`
+    );
   }
 
   private async runInChatQueue<T>(

@@ -13,12 +13,16 @@ afterEach(() => {
   for (const pool of pools.splice(0)) pool.dispose();
 });
 
-function runnerWithPrompt(prompt: IModelRunner['prompt'], maxTurns = 30) {
+function runnerWithPrompt(
+  prompt: IModelRunner['prompt'],
+  maxTurns = 30,
+  modelRun?: NativeModelRunPort
+) {
   const pool = new SessionPool();
   pools.push(pool);
   const agent = {
     backendType: 'codex' as const,
-    reportsModelRuns: false,
+    reportsModelRuns: Boolean(modelRun),
     supportsNativeSubagents: false,
     prompt,
     stop: vi.fn(),
@@ -45,6 +49,7 @@ function runnerWithPrompt(prompt: IModelRunner['prompt'], maxTurns = 30) {
     executionContext: () => null,
     hostToolDefinitions: () => [tool],
     callTool: async (_name, input) => ({ success: true, data: input }),
+    modelRun,
   };
   return createNativeSessionRunner(host);
 }
@@ -60,6 +65,38 @@ function toolCall(index: number, input: Record<string, unknown>): HostToolCall {
 }
 
 describe('native host-tool loop signatures', () => {
+  it.each(['completed', 'failed', 'commit_failed'] as const)(
+    'exposes the created model run before a %s turn settles',
+    async (outcome) => {
+      const events: string[] = [];
+      const failure = new Error('model failed');
+      const runner = runnerWithPrompt(
+        async () => {
+          events.push('prompt');
+          if (outcome === 'failed') throw failure;
+          return promptResult();
+        },
+        30,
+        {
+          begin: async () => 'run:fixture',
+          commit: async () => {
+            if (outcome === 'commit_failed') throw new Error('commit failed');
+          },
+          fail: async () => {},
+        }
+      );
+      const pending = runner.runTurn([{ type: 'text', text: 'fixture' }], {
+        onModelRunStarted: (id) => events.push(id),
+      });
+      if (outcome === 'failed') await expect(pending).rejects.toThrow('model failed');
+      else
+        await expect(pending).resolves.toMatchObject({
+          modelRunId: outcome === 'completed' ? 'run:fixture' : null,
+        });
+      expect(events).toEqual(['run:fixture', 'prompt']);
+    }
+  );
+
   it('allows more than fifty host calls when each input is different', async () => {
     const prompt = vi.fn(async (_content, _callbacks, options) => {
       const bridge = options?.hostToolBridge;

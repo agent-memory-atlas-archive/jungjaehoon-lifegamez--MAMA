@@ -134,8 +134,11 @@ export function reportActionRegistrations(ports: ReportPorts): ActionRegistratio
         if (!publisher) {
           throw reportFailure('publisher_unavailable', 'Report publisher not configured');
         }
-        const publication =
-          basisRevision === undefined ? publisher(slots) : publisher(slots, { basisRevision });
+        const publication = publisher(slots, {
+          ...(basisRevision === undefined ? {} : { basisRevision }),
+          operationId: context.operationId ?? null,
+          modelRunId: context.session?.modelRunId ?? null,
+        });
         // Backward compatibility: older injected publishers return void or the
         // exact changed slot array. Production distinguishes slots accepted as
         // present from slots whose HTML actually changed.

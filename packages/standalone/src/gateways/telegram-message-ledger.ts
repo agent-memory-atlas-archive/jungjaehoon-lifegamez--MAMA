@@ -25,6 +25,9 @@ export interface TelegramMessageLedgerEntry {
   chunkFormat?: TelegramChunkFormat;
   deliveryTarget?: string;
   payloadIdentity?: string;
+  /** Readable producer identity and confirmed Telegram receipts; absent on older entries. */
+  idempotencyKey?: string;
+  messageIds?: number[];
   /** This inbound input shares the final reply owned by another input in the same chat. */
   sharedReplyKey?: string;
 }
@@ -32,6 +35,7 @@ export interface TelegramMessageLedgerEntry {
 export interface TelegramDeliveryBinding {
   deliveryTarget: string;
   payloadIdentity: string;
+  idempotencyKey?: string;
 }
 
 interface LedgerStateV3 {
@@ -117,6 +121,11 @@ export class TelegramMessageLedger {
       ) {
         throw new Error(`Telegram delivery binding mismatch for ${key}`);
       }
+      if (binding?.idempotencyKey !== undefined && existing.idempotencyKey === undefined) {
+        const entry = { ...existing, idempotencyKey: binding.idempotencyKey };
+        this.commit(() => this.entries.set(key, entry));
+        return { claimed: false, entry: { ...entry } };
+      }
       return { claimed: false, entry: { ...existing } };
     }
     if (binding && !isDeliveryBinding(binding)) {
@@ -158,7 +167,12 @@ export class TelegramMessageLedger {
     });
   }
 
-  markDeliveryProgress(key: string, nextChunkIndex: number, deliveryUncertain: boolean): void {
+  markDeliveryProgress(
+    key: string,
+    nextChunkIndex: number,
+    deliveryUncertain: boolean,
+    messageId?: number
+  ): void {
     if (!Number.isSafeInteger(nextChunkIndex) || nextChunkIndex < 0) {
       throw new Error('Telegram delivery progress must be a non-negative integer');
     }
@@ -171,6 +185,9 @@ export class TelegramMessageLedger {
         ...entry,
         nextChunkIndex,
         deliveryUncertain,
+        ...(messageId === undefined
+          ? {}
+          : { messageIds: [...(entry.messageIds ?? []), messageId] }),
         updatedAt: this.now(),
         ownerId: this.ownerId,
       });
@@ -188,6 +205,10 @@ export class TelegramMessageLedger {
         ownerId: this.ownerId,
         ...(existing?.deliveryTarget ? { deliveryTarget: existing.deliveryTarget } : {}),
         ...(existing?.payloadIdentity ? { payloadIdentity: existing.payloadIdentity } : {}),
+        ...(existing?.idempotencyKey === undefined
+          ? {}
+          : { idempotencyKey: existing.idempotencyKey }),
+        ...(existing?.messageIds === undefined ? {} : { messageIds: existing.messageIds }),
         ...(existing?.sharedReplyKey ? { sharedReplyKey: existing.sharedReplyKey } : {}),
       });
       this.enforceEntryLimit();
@@ -378,6 +399,10 @@ function isLedgerEntry(value: unknown): value is TelegramMessageLedgerEntry {
     (item.nextChunkIndex === undefined ||
       (Number.isSafeInteger(item.nextChunkIndex) && (item.nextChunkIndex as number) >= 0)) &&
     (item.deliveryUncertain === undefined || typeof item.deliveryUncertain === 'boolean') &&
+    (item.idempotencyKey === undefined || typeof item.idempotencyKey === 'string') &&
+    (item.messageIds === undefined ||
+      (Array.isArray(item.messageIds) &&
+        item.messageIds.every((id) => Number.isSafeInteger(id) && id > 0))) &&
     (item.sharedReplyKey === undefined ||
       (typeof item.sharedReplyKey === 'string' &&
         item.state === 'delivered' &&

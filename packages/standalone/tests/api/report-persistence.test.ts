@@ -4,11 +4,13 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createPersistentReportStore } from '../../src/api/report-persistence.js';
 import { createReportPublisher } from '../../src/api/report-handler.js';
+import { createCatalog, createDispatcher } from '@jungjaehoon/mama-core';
+import { reportActionRegistrations } from '../../src/api/report-actions.js';
 
 const flushDebounce = () => new Promise((resolve) => setTimeout(resolve, 350));
 
@@ -18,11 +20,76 @@ describe('createPersistentReportStore', () => {
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'report-persist-'));
+    vi.stubEnv('HOME', dir);
     filePath = join(dir, 'report-slots.json');
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('links each changed slot to its writing action and run while preserving old slots and no-ops', async () => {
+    const legacy = {
+      slotId: 'briefing',
+      html: '<p>legacy</p>',
+      priority: 2,
+      updatedAt: 123,
+      basisRevision: 'basis:old',
+    };
+    writeFileSync(filePath, JSON.stringify({ briefing: legacy }));
+    const store = createPersistentReportStore({ filePath });
+    expect(store.get('briefing')).toEqual(legacy);
+    const dispatch = createDispatcher(
+      createCatalog(
+        reportActionRegistrations({ publisher: createReportPublisher(store, new Set()) })
+      )
+    );
+    const access = {
+      principalId: 'owner',
+      agentId: 'agent',
+      scopes: [],
+      actions: ['report.publish'],
+    };
+    const slots = {
+      briefing: '<div class="report-card">current</div>',
+      pipeline: '<div class="report-table">current</div>',
+    };
+    const publish = (
+      operationId: string,
+      modelRunId?: string,
+      input = { slots, basis_revision: 'basis:new' }
+    ) =>
+      dispatch(
+        { action: 'report.publish', operationId, input },
+        { access, ...(modelRunId ? { session: { modelRunId } } : {}) }
+      );
+    expect(await publish('op:1', 'run:1')).toMatchObject({ status: 'completed' });
+    const saved = JSON.parse(readFileSync(filePath, 'utf8'));
+    for (const slot of Object.keys(slots)) {
+      expect(saved[slot]).toMatchObject({
+        operationId: 'op:1',
+        modelRunId: 'run:1',
+        basisRevision: 'basis:new',
+      });
+      expect(createPersistentReportStore({ filePath }).get(slot)).toEqual(saved[slot]);
+    }
+    expect(await publish('op:no-op', 'run:2')).toMatchObject({ data: { changedSlotIds: [] } });
+    expect(JSON.parse(readFileSync(filePath, 'utf8'))).toEqual(saved);
+    expect(await publish('op:2', 'run:2', { slots, basis_revision: 'basis:next' })).toMatchObject({
+      status: 'completed',
+    });
+    expect(createPersistentReportStore({ filePath }).get('briefing')).toMatchObject({
+      operationId: 'op:2',
+      modelRunId: 'run:2',
+    });
+    expect(
+      await publish('op:manual', undefined, { slots, basis_revision: 'basis:manual' })
+    ).toMatchObject({ status: 'completed' });
+    expect(createPersistentReportStore({ filePath }).get('briefing')).toMatchObject({
+      operationId: 'op:manual',
+      modelRunId: null,
+    });
   });
 
   it('restores slots from disk on creation, preserving updatedAt', async () => {

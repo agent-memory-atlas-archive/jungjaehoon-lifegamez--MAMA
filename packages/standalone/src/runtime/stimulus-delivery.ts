@@ -61,8 +61,8 @@ export interface StimulusDeliveryOptions {
   onSourceResult?: (row: MailboxRow, result: NativeTurnResult) => void | Promise<void>;
   onScheduledResult?: (row: MailboxRow, result: NativeTurnResult) => void | Promise<void>;
   onNativeEventResult?: (row: MailboxRow, result: NativeTurnResult) => void | Promise<void>;
-  onDelivered?: (row: MailboxRow) => void | Promise<void>;
-  onFailed?: (row: MailboxRow, reason: string) => void | Promise<void>;
+  onDelivered?: (row: MailboxRow, modelRunId: string | null) => void | Promise<void>;
+  onFailed?: (row: MailboxRow, reason: string, modelRunId: string | null) => void | Promise<void>;
 }
 
 export interface LessonHit {
@@ -483,6 +483,7 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
       payload.replay !== undefined;
     const liveSourceDelta =
       row.kind === 'source_delta' && replaySourceEndMs === undefined && !hasReplayPayload;
+    let modelRunId: string | null = null;
     try {
       if (
         row.kind !== 'owner_message' &&
@@ -493,6 +494,9 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
         throw new Error('Stimulus kind is missing; no owner turn can be assembled');
       }
       const result = await context.run(assembledContent(row, [], liveSourceDelta), {
+        onModelRunStarted: (id: string) => {
+          modelRunId = id;
+        },
         prepareSessionContent: async ({ isNewSession }) => {
           const lessonBlocks: string[] = [];
           if (isNewSession) {
@@ -515,13 +519,15 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
         sourceMessageRef: row.stimulusId,
         ...(replaySourceEndMs === undefined ? {} : { replaySourceEndMs }),
       });
+      // A commit failure withholds result provenance, but the opened run still identifies this turn.
+      modelRunId = result.modelRunId ?? modelRunId;
       if (row.kind === 'owner_message') await options.onOwnerResult?.(row, result);
       if (liveSourceDelta) await options.onSourceResult?.(row, result);
       if (row.kind === 'scheduled') await options.onScheduledResult?.(row, result);
       if (row.kind === 'native_event') await options.onNativeEventResult?.(row, result);
-      await options.onDelivered?.(row);
+      await options.onDelivered?.(row, modelRunId);
     } catch (error) {
-      await options.onFailed?.(row, stimulusFailureReason(error));
+      await options.onFailed?.(row, stimulusFailureReason(error), modelRunId);
       throw error;
     } finally {
       if (activeReplaySourceEndMs === replaySourceEndMs) activeReplaySourceEndMs = undefined;
@@ -541,7 +547,7 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
       ) {
         const reason =
           'Scheduled report interrupted before completion; retry on the next report tick';
-        await options.onFailed?.(row, reason);
+        await options.onFailed?.(row, reason, null);
         // Core parks the orphan uncertain, preserving its receipt and any result.
         throw new Error(reason);
       }

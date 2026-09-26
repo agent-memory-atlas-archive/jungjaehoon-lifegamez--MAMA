@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
@@ -60,7 +60,12 @@ function delta(): SourceDelta {
   };
 }
 
-async function boot(response: string, mode: 'live' | 'replay' = 'live', earlyDelta = false) {
+async function boot(
+  response: string,
+  mode: 'live' | 'replay' = 'live',
+  earlyDelta = false,
+  failTurn = false
+) {
   const root = mkdtempSync(join(tmpdir(), 'delta-'));
   roots.push(root);
   vi.stubEnv('HOME', root);
@@ -110,9 +115,9 @@ async function boot(response: string, mode: 'live' | 'replay' = 'live', earlyDel
         ownerRuntime = await createOwnerRuntime({
           ...options,
           embedder: { embed: async () => new Float32Array(1024).fill(0.25) },
-          onStimulusFailed: (row, reason) => {
-            failures(row, reason);
-            return options.onStimulusFailed?.(row, reason);
+          onStimulusFailed: (row, reason, modelRunId) => {
+            failures(row, reason, modelRunId);
+            return options.onStimulusFailed?.(row, reason, modelRunId);
           },
           nativeSession: {
             stop: async () => {},
@@ -123,6 +128,7 @@ async function boot(response: string, mode: 'live' | 'replay' = 'live', earlyDel
                   isNewSession: false,
                 })) ?? content;
               prompts.push({ source: request?.source, text: JSON.stringify(content) });
+              request?.onModelRunStarted?.(`run:${prompts.length}`);
               request?.streamCallbacks?.onInputDispatch?.({
                 backend: 'codex',
                 sessionId: 'fixture-session',
@@ -133,14 +139,15 @@ async function boot(response: string, mode: 'live' | 'replay' = 'live', earlyDel
                 sessionId: 'fixture-session',
                 turnId: `turn-${prompts.length}`,
               });
+              if (failTurn) throw new Error('native model failed');
               return {
                 response: request?.source === 'source_delta' ? response : '[ack]',
                 turns: 1,
                 history: [],
                 totalUsage: { input_tokens: 0, output_tokens: 0 },
                 stopReason: 'end_turn',
-                modelRunId: null,
-                modelRunProvenance: 'backend_no_run',
+                modelRunId: `run:${prompts.length}`,
+                modelRunProvenance: 'available',
               } as NativeTurnResult;
             },
           },
@@ -159,10 +166,22 @@ async function boot(response: string, mode: 'live' | 'replay' = 'live', earlyDel
     },
   });
   daemons.push(daemon);
-  return { daemon, logs, prompts, failures, ownerOptions, promptsBeforeGatewayStart };
+  return { root, daemon, logs, prompts, failures, ownerOptions, promptsBeforeGatewayStart };
 }
 
 describe('live delta reports', () => {
+  it('logs the run id even when the native turn throws before producing a result', async () => {
+    const { daemon, logs } = await boot('[notify] unused', 'live', false, true);
+    const id = sourceDeltaStimulusId(delta());
+    daemon.owner.acceptSourceDelta(delta());
+    await vi.waitFor(() =>
+      expect(logs).toContain(
+        `stimulus failed kind=source_delta id=${id} model_run_id=run:1 reason=native model failed`
+      )
+    );
+    expect(telegram.sendMessage).not.toHaveBeenCalled();
+  });
+
   it('holds boot-time deltas until the Telegram gateway is ready', async () => {
     const { daemon, promptsBeforeGatewayStart } = await boot(
       '[notify] startup update',
@@ -209,7 +228,7 @@ describe('live delta reports', () => {
     ['last repeated notify wins', '[notify] earlier\n[notify] final', 'final', 'notify'],
     ['empty notify', '[notify]  ', null, 'notify'],
   ])('routes %s and enqueues exactly one board pass', async (_name, response, sent, route) => {
-    const { daemon, logs, prompts, ownerOptions } = await boot(response!);
+    const { root, daemon, logs, prompts, ownerOptions } = await boot(response!);
     const input = delta();
     const id = sourceDeltaStimulusId(input);
     daemon.owner.acceptSourceDelta(input);
@@ -236,10 +255,23 @@ describe('live delta reports', () => {
       expect(board).toContain(instruction);
     }
     expect(logs).toContain(`delta report route=${route} id=${id}`);
+    expect(logs).toContain(`stimulus delivered kind=source_delta id=${id} model_run_id=run:1`);
+    expect(logs).toContain(
+      `stimulus delivered kind=native_event id=delta-board:${id} model_run_id=run:2`
+    );
     if (sent === null) expect(telegram.sendMessage).not.toHaveBeenCalled();
     else {
       expect(telegram.sendMessage).toHaveBeenCalledOnce();
       expect(telegram.sendMessage).toHaveBeenCalledWith(7, sent);
+      expect(
+        JSON.parse(readFileSync(join(root, 'runtime', 'telegram-message-ledger.json'), 'utf8'))
+          .entries
+      ).toEqual([
+        expect.objectContaining({ state: 'delivered', idempotencyKey: id, messageIds: [101] }),
+      ]);
+      expect(logs.filter((line) => line.startsWith('telegram outbound delivered'))).toEqual([
+        `telegram outbound delivered idempotency_key="${id}" message_ids=[101]`,
+      ]);
     }
 
     // Same result callback cannot enqueue another board turn or resend the text.
@@ -267,7 +299,9 @@ describe('live delta reports', () => {
     expect(reason).toMatch(/^send failed /);
     expect(reason.length).toBeLessThanOrEqual(500);
     expect(reason).not.toContain('\n');
-    expect(logs).toContain(`stimulus failed kind=source_delta id=${id} reason=${reason}`);
+    expect(logs).toContain(
+      `stimulus failed kind=source_delta id=${id} model_run_id=run:1 reason=${reason}`
+    );
     await daemon.owner.runtime.drainOnce();
     expect(telegram.sendMessage).toHaveBeenCalledOnce();
     expect(prompts).toHaveLength(2);

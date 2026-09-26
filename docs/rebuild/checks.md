@@ -880,3 +880,26 @@ The implementation writes raw/index data during import only. Replay is the owner
   (421), identities anonymous, and three owner Telegram alerts show as delivered in the message ledger.
   Limit stated to the owner: requests that Cloudflare Access refuses at the edge never reach the origin,
   so they appear only in Cloudflare's Access logs, not here.
+- 2026-09-27: D4 Answer/Report — outbound Telegram ledger v3 now retains the readable `idempotencyKey` and confirmed chunk `messageIds`; one completion log carries those IDs without message text.
+  Evidence: temporary-HOME gateway tests read receipts from disk after split delivery, partial failure and restart; daemon delta/scheduled tests verify the same key in the ledger and logger. Delivered sends remain deduplicated.
+  Older receipts still load without fabricated IDs; a supplied key can annotate an existing receipt. Historical Telegram message IDs cannot be recovered from the old hash alone.
+  Remaining: no live send, daemon restart or deployment was performed for this change.
+- 2026-09-27: D4 Report — changed slots persist `operationId` and `modelRunId` from the action context through the existing atomic report snapshot writer; absent context is explicit null.
+  Evidence: dispatcher-to-file tests verify both slots, reload, basis-only rewrites and manual calls. An unchanged HTML/basis publication remains a no-op and preserves its original writer.
+  Old slot snapshots retain their existing fields and load unchanged; report-persistence.ts already serializes the full slot, so it needs no separate format or migration.
+  Remaining: existing slots are not retrospectively attributed; a live agent publication has not been exercised here.
+- 2026-09-27: D4 Answer/Report — stimulus delivered/failed lines include `model_run_id`; native `onModelRunStarted` carries the actual opened run through model, receipt-storage and outbound failures before a result is available.
+  Evidence: native-turn tests cover completion, model failure and commit failure; daemon tests cover source deltas, board turns, scheduled reports and failed sends. Result provenance/replay semantics stay unchanged; unavailable run identity is null.
+  Validation: focused core 6/6 and standalone 69/69, core compilation, standalone typecheck, changed-file lint and diff whitespace checks passed, all tests under a temporary HOME with isolated MAMA_DB_PATH.
+  Remaining: source/test evidence only. Full standalone 686 passed / 23 socket-listen EPERM failures; full core 806 passed / 67 failures, with all 50 tests in its four embedding-affected suites passing after copying the model cache into the temporary HOME. Socket-bound suites remain blocked by the sandbox.
+  MAMA MCP decision save was attempted under AGENTS.md but refused because approval is required and this session has policy `never`; the contract decision is recorded above. No commit.
+- 2026-09-27 02:40 KST: D4 trace check. Live trace of one owner message (Telegram receipt → mailbox row →
+  native input delivery → model run by sourceMessageRef and nativeInputId → 55 tool traces → daemon.log
+  accepted/delivered → reply state on the same ledger key) and one source delta (observation in the
+  connector index and observation_versions → delta stimulus with 65 refs → model run → 5 log lines →
+  board stimulus → board run → report.publish trace) connected by ids. Gaps found and fixed: outbound
+  sends keyed only by a hash (now the idempotency key and Telegram message ids are stored and logged),
+  board slots without their writer (now operationId and modelRunId), log lines without the model run
+  (now model_run_id), security alerts not linked to their event (supervisor: event ids are the alert
+  keys). Live: an alert's ledger entry carries its key and message id and the log shows it. Suites:
+  core runtime 263/263, standalone 709/709. Open: a native shell call traced live.

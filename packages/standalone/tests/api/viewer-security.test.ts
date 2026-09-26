@@ -498,6 +498,14 @@ describe('security events and owner alerts', () => {
       'forged_access_header',
     ]);
     expect(sendToOwner).toHaveBeenCalledTimes(2);
+    // Each alert's idempotency key names the security event it reports.
+    const alertKeys = sendToOwner.mock.calls.map(([, key]) => key);
+    const rows = securityRows() as Array<{ class: string; eventId?: string }>;
+    expect(alertKeys).toEqual(
+      rows
+        .filter((row) => row.class !== 'owner_access')
+        .map((row) => `viewer-security:${row.eventId}`)
+    );
     expect(fs.readFileSync(securityPath(), 'utf8')).not.toContain(token);
     expect(fs.readFileSync(securityPath(), 'utf8')).not.toContain('fixture@invalid');
   });

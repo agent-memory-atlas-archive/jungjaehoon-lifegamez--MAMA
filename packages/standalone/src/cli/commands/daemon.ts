@@ -162,12 +162,22 @@ function stimulusAccepted(
   logger.info(`stimulus accepted kind=${kind} id=${id} state=${receipt.state}`);
 }
 
-function stimulusFailed(logger: DaemonLogger, kind: string, id: string, error: unknown): void {
-  logger.error(`stimulus failed kind=${kind} id=${id} reason=${stimulusFailureReason(error)}`);
+function stimulusFailed(
+  logger: DaemonLogger,
+  kind: string,
+  id: string,
+  error: unknown,
+  modelRunId: string | null = null
+): void {
+  logger.error(
+    `stimulus failed kind=${kind} id=${id} model_run_id=${modelRunId} reason=${stimulusFailureReason(error)}`
+  );
 }
 
-function stimulusDelivered(logger: DaemonLogger, row: MailboxRow): void {
-  logger.info(`stimulus delivered kind=${row.kind ?? 'unknown'} id=${row.stimulusId}`);
+function stimulusDelivered(logger: DaemonLogger, row: MailboxRow, modelRunId: string | null): void {
+  logger.info(
+    `stimulus delivered kind=${row.kind ?? 'unknown'} id=${row.stimulusId} model_run_id=${modelRunId}`
+  );
 }
 
 function pathsFor(configPath: string, config: W1Config): DaemonPaths {
@@ -399,9 +409,9 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
               await reportScheduler.onResult(row, result);
             },
           }),
-      onStimulusDelivered: (row) => stimulusDelivered(logger, row),
-      onStimulusFailed: (row, reason) =>
-        stimulusFailed(logger, row.kind ?? 'unknown', row.stimulusId, reason),
+      onStimulusDelivered: (row, modelRunId) => stimulusDelivered(logger, row, modelRunId),
+      onStimulusFailed: (row, reason, modelRunId) =>
+        stimulusFailed(logger, row.kind ?? 'unknown', row.stimulusId, reason, modelRunId),
     });
     stage(logger, 'owner_runtime');
 
@@ -513,6 +523,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
           polling: config.telegram.polling,
         },
         messageLedgerPath: paths.telegramLedgerPath,
+        log: (line) => logger.info(line),
         filesRoot: join(paths.workspaceDir, 'files'),
         workspaceDir: paths.workspaceDir,
       });

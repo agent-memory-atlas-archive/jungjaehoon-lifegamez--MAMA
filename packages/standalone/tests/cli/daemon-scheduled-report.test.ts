@@ -107,8 +107,8 @@ async function boot(
                 history: [],
                 totalUsage: { input_tokens: 0, output_tokens: 0 },
                 stopReason: 'end_turn',
-                modelRunId: null,
-                modelRunProvenance: 'backend_no_run',
+                modelRunId: `run:scheduled:${prompts.length}`,
+                modelRunProvenance: 'available',
               };
             },
           },
@@ -224,6 +224,13 @@ describe('daemon scheduled reports', () => {
     ctx.scheduler!.tick(now);
     await vi.waitFor(() => expect(ctx.status(0)?.status).toBe('acked'));
     expect(telegram.sendMessage).toHaveBeenCalledWith(7, 'Some work needs a check.');
+    const id = ctx.rows()[0]!.stimulus_id;
+    expect(ctx.logs).toContain(
+      `stimulus delivered kind=scheduled id=${id} model_run_id=run:scheduled:1`
+    );
+    expect(ctx.logs).toContain(
+      `telegram outbound delivered idempotency_key="${id}" message_ids=[101]`
+    );
     expect(ctx.prompts[0]).toContain('report.publish');
     expect(JSON.parse(readFileSync(ctx.statePath, 'utf8')).lastFullKey).toBe('2026-01-01:13');
     ctx.scheduler!.tick(now);

@@ -37,7 +37,10 @@ export function createSecurityEventRecorder(options: SecurityEventOptions = {}) 
 
   return {
     path,
-    record(event: SecurityEvent): void {
+    record(observed: SecurityEvent): void {
+      // The event id is the alert's idempotency key too, so a Telegram alert in the message ledger
+      // leads back to its line here.
+      const event = { eventId: randomUUID(), ...observed };
       try {
         mkdirSync(dirname(path), { recursive: true });
         const fd = openSync(path, 'a', 0o600);
@@ -76,7 +79,7 @@ export function createSecurityEventRecorder(options: SecurityEventOptions = {}) 
       void (async () => {
         try {
           if (!options.sendToOwner) throw new Error('Owner alert delivery is unavailable');
-          await options.sendToOwner(text, `viewer-security:${randomUUID()}`);
+          await options.sendToOwner(text, `viewer-security:${event.eventId}`);
         } catch {
           // Gateway errors can include credentials and destination identifiers.
           console.error('[viewer] security_alert_failed');
