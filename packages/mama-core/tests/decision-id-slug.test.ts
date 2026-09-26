@@ -40,9 +40,9 @@ describe('Story SMALLFIX-1: buildDecisionId slugging', () => {
     });
 
     it('mixed topics keep the ascii part', () => {
-      const id = buildDecisionId(koreanTopicKeywords[1] + '_KMS2019_v2');
+      const id = buildDecisionId(koreanTopicKeywords[1] + '_PROJECT2019_v2');
       expect(id).toContain('sr');
-      expect(id).toContain('kms2019');
+      expect(id).toContain('project2019');
       expect(id).not.toMatch(/__/);
     });
   });
