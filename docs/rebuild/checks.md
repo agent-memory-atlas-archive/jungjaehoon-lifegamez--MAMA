@@ -745,3 +745,11 @@ The implementation writes raw/index data during import only. Replay is the owner
   11/11, standalone runtime 72/72, both typechecks clean. Live-DB probe with the owner resolver's kinds:
   the work-assignment rule, the hourly delta rule and the deadline-reminder rule (all saved as preference,
   never injected before) now rank in the top 3 for questions on their subject.
+- 2026-09-26 20:10 KST: live owner turns after the recall change (Claude). Two subagents ran in parallel
+  inside one turn (128 s, one answer, 14 traces under each child run linked to the parent, no refusal).
+  "Who should take the TF of <asset>?" got the work-assignment rule (saved as preference) first in the
+  <lessons> block and answered by it: the BC artist is unassigned, so the TF waits (17 s, 3 tools). The
+  owner corrected "feedback arriving means someone is working on it"; the agent re-read the source chat,
+  named the likely artist with the evidence level stated and asked before revising (73 s, 13 tools).
+  Still failing: that correction was not saved (no memory.save in the turn) despite the any-turn lesson
+  rule; the earlier correction in this session was saved. Agent compliance, not host; watch it on Codex.
