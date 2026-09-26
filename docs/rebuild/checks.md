@@ -869,3 +869,14 @@ The implementation writes raw/index data during import only. Replay is the owner
   forged Access header 401 and logged as a [viewer] line; a /.env probe logged; daemon.log 0600;
   MAMA_VIEWER_HOSTNAMES set without printing the hostname. Not yet seen live: a native shell/web call
   traced (no turn since the restart used the shell; unit tests only).
+- 2026-09-27: Report check — viewer security observation extends `5361db634`: one 0600 JSONL event per tunnelled/refused request, an authenticated bounded event tail, and recent events on the existing logs page; access decisions are unchanged.
+  Classification precedence is host_rejected → probe (fixed scanner fingerprints) → forged_access_header → unknown_identity → auth_failed → owner_access; authenticated non-success responses use request_failed. `MAMA_VIEWER_OWNER_EMAILS` is an optional comma-separated, case-insensitive observation list; an explicitly empty list matches nobody. Emails are hashed, and paths omit queries and redact credentials.
+  Alerts use the daemon's late-bound `gateway.sendToOwner`, once per class/path per ten minutes within the running viewer; owner_access and replay never alert. Send failures log fixed metadata with no retry loop. Evidence: temporary-HOME focused verification 92 passed / 1 socket test excluded; full standalone 681 passed / 23 listener EPERM failures; typecheck, changed-file lint and viewer inline JavaScript syntax passed.
+  The eight affected suites are `viewer-archive-routes`, `viewer-records`, `viewer-server`, `daemon-boot`, `w1-owner-q1`, `action-mcp-server`, `owner-runtime`, and `stimulus-delivery`. Commands from `packages/standalone`: `node node_modules/vitest/vitest.mjs run tests/api/viewer-security.test.ts tests/api/auth-middleware.test.ts tests/api/cf-access.test.ts tests/cli/daemon-boot.test.ts -t '^(?!.*authenticates MCP list)'`; `pnpm --manage-package-manager-versions=false test`; `pnpm typecheck`; changed-file `pnpm exec eslint`; extracted inline script `node --check`.
+  Still unverified: deployed tunnel traffic, real Telegram receipt and visual browser rendering (local preview navigation blocked by browser policy). MAMA MCP decision search/save was denied by approval policy `never`. No daemon restart, deployment or commit performed; this is source/test evidence, not completion of the owner loop.
+- 2026-09-27 02:20 KST: external-access detection live. Supervisor: standalone api/cli/gateways/runtime
+  397/397, typecheck clean. After restart, three tunnel-shaped requests at the origin were recorded in
+  logs/security-events.jsonl (0600) as forged_access_header (401), probe (/.env, 404) and host_rejected
+  (421), identities anonymous, and three owner Telegram alerts show as delivered in the message ledger.
+  Limit stated to the owner: requests that Cloudflare Access refuses at the edge never reach the origin,
+  so they appear only in Cloudflare's Access logs, not here.

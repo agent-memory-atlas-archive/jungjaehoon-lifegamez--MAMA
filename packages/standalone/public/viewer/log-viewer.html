@@ -10,6 +10,12 @@
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);height:100vh;display:flex;flex-direction:column;overflow:hidden}
 .header{display:flex;align-items:center;gap:10px;padding:8px 14px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
 .header h1{font-size:13px;font-weight:600;color:var(--accent);white-space:nowrap}
+.security-events{padding:8px 14px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0;max-height:170px;overflow:auto;font-size:11px}
+.security-events h2{font-size:12px;margin-bottom:5px}
+.security-events table{width:100%;border-collapse:collapse;text-align:left}
+.security-events th,.security-events td{padding:3px 10px 3px 0;vertical-align:top;overflow-wrap:anywhere}
+.security-events th,.security-events p{color:var(--muted)}
+.security-events .security-warning{color:var(--warn)}
 .status-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
 .status-dot.connected{background:var(--success);box-shadow:0 0 6px var(--success)}
 .status-dot.disconnected{background:var(--error)}
@@ -204,6 +210,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Agent Activity Timeline</div>
   <div id="auditTimeline" style="font-size:11px;font-family:'SF Mono','Cascadia Code',Consolas,monospace;line-height:1.8"></div>
 </div>
+<section class="security-events" aria-labelledby="securityTitle">
+  <h2 id="securityTitle">Recent viewer security events</h2>
+  <p id="securityStatus" role="status">Loading security events...</p>
+  <table id="securityTable" hidden>
+    <thead><tr><th>Time (KST)</th><th>Class</th><th>Method / path</th><th>Status</th><th>Country</th></tr></thead>
+    <tbody id="securityRows"></tbody>
+  </table>
+</section>
 <div class="source-panel" id="sourcePanel">
   <div class="source-panel-header">
     <span>Sources</span>
@@ -564,8 +578,40 @@ function setStatus(state, text) {
 }
 
 /* ===== Polling ===== */
+let securityFetchPending = false;
+async function fetchSecurityEvents() {
+  if (securityFetchPending) return;
+  securityFetchPending = true;
+  try {
+    const response = await fetch(API_BASE + '/api/security/events?limit=20');
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    const data = await response.json();
+    const rows = document.createDocumentFragment();
+    for (const event of data.events.slice().reverse()) {
+      const row = document.createElement('tr');
+      if (event.class !== 'owner_access') row.className = 'security-warning';
+      const time = new Date(event.time).toLocaleString('sv-SE', { timeZone: 'Asia/Seoul' });
+      for (const value of [time, event.class, event.method + ' ' + event.path, event.status, event.country || 'unknown']) {
+        const cell = document.createElement('td');
+        cell.textContent = String(value);
+        row.appendChild(cell);
+      }
+      rows.appendChild(row);
+    }
+    $('securityRows').replaceChildren(rows);
+    $('securityTable').hidden = data.events.length === 0;
+    $('securityStatus').textContent = data.events.length ? 'Latest ' + data.events.length + ' events' : 'No security events recorded.';
+  } catch (error) {
+    $('securityTable').hidden = true;
+    $('securityStatus').textContent = 'Security events unavailable: ' + error.message;
+  } finally {
+    securityFetchPending = false;
+  }
+}
+
 function fetchLogs() {
   if (S.paused) return;
+  void fetchSecurityEvents();
   const tail = parseInt($('tailN').value) || 500;
   let url = API_BASE + '/api/logs/daemon?tail=' + (S.initialized ? tail : INITIAL_TAIL);
   if (S.lastMtime > 0) url += '&since=' + S.lastMtime;

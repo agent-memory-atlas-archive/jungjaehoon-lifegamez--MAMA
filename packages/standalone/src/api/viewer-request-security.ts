@@ -1,7 +1,12 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { isIP } from 'node:net';
 import { redactTraceText } from '@jungjaehoon/mama-core/runtime/trace-summary';
-import { isTunnelRequest, type ViewerIdentity } from './auth-middleware.js';
+import {
+  isTunnelRequest,
+  type ViewerIdentity,
+  type ViewerAuthObservation,
+} from './auth-middleware.js';
+import type { SecurityEvent, SecurityEventClass } from './security-events.js';
 
 function hostname(authority: string): string | null {
   if (!authority || authority.length > 260 || /[\s\\/@?#,%]/.test(authority)) return null;
@@ -51,7 +56,7 @@ function configuredValues(): string[] {
     .filter(
       ([name, value]) =>
         value &&
-        /(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|CREDENTIAL|AUTH_KEY|AUTHORIZATION|ISSUER|HOSTNAME|HOSTNAMES|API_HOST)$/i.test(
+        /(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|CREDENTIAL|AUTH_KEY|AUTHORIZATION|ISSUER|HOSTNAME|HOSTNAMES|API_HOST|OWNER_EMAILS)$/i.test(
           name
         )
     )
@@ -84,52 +89,113 @@ function auditPath(req: IncomingMessage): string {
   try {
     const path = new URL(target, 'http://localhost').pathname;
     // A path may contain an encoded credential; decode only for redaction, never routing.
-    return auditField(decodeURIComponent(path));
+    let decoded = decodeURIComponent(path);
+    // Request-supplied credentials may also be copied into the URL by a scanner.
+    for (const name of [
+      'authorization',
+      'cf-access-jwt-assertion',
+      'cf-access-authenticated-user-email',
+      'host',
+    ]) {
+      const value = req.headers[name];
+      if (typeof value === 'string' && value) {
+        decoded = decoded.split(value).join('[redacted]');
+        if (name === 'authorization' && value.startsWith('Bearer '))
+          decoded = decoded.split(value.slice(7)).join('[redacted]');
+      }
+    }
+    return auditField(decoded.replace(/[^/\s@]+@[^/\s@]+/g, '[email]'));
   } catch {
     return '[invalid-path]';
   }
 }
 
+// Scanner fingerprints: common secret-file and admin-console probes, not a routing policy.
+const SCANNER_PATHS = [
+  '/.env',
+  '/.git',
+  '/wp-login.php',
+  '/phpmyadmin',
+  '/.aws',
+  '/config',
+  '/server-status',
+  '/mama-memory.db',
+];
+
+function securityClass(
+  req: IncomingMessage,
+  status: number,
+  audit: ViewerAuthObservation & { identity: ViewerIdentity | null },
+  path: string
+): SecurityEventClass {
+  if (status === 421) return 'host_rejected';
+  const lower = path.toLowerCase();
+  if (SCANNER_PATHS.some((probe) => lower === probe || lower.startsWith(probe + '/')))
+    return 'probe';
+  if (
+    Object.keys(req.headers).some((name) => name.startsWith('cf-access-')) &&
+    !audit.accessVerified
+  )
+    return 'forged_access_header';
+  if (audit.unknownIdentity) return 'unknown_identity';
+  if (audit.identity === null || audit.identity === 'local') return 'auth_failed';
+  if (status >= 200 && status < 400) return 'owner_access';
+  return 'request_failed';
+}
+
 export function viewerRequestAudit(
   req: IncomingMessage,
-  res: ServerResponse
-): {
+  res: ServerResponse,
+  record: (event: SecurityEvent) => void
+): ViewerAuthObservation & {
   identity: ViewerIdentity | null;
   log: () => void;
 } {
   let logged = false;
   const audit = {
     identity: null as ViewerIdentity | null,
+    accessVerified: false,
+    unknownIdentity: false,
     log() {
-      if (logged || (!isTunnelRequest(req) && res.statusCode !== 401)) return;
+      if (logged || (!isTunnelRequest(req) && ![401, 403, 421].includes(res.statusCode))) return;
       logged = true;
       const ray = req.headers['cf-ray'];
-      console.info(
-        `[viewer] ${JSON.stringify({
-          method: [
-            'GET',
-            'HEAD',
-            'POST',
-            'PUT',
-            'PATCH',
-            'DELETE',
-            'OPTIONS',
-            'TRACE',
-            'CONNECT',
-          ].includes(req.method ?? '')
-            ? req.method
-            : 'UNKNOWN',
-          path: auditPath(req),
-          status: res.statusCode,
-          cfRay:
-            typeof ray !== 'string'
-              ? null
-              : /^[a-fA-F0-9]{16,32}(?:-[A-Z]{3,8})?$/.test(ray)
-                ? auditField(ray)
-                : '[invalid]',
-          identity: audit.identity ?? 'anonymous',
-        })}`
-      );
+      const country = req.headers['cf-ipcountry'];
+      const path = auditPath(req);
+      const event: SecurityEvent = {
+        time: new Date().toISOString(),
+        class: securityClass(req, res.statusCode, audit, path),
+        method: [
+          'GET',
+          'HEAD',
+          'POST',
+          'PUT',
+          'PATCH',
+          'DELETE',
+          'OPTIONS',
+          'TRACE',
+          'CONNECT',
+        ].includes(req.method ?? '')
+          ? req.method!
+          : 'UNKNOWN',
+        path,
+        status: res.statusCode,
+        cfRay:
+          typeof ray !== 'string'
+            ? null
+            : /^[a-fA-F0-9]{16,32}(?:-[A-Z]{3,8})?$/.test(ray)
+              ? auditField(ray)
+              : '[invalid]',
+        ...(country === undefined
+          ? {}
+          : {
+              country:
+                typeof country === 'string' && /^[A-Z]{2}$/.test(country) ? country : '[invalid]',
+            }),
+        identity: audit.identity === 'local' ? 'anonymous' : (audit.identity ?? 'anonymous'),
+      };
+      console.info(`[viewer] ${JSON.stringify(event)}`);
+      record(event);
     },
   };
   res.once('finish', audit.log);

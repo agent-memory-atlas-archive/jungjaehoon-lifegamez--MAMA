@@ -31,6 +31,10 @@ let errors: ReturnType<typeof vi.spyOn>;
 const dispatch = vi.fn();
 
 beforeEach(() => {
+  const home = fs.mkdtempSync(join(tmpdir(), 'viewer-security-home-'));
+  roots.push(home);
+  vi.stubEnv('HOME', home);
+  vi.stubEnv('MAMA_VIEWER_OWNER_EMAILS', '');
   vi.stubEnv('MAMA_AUTH_TOKEN', '');
   vi.stubEnv('MAMA_CF_ACCESS_ISSUER', '');
   vi.stubEnv('MAMA_CF_ACCESS_AUD', '');
@@ -41,6 +45,7 @@ beforeEach(() => {
   dispatch.mockReset();
 });
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
@@ -69,6 +74,7 @@ function request(
       },
       end(body = '') {
         this.emit('finish');
+        this.emit('close');
         resolve({ status: this.statusCode, body });
       },
     });
@@ -398,5 +404,276 @@ describe('bounded daemon log reads', () => {
     const body = JSON.parse((await request('/api/logs/daemon?limit=2')).body);
     expect(body.lines).toEqual(['last']);
     expect(body.truncated).toBe(true);
+  });
+});
+
+function securityPath() {
+  return join(process.env.HOME!, '.mama', 'logs', 'security-events.jsonl');
+}
+function securityRows() {
+  return fs
+    .readFileSync(securityPath(), 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+}
+let accessIssuerPort = 21000;
+function signedAccess(email: string) {
+  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const issuer = `https://127.0.0.1:${accessIssuerPort++}`;
+  vi.stubEnv('MAMA_CF_ACCESS_ISSUER', issuer);
+  vi.stubEnv('MAMA_CF_ACCESS_AUD', 'fixture');
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ keys: [{ ...publicKey.export({ format: 'jwk' }), kid: 'fixture' }] }),
+    }))
+  );
+  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  const input = `${encode({ alg: 'RS256', kid: 'fixture' })}.${encode({ iss: issuer, aud: 'fixture', exp: Date.now() / 1000 + 120, email })}`;
+  return `${input}.${sign('RSA-SHA256', Buffer.from(input), privateKey).toString('base64url')}`;
+}
+const tunnel = { 'cf-ray': '0123456789abcdef-TST', 'cf-ipcountry': 'KR' };
+
+describe('security events and owner alerts', () => {
+  it('records public tunnel access, local refusals and every scanner fingerprint once', async () => {
+    await serve();
+    await request('/health?private=true', tunnel);
+    await request('/api/runtime/status', {}, '192.0.2.2');
+    await request('/health', { host: '192.0.2.2' });
+    dispatch.mockResolvedValue({
+      status: 'failed',
+      error: { kind: 'denied', code: 'DENIED', message: 'Denied' },
+    });
+    await request('/api/operator/tasks');
+    for (const path of [
+      '/.env',
+      '/.git/config',
+      '/wp-login.php',
+      '/phpmyadmin',
+      '/.aws/credentials',
+      '/config',
+      '/server-status',
+      '/mama-memory.db',
+    ])
+      await request(path, tunnel);
+    const rows = securityRows();
+    expect(rows).toHaveLength(12);
+    expect(rows.slice(0, 4).map((row) => [row.class, row.status, row.identity])).toEqual([
+      ['auth_failed', 200, 'anonymous'],
+      ['auth_failed', 401, 'anonymous'],
+      ['host_rejected', 421, 'anonymous'],
+      ['auth_failed', 403, 'anonymous'],
+    ]);
+    expect(rows[0]).toMatchObject({
+      method: 'GET',
+      path: '/health',
+      cfRay: tunnel['cf-ray'],
+      country: 'KR',
+      time: expect.any(String),
+    });
+    expect(rows.slice(4).every((row) => row.class === 'probe')).toBe(true);
+    expect(fs.statSync(securityPath()).mode & 0o777).toBe(0o600);
+  });
+  it('records token owner access and forged headers even with a valid token', async () => {
+    const token = randomBytes(24).toString('hex');
+    vi.stubEnv('MAMA_AUTH_TOKEN', token);
+    const sendToOwner = vi.fn(async (_text: string, _key: string) => {});
+    await serve({
+      securityEvents: { sendToOwner },
+      getRuntimeStatus: () => ({ running: true }) as never,
+    });
+    await request('/api/runtime/status', { ...tunnel, authorization: `Bearer ${token}` });
+    expect(sendToOwner).not.toHaveBeenCalled();
+    await request('/api/runtime/status', {
+      ...tunnel,
+      authorization: `Bearer ${token}`,
+      'cf-access-jwt-assertion': 'invalid',
+    });
+    await request('/health', { 'cf-access-authenticated-user-email': 'fixture@invalid' });
+    expect(securityRows().map((row) => row.class)).toEqual([
+      'owner_access',
+      'forged_access_header',
+      'forged_access_header',
+    ]);
+    expect(sendToOwner).toHaveBeenCalledTimes(2);
+    expect(fs.readFileSync(securityPath(), 'utf8')).not.toContain(token);
+    expect(fs.readFileSync(securityPath(), 'utf8')).not.toContain('fixture@invalid');
+  });
+  it.each([undefined, ' FIXTURE@INVALID ', 'other@invalid', ''])(
+    'hashes verified emails and only observes unknown identities (%s)',
+    async (owners) => {
+      if (owners === undefined) delete process.env.MAMA_VIEWER_OWNER_EMAILS;
+      else vi.stubEnv('MAMA_VIEWER_OWNER_EMAILS', owners);
+      const email = 'fixture@invalid';
+      const assertion = signedAccess(email);
+      const sendToOwner = vi.fn(async () => {});
+      await serve({
+        securityEvents: { sendToOwner },
+        getRuntimeStatus: () => ({ running: true }) as never,
+      });
+      expect(
+        (await request('/api/runtime/status', { ...tunnel, 'cf-access-jwt-assertion': assertion }))
+          .status
+      ).toBe(200);
+      const unknown = owners === 'other@invalid' || owners === '';
+      expect(securityRows()[0]).toMatchObject({
+        class: unknown ? 'unknown_identity' : 'owner_access',
+        identity: `access:${createHash('sha256').update(email).digest('hex').slice(0, 12)}`,
+      });
+      expect(sendToOwner).toHaveBeenCalledTimes(unknown ? 1 : 0);
+      const contents = fs.readFileSync(securityPath(), 'utf8');
+      expect(contents).not.toContain(email);
+      expect(contents).not.toContain(assertion);
+    }
+  );
+  it('alerts once per class and path per ten minutes, with KST and no identifiers', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-09-27T00:00:00Z'));
+    const sendToOwner = vi.fn(async (_text: string, _key: string) => {});
+    await serve({ securityEvents: { sendToOwner } });
+    await request('/health', tunnel);
+    await request('/health', tunnel);
+    await request('/health', { ...tunnel, 'cf-access-jwt-assertion': 'invalid' });
+    await request('/api/runtime/status', tunnel);
+    expect(sendToOwner).toHaveBeenCalledTimes(3);
+    vi.setSystemTime(new Date('2026-09-27T00:09:59Z'));
+    await request('/health', tunnel);
+    expect(sendToOwner).toHaveBeenCalledTimes(3);
+    vi.setSystemTime(new Date('2026-09-27T00:10:00Z'));
+    await request('/health', tunnel);
+    expect(sendToOwner).toHaveBeenCalledTimes(4);
+    const text = sendToOwner.mock.calls[0]![0];
+    for (const value of ['auth_failed', '/health', '200', '09:00:00 KST', 'KR'])
+      expect(text).toContain(value);
+    expect(text).not.toContain(tunnel['cf-ray']);
+    expect(securityRows()).toHaveLength(6);
+  });
+  it('logs one failed send and never schedules a retry', async () => {
+    const secret = randomBytes(24).toString('hex');
+    const sendToOwner = vi.fn(async () => {
+      throw new Error(secret);
+    });
+    await serve({ securityEvents: { sendToOwner } });
+    await request('/health', tunnel);
+    await request('/health', tunnel);
+    expect(sendToOwner).toHaveBeenCalledOnce();
+    expect(errors).toHaveBeenCalledOnce();
+    expect(JSON.stringify(errors.mock.calls)).toContain('security_alert_failed');
+    expect(JSON.stringify(errors.mock.calls)).not.toContain(secret);
+    expect(securityRows()).toHaveLength(2);
+  });
+  it('records in replay mode without sending alerts', async () => {
+    const sendToOwner = vi.fn(async () => {});
+    await serve({ securityEvents: { replay: true, sendToOwner } });
+    await request('/.env', tunnel);
+    expect(securityRows()[0].class).toBe('probe');
+    expect(sendToOwner).not.toHaveBeenCalled();
+  });
+  it('records authenticated non-success responses without mislabelling them as owner access', async () => {
+    const token = randomBytes(24).toString('hex');
+    vi.stubEnv('MAMA_AUTH_TOKEN', token);
+    const sendToOwner = vi.fn(async () => {});
+    await serve({
+      securityEvents: { sendToOwner },
+      getRuntimeStatus: () => {
+        throw new Error('fixture');
+      },
+    });
+    const headers = { ...tunnel, authorization: `Bearer ${token}` };
+    expect((await request('/api/missing', headers)).status).toBe(404);
+    expect((await request('/api/runtime/status', headers)).status).toBe(500);
+    dispatch.mockResolvedValue({
+      status: 'failed',
+      error: { kind: 'denied', code: 'DENIED', message: 'Denied' },
+    });
+    expect((await request('/api/operator/tasks', headers)).status).toBe(403);
+    expect(securityRows().map((row) => row.class)).toEqual([
+      'request_failed',
+      'request_failed',
+      'request_failed',
+    ]);
+    expect(sendToOwner).toHaveBeenCalledTimes(3);
+  });
+  it('keeps recording while a send is pending and does not launch duplicate sends', async () => {
+    let finish!: () => void;
+    const sendToOwner = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        })
+    );
+    await serve({ securityEvents: { sendToOwner } });
+    await Promise.all([request('/health', tunnel), request('/health', tunnel)]);
+    expect(securityRows()).toHaveLength(2);
+    expect(sendToOwner).toHaveBeenCalledOnce();
+    finish();
+  });
+  it('preserves the response and alerts if the event file cannot be written', async () => {
+    const sendToOwner = vi.fn(async () => {});
+    await serve({ securityEvents: { path: process.env.HOME, sendToOwner } });
+    expect((await request('/health', tunnel)).status).toBe(200);
+    expect(sendToOwner).toHaveBeenCalledOnce();
+    expect(JSON.stringify(errors.mock.calls)).toContain('security_event_write_failed');
+  });
+  it('keeps credentials and emails out of event paths', async () => {
+    const token = randomBytes(24).toString('hex');
+    vi.stubEnv('MAMA_AUTH_TOKEN', token);
+    const email = 'fixture@invalid';
+    await serve();
+    await request(`/api/${encodeURIComponent(email)}/${token}?secret=${token}`, {
+      ...tunnel,
+      'cf-access-authenticated-user-email': email,
+    });
+    const contents = fs.readFileSync(securityPath(), 'utf8');
+    expect(contents).not.toContain(email);
+    expect(contents).not.toContain(token);
+    expect(contents).not.toContain('?');
+  });
+});
+
+describe('security events API', () => {
+  it('drops a partial oversized first line and limits reads to 256 KiB', async () => {
+    await serve();
+    await request('/health', tunnel);
+    const line = fs.readFileSync(securityPath(), 'utf8');
+    fs.writeFileSync(securityPath(), 'x'.repeat(500000) + '\n' + line);
+    const reads = vi.mocked(fs.readSync).mockClear();
+    const response = await request('/api/security/events?limit=2');
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body).events).toHaveLength(1);
+    expect(JSON.parse(response.body).truncated).toBe(true);
+    expect(
+      reads.mock.results.reduce((sum, item) => sum + Number(item.value), 0)
+    ).toBeLessThanOrEqual(256 * 1024);
+  });
+  it('requires owner auth and bounds both row count and file reads', async () => {
+    await serve();
+    await request('/health', tunnel);
+    const path = securityPath();
+    const line = fs.readFileSync(path, 'utf8');
+    fs.writeFileSync(path, line.repeat(4000));
+    const wholeFile = vi.mocked(fs.readFileSync).mockClear();
+    const reads = vi.mocked(fs.readSync).mockClear();
+    const response = await request('/api/security/events?limit=2');
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body).events).toHaveLength(2);
+    expect(JSON.parse(response.body).truncated).toBe(true);
+    expect(wholeFile.mock.calls.some(([file]) => file === path)).toBe(false);
+    expect(
+      reads.mock.results.reduce((sum, item) => sum + Number(item.value), 0)
+    ).toBeLessThanOrEqual(256 * 1024);
+    for (const limit of ['0', '-1', '2001', '1.5', 'NaN'])
+      expect((await request(`/api/security/events?limit=${limit}`)).status).toBe(400);
+    expect((await request('/api/security/events', tunnel)).status).toBe(401);
+    expect((await request('/api/security/events', {}, '192.0.2.2')).status).toBe(401);
+  });
+  it('returns an empty list before the first security event', async () => {
+    await serve();
+    const result = await request('/api/security/events');
+    expect(result.status).toBe(200);
+    expect(JSON.parse(result.body).events).toEqual([]);
+    expect(fs.existsSync(securityPath())).toBe(false);
   });
 });

@@ -35,14 +35,34 @@ function requestToken(req: IncomingMessage): string | null {
  */
 export type ViewerIdentity = 'local' | 'token' | `access:${string}`;
 
+/** Observation only: owner email membership does not change the authentication policy. */
+export interface ViewerAuthObservation {
+  accessVerified: boolean;
+  unknownIdentity: boolean;
+}
+
 export async function authenticateViewerRequest(
-  req: IncomingMessage
+  req: IncomingMessage,
+  observation?: ViewerAuthObservation
 ): Promise<ViewerIdentity | null> {
   const configured = process.env.MAMA_AUTH_TOKEN;
   if (isLocalRequest(req) && !isTunnelRequest(req)) return 'local';
   const token = requestToken(req);
-  if (configured && token !== null && safeTokenEqual(token, configured)) return 'token';
+  const validToken = configured && token !== null && safeTokenEqual(token, configured);
+  if (validToken && !observation) return 'token';
   const email = await verifiedCfAccessEmail(req.headers);
+  if (observation) {
+    observation.accessVerified = email !== null;
+    const owners = process.env.MAMA_VIEWER_OWNER_EMAILS;
+    observation.unknownIdentity =
+      email !== null &&
+      owners !== undefined &&
+      !owners
+        .split(',')
+        .map((owner) => owner.trim().toLowerCase())
+        .includes(email.toLowerCase());
+  }
+  if (validToken) return 'token';
   return email === null
     ? null
     : `access:${createHash('sha256').update(email).digest('hex').slice(0, 12)}`;

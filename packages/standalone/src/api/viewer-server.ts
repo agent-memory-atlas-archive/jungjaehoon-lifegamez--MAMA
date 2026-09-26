@@ -24,6 +24,7 @@ import {
   requireViewerAuth,
 } from './auth-middleware.js';
 import { logCfAccessConfiguration } from './cf-access.js';
+import { createSecurityEventRecorder, type SecurityEventOptions } from './security-events.js';
 import {
   isAllowedViewerHost,
   logViewerInternalError,
@@ -107,6 +108,7 @@ export interface ViewerServerOptions {
   getRuntimeStatus?: () => ViewerRuntimeStatus | Promise<ViewerRuntimeStatus>;
   getMemoryStats?: () => ViewerMemoryStats | Promise<ViewerMemoryStats>;
   logPath?: string;
+  securityEvents?: SecurityEventOptions;
 }
 
 export interface ViewerServer {
@@ -468,6 +470,7 @@ function readLogTail(
 
 export function createViewerServer(options: ViewerServerOptions): ViewerServer {
   logCfAccessConfiguration();
+  const securityEvents = createSecurityEventRecorder(options.securityEvents);
   const port = options.port ?? resolveApiPort(process.env.MAMA_API_PORT);
   const host = options.host ?? process.env.MAMA_API_HOST ?? '127.0.0.1';
   const root = options.viewerDirectory ?? viewerDirectory();
@@ -845,14 +848,14 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
     pathname === '/graph/update';
 
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    const audit = viewerRequestAudit(req, res);
+    const audit = viewerRequestAudit(req, res, securityEvents.record);
     if (!isAllowedViewerHost(req)) {
       json(res, 421, { error: true, code: 'MISDIRECTED_REQUEST', message: 'Host is not allowed' });
       return;
     }
     const url = new URL(req.url ?? '/', 'http://localhost');
     if (isTunnelRequest(req) || apiPath(url.pathname))
-      audit.identity = await authenticateViewerRequest(req);
+      audit.identity = await authenticateViewerRequest(req, audit);
     const origin = req.headers.origin;
     if (typeof origin === 'string' && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
       res.setHeader('Access-Control-Allow-Origin', origin);
@@ -964,6 +967,12 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
         result = { memory: await options.getMemoryStats() };
       } else if (url.pathname === '/api/logs/daemon') {
         result = readLogTail(options.logPath, url.searchParams);
+      } else if (url.pathname === '/api/security/events') {
+        const params = new URLSearchParams({
+          limit: String(parseLimit(url.searchParams, 50, 2_000)),
+        });
+        const { lines, ...metadata } = readLogTail(securityEvents.path, params);
+        result = { ...metadata, events: (lines as string[]).map((line) => JSON.parse(line)) };
       } else if (url.pathname === '/api/cron') {
         result = { jobs: [], ...notAvailable() };
       } else if (url.pathname.startsWith('/api/cron/')) {

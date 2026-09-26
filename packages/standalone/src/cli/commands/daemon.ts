@@ -414,6 +414,14 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
       reportSseClients: owner.reportSseClients,
       wikiRoot: owner.wikiRoot,
       logPath: config.logging.file,
+      securityEvents: {
+        path: join(paths.mamaRoot, 'logs', 'security-events.jsonl'),
+        replay: options.mode === 'replay',
+        sendToOwner: async (text, key) => {
+          if (!gateway) throw new Error('Telegram gateway is not available for a security alert');
+          await gateway.sendToOwner(text, key);
+        },
+      },
       getMemoryStats: () => readViewerMemoryStats(owner!.database.adapter),
       getRuntimeStatus: () => ({
         running: true,

@@ -20,6 +20,10 @@ import {
 import type { W1Config } from '../../src/runtime/config.js';
 import { createOwnerRuntime } from '../../src/runtime/owner-runtime.js';
 import { actionMcpSession } from '../helpers/action-mcp-session.js';
+import {
+  createSecurityEventRecorder,
+  type SecurityEventOptions,
+} from '../../src/api/security-events.js';
 
 const roots: string[] = [];
 
@@ -222,6 +226,7 @@ describe('daemon bootstrap', () => {
       database: { adapter: { prepare: vi.fn(() => ({ get: memoryRead })) } },
     };
     const viewer = viewerDouble(order);
+    let securityEvents: SecurityEventOptions | undefined;
     const connectors = {
       stop: vi.fn(async () => {
         order.push('connectors:stop');
@@ -250,6 +255,7 @@ describe('daemon bootstrap', () => {
           return owner as never;
         }),
         createViewerServer: vi.fn((options) => {
+          securityEvents = options.securityEvents;
           expect(options.getMemoryStats?.()).toEqual(memoryStats);
           expect(owner.database.adapter.prepare).toHaveBeenCalledWith(
             expect.stringContaining('FROM decisions')
@@ -271,6 +277,21 @@ describe('daemon bootstrap', () => {
     });
 
     expect(order).toEqual(['owner:start', 'viewer:start', 'connectors:start', 'telegram:start']);
+    expect(securityEvents?.path).toBe(join(mamaRoot, 'logs', 'security-events.jsonl'));
+    expect(securityEvents?.replay).toBe(false);
+    createSecurityEventRecorder(securityEvents).record({
+      time: new Date().toISOString(),
+      class: 'probe',
+      method: 'GET',
+      path: '/.env',
+      status: 404,
+      cfRay: null,
+      identity: 'anonymous',
+    });
+    expect(gateway.sendToOwner).toHaveBeenCalledWith(
+      expect.stringContaining('/.env'),
+      expect.any(String)
+    );
     expect(existsSync(join(mamaRoot, 'workspace', '.git', 'HEAD'))).toBe(true);
     expect(readFileSync(join(mamaRoot, 'workspace', '.git', 'HEAD'), 'utf8')).toBe(
       'ref: refs/heads/main\n'
@@ -354,6 +375,7 @@ describe('daemon bootstrap', () => {
       start: vi.fn(async () => undefined),
       stop: vi.fn(async () => undefined),
     };
+    let securityEvents: SecurityEventOptions | undefined;
     const replay = vi.fn(async (context: { owner: unknown }) => {
       expect(context.owner).toBe(owner);
       expect(viewer.start).toHaveBeenCalledOnce();
@@ -367,7 +389,10 @@ describe('daemon bootstrap', () => {
       replay,
       dependencies: {
         createOwnerRuntime: vi.fn(async () => owner as never),
-        createViewerServer: vi.fn(() => viewer as never),
+        createViewerServer: vi.fn((options) => {
+          securityEvents = options.securityEvents;
+          return viewer as never;
+        }),
         startConnectorRuntime: vi.fn(async () => {
           throw new Error('live connectors must not start in replay mode');
         }),
@@ -382,6 +407,19 @@ describe('daemon bootstrap', () => {
     expect(daemon.connectors).toBeNull();
     expect(daemon.gateway).toBeNull();
     expect(daemon.viewer).toBe(viewer);
+    expect(securityEvents?.replay).toBe(true);
+    const sendToOwner = vi.fn(async () => {});
+    createSecurityEventRecorder({ ...securityEvents, sendToOwner }).record({
+      time: new Date().toISOString(),
+      class: 'probe',
+      method: 'GET',
+      path: '/.env',
+      status: 404,
+      cfRay: null,
+      identity: 'anonymous',
+    });
+    expect(sendToOwner).not.toHaveBeenCalled();
+    expect(existsSync(join(mamaRoot, 'logs', 'security-events.jsonl'))).toBe(true);
     await daemon.stop();
     expect(viewer.stop).toHaveBeenCalledOnce();
   });
