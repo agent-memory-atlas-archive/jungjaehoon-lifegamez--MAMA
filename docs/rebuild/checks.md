@@ -515,9 +515,23 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Evidence: seven-revision set/clear/withdraw fold, inaccessible judgment summary nulling, and the
   work.show catalog roundtrip pass; knowledge/api suites pass 24 files / 225 tests and core tsc passes.
 - Still open: a fresh live owner C2 turn using the new default has not been run in this code-only change.
+
 - 2026-09-26 12:00 KST: owner-reports R9 (Codex implemented; supervisor removed a copied visibility
   query and a wrapper). work.show now returns the revision chain by default — per revision: number,
   operation, event time (null for legacy rows), the status and stage in effect after it (withdraw →
   cancelled), and the revision's summary when its record is visible to the caller; history "all" keeps
   the full values; readWork's own default is unchanged for other callers. Core knowledge+api 225/225,
   typecheck clean. Live proof pending with R8 (one daemon restart for both).
+
+- 2026-09-26 12:30 KST: owner-reports R8. Codex built lexical tokens + embedding cosine with a score
+  threshold; measured on the live ledger (109 titles, real e5 embedder) the embedding part did not
+  earn its place: every query passed the threshold (total 109; e5 gives unrelated titles ~0.8 cosine),
+  a transliterated Korean name ranked a different, similarly named item first (0.654 vs 0.653), a short
+  Korean name separated by 0.002, and the first query embedded all items for 80 s (again after every
+  restart). The Codex test hid this with a fake embedder that mapped both scripts to one vector.
+  Supervisor removed the embedding path: work.list text now ranks by NFKC token overlap plus a
+  separator-free containment bonus; an item sharing no token is not a match; rows carry their score.
+  status accepts a list (OR); ids outside view=detail is refused. Real-title check: "<asset-1>
+  SSR1" and "<task-title-1>" rank their items first; a Korean transliteration shares no token and returns
+  nothing, so the agent searches in the title's script (it already translated to katakana in C2 and
+  failed only on the space). Standalone api+runtime 134/134, typecheck clean. Tests use synthetic names.

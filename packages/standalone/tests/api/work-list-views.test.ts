@@ -108,10 +108,10 @@ function context(readWork: WorkListViewContext['knowledge']['readWork']): WorkLi
 }
 
 describe('progressive work.list views', () => {
-  it('returns a bounded compact items page and keeps detail-only evidence out', () => {
+  it('returns a bounded compact items page and keeps detail-only evidence out', async () => {
     const reader = makeReader(Array.from({ length: 30 }, (_, index) => view(index + 1)));
 
-    const result = runWorkListView({}, context(reader.readWork));
+    const result = await runWorkListView({}, context(reader.readWork));
 
     expect(result).toMatchObject({ view: 'items', returned: 25, total: 30 });
     expect(result.tasks).toHaveLength(25);
@@ -124,7 +124,7 @@ describe('progressive work.list views', () => {
     expect(JSON.stringify(result).length).toBeLessThanOrEqual(6_000);
   });
 
-  it('filters status, stage, project, and title or description before paging', () => {
+  it('filters status, stage, project, and title or description before paging', async () => {
     const reader = makeReader([
       view(1, {
         values: {
@@ -156,38 +156,49 @@ describe('progressive work.list views', () => {
     ]);
 
     expect(
-      runWorkListView(
-        { view: 'items', status: 'pending', stage: 'stage-1', project: 'scope-1', text: 'needle' },
-        context(reader.readWork)
+      (
+        await runWorkListView(
+          {
+            view: 'items',
+            status: 'pending',
+            stage: 'stage-1',
+            project: 'scope-1',
+            text: 'needle',
+          },
+          context(reader.readWork)
+        )
       ).tasks.map((task) => task.commitmentId)
     ).toEqual(['commitment-1']);
   });
 
-  it('filters to the items written at or after changedSince', () => {
+  it('filters to the items written at or after changedSince', async () => {
     const items = [
       view(1, { updatedAt: 100 }),
       view(2, { updatedAt: 200 }),
       view(3, { updatedAt: 300 }),
     ];
     const reader = makeReader(items);
-    const result = runWorkListView({ view: 'items', changedSince: 200 }, context(reader.readWork));
+    const result = await runWorkListView(
+      { view: 'items', changedSince: 200 },
+      context(reader.readWork)
+    );
     expect(result).toMatchObject({ total: 2, returned: 2 });
     expect(
       (result.tasks as Array<{ commitmentId: string }>).map((task) => task.commitmentId)
     ).toEqual(['commitment-2', 'commitment-3']);
   });
 
-  it('rejects a cursor after the commitment read version changes', () => {
+  it('rejects a cursor after the commitment read version changes', async () => {
     const reader = makeReader(Array.from({ length: 30 }, (_, index) => view(index + 1)));
-    const first = runWorkListView({}, context(reader.readWork));
+    const first = await runWorkListView({}, context(reader.readWork));
     reader.state.items[0] = view(1, { values: { title: 'changed', status: 'pending' } });
 
-    expect(() => runWorkListView({ cursor: first.nextCursor }, context(reader.readWork))).toThrow(
-      /changed.*restart/i
-    );
+    await expect(
+      runWorkListView({ cursor: first.nextCursor }, context(reader.readWork))
+    ).rejects.toThrow(/changed.*restart/i);
   });
 
-  it('surfaces an incomplete commitment page instead of hiding scope gaps', () => {
+  it('surfaces an incomplete commitment page instead of hiding scope gaps', async () => {
     const readWork = vi
       .fn()
       .mockReturnValueOnce({
@@ -209,10 +220,12 @@ describe('progressive work.list views', () => {
         coverage: { returned: 0, total: 2, complete: true, reasons: [] },
       });
 
-    expect(() => runWorkListView({}, context(readWork))).toThrow(/incomplete|outside the caller/i);
+    await expect(runWorkListView({}, context(readWork))).rejects.toThrow(
+      /incomplete|outside the caller/i
+    );
   });
 
-  it('returns up to four full records with basis, history, and code-point text continuation', () => {
+  it('returns up to four full records with basis, history, and code-point text continuation', async () => {
     const longText = 'x'.repeat(2_301);
     const reader = makeReader([
       view(1, {
@@ -222,7 +235,7 @@ describe('progressive work.list views', () => {
       }),
     ]);
 
-    const first = runWorkListView(
+    const first = await runWorkListView(
       { view: 'detail', ids: ['commitment-1'], text_limit: 1_000 },
       context(reader.readWork)
     );
@@ -232,7 +245,7 @@ describe('progressive work.list views', () => {
     expect(task).toHaveProperty('history');
     expect(task.values.description).toMatchObject({ total: 2_301, nextOffset: 1_000 });
 
-    const second = runWorkListView(
+    const second = await runWorkListView(
       { view: 'detail', ids: ['commitment-1'], text_offset: 1_000, text_limit: 2_000 },
       context(reader.readWork)
     );
@@ -251,6 +264,22 @@ describe('progressive work.list views', () => {
       'items',
       'detail',
     ]);
+    expect(registration.contract.inputSchema.properties?.status).toMatchObject({
+      oneOf: expect.arrayContaining([
+        {
+          type: 'string',
+          enum: ['pending', 'in_progress', 'review', 'blocked', 'done', 'cancelled'],
+        },
+        {
+          type: 'array',
+          minItems: 1,
+          items: {
+            type: 'string',
+            enum: ['pending', 'in_progress', 'review', 'blocked', 'done', 'cancelled'],
+          },
+        },
+      ]),
+    });
     expect(registration.contract.summary).toContain('bounded');
   });
 
@@ -266,5 +295,71 @@ describe('progressive work.list views', () => {
 
     expect(result).toMatchObject({ view: 'items', returned: 1 });
     expect(reader.readWork).toHaveBeenCalledWith(expect.anything(), access);
+  });
+
+  it('ranks by normalized tokens: spaces, circled digits and underscores do not hide a title', async () => {
+    const reader = makeReader([
+      view(1, {
+        updatedAt: 1_700_000_100_003,
+        values: { title: 'Synthetic unrelated item', description: 'unrelated description' },
+      }),
+      view(2, {
+        updatedAt: 1_700_000_100_001,
+        values: {
+          title: '[P] サンプルタワー⑥_SSR_イラスト1',
+          description: 'Synthetic target description',
+        },
+      }),
+    ]);
+    const readContext = context(reader.readWork);
+
+    const Japanese = await runWorkListView(
+      { view: 'items', text: 'サンプルタワー SSR1' },
+      readContext
+    );
+    expect(Japanese.tasks[0]).toMatchObject({
+      commitmentId: 'commitment-2',
+      title: '[P] サンプルタワー⑥_SSR_イラスト1',
+    });
+    expect(Japanese.tasks[0]!.score).toEqual(expect.any(Number));
+    expect(Japanese.tasks).toHaveLength(1);
+
+    // A name in another script shares no token: no match, so the agent searches in the title's script.
+    const otherScript = await runWorkListView({ view: 'items', text: 'sanpurutawa' }, readContext);
+    expect(otherScript.tasks).toEqual([]);
+
+    const shortJapanese = await runWorkListView(
+      { view: 'items', text: 'サンプルタワー' },
+      readContext
+    );
+    expect(shortJapanese.tasks[0]).toMatchObject({
+      commitmentId: 'commitment-2',
+      title: '[P] サンプルタワー⑥_SSR_イラスト1',
+    });
+  });
+
+  it('accepts multiple statuses as an OR filter in one read', async () => {
+    const reader = makeReader([
+      view(1, { values: { title: 'Synthetic pending', status: 'pending' } }),
+      view(2, { values: { title: 'Synthetic review', status: 'review' } }),
+      view(3, { values: { title: 'Synthetic done', status: 'done' } }),
+    ]);
+
+    const result = await runWorkListView(
+      { view: 'items', status: ['pending', 'review'] },
+      context(reader.readWork)
+    );
+
+    expect(result.tasks.map((task) => task.commitmentId)).toEqual(['commitment-1', 'commitment-2']);
+    expect(reader.readWork).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses ids on a non-detail view before reading commitments', async () => {
+    const reader = makeReader([view(1)]);
+
+    await expect(
+      runWorkListView({ view: 'items', ids: ['commitment-1'] }, context(reader.readWork))
+    ).rejects.toThrow(/ids.*detail/i);
+    expect(reader.readWork).not.toHaveBeenCalled();
   });
 });

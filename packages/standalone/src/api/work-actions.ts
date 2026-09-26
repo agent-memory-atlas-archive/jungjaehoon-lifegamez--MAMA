@@ -40,7 +40,7 @@ export interface WorkListTextWindow {
 type PublicWorkStatus = 'pending' | 'in_progress' | 'review' | 'blocked' | 'done' | 'cancelled';
 
 interface WorkListFilter {
-  readonly status?: PublicWorkStatus;
+  readonly status?: readonly PublicWorkStatus[];
   readonly stage?: string;
   readonly project?: string;
   readonly text?: string;
@@ -125,6 +125,24 @@ function workListString(value: unknown, field: string): string | undefined {
   return value;
 }
 
+function workListStatuses(value: unknown): readonly PublicWorkStatus[] | undefined {
+  if (value === undefined) return undefined;
+  const values = Array.isArray(value) ? value : [value];
+  if (values.length === 0) {
+    throw new Error('work.list status must contain at least one status');
+  }
+  const statuses = values.map((candidate) => {
+    if (typeof candidate !== 'string') {
+      throw new Error('work.list status must be a string or an array of strings');
+    }
+    if (!WORK_LIST_STATUSES.includes(candidate as PublicWorkStatus)) {
+      throw new Error(`work.list status must be one of ${WORK_LIST_STATUSES.join('|')}`);
+    }
+    return candidate as PublicWorkStatus;
+  });
+  return [...new Set(statuses)];
+}
+
 function workListInteger(
   value: unknown,
   field: string,
@@ -156,12 +174,9 @@ function workListAsOf(value: unknown): number | undefined {
 }
 
 function workListFilter(input: Record<string, unknown>): WorkListFilter {
-  const rawStatus = workListString(input.status, 'status');
-  if (rawStatus !== undefined && !WORK_LIST_STATUSES.includes(rawStatus as PublicWorkStatus)) {
-    throw new Error(`work.list status must be one of ${WORK_LIST_STATUSES.join('|')}`);
-  }
+  const status = workListStatuses(input.status);
   return {
-    ...(rawStatus === undefined ? {} : { status: rawStatus as PublicWorkStatus }),
+    ...(status === undefined ? {} : { status }),
     ...(input.stage === undefined ? {} : { stage: workListString(input.stage, 'stage') }),
     ...(input.project === undefined ? {} : { project: workListString(input.project, 'project') }),
     ...(input.text === undefined ? {} : { text: workListString(input.text, 'text') }),
@@ -178,6 +193,49 @@ function workListValueObject(value: unknown): Record<string, unknown> {
 
 function workListText(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
+}
+
+function workListNormalizedText(value: string): string {
+  return value.normalize('NFKC').toLowerCase();
+}
+
+function workListTokens(value: string): string[] {
+  const normalized = workListNormalizedText(value)
+    .replace(/([\p{L}])([\p{N}])/gu, '$1 $2')
+    .replace(/([\p{N}])([\p{L}])/gu, '$1 $2');
+  return normalized.split(/[^\p{L}\p{N}]+/gu).filter((token) => token.length > 0);
+}
+
+function workListSearchFields(item: CommitmentView): { title: string; description: string } {
+  const values = workListValueObject(item.values);
+  return {
+    title: workListText(values.title) ?? '',
+    description: workListText(values.description) ?? '',
+  };
+}
+
+function workListLexicalScore(
+  query: string,
+  fields: { title: string; description: string }
+): number {
+  const queryTokens = [...new Set(workListTokens(query))];
+  if (queryTokens.length === 0) {
+    throw new Error('work.list text must contain searchable text');
+  }
+  const fieldText = `${fields.title}\n${fields.description}`;
+  const fieldTokens = new Set(workListTokens(fieldText));
+  const overlap = queryTokens.filter((token) => fieldTokens.has(token)).length / queryTokens.length;
+  const compactQuery = workListNormalizedText(query).replace(/[^\p{L}\p{N}]+/gu, '');
+  const exactSubstringBonus =
+    compactQuery.length > 0 &&
+    [fields.title, fields.description].some((field) =>
+      workListNormalizedText(field)
+        .replace(/[^\p{L}\p{N}]+/gu, '')
+        .includes(compactQuery)
+    )
+      ? 0.2
+      : 0;
+  return Math.min(1, overlap * 0.8 + exactSubstringBonus);
 }
 
 function workListStatus(item: CommitmentView): PublicWorkStatus {
@@ -238,7 +296,11 @@ function workListDueState(
   return 'date_overdue';
 }
 
-function workListCompact(item: CommitmentView, now: number): Record<string, unknown> {
+function workListCompact(
+  item: CommitmentView,
+  now: number,
+  score?: number
+): Record<string, unknown> {
   const values = workListValueObject(item.values);
   const status = workListStatus(item);
   const assignee = workListText(values.assignee ?? values.assigneeText ?? values.assignee_text);
@@ -285,35 +347,56 @@ function workListCompact(item: CommitmentView, now: number): Record<string, unkn
   if (values.autoCreated === true || values.auto_created === true) compact.auto_created = true;
   if (values.confirmed === true) compact.confirmed = true;
   if (item.withdrawn) compact.withdrawn = true;
+  if (score !== undefined) compact.score = score;
   return compact;
 }
 
 function workListMatches(item: CommitmentView, filter: WorkListFilter): boolean {
   const values = workListValueObject(item.values);
-  if (filter.status !== undefined && workListStatus(item) !== filter.status) return false;
+  if (filter.status !== undefined && !filter.status.includes(workListStatus(item))) return false;
   if (filter.stage !== undefined && workListText(values.stage) !== filter.stage) return false;
   if (filter.project !== undefined && workListText(values.project) !== filter.project) return false;
   if (filter.changedSince !== undefined && item.updatedAt < filter.changedSince) return false;
-  if (filter.text !== undefined) {
-    const needle = filter.text.toLocaleLowerCase();
-    const haystack = [workListText(values.title), workListText(values.description)]
-      .filter((value): value is string => value !== null)
-      .join('\n')
-      .toLocaleLowerCase();
-    if (!haystack.includes(needle)) return false;
-  }
   return true;
+}
+
+interface WorkListRankedItem {
+  readonly item: CommitmentView;
+  readonly score?: number;
+}
+
+/**
+ * Rank by the owner's words, not by substring: token overlap after NFKC and
+ * splitting on spaces, underscores, punctuation and letter/number boundaries,
+ * plus a bonus when the query is contained with separators removed. An item
+ * sharing no token is not a match. Embeddings were measured and dropped: on
+ * the live ledger e5 gave every title ~0.8 cosine (no separation, a
+ * transliterated Korean name ranked a different item first) and the first
+ * query embedded all items for 80 s.
+ */
+function workListRankedItems(
+  items: readonly CommitmentView[],
+  filter: WorkListFilter
+): readonly WorkListRankedItem[] {
+  const filtered = items.filter((item) => workListMatches(item, filter));
+  if (filter.text === undefined) return filtered.map((item) => ({ item }));
+  const query = filter.text;
+  return filtered
+    .map((item) => ({ item, score: workListLexicalScore(query, workListSearchFields(item)) }))
+    .filter((candidate) => candidate.score > 0)
+    .sort((left, right) => right.score - left.score || right.item.updatedAt - left.item.updatedAt);
 }
 
 function workListFingerprint(filter: WorkListFilter): string {
   return createHash('sha256')
     .update(
       JSON.stringify([
-        filter.status ?? null,
+        filter.status === undefined ? null : [...filter.status].sort(),
         filter.stage ?? null,
         filter.project ?? null,
         filter.text ?? null,
         filter.asOf ?? null,
+        filter.changedSince ?? null,
       ])
     )
     .digest('base64url')
@@ -509,11 +592,11 @@ function workListDetail(input: Record<string, unknown>, ctx: WorkListViewContext
 }
 
 function workListOverview(
-  filter: WorkListFilter,
   snapshot: WorkListSnapshot,
+  rankedItems: readonly WorkListRankedItem[],
   now: number
 ): WorkListOverview {
-  const items = snapshot.items.filter((item) => workListMatches(item, filter));
+  const items = rankedItems.map(({ item }) => item);
   const status = Object.fromEntries(WORK_LIST_STATUSES.map((name) => [name, 0])) as Record<
     PublicWorkStatus,
     number
@@ -574,17 +657,26 @@ function workListOverview(
   };
 }
 
-export function runWorkListView(rawInput: unknown, ctx: WorkListViewContext): WorkListViewResult {
+export async function runWorkListView(
+  rawInput: unknown,
+  ctx: WorkListViewContext
+): Promise<WorkListViewResult> {
   const input = workListObject(rawInput);
   const view = input.view === undefined ? 'items' : input.view;
   if (view !== 'overview' && view !== 'items' && view !== 'detail') {
     throw new Error('work.list view must be one of overview|items|detail');
   }
+  if (input.ids !== undefined && view !== 'detail') {
+    throw new Error('work.list ids are only valid with view=detail');
+  }
   if (view === 'detail') return workListDetail(input, ctx);
   const filter = workListFilter(input);
   const snapshot = workListReadSnapshot(ctx, filter);
   const now = ctx.now?.() ?? snapshot.observedAt;
-  if (view === 'overview') return workListOverview(filter, snapshot, now);
+  if (view === 'overview') {
+    const rankedItems = workListRankedItems(snapshot.items, filter);
+    return workListOverview(snapshot, rankedItems, now);
+  }
 
   const limit = workListInteger(
     input.limit,
@@ -599,15 +691,15 @@ export function runWorkListView(rawInput: unknown, ctx: WorkListViewContext): Wo
       'work.list board changed since this cursor was issued; restart the items read from the first page'
     );
   }
-  const filtered = snapshot.items.filter((item) => workListMatches(item, filter));
+  const rankedItems = workListRankedItems(snapshot.items, filter);
   const offset = decoded?.offset ?? 0;
-  const page = filtered.slice(offset, offset + limit);
-  const nextOffset = offset + page.length < filtered.length ? offset + page.length : null;
+  const page = rankedItems.slice(offset, offset + limit);
+  const nextOffset = offset + page.length < rankedItems.length ? offset + page.length : null;
   return {
     success: true,
     view: 'items',
-    tasks: page.map((item) => workListCompact(item, now)),
-    total: filtered.length,
+    tasks: page.map(({ item, score }) => workListCompact(item, now, score)),
+    total: rankedItems.length,
     returned: page.length,
     nextCursor:
       nextOffset === null
@@ -651,7 +743,12 @@ export function workListActionRegistrations(ports: WorkListPorts): ActionRegistr
             },
             limit: { type: 'integer', minimum: 1, maximum: WORK_LIST_MAX_LIMIT },
             cursor: { type: 'string', minLength: 1 },
-            status: { type: 'string', enum: WORK_LIST_STATUSES },
+            status: {
+              oneOf: [
+                { type: 'string', enum: WORK_LIST_STATUSES },
+                { type: 'array', minItems: 1, items: { type: 'string', enum: WORK_LIST_STATUSES } },
+              ],
+            },
             stage: { type: 'string' },
             project: { type: 'string' },
             text: { type: 'string' },
