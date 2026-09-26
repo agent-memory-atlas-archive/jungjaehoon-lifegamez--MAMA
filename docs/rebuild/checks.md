@@ -563,3 +563,21 @@ The implementation writes raw/index data during import only. Replay is the owner
   an explicit runner signal. Core 525/525 (memory, knowledge, api, runtime), standalone 138/138,
   typechecks clean. Live proof pending: restart, then ask for a full report — the report-format and
   Telegram-formatting lessons must show in the stimulus and be followed.
+- 2026-09-26 12:47 KST: R3 live (restart → new thread). "전체보고해줘": the stimulus carried two <lessons>
+  blocks — startup (three feedback-translation lessons) and the turn's own, whose first line was the
+  owner's 11:18 correction "전체 보고는 대화체가 아니라 간결한 보고서 형식". The answer came in report
+  form (title, 우선 확인, 결정·확인 요청), Telegram <b> tags, no Markdown, no ids, and the agent
+  republished the four board slots first (the board was stale since 9/25). 74 s, most of it reading the
+  ledger in pages. The Markdown lesson was not among the three recalled but the answer complied. Still
+  missing: Kagemusha's five-part full-report format and schedule (R5).
+
+- 2026-09-26 13:40 KST: owner-reports R6 part 1 (Codex implemented; supervisor kept non-ASCII file
+  names readable — the sanitizer turned a Japanese name into underscores — and set the owner chat in the
+  testbed config). New owner actions: source.attachment.list (Chatwork: the room's file list matched by
+  the stored file ids, the message id, or upload time within 5 min of the message; Slack: file ids from
+  metadata or `(slack_file:<id>)` markers), source.attachment.download (the file must belong to that
+  room; saved under the workspace files/<connector>/<room>/), deliver.telegram.file (owner chat from the
+  new required config telegram.owner_chat_id, which must be in allowed_chats; path under workspace
+  files, no symlink, regular file, ≤ 50 MB, idempotent per operation). Live Chatwork and Slack collection
+  now keep file ids in metadata. Standalone 213/213, typecheck clean. Live proof pending with part 2
+  (shell), on the 9/14 feedback ZIP.

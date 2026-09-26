@@ -12,20 +12,60 @@ import type {
   IConnector,
   NormalizedItem,
 } from '../framework/types.js';
+import {
+  type AttachmentDescriptor,
+  type AttachmentListRequest,
+  type AttachmentDownloadRequest,
+} from '../framework/attachments.js';
+import { requireHttpsUrl, saveResponseBody } from '../framework/attachment-io.js';
+
+interface SlackMessageFile {
+  id?: string;
+  name?: string;
+}
+
+interface SlackFileInfo {
+  id: string;
+  name: string;
+  size: number;
+  created: number;
+  url_private?: string;
+  channels?: string[];
+  groups?: string[];
+}
+
+export interface SlackConnectorOptions {
+  client?: WebClient;
+  clientFactory?: (token: string) => WebClient;
+  fetch?: typeof fetch;
+}
+
+export function extractSlackFileIds(text: string): string[] {
+  const ids = new Set<string>();
+  for (const match of text.matchAll(/\(slack_file:([A-Za-z0-9_-]+)\)/g)) ids.add(match[1]!);
+  return [...ids];
+}
 
 export class SlackConnector implements IConnector {
   readonly name = 'slack';
   readonly type = 'api' as const;
 
   private readonly config: ConnectorConfig;
+  private readonly providedClient: WebClient | undefined;
+  private readonly clientFactory: ((token: string) => WebClient) | undefined;
+  private readonly http: typeof fetch;
   private client: WebClient | null = null;
+  private token: string | null = null;
   private readonly userCache = new Map<string, string>();
   private lastPollTime: Date | null = null;
   private lastPollCount = 0;
   private lastError: string | undefined;
 
-  constructor(config: ConnectorConfig) {
+  constructor(config: ConnectorConfig, options: SlackConnectorOptions = {}) {
     this.config = config;
+    this.providedClient = options.client;
+    this.clientFactory = options.clientFactory;
+    this.http = options.fetch ?? fetch;
   }
 
   async init(): Promise<void> {
@@ -33,12 +73,22 @@ export class SlackConnector implements IConnector {
     if (!token) {
       throw new Error('Slack bot token not found in the daemon environment.');
     }
+    this.token = token;
+    if (this.providedClient !== undefined) {
+      this.client = this.providedClient;
+      return;
+    }
+    if (this.clientFactory !== undefined) {
+      this.client = this.clientFactory(token);
+      return;
+    }
     const { WebClient } = await import('@slack/web-api');
     this.client = new WebClient(token);
   }
 
   async dispose(): Promise<void> {
     this.client = null;
+    this.token = null;
     this.userCache.clear();
   }
 
@@ -105,11 +155,14 @@ export class SlackConnector implements IConnector {
             ...(cursor === undefined ? {} : { cursor }),
           });
           for (const message of result.messages ?? []) {
+            const messageFiles = Array.isArray((message as { files?: unknown }).files)
+              ? ((message as { files: SlackMessageFile[] }).files ?? [])
+              : [];
             if (
               message.bot_id ||
               message.subtype === 'bot_message' ||
               !message.user ||
-              !message.text
+              (!message.text && messageFiles.length === 0)
             ) {
               continue;
             }
@@ -121,13 +174,29 @@ export class SlackConnector implements IConnector {
               sourceId: `${channelId}:${message.ts}`,
               channel: channelConfig.name ?? channelId,
               author: await this.resolveUserName(message.user),
-              content: message.text,
+              content: message.text ?? '',
               timestamp,
               type: 'message',
               metadata: {
                 channelId,
                 ts: message.ts,
                 ...(message.thread_ts === undefined ? {} : { threadTs: message.thread_ts }),
+                ...(messageFiles.length === 0
+                  ? {}
+                  : {
+                      slackFileIds: messageFiles
+                        .map((file) => file.id)
+                        .filter((id): id is string => typeof id === 'string' && id.trim() !== ''),
+                      slackFiles: messageFiles
+                        .filter(
+                          (file): file is SlackMessageFile & { id: string } =>
+                            typeof file.id === 'string' && file.id.trim() !== ''
+                        )
+                        .map((file) => ({
+                          fileId: file.id,
+                          ...(file.name ? { name: file.name } : {}),
+                        })),
+                    }),
               },
             });
           }
@@ -145,5 +214,103 @@ export class SlackConnector implements IConnector {
     this.lastPollCount = items.length;
     this.lastError = undefined;
     return items;
+  }
+
+  async listAttachments(request: AttachmentListRequest): Promise<AttachmentDescriptor[]> {
+    const ids = [
+      ...new Set((request.fileIds ?? []).map((fileId) => fileId.trim()).filter(Boolean)),
+    ];
+    if (ids.length === 0) return [];
+    const matchedBy = request.fileIdRule ?? 'metadata_file_id';
+    return Promise.all(
+      ids.map(async (fileId) => this.readAttachment(request.roomId, fileId, matchedBy))
+    );
+  }
+
+  async downloadAttachment(
+    request: AttachmentDownloadRequest
+  ): Promise<{ descriptor: AttachmentDescriptor; size: number }> {
+    const descriptor = await this.readAttachment(
+      request.roomId,
+      request.fileId,
+      'metadata_file_id'
+    );
+    const clientToken = this.token;
+    if (!clientToken) throw new Error('SlackConnector not initialized');
+    const fileInfo = await this.fetchFileInfo(request.fileId);
+    const downloadUrl = requireHttpsUrl(fileInfo.url_private, 'Slack file url_private');
+    const response = await this.http(downloadUrl, {
+      headers: { Authorization: `Bearer ${clientToken}` },
+    });
+    if (!response.ok) {
+      throw new Error(`Slack file ${request.fileId} download failed: HTTP ${response.status}`);
+    }
+    const size = await saveResponseBody(response, request.targetPath);
+    return { descriptor, size };
+  }
+
+  private async readAttachment(
+    roomId: string,
+    fileId: string,
+    matchedBy: AttachmentDescriptor['matchedBy']
+  ): Promise<AttachmentDescriptor> {
+    if (!this.client) throw new Error('SlackConnector not initialized');
+    if (roomId.trim() === '' || fileId.trim() === '') {
+      throw new Error('Slack attachment roomId and fileId are required');
+    }
+    const file = await this.fetchFileInfo(fileId);
+    const memberships = [...(file.channels ?? []), ...(file.groups ?? [])];
+    if (memberships.length === 0 || !memberships.includes(roomId)) {
+      throw new Error(`Slack file ${fileId} does not belong to observation room ${roomId}`);
+    }
+    return {
+      fileId: file.id,
+      name: file.name,
+      size: file.size,
+      uploadTime: file.created * 1_000,
+      matchedBy,
+    };
+  }
+
+  private async fetchFileInfo(fileId: string): Promise<SlackFileInfo> {
+    if (!this.client) throw new Error('SlackConnector not initialized');
+    const result = (await this.client.files.info({ file: fileId })) as unknown as {
+      ok?: boolean;
+      error?: string;
+      file?: Partial<SlackFileInfo>;
+    };
+    if (!result.ok || !result.file) {
+      throw new Error(
+        `Slack files.info failed for ${fileId}: ${result.error ?? 'no file metadata'}`
+      );
+    }
+    const file = result.file;
+    const id = typeof file.id === 'string' ? file.id : '';
+    const name = typeof file.name === 'string' ? file.name : '';
+    const size = Number(file.size);
+    const created = Number(file.created);
+    if (
+      id.trim() === '' ||
+      name.trim() === '' ||
+      !Number.isSafeInteger(size) ||
+      size < 0 ||
+      !Number.isSafeInteger(created) ||
+      created < 0
+    ) {
+      throw new Error(`Slack files.info returned malformed metadata for ${fileId}`);
+    }
+    return {
+      id,
+      name,
+      size,
+      created,
+      ...(typeof file.url_private === 'string' ? { url_private: file.url_private } : {}),
+      ...(Array.isArray(file.channels)
+        ? { channels: file.channels.filter((v): v is string => typeof v === 'string') }
+        : {}),
+      ...(Array.isArray(file.groups)
+        ? { groups: file.groups.filter((v): v is string => typeof v === 'string') }
+        : {}),
+    };
   }
 }

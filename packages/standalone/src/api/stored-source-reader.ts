@@ -1,7 +1,7 @@
 import type { ActionContext } from '@jungjaehoon/mama-core';
 import type { MemoryReadAllowance } from '@jungjaehoon/mama-core/api/catalog';
 import type { DatabaseAdapter } from '@jungjaehoon/mama-core/db-manager';
-import { readObservationVersion } from '@jungjaehoon/mama-core/knowledge';
+import { getObservationVersion, readObservationVersion } from '@jungjaehoon/mama-core/knowledge';
 import type { RawStore } from '../storage/source-archive.js';
 import { listRaw, searchRaw } from '../connectors/framework/raw-query.js';
 import {
@@ -37,6 +37,11 @@ export interface StoredSourceReader {
   read(
     source: string,
     input: Record<string, unknown>,
+    access: Access,
+    allowance?: Pick<MemoryReadAllowance, 'maxSourceMs'>
+  ): Record<string, unknown>;
+  readObservation(
+    observationRef: string,
     access: Access,
     allowance?: Pick<MemoryReadAllowance, 'maxSourceMs'>
   ): Record<string, unknown>;
@@ -312,6 +317,17 @@ export function createStoredSourceReader(options: StoredSourceReaderOptions): St
           }
         }),
       };
+    },
+    readObservation(observationRef, access, allowance) {
+      if (typeof observationRef !== 'string' || observationRef.trim() === '') {
+        throw new Error('observationRef must be nonblank text');
+      }
+      const stored = getObservationVersion(adapter, observationRef);
+      if (stored === null) {
+        if (access.principalId === options.ownerPrincipalId()) throw missing();
+        throw denied();
+      }
+      return this.read(stored.source, { observationRef }, access, allowance);
     },
   };
 }

@@ -73,6 +73,7 @@ describe('one owner native session', () => {
           .map((tool) => tool.name)
           .sort()
       ).toEqual([
+        'deliver.telegram.file',
         'graph.query',
         'manage.wiki.publish',
         'manage.wiki.read',
@@ -83,6 +84,8 @@ describe('one owner native session', () => {
         'memory.search',
         'report.publish',
         'report.read',
+        'source.attachment.download',
+        'source.attachment.list',
         'source.read',
         'source.search',
         'work.create',

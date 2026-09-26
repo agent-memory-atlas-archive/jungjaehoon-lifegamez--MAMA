@@ -34,6 +34,7 @@ function config(root: string, backend: 'codex' | 'claude' = 'codex'): W1Config {
     telegram: {
       enabled: true,
       token: 'fixture-token',
+      owner_chat_id: 'chat',
       allowed_chats: ['chat'],
       owner_user_ids: ['owner'],
       polling: false,
@@ -100,6 +101,7 @@ describe('daemon bootstrap', () => {
         order.push('telegram:stop');
       }),
       deliverResponse: vi.fn(async () => {}),
+      sendFile: vi.fn(async () => ({ sentAs: 'document' as const, size: 0 })),
     };
     const daemon = await bootDaemon({
       home: root,
@@ -116,7 +118,11 @@ describe('daemon bootstrap', () => {
           order.push('connectors:start');
           return connectors as never;
         }),
-        createTelegramGateway: vi.fn(() => gateway),
+        createTelegramGateway: vi.fn((options) => {
+          expect(options.config?.ownerChatId).toBe('chat');
+          expect(options.filesRoot).toBe(join(mamaRoot, 'workspace', 'files'));
+          return gateway;
+        }),
       },
     });
 
@@ -163,6 +169,7 @@ describe('daemon bootstrap', () => {
       start: vi.fn(async () => {}),
       stop: vi.fn(async () => {}),
       deliverResponse: vi.fn(async () => {}),
+      sendFile: vi.fn(async () => ({ sentAs: 'document' as const, size: 0 })),
     };
     let policyContent: string | null | undefined;
     const daemon = await bootDaemon({
@@ -251,6 +258,7 @@ describe('daemon bootstrap', () => {
       start: vi.fn(async () => {}),
       stop: vi.fn(async () => {}),
       deliverResponse: vi.fn(async () => {}),
+      sendFile: vi.fn(async () => ({ sentAs: 'document' as const, size: 0 })),
     };
     const daemon = await bootDaemon({
       home: root,

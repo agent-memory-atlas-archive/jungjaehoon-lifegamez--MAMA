@@ -71,6 +71,25 @@ describe('W1 runtime configuration', () => {
     ).toBe(false);
   });
 
+  it('requires an allowlisted owner chat when Telegram is enabled', () => {
+    const base = validConfig();
+    expect(() => parseConfig({ ...base, telegram: { ...base.telegram, enabled: true } })).toThrow(
+      /telegram\.owner_chat_id is required/
+    );
+    expect(() =>
+      parseConfig({
+        ...base,
+        telegram: { ...base.telegram, enabled: true, owner_chat_id: 'chat-other' },
+      })
+    ).toThrow(/telegram\.owner_chat_id must be listed in telegram\.allowed_chats/);
+    expect(
+      parseConfig({
+        ...base,
+        telegram: { ...base.telegram, enabled: true, owner_chat_id: 'chat-test' },
+      }).telegram.owner_chat_id
+    ).toBe('chat-test');
+  });
+
   it('loads YAML from an explicit path and fails on a missing required section', () => {
     const root = mkdtempSync(join(tmpdir(), 'mama-config-'));
     try {

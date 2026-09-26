@@ -23,6 +23,7 @@ export interface W1AgentConfig {
 export interface W1TelegramConfig {
   enabled: boolean;
   token?: string;
+  owner_chat_id?: string;
   allowed_chats: string[];
   owner_user_ids: string[];
   polling: boolean;
@@ -234,17 +235,25 @@ function parseConfigValue(
   const telegramRaw = raw.telegram === undefined ? {} : object(raw.telegram, 'telegram');
   collectIgnoredKeys(
     telegramRaw,
-    ['enabled', 'token', 'allowed_chats', 'owner_user_ids', 'polling'],
+    ['enabled', 'token', 'owner_chat_id', 'allowed_chats', 'owner_user_ids', 'polling'],
     'telegram',
     state
   );
   if (typeof (telegramRaw.enabled ?? false) !== 'boolean') {
     throw new ConfigError('telegram.enabled must be boolean');
   }
+  const telegramEnabled = (telegramRaw.enabled ?? false) as boolean;
   if (telegramRaw.polling !== undefined && typeof telegramRaw.polling !== 'boolean') {
     throw new ConfigError('telegram.polling must be boolean');
   }
   const allowedChats = stringList(telegramRaw.allowed_chats, 'telegram.allowed_chats');
+  const ownerChatId = optionalText(telegramRaw.owner_chat_id, 'telegram.owner_chat_id');
+  if (telegramEnabled && ownerChatId === undefined) {
+    throw new ConfigError('telegram.owner_chat_id is required when telegram.enabled is true');
+  }
+  if (ownerChatId !== undefined && !allowedChats.includes(ownerChatId)) {
+    throw new ConfigError('telegram.owner_chat_id must be listed in telegram.allowed_chats');
+  }
   const jevRaw = raw.jev === undefined ? {} : object(raw.jev, 'jev');
   collectIgnoredKeys(jevRaw, ['keyFile', 'vocabFile'], 'jev', state);
   const jev: W1JevConfig = {
@@ -287,10 +296,11 @@ function parseConfigValue(
         file: configPath(text(logging.file, 'logging.file'), home),
       },
       telegram: {
-        enabled: (telegramRaw.enabled ?? false) as boolean,
+        enabled: telegramEnabled,
         ...(telegramRaw.token === undefined
           ? {}
           : { token: text(telegramRaw.token, 'telegram.token') }),
+        ...(ownerChatId === undefined ? {} : { owner_chat_id: ownerChatId }),
         allowed_chats: allowedChats,
         owner_user_ids: deriveTelegramOwnerIds(telegramRaw, allowedChats),
         // Absent means the daemon polls, as in the archive gateway (`polling !== false`);

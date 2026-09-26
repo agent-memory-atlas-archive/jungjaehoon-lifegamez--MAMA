@@ -41,6 +41,13 @@ describe('owner standing prompt', () => {
     );
   });
 
+  it('explains the attachment list, download, and Telegram file delivery actions', () => {
+    const prompt = ownerSystemPrompt('codex');
+    expect(prompt).toContain(
+      "A message's attachments are listed with source.attachment.list and fetched with source.attachment.download into the workspace; a file is sent to the owner with deliver.telegram.file."
+    );
+  });
+
   it('keeps owner-facing text free of stable ids and leaves reads in tool traces', () => {
     const prompt = ownerSystemPrompt('codex');
 

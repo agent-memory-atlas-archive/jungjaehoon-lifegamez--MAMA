@@ -38,6 +38,7 @@ function config(root: string): W1Config {
     telegram: {
       enabled: true,
       token: 'fixture-token',
+      owner_chat_id: 'chat',
       allowed_chats: ['chat'],
       owner_user_ids: ['owner'],
       polling: false,
@@ -223,6 +224,7 @@ describe('W1 owner question integration', () => {
       deliverResponse: vi.fn(async (sourceRef, response) => {
         responses.push({ sourceRef, response });
       }),
+      sendFile: vi.fn(async () => ({ sentAs: 'document' as const, size: 0 })),
       receive: (input) => {
         gatewayIntake!.acceptOwnerMessage(input);
       },

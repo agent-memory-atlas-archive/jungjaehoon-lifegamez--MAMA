@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 
-import { Bot } from 'grammy';
+import { Bot, InputFile } from 'grammy';
 import type { Context } from 'grammy';
 import type { JsonValue } from '@jungjaehoon/mama-core/knowledge';
 import { BaseGateway } from './base-gateway.js';
@@ -20,6 +20,7 @@ import {
   type TelegramMessageLedgerEntry,
 } from './telegram-message-ledger.js';
 import { TelegramResponsePresenter } from './telegram-response-presenter.js';
+import { validateWorkspaceFile, type TelegramFileDeliveryResult } from '../api/file-delivery.js';
 
 const TELEGRAM_MAX_LENGTH = 4096;
 const MESSAGE_DEDUP_TTL_MS = 60_000;
@@ -37,6 +38,7 @@ export interface TelegramGatewayConfig {
   enabled: boolean;
   allowedChats?: string[];
   ownerUserIds?: string[];
+  ownerChatId?: string;
   polling?: boolean;
 }
 
@@ -45,6 +47,7 @@ export interface TelegramGatewayOptions {
   intake: TurnIntake;
   config?: Partial<TelegramGatewayConfig>;
   messageLedgerPath?: string;
+  filesRoot?: string;
 }
 
 function entityOptions<T>(entities: TelegramFormattedText['entities']): T {
@@ -133,6 +136,7 @@ export class TelegramGateway extends BaseGateway {
 
   private readonly token: string;
   private readonly config: TelegramGatewayConfig;
+  private readonly filesRoot?: string;
   private readonly messageLedger: TelegramMessageLedger;
   private readonly chatTails = new Map<string, Promise<void>>();
   private readonly activePresenters = new Map<string, TelegramResponsePresenter>();
@@ -155,8 +159,12 @@ export class TelegramGateway extends BaseGateway {
       ...(options.config?.ownerUserIds === undefined
         ? {}
         : { ownerUserIds: options.config.ownerUserIds }),
+      ...(options.config?.ownerChatId === undefined
+        ? {}
+        : { ownerChatId: options.config.ownerChatId }),
       ...(options.config?.polling === undefined ? {} : { polling: options.config.polling }),
     };
+    this.filesRoot = options.filesRoot;
     const ledgerPath = options.messageLedgerPath ?? process.env.MAMA_TELEGRAM_MESSAGE_LEDGER_PATH;
     if (!ledgerPath?.trim()) {
       throw new Error('Telegram message ledger path is required');
@@ -238,6 +246,58 @@ export class TelegramGateway extends BaseGateway {
     const trimmed = text.trim();
     if (!trimmed) return;
     await this.runInChatQueue(chatId, () => this.sendMessageNow(chatId, trimmed, idempotencyKey));
+  }
+
+  async sendFile(
+    path: string,
+    caption: string | undefined,
+    operationId: string
+  ): Promise<TelegramFileDeliveryResult> {
+    if (!this.bot || !this.connected) throw new Error('Telegram gateway not connected');
+    if (operationId.trim() === '') throw new Error('Telegram file operation id is required');
+    const ownerChatId = this.config.ownerChatId?.trim();
+    if (!ownerChatId) throw new Error('telegram.owner_chat_id is required for file delivery');
+    this.requireAllowedChat(ownerChatId);
+    if (!this.filesRoot) throw new Error('Telegram workspace files root is not configured');
+
+    const validated = validateWorkspaceFile(this.filesRoot, path);
+    const payloadIdentity = createHash('sha256')
+      .update(`${validated.path}\0${validated.size}\0${caption ?? ''}`)
+      .digest('hex');
+    const claim = this.messageLedger.claim(`file:${operationId}`, {
+      deliveryTarget: ownerChatId,
+      payloadIdentity,
+    });
+    if (!claim.claimed) {
+      if (claim.entry.state === 'delivered') {
+        return {
+          sentAs: validated.sentAs,
+          size: validated.size,
+          idempotent: true,
+        };
+      }
+      throw new Error('Telegram file delivery operation is already in progress or uncertain');
+    }
+
+    const upload = new InputFile(validated.path);
+    const sent =
+      validated.sentAs === 'photo'
+        ? await this.bot.api.sendPhoto(
+            ownerChatId,
+            upload,
+            caption === undefined ? undefined : { caption }
+          )
+        : await this.bot.api.sendDocument(
+            ownerChatId,
+            upload,
+            caption === undefined ? undefined : { caption }
+          );
+    this.messageLedger.markDelivered(`file:${operationId}`);
+    return {
+      messageId: sent.message_id,
+      sentAs: validated.sentAs,
+      size: validated.size,
+    };
   }
 
   getLastError(): string | null {

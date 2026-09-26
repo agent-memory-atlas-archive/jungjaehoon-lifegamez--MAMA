@@ -62,6 +62,7 @@ describe('W1 real owner configuration shape', () => {
         'telegram:',
         '  enabled: true',
         '  token: placeholder-telegram-token',
+        '  owner_chat_id: "123456789"',
         '  os_report_chat_id: 999999999',
         '  allowed_chats: ["123456789"]',
         'wiki:',
@@ -158,6 +159,7 @@ describe('W1 real owner configuration shape', () => {
       },
       telegram: {
         enabled: true,
+        owner_chat_id: '123456789',
         allowed_chats: ['123456789'],
         owner_user_ids: ['123456789'],
       },

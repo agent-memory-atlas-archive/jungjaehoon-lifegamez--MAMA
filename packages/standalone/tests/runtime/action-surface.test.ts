@@ -13,6 +13,7 @@ describe('W1 action surface', () => {
       scopes: [{ kind: 'project', id: 'workspace-test' }],
     });
     const expected = [
+      'deliver.telegram.file',
       'graph.query',
       'manage.wiki.publish',
       'manage.wiki.read',
@@ -23,6 +24,8 @@ describe('W1 action surface', () => {
       'memory.search',
       'report.publish',
       'report.read',
+      'source.attachment.download',
+      'source.attachment.list',
       'source.read',
       'source.search',
       'work.create',

@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 import { SlackConnector } from '../../src/connectors/slack/index.js';
 import type { ConnectorConfig } from '../../src/connectors/framework/types.js';
@@ -8,6 +11,7 @@ const slack = vi.hoisted(() => ({
   authTest: vi.fn(),
   history: vi.fn(),
   usersInfo: vi.fn(),
+  filesInfo: vi.fn(),
 }));
 
 vi.mock('@slack/web-api', () => ({ WebClient: slack.WebClient }));
@@ -19,6 +23,7 @@ const config: ConnectorConfig = {
   channels: { 'channel-key': { role: 'hub', name: 'channel-display' } },
   auth: { type: 'token', tokenName: envName },
 };
+const roots: string[] = [];
 
 describe('SlackConnector', () => {
   beforeEach(() => {
@@ -27,16 +32,19 @@ describe('SlackConnector', () => {
       auth: { test: slack.authTest },
       conversations: { history: slack.history },
       users: { info: slack.usersInfo },
+      files: { info: slack.filesInfo },
     }));
     slack.authTest.mockResolvedValue({ ok: true });
     slack.history.mockReset();
     slack.usersInfo.mockReset();
+    slack.filesInfo.mockReset();
   });
 
   afterEach(() => {
     delete process.env[envName];
     vi.unstubAllGlobals();
     vi.clearAllMocks();
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   });
 
   it('polls paginated history through the SDK and resolves authors', async () => {
@@ -71,6 +79,103 @@ describe('SlackConnector', () => {
       limit: 200,
       cursor: 'next-page',
     });
+  });
+
+  it('keeps live Slack message file ids in observation metadata', async () => {
+    slack.history.mockResolvedValue({
+      messages: [
+        {
+          ts: '20.000',
+          user: 'user-key',
+          text: 'feedback with a file',
+          files: [{ id: 'F-901', name: 'feedback-test.pdf' }],
+        },
+      ],
+      response_metadata: { next_cursor: '' },
+    });
+    slack.usersInfo.mockResolvedValue({ user: { real_name: 'actor-a' } });
+    const connector = new SlackConnector(config);
+    await connector.init();
+
+    const [item] = await connector.poll(new Date(15_000));
+
+    expect(item?.metadata).toMatchObject({
+      channelId: 'channel-key',
+      ts: '20.000',
+      slackFileIds: ['F-901'],
+      slackFiles: [{ fileId: 'F-901', name: 'feedback-test.pdf' }],
+    });
+  });
+
+  it('resolves Slack file metadata through files.info and checks the observation channel', async () => {
+    slack.filesInfo.mockResolvedValue({
+      ok: true,
+      file: {
+        id: 'F-901',
+        name: 'feedback-test.pdf',
+        size: 1_234,
+        created: 200,
+        url_private: 'https://files.example.test/F-901',
+        channels: ['channel-key'],
+        groups: [],
+      },
+    });
+    const connector = new SlackConnector(config);
+    await connector.init();
+
+    const files = await connector.listAttachments({
+      roomId: 'channel-key',
+      fileIds: ['F-901'],
+      sourceAtMs: 200_000,
+    });
+
+    expect(files).toEqual([
+      {
+        fileId: 'F-901',
+        name: 'feedback-test.pdf',
+        size: 1_234,
+        uploadTime: 200_000,
+        matchedBy: 'metadata_file_id',
+      },
+    ]);
+    expect(slack.filesInfo).toHaveBeenCalledWith({ file: 'F-901' });
+  });
+
+  it('downloads Slack url_private with the configured bot token and refuses another room', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'mama-slack-download-'));
+    roots.push(root);
+    const target = join(root, 'files', 'F-901_feedback-test.pdf');
+    mkdirSync(join(root, 'files'), { recursive: true });
+    slack.filesInfo.mockResolvedValue({
+      ok: true,
+      file: {
+        id: 'F-901',
+        name: 'feedback-test.pdf',
+        size: 9,
+        created: 200,
+        url_private: 'https://files.example.test/F-901',
+        channels: ['channel-key'],
+        groups: [],
+      },
+    });
+    const http = vi.fn().mockResolvedValue(new Response('file-data'));
+    const connector = new SlackConnector(config, { fetch: http });
+    await connector.init();
+
+    const result = await connector.downloadAttachment({
+      roomId: 'channel-key',
+      fileId: 'F-901',
+      targetPath: target,
+    });
+
+    expect(result.size).toBe(9);
+    expect(readFileSync(target, 'utf8')).toBe('file-data');
+    expect(http).toHaveBeenCalledWith('https://files.example.test/F-901', {
+      headers: { Authorization: 'Bearer fixture-slack-token' },
+    });
+    await expect(
+      connector.listAttachments({ roomId: 'other-channel', fileIds: ['F-901'] })
+    ).rejects.toThrow(/does not belong to observation room other-channel/);
   });
 
   it('skips bot messages and ignored channels', async () => {

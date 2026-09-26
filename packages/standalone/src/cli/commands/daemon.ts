@@ -30,6 +30,7 @@ import {
   type ViewerServerOptions,
 } from '../../api/viewer-server.js';
 import { resolvePackageVersion } from '../../package-version.js';
+import type { TelegramFileDeliveryResult } from '../../api/file-delivery.js';
 
 const OWNER_PRINCIPAL_ID = 'owner';
 const OWNER_AGENT_ID = 'owner-agent';
@@ -45,6 +46,11 @@ export interface DaemonGateway {
   start(): Promise<void>;
   stop(): Promise<void>;
   deliverResponse(sourceRef: string, response: string): Promise<void>;
+  sendFile(
+    path: string,
+    caption: string | undefined,
+    operationId: string
+  ): Promise<TelegramFileDeliveryResult>;
 }
 
 export interface DaemonPaths {
@@ -292,6 +298,10 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
       codexSandbox: config.agent.codex_sandbox ?? 'workspace-write',
       ...(config.agent.backend === 'claude' ? { mcpConfigPath: paths.mcpConfigPath } : {}),
       pluginDir: paths.pluginDir,
+      attachmentPorts: {
+        connectors: () => connectors?.registry ?? null,
+        telegram: () => gateway,
+      },
       ...(config.wiki?.enabled
         ? {
             wiki: {
@@ -403,9 +413,11 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
           enabled: config.telegram.enabled,
           allowedChats: config.telegram.allowed_chats,
           ownerUserIds: config.telegram.owner_user_ids,
+          ownerChatId: config.telegram.owner_chat_id,
           polling: config.telegram.polling,
         },
         messageLedgerPath: paths.telegramLedgerPath,
+        filesRoot: join(paths.workspaceDir, 'files'),
       });
       await gateway.start();
       stage(logger, 'telegram');

@@ -17,6 +17,7 @@ import type { ServerResponse } from 'node:http';
 import type { NativeSessionHandle } from '@jungjaehoon/mama-core/runtime/runtime';
 import type { NativeModelRunPort } from '@jungjaehoon/mama-core/runtime/native-turn';
 import { createStoredSourceReader } from '../api/stored-source-reader.js';
+import type { AttachmentActionPorts } from '../api/attachment-actions.js';
 import { createPersistentReportStore } from '../api/report-persistence.js';
 import { ObsidianWriter } from '../wiki/obsidian-writer.js';
 import { RawStore } from '../storage/source-archive.js';
@@ -72,6 +73,7 @@ export interface OwnerRuntimeOptions {
   onStimulusDelivered?: StimulusDeliveryOptions['onDelivered'];
   onStimulusFailed?: StimulusDeliveryOptions['onFailed'];
   maxTurns: number;
+  attachmentPorts?: Pick<AttachmentActionPorts, 'connectors' | 'telegram'>;
 }
 
 export interface OwnerRuntime {
@@ -199,6 +201,11 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       reportStore,
       reportSseClients,
       wikiPorts,
+      attachmentPorts: {
+        ...(options.attachmentPorts ?? {}),
+        stored: storedSourceReader,
+        workspaceDir: options.workspaceDir,
+      },
     });
     const access: JudgmentAccess = surface.ownerAccess;
     const standingText = ownerSystemPrompt(options.backend);

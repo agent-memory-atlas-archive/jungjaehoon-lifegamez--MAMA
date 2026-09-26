@@ -14,6 +14,10 @@ import type { JudgmentAccess, Knowledge } from '@jungjaehoon/mama-core/knowledge
 import type { MemoryScopeRef } from '@jungjaehoon/mama-core/memory/types';
 import { reportActionRegistrations } from '../api/report-actions.js';
 import { createReportPublisher, type ReportStore } from '../api/report-handler.js';
+import {
+  createAttachmentActionRegistrations,
+  type AttachmentActionPorts,
+} from '../api/attachment-actions.js';
 import { sourceActionRegistrations } from '../api/source-actions.js';
 import {
   minimalWorkActionRegistrations,
@@ -40,6 +44,9 @@ const OWNER_ACTIONS = [
   'manage.wiki.publish',
   'manage.wiki.read',
   'manage.wiki.update',
+  'source.attachment.list',
+  'source.attachment.download',
+  'deliver.telegram.file',
 ] as const;
 
 const OWNER_CONNECTORS = ['chatwork', 'slack', 'trello', 'kagemusha'] as const;
@@ -61,6 +68,7 @@ export interface ActionSurfaceOptions {
   reportStore?: ReportStore | null;
   reportSseClients?: Set<ServerResponse>;
   wikiPorts?: WikiPorts;
+  attachmentPorts?: AttachmentActionPorts;
 }
 
 export interface ActionSurface {
@@ -141,6 +149,10 @@ export function createActionSurface(options: ActionSurfaceOptions): ActionSurfac
   const registrations = [
     ...core,
     ...sourceActionRegistrations({ stored: options.storedSourceReader }),
+    ...createAttachmentActionRegistrations({
+      ...(options.attachmentPorts ?? {}),
+      stored: options.storedSourceReader,
+    }),
     ...workListActionRegistrations({ knowledge: options.knowledge }),
     ...minimalWorkActionRegistrations({
       knowledge: options.knowledge,
