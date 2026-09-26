@@ -774,3 +774,11 @@ The implementation writes raw/index data during import only. Replay is the owner
   kagemusha (4089; feedback 75, kakao 3771, line 183, telegram 60), slack (190), trello (1290). Cause it
   answers: the assignee re-check subagent asked for source "kakao", got "may not read kakao" and gave up on
   the 66% of stored rows that are kakao chats under kagemusha.
+- 2026-09-26 21:35 KST: assignee re-check after the rule, search and source-list fixes (Codex, new session).
+  Result: the asset whose uploader the owner asked about is now assigned to that uploader on both BC and
+  TF with the delivery observations as evidence; one billing item was assigned to its author. The agent
+  searched source kagemusha (7 calls) after one "kakao" refusal that now names the readable connectors.
+  54 calls in one run, no subagents; the answer said it had not re-checked every item. Read-back of the 26
+  still unassigned: none has a file upload under its number in any kakao channel; they are lodging chores,
+  quotes, meetings, pending orders and material received but not started, where no worker exists yet.
+  Still open: the agent stopped short of the full list without saying why beyond "not all re-checked".
