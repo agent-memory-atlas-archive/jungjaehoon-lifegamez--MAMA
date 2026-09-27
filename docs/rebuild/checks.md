@@ -1208,26 +1208,18 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Still open: a live source delta on the one-turn flow and the 08:00 scheduled report on the new
   structure have not run yet.
 
-### W17 verified review fixes — 2026-09-27
+### Review fixes and owner timezone (2026-09-27 – 09-28)
 
-- Result: repaired related-work reads, deterministic iCal revisions and cancellation, poll failure visibility, board/wiki guidance, and report basis removal; fixed the listed source, schedule, work-list, and revision contracts.
-- Evidence: `pnpm build`, `pnpm typecheck`, ESLint on changed TS/JS files, and 128 focused tests pass; the UI bundle was regenerated.
-- Still open: two existing native-session tests cannot bind Unix sockets in this sandbox; no live owner turn or provider poll was run, and `~/.mama` and `~/.claude` were not accessed.
-
-### Owner timezone and calendar review fixes — 2026-09-27
-
-- Result: config/onboarding now set one mutable owner timezone; interactive owner corrections update it live, all report/source/viewer/replay consumers use it, iCal storage retains raw date kinds, and schedule.upcoming sorts/filter by interpreted epoch. Duration, default iCal ends, and invalid source.recent `since` are handled.
-- Evidence: standalone build and typecheck pass; ESLint passes on changed TypeScript; 200 focused tests pass, including timezone changes across scheduling and iCal raw saves.
-- Still open: the wider owner-runtime/socket test slice has four `listen EPERM` failures in this sandbox; fixed historical import-start dates remain `+09:00` as scoped, and no live owner turn or home-state access was performed.
-
-### Required timezone propagation follow-up — 2026-09-28
-
-- Result: removed machine-zone defaults from timezone consumers; production call sites now pass the daemon setting, and calendar epochs require their stored kind.
-- Evidence: standalone build/typecheck, ESLint, Prettier, and 154 focused tests pass; grep leaves only config loading and onboarding machine-zone resolution.
-- Still open: socket-backed viewer and owner-runtime tests still fail to bind with `listen EPERM` in this sandbox; no home-state directories were accessed.
-
-### Calendar kind derivation follow-up — 2026-09-28
-
-- Result: calendar kinds now derive from timestamp values; legacy rows without kind metadata remain readable.
-- Evidence: standalone build, typecheck, changed-file ESLint, Prettier, and 47 affected tests pass.
-- Still open: no live calendar poll or owner turn was run; `~/.mama` and `~/.claude` were not accessed.
+- Result: Opus and Codex reviews of today's commits found two live-relevant P1s (related-work
+  candidates always empty; iCal failing every poll on a DTSTAMP replay conflict) and several P2s; all
+  fixed (host reads open work from the snapshot, iCal first-seen times and cancellations, poll outcomes
+  recorded, pipeline cap removed, board-section rule, wiki structure restored, basis mechanism
+  removed). Owner decision: one `timezone` setting, asked by `mama init` and changed in chat through
+  `owner.timezone.set` (owner-message turns only); every consumer takes it as a required input.
+- Evidence: build, typecheck, lint and focused suites pass; `resolvedOptions().timeZone` remains only
+  in config loading and init. First live delta on the one-turn flow (before these fixes, 2026-09-28
+  00:02): 30 s and 402,665 tokens, 7 tool calls, routed notify, no board turn (previous flow: about
+  113 s and 840k tokens per delta). One wiki update failed because the agent mistyped the optional
+  64-character version and succeeded on an append without it.
+- Still open: deploy and live checks (iCal re-snapshot, timezone change from chat, board-section
+  updates on a live delta); RRULE is not expanded.

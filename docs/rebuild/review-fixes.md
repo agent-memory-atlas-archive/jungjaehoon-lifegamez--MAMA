@@ -131,3 +131,28 @@ Codex re-read every item against the code: all F1–F3 defects resolved except t
    make it agent-writable again; the daemon refuses overlapping paths at boot.
    Known limit: the check compares resolved paths, not realpaths, so a `codex_cwd` that is a symlink to
    the downloads directory passes; it is owner configuration, not agent-reachable.
+
+## F7 — Opus and Codex reviews of the 2026-09-27 afternoon commits
+
+Both reviews read `b3607ce3b..da11e0294`; every item was checked against the code, and the iCal item
+against daemon.log.
+
+1. P1 Related-work candidates were always empty: the host parsed the agent-facing pipeline, whose rows
+   are positional arrays in seconds with no channel. The host reads open work from the snapshot.
+2. P1 iCal failed every poll after its first snapshot (DTSTAMP is the fetch time, so the same sourceId
+   carried a different payload). First-seen times are kept before poll returns; cancellations are
+   versions; ended bookings are dropped.
+3. P2 The 100-item pipeline cap would fail every delta and new session; removed.
+4. P2 `source.recent.failedConnectors` read a table nothing wrote; poll outcomes are recorded.
+5. P2 Board sections went stale (owner answers never published) or were replaced unread; a turn that
+   changes work reads and updates the sections the item is in or leaves.
+6. P2 The unused basis/freshness mechanism is removed.
+7. P2 Wiki structure deleted with the delta-board turn is restored to the standing prompt.
+8. P2 Cancelled iCal bookings stayed upcoming; all-day ends were judged in UTC; DURATION events failed
+   the feed; upcoming events sorted as strings. Fixed with the owner timezone work.
+9. P3 work.revise head read outside the transaction, report since-time, reminder calendar read,
+   work.list limit, denial kind, inferred read window, search channel, feed-key validation, error text.
+
+Not taken: slot compare-and-set for concurrent subagent board writes (board writes come from the owner
+agent; no evidence of subagent board writes). Deferred as a known issue: collect-only intent of a first
+snapshot is not persisted if the poll fails after saving.

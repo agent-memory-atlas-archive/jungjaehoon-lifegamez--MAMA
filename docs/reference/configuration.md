@@ -49,7 +49,7 @@ Move that value using `mama secret set MAMA_TELEGRAM_TOKEN`, then remove the YAM
 | `reports.reminder_start_hour`                         | Hour `0`–`23` in the configured owner time zone; default `9`.                                                                                                        |
 | `reports.reminder_end_hour`                           | Hour `0`–`23` in the configured owner time zone; default `21`; must be at least the start hour.                                                                      |
 
-Report hours use Korea Standard Time. File paths accept `~` and `${HOME}`. Most relative paths
+Report hours use the `timezone` setting. File paths accept `~` and `${HOME}`. Most relative paths
 resolve against the user's home; a relative `wiki.wikiDir` stays relative to its vault.
 See [backends](../guides/backends.md) and [reports](../guides/reports-and-board.md) for behavior.
 

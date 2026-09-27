@@ -42,7 +42,7 @@ its own owner runtime and read-only viewer, skips live connector polling and
 Telegram delivery, and stops after completion. Do not run it beside the live
 service.
 
-Each window follows source occurrence time with day boundaries in KST. The owner
+Each window follows source occurrence time with day boundaries in your configured timezone. The owner
 reads the day's work, reconciles changes and child results, and is instructed to
 write the journal, board, wiki table of contents and applicable lessons. Source
 reads are capped at the window's end so later evidence cannot leak into an earlier

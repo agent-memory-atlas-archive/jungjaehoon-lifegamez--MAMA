@@ -711,7 +711,7 @@ describe('one stimulus intake and delivery', () => {
                     connector: 'collector',
                     channelName: 'client room',
                     author: 'sender-a',
-                    kstTime: '01-01 09:00',
+                    localTime: '01-01 09:00',
                     sourceAtMs: 1,
                     observationRef: 'obs-1',
                     text: 'bounded message text',

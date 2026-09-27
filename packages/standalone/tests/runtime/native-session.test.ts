@@ -90,6 +90,7 @@ describe('one owner native session', () => {
         'memory.retire',
         'memory.save',
         'memory.search',
+        'owner.timezone.set',
         'report.publish',
         'report.read',
         'schedule.upcoming',

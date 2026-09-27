@@ -29,8 +29,15 @@ version is released.
   line saying when it applies. The agent sees the list when a session starts, reads an entry when it
   applies, and saves, revises or retires a workflow as you agree on it.
 - A source change is handled in one turn. The agent continues from what it already knows: it updates
-  the affected work item, the one board section it touches and the item's wiki page, then decides
-  whether to notify you. It no longer re-reads all work and the whole board for every change.
+  the affected work item (the host attaches up to five open items that may be related), the board
+  sections that item is in or leaves, and the topic's wiki page, then decides whether to notify you.
+  It no longer re-reads all work and the whole board for every change. A chat answer that changes
+  work updates the board the same way; only scheduled full reports rewrite the whole board.
+- Your timezone is one setting. `mama init` asks for it (default: this machine's timezone), and you
+  can change it by telling MAMA in chat. Report hours, times, deadlines and all-day events follow it.
+- A source whose last collection failed is listed in reports with its error, so a failure is not
+  read as "no change". An iCal booking that disappears from its feed before it ends is recorded as
+  cancelled.
 - Scheduled reports read the recent changes in every source, all open work by stage, and the next 14
   days of schedule, including several Google calendars, holiday calendars and iCal reservation feeds.
 - The board header counts open, overdue and unassigned work, and each board section shows when it
@@ -82,6 +89,11 @@ version is released.
   is no longer read.
 - **Connector token names:** a connector's `auth.tokenName` must be a name `mama secret set`
   accepts: one of the listed MAMA secret names, or `MAMA_ICAL_URL_<NAME>` for an iCal feed.
+- **Timezone:** 0.56 used Korea time everywhere. 0.57 uses the `timezone` setting, which defaults
+  to this machine's timezone. On a machine set to another timezone, add `timezone: Asia/Seoul` (or
+  tell MAMA in chat) to keep the old report hours.
+- **report.publish:** the `basis_revision` input and the board freshness fields were removed; a call
+  that still sends `basis_revision` is rejected as invalid input.
 - **Database migrations:** migrations 096–098 drop the unused connector event full-text index,
   guard a native-input view against malformed historical JSON, and add `workflow` as a memory
   kind. Let MAMA apply these migrations; do not edit the database schema by hand.
@@ -99,6 +111,9 @@ version is released.
   backfill is available only through a script.
 - The first live download-copy-deliver run and the one-turn source-change flow on a live change have
   not yet been observed.
+- iCal recurring events (RRULE/EXDATE) are not expanded; only the first occurrence is read.
+- If the first poll of a new calendar or iCal feed fails after saving and an event changes before the
+  retry, the older version can arrive as one live change.
 - Response time depends strongly on the model's reasoning effort: the same owner report took 291 s
   with `agent.effort: high` and 19 s with `medium` after the read changes. `medium` is recommended.
 - A live correction has not yet confirmed that guidance changes the next related answer. Live

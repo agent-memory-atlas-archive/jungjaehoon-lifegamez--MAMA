@@ -76,7 +76,7 @@ poll, error and configured channel scope. Token-backed sources need the matching
 `gws` on the daemon PATH and actual primary-calendar read access. See
 [Connectors](connectors.md).
 
-For reports, check KST schedule hours, Telegram delivery, and whether an earlier
+For reports, check the schedule hours in your configured timezone, Telegram delivery, and whether an earlier
 report is still pending. Compare task revisions with the board slot update time.
 A source delta ending in `[ack]` produces no owner notification. See
 [Reports and board](reports-and-board.md).

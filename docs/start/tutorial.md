@@ -45,8 +45,8 @@ user id ready. In your terminal, type:
 node packages/standalone/dist/cli/index.js init
 ```
 
-At the prompts, enter `claude` or `codex`, the model name, the Telegram bot token, chat id, and
-user id. Tokens are typed into hidden prompts. Do not paste them into chat or a configuration
+At the prompts, enter `claude` or `codex`, the model name, your timezone (press Enter to keep this
+machine's timezone), the Telegram bot token, chat id, and user id. Tokens are typed into hidden prompts. Do not paste them into chat or a configuration
 file. When asked which connectors to enable, type `slack` (or `chatwork`) and enter its token
 and channel ids. To skip a source for now, leave the connector list blank. Enable the launch agent
 if you want macOS to manage the daemon.
@@ -144,7 +144,9 @@ answer.
 ## 7. Receive a delta notification and a full report
 
 When a connected source adds a new message, MAMA can send a delta notification to the owner. A
-full report is scheduled for 08:00, 13:00, and 18:00 Korea Standard Time by default. There is no report
+full report is scheduled for 08:00, 13:00, and 18:00 in your timezone by default. If your
+timezone changes, tell MAMA in the owner chat, for example "My timezone is Europe/Berlin"; the
+next report follows it without a restart. There is no report
 command in the current CLI; leave the daemon running and wait for the next source change or report
 time.
 
