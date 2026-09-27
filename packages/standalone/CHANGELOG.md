@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.57.0] - 2026-09-27
+
+The product layer is rebuilt around one owner agent on Claude or Codex; see the root CHANGELOG
+and docs/start/owner-setup.md. Breaking: the CLI is `init | secret | daemon | replay | status |
+stop`, the Telegram bot token moves from config.yaml to auth.env (MAMA_TELEGRAM_TOKEN), and keys of
+the old product layer are ignored.
+
 ## [0.56.0] - 2026-09-13
 
 ### Added

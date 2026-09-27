@@ -75,10 +75,10 @@ Versions below are the current manifests, not a release of this rebuild.
 
 | Package                                                     | Role                                     | Version |
 | ----------------------------------------------------------- | ---------------------------------------- | ------- |
-| [MAMA OS](packages/standalone/README.md)                    | Owner loop and `mama` CLI                | 0.56.0  |
-| [mama-core](packages/mama-core/README.md)                   | Shared engine and public exports         | 3.2.0   |
-| [Public MCP server](packages/mcp-server/README.md)          | In-process development memory over stdio | 2.2.0   |
-| [Claude Code plugin](packages/claude-code-plugin/README.md) | Development commands and hooks           | 2.0.0   |
+| [MAMA OS](packages/standalone/README.md)                    | Owner loop and `mama` CLI                | 0.57.0  |
+| [mama-core](packages/mama-core/README.md)                   | Shared engine and public exports         | 4.0.0   |
+| [Public MCP server](packages/mcp-server/README.md)          | In-process development memory over stdio | 2.2.1   |
+| [Claude Code plugin](packages/claude-code-plugin/README.md) | Development commands and hooks           | 2.0.1   |
 
 ## Status and roadmap
 

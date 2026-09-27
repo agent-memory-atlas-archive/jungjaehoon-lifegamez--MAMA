@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## mama-core [4.0.0] / mcp-server [2.2.1] / mama-os [0.57.0] / plugin [2.0.1] - 2026-09-27
 
 The `rebuild/owner-flow` branch rebuilds the product around one owner agent on Claude or Codex.
 Start from the [owner setup guide](docs/start/owner-setup.md); published versions below describe
