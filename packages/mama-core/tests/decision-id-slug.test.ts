@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest';
 import { buildDecisionId } from '../src/memory/api.js';
 
 // prettier-ignore
-const koreanTopicKeywords = ['보고_언어_정책', '카나리아 SR 파츠분리', '외주 검수 규칙'];
+const koreanTopicKeywords = ['보고_언어_정책', '\uc0d8\ud50c SR \ud56d\ubaa9\ubd84\ub9ac', '외주 검수 규칙'];
 
 describe('Story SMALLFIX-1: buildDecisionId slugging', () => {
   describe('AC #1: ascii topics keep readable slugs', () => {
