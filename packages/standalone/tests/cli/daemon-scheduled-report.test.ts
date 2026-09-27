@@ -57,6 +57,8 @@ async function boot(
   let response = 'Some work needs a check.';
   const config = parseConfig({
     version: 1,
+    // The ticks below name Korea-time report hours; fix the zone instead of using the machine's.
+    timezone: 'Asia/Seoul',
     agent: { backend: 'codex', model: 'fixture-model', max_turns: 10, timeout: 1000 },
     database: { path: join(root, 'memory.db') },
     logging: { level: 'info', file: join(root, 'daemon.log') },
