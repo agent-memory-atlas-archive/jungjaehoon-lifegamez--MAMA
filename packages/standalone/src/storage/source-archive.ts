@@ -543,9 +543,8 @@ export class RawStore {
           if (canonicalizeProducerPayload(originalItem) !== canonicalizeProducerPayload(item)) {
             throw new Error(`Immutable raw producer replay conflict for ${item.sourceId}`);
           }
-          // Same immutable version re-listed: do not forge a new observation, but advance last-seen
-          // provenance (source_cursor / scope) so a re-poll still records that we looked - a missing
-          // poll must stay distinguishable from an unchanged one.
+          // Same immutable version re-listed: advance last-seen provenance without projecting an
+          // unchanged observation as new source work.
           updateProvenance.run(
             original.revision_hash ?? revisionHash,
             item.sourceEntityId ?? original.source_entity_id,
@@ -566,13 +565,13 @@ export class RawStore {
           let existingPending = findPending.get(refreshed.source_id, payloadHash) as
             | { sequence: number; payload_json: string }
             | undefined;
-          const provenanceChanged =
-            refreshed.source_cursor !== original.source_cursor ||
+          // A new cursor alone is only "we looked again"; a moved scope must reach the index.
+          const scopeChanged =
             refreshed.tenant_id !== original.tenant_id ||
             refreshed.project_id !== original.project_id ||
             refreshed.memory_scope_kind !== original.memory_scope_kind ||
             refreshed.memory_scope_id !== original.memory_scope_id;
-          if (provenanceChanged && !existingPending) {
+          if (scopeChanged && !existingPending) {
             const observedAt = item.observedAt;
             enqueue.run(
               refreshed.source_id,
@@ -657,7 +656,6 @@ export class RawStore {
             sourceId
           );
         }
-        const beforeUpdate = matching;
         const persisted = find.get(sourceId) as RawRow | undefined;
         if (!persisted) {
           throw new Error('Persisted raw revision is missing');
@@ -667,14 +665,13 @@ export class RawStore {
         let existingPending = findPending.get(sourceId, payloadHash) as
           | { sequence: number; payload_json: string }
           | undefined;
-        const provenanceChanged =
-          beforeUpdate !== undefined &&
-          (persisted.source_cursor !== beforeUpdate.source_cursor ||
-            persisted.tenant_id !== beforeUpdate.tenant_id ||
-            persisted.project_id !== beforeUpdate.project_id ||
-            persisted.memory_scope_kind !== beforeUpdate.memory_scope_kind ||
-            persisted.memory_scope_id !== beforeUpdate.memory_scope_id);
-        if ((!matching || provenanceChanged) && !existingPending) {
+        const scopeChanged =
+          matching !== undefined &&
+          (persisted.tenant_id !== matching.tenant_id ||
+            persisted.project_id !== matching.project_id ||
+            persisted.memory_scope_kind !== matching.memory_scope_kind ||
+            persisted.memory_scope_id !== matching.memory_scope_id);
+        if ((!matching || scopeChanged) && !existingPending) {
           const observedAt = item.observedAt;
           enqueue.run(
             sourceId,

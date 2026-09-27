@@ -432,6 +432,10 @@ export async function startRuntime(options: StartRuntimeOptions): Promise<Runtim
       writeCredential(entry.path, entry.credential);
       written.add(entry.path);
     }
+    const requeued = mailbox?.recoverOrphanedClaims() ?? 0;
+    if (requeued > 0) {
+      console.info(`[Runtime] requeued orphaned mailbox claims count=${requeued}`);
+    }
   } catch (error) {
     try {
       await mounted.close();
@@ -490,6 +494,7 @@ export async function startRuntime(options: StartRuntimeOptions): Promise<Runtim
   let reconciliationCursor = 0;
   type DrainResult = { delivered: number; failed: number; dead: number };
   const activeDeliveries = new Map<number, { accepted: boolean; result: Promise<DrainResult> }>();
+  const reportedUncertain = new Set<number>();
   let drainScheduled = false;
   const scheduleDrain = (): void => {
     if (stopped || drainScheduled) return;
@@ -508,9 +513,12 @@ export async function startRuntime(options: StartRuntimeOptions): Promise<Runtim
   };
 
   const markUncertain = async (row: MailboxRow, reason: string): Promise<void> => {
-    const before = mailbox!.nativeInputs.get(row.id);
-    mailbox!.nativeInputs.uncertain(row.id, reason);
-    if (before?.state === 'uncertain' && before.error === reason.slice(0, 500)) return;
+    // The first recorded cause stays; a later reconcile pass only re-reports it.
+    if (mailbox!.nativeInputs.get(row.id)?.state !== 'uncertain') {
+      mailbox!.nativeInputs.uncertain(row.id, reason);
+    }
+    if (reportedUncertain.has(row.id)) return;
+    reportedUncertain.add(row.id);
     try {
       await delivery?.onUncertain?.(row, reason);
     } catch {

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { createOwnerRuntime, type OwnerRuntime } from '../../src/runtime/owner-runtime.js';
 import type { NativeTurnResult } from '@jungjaehoon/mama-core/runtime/native-turn';
+import type { NativeSessionHandle } from '@jungjaehoon/mama-core/runtime/runtime';
 import type { MailboxRow } from '@jungjaehoon/mama-core/runtime/mailbox';
 import { createStimulusDelivery } from '../../src/runtime/stimulus-delivery.js';
 
@@ -38,7 +39,22 @@ async function setup() {
   let ready = false;
   const delivered: string[] = [];
   const failures: string[] = [];
-  const runTurn = vi.fn(async () => result);
+  const uncertain: string[] = [];
+  const runTurn = vi.fn<NonNullable<NativeSessionHandle['runTurn']>>(async (_content, request) => {
+    const nativeInputId = request?.nativeInputId;
+    if (!nativeInputId) throw new Error('test run is missing its native input id');
+    request?.streamCallbacks?.onInputDispatch?.({
+      backend: 'codex',
+      sessionId: 'fixture-session',
+      inputId: nativeInputId,
+    });
+    request?.streamCallbacks?.onAccepted?.({
+      backend: 'codex',
+      sessionId: 'fixture-session',
+      turnId: `turn-${nativeInputId}`,
+    });
+    return result;
+  });
   const options = {
     backend: 'codex' as const,
     model: 'fixture-model',
@@ -66,6 +82,9 @@ async function setup() {
     onStimulusFailed: async (_row: MailboxRow, reason: string) => {
       failures.push(reason);
     },
+    onStimulusUncertain: async (row: MailboxRow, reason: string) => {
+      uncertain.push(`${row.kind}:${reason}`);
+    },
   };
   let owner = await createOwnerRuntime(options);
   owners.push(owner);
@@ -75,6 +94,7 @@ async function setup() {
     },
     delivered,
     failures,
+    uncertain,
     runTurn,
     restart: async () => {
       await owner.stop();
@@ -87,6 +107,34 @@ async function setup() {
 }
 
 describe('owner input recovery', () => {
+  it.each(['source_delta', 'native_event'] as const)(
+    'redelivers a claimed %s with no native dispatch after restart',
+    async (kind) => {
+      const ctx = await setup();
+      ctx.owner.intake.accept({
+        id: 'input',
+        kind,
+        principalId: 'owner',
+        channelKey: 'fixture',
+        occurredAt: 1,
+      });
+      expect(ctx.owner.runtime.mailbox!.claimNext()).toMatchObject({
+        stimulusId: 'input',
+        status: 'claimed',
+      });
+      expect(ctx.runTurn).not.toHaveBeenCalled();
+
+      await ctx.restart();
+
+      expect(ctx.runTurn).toHaveBeenCalledOnce();
+      expect(ctx.delivered).toEqual(['Stored answer']);
+      expect(ctx.owner.runtime.mailbox!.readInput('input', 'owner')).toMatchObject({
+        status: 'acked',
+        nativeDelivery: { state: 'settled' },
+      });
+    }
+  );
+
   it.each(['owner_message', 'source_delta', 'native_event'] as const)(
     'delivers the stored %s result after restart without rerunning the model',
     async (kind) => {
@@ -148,6 +196,7 @@ describe('owner input recovery', () => {
       );
       expect(ctx.owner.intake.isPending!('input')).toBe(false);
       expect(ctx.failures).toHaveLength(1);
+      expect(ctx.uncertain).toHaveLength(1);
       expect(ctx.runTurn).not.toHaveBeenCalled();
     }
   );

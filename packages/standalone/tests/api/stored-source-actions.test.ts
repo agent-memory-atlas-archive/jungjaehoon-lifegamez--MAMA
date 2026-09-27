@@ -12,19 +12,25 @@ describe('stored source reader', () => {
       } as never,
       ownerPrincipalId: () => 'owner-test',
     });
-    expect(
-      reader.search(
-        'connector-test',
-        { query: 'term', limit: 10 },
-        {
-          principalId: 'owner-test',
-          agentId: 'agent-test',
-          actions: ['source.search'],
-          connectors: ['connector-test'],
-          scopes: [],
-        }
-      )
-    ).toMatchObject({ source: 'connector-test', mode: 'stored', hits: [] });
+    const result = reader.search(
+      'connector-test',
+      { query: 'term', limit: 10 },
+      {
+        principalId: 'owner-test',
+        agentId: 'agent-test',
+        actions: ['source.search'],
+        connectors: ['connector-test'],
+        scopes: [],
+      }
+    );
+
+    expect(result).toMatchObject({
+      source: 'connector-test',
+      mode: 'stored',
+      hits: [],
+      coverage: { returned: 0, pageComplete: true },
+    });
+    expect(result.coverage).not.toHaveProperty('sourceComplete');
   });
 
   it('returns one result per batch ref when replay ceiling hides a future observation', () => {

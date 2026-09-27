@@ -201,6 +201,7 @@ export class PollingScheduler {
       this.lastPollTimes.get(name) ?? new Date(this.initialNow - this.initialLookbackMs);
     try {
       connector.beginPollHandoff?.();
+      const pollStartedAt = this.now();
       const polled = await connector.poll(since);
       const observedAt = this.now();
       const canonicalItems = polled.flatMap((item) => {
@@ -276,7 +277,7 @@ export class PollingScheduler {
         );
       }
       await connector.commitPoll?.();
-      this.lastPollTimes.set(name, new Date(observedAt));
+      this.lastPollTimes.set(name, new Date(pollStartedAt));
     } catch (error) {
       console.error(`[PollingScheduler] poll failed for connector ${name}`, error);
       connector.abortPollHandoff?.();

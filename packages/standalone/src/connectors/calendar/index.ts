@@ -11,6 +11,7 @@ import { execGwsAsync } from '../framework/gws-utils.js';
 
 interface CalendarEvent {
   id: string;
+  updated: string;
   summary?: string;
   description?: string;
   location?: string;
@@ -111,8 +112,9 @@ export class CalendarConnector implements IConnector {
   async poll(since: Date): Promise<NormalizedItem[]> {
     const items: NormalizedItem[] = [];
     try {
-      const timeMin = since.toISOString();
-      const timeMax = new Date(Date.now() + EVENT_LIST_HORIZON_MS).toISOString();
+      const windowStart = new Date();
+      const timeMin = windowStart.toISOString();
+      const timeMax = new Date(windowStart.getTime() + EVENT_LIST_HORIZON_MS).toISOString();
       const observedAt = new Date().toISOString();
       let pageToken: string | undefined;
       const visitedPageTokens = new Set<string>();
@@ -126,6 +128,7 @@ export class CalendarConnector implements IConnector {
             calendarId: 'primary',
             timeMin,
             timeMax,
+            updatedMin: since.toISOString(),
             singleEvents: true,
             showDeleted: true,
             orderBy: 'startTime',
@@ -135,6 +138,10 @@ export class CalendarConnector implements IConnector {
         ])) as CalendarEventList;
 
         for (const ev of result.items ?? []) {
+          const updatedAt = new Date(ev.updated);
+          if (!Number.isFinite(updatedAt.getTime())) {
+            throw new Error('Calendar event omitted a valid updated time');
+          }
           const start = ev.start?.dateTime ?? ev.start?.date ?? '';
           const end = ev.end?.dateTime ?? ev.end?.date ?? '';
           const summary = ev.summary ?? '(No title)';
@@ -142,9 +149,9 @@ export class CalendarConnector implements IConnector {
           const organizer = ev.organizer?.displayName ?? ev.organizer?.email ?? 'unknown';
           const allDay = ev.start?.date !== undefined;
           // Cancelled events can carry only an id; retain that cancellation observation.
-          const startMs = start ? new Date(start).getTime() : Date.now();
           const observation = {
             eventId: ev.id,
+            updated: ev.updated,
             summary,
             description,
             location: ev.location,
@@ -172,9 +179,9 @@ export class CalendarConnector implements IConnector {
               ...(ev.location ? [`Location: ${previewText(ev.location)}`] : []),
               previewText(description),
             ].join('\n'),
-            timestamp: new Date(startMs),
+            timestamp: updatedAt,
             type: 'event',
-            sourceCursor: observedAt,
+            sourceCursor: ev.updated,
             metadata: { ...observation, observedAt },
           });
         }

@@ -42,6 +42,7 @@ const now = new Date('2024-01-15T00:00:00.000Z');
 const since = new Date('2024-01-10T00:00:00.000Z');
 const event = (overrides: Record<string, unknown> = {}) => ({
   id: 'fixture-event',
+  updated: '2024-01-14T12:00:00.000Z',
   summary: 'Schedule review',
   description: 'Weekly sync',
   start: { dateTime: '2024-01-16T10:00:00+09:00' },
@@ -124,8 +125,9 @@ describe('CalendarConnector (ported from the pre-stub connector)', () => {
       '--params',
       JSON.stringify({
         calendarId: 'primary',
-        timeMin: since.toISOString(),
+        timeMin: now.toISOString(),
         timeMax: '2024-04-14T00:00:00.000Z',
+        updatedMin: since.toISOString(),
         singleEvents: true,
         showDeleted: true,
         orderBy: 'startTime',
@@ -145,10 +147,11 @@ describe('CalendarConnector (ported from the pre-stub connector)', () => {
       sourceEntityId: 'fixture-event',
       sourceId: expect.stringMatching(/^fixture-event:[a-f0-9]{24}$/),
       author: 'Fixture organizer',
-      timestamp: new Date('2024-01-16T01:00:00Z'),
-      sourceCursor: now.toISOString(),
+      timestamp: new Date('2024-01-14T12:00:00Z'),
+      sourceCursor: '2024-01-14T12:00:00.000Z',
       metadata: {
         eventId: 'fixture-event',
+        updated: '2024-01-14T12:00:00.000Z',
         summary: 'Schedule review',
         location: 'Meeting room',
         start: '2024-01-16T10:00:00+09:00',
@@ -172,10 +175,38 @@ describe('CalendarConnector (ported from the pre-stub connector)', () => {
     vi.setSystemTime(new Date(now.getTime() + 300_000));
     const [same] = await connector.poll(since);
     expect(same?.sourceId).toBe(first?.sourceId);
-    gws.run.mockReturnValue(list([event({ location: 'Other room' })]));
+    gws.run.mockReturnValue(
+      list([event({ location: 'Other room', updated: '2024-01-14T13:00:00.000Z' })])
+    );
     const [changed] = await connector.poll(since);
     expect(changed?.sourceId).not.toBe(first?.sourceId);
     expect(changed?.sourceEntityId).toBe(first?.sourceEntityId);
+  });
+
+  it('records event update time and keeps a cancelled id-only event as a change', async () => {
+    const connector = await initialized();
+    gws.run.mockReturnValue(
+      list([
+        {
+          id: 'fixture-cancelled',
+          updated: '2024-01-14T18:30:00.000Z',
+          status: 'cancelled',
+        },
+      ])
+    );
+
+    const [item] = await connector.poll(since);
+
+    expect(item).toMatchObject({
+      sourceEntityId: 'fixture-cancelled',
+      timestamp: new Date('2024-01-14T18:30:00.000Z'),
+      sourceCursor: '2024-01-14T18:30:00.000Z',
+      metadata: {
+        eventId: 'fixture-cancelled',
+        updated: '2024-01-14T18:30:00.000Z',
+        status: 'cancelled',
+      },
+    });
   });
 
   it('preserves all-day exclusive ends and upstream timezone for lodging stays', async () => {
@@ -391,7 +422,7 @@ describe('calendar through the daemon connector runtime', () => {
             action: 'source.search',
             input: {
               source: 'calendar',
-              from: '2024-01-15T00:00:00Z',
+              from: '2024-01-14T00:00:00Z',
               to: '2024-01-29T00:00:00Z',
             },
           },

@@ -577,6 +577,36 @@ export class Mailbox {
     }
   }
 
+  /** Reopen claims that never crossed the native dispatch boundary. */
+  recoverOrphanedClaims(now = this.now()): number {
+    return this.db.transaction(() => {
+      const replayed = this.db
+        .prepare(
+          `UPDATE mailbox_inputs
+              SET status='pending', claimed_at=NULL, retry_after=NULL
+            WHERE status='claimed'
+              AND NOT EXISTS (
+                SELECT 1 FROM native_input_deliveries n
+                 WHERE n.input_id=mailbox_inputs.id
+                   AND n.state IN ('dispatching','accepted','uncertain','settled')
+              )`
+        )
+        .run().changes;
+      this.db
+        .prepare(
+          `UPDATE mailbox_inputs
+              SET status='acked', acked_at=COALESCE(acked_at, ?), claimed_at=NULL
+            WHERE status='claimed'
+              AND EXISTS (
+                SELECT 1 FROM native_input_deliveries n
+                 WHERE n.input_id=mailbox_inputs.id AND n.state='settled'
+              )`
+        )
+        .run(now);
+      return replayed;
+    });
+  }
+
   /** Identity lookup for transport recovery; never returns another principal's payload. */
   principalsForInput(stimulusId: string): string[] {
     return (

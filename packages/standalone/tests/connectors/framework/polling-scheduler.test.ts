@@ -124,6 +124,81 @@ describe('PollingScheduler', () => {
     rawStore.close();
   });
 
+  it('admits one source delta when the same observation is returned on consecutive polls', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'poll-scheduler-unchanged-'));
+    roots.push(root);
+    const rawStore = new RawStore(root);
+    const scheduler = new PollingScheduler(rawStore, root, {
+      now: () => Date.parse('2024-01-02T00:00:00.000Z'),
+      rawIndexSink: (_connector, items) =>
+        items.map((item) => ({ sourceId: item.sourceId, observationRef: `obs:${item.sourceId}` })),
+    });
+    const registry = new ConnectorRegistry();
+    let sourceCursor = Date.parse('2024-01-01T00:00:00.000Z');
+    const connector = fakeConnector([]);
+    connector.poll = vi.fn(async () => {
+      sourceCursor += 1_000;
+      return [
+        {
+          source: 'slack',
+          sourceId: 'source-key',
+          channel: 'channel-key',
+          author: 'actor-key',
+          content: 'unchanged source content',
+          timestamp: new Date('2024-01-01T12:00:00.000Z'),
+          type: 'message',
+          sourceCursor: new Date(sourceCursor).toISOString(),
+          metadata: { observedAt: new Date(sourceCursor).toISOString() },
+        },
+      ];
+    });
+    registry.register('slack', connector);
+    const admitted = vi.fn();
+
+    await scheduler.pollConnector(
+      'slack',
+      registry,
+      { slack: { 'channel-key': { role: 'hub' } } },
+      admitted
+    );
+    await scheduler.pollConnector(
+      'slack',
+      registry,
+      { slack: { 'channel-key': { role: 'hub' } } },
+      admitted
+    );
+
+    expect(connector.poll).toHaveBeenCalledTimes(2);
+    expect(admitted).toHaveBeenCalledTimes(1);
+    expect(admitted.mock.calls[0]?.[0].refs).toHaveLength(1);
+    expect(rawStore.listPendingProjections('slack')).toEqual([]);
+    rawStore.close();
+  });
+
+  it('keeps the request start as the next cursor so changes during collection are queried again', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'poll-scheduler-cursor-'));
+    roots.push(root);
+    const rawStore = new RawStore(root);
+    let clock = 10_000;
+    const scheduler = new PollingScheduler(rawStore, root, {
+      now: () => clock,
+      initialNow: clock,
+      rawIndexSink: () => [],
+    });
+    const registry = new ConnectorRegistry();
+    const connector = fakeConnector([]);
+    connector.poll = vi.fn(async () => {
+      clock = 20_000;
+      return [];
+    });
+    registry.register('slack', connector);
+
+    await scheduler.pollConnector('slack', registry, {}, async () => {});
+
+    expect(scheduler.getLastPollTime('slack')).toEqual(new Date(10_000));
+    rawStore.close();
+  });
+
   it('does not advance state when the handoff fails', async () => {
     const root = mkdtempSync(join(tmpdir(), 'poll-scheduler-fail-'));
     roots.push(root);

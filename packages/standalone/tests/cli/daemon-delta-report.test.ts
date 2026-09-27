@@ -204,6 +204,9 @@ describe('live delta reports', () => {
         `stimulus failed kind=source_delta id=${id} model_run_id=run:1 reason=native model failed`
       )
     );
+    await vi.waitFor(() =>
+      expect(logs).toContain('stimulus parked uncertain kind=source_delta mailbox_id=1')
+    );
     expect(telegram.sendMessage).not.toHaveBeenCalled();
   });
 

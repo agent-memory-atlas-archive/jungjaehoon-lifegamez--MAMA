@@ -414,6 +414,9 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
         : {
             onOwnerResult: deliverOwnerResponse,
             onStimulusUncertain: async (row) => {
+              logger.error(
+                `stimulus parked uncertain kind=${row.kind ?? 'unknown'} mailbox_id=${row.id}`
+              );
               if (row.kind !== 'owner_message') return;
               if (!gateway)
                 throw new Error(

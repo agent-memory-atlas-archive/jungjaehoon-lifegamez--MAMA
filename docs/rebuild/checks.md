@@ -1111,3 +1111,21 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Result: restored Notion, Obsidian, Discord, Telegram and Claude Code, restored iMessage, and added scoped credentials and local-path aliases.
 - Evidence: restored connector, iMessage, onboarding and owner readable-source tests pass; root build/typecheck/lint pass and standalone reports 1,004 pass / 23 socket `EPERM` failures.
 - Still fails: live provider access and post-restart owner reads were not exercised; Notion reads integration-shared pages and Gmail has no mailbox label scope.
+
+### Calendar incremental polling and source-delta admission (2026-09-27)
+
+- Result: Calendar uses `updatedMin` inside the existing 90-day event window, and event `updated` supplies source time; provenance-only re-polls no longer create pending source projections.
+- Evidence: standalone calendar and polling-scheduler regressions pass, including a second identical poll admitting no additional delta.
+- Still open: no live calendar owner turn was run; `~/.mama` was left untouched.
+
+### Stored-source coverage contract (2026-09-27)
+
+- Result: Removed the hard-coded false collection-completeness claim; search still returns `returned` and `pageComplete`.
+- Evidence: the stored-source action regression confirms those fields and absence of the false completeness claim.
+- Still open: no live owner search was run; `~/.mama` was left untouched.
+
+### Claimed mailbox restart recovery (2026-09-27)
+
+- Result: Startup requeues claims with no native dispatch; dispatched or uncertain rows reconcile and park uncertain with a log line. Telegram pending checks no longer treat an unowned claim as live.
+- Evidence: restart simulations redeliver unstarted `source_delta` and `native_event` rows once, and result-less dispatches invoke the uncertainty callback.
+- Still open: no live daemon restart was run; `~/.mama` and `~/.claude/mama-memory.db` were left untouched.

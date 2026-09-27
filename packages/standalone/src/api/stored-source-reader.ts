@@ -216,7 +216,6 @@ export function createStoredSourceReader(options: StoredSourceReaderOptions): St
         coverage: {
           returned: result.hits.length,
           pageComplete: result.next_cursor === null,
-          sourceComplete: false,
         },
       };
     },

@@ -164,7 +164,7 @@ export function createStimulusIntake(
           receipt && runtime.mailbox!.nativeInputs.resultForReceipt(receipt, principalId)
         );
       }
-      return row?.status === 'pending' || row?.status === 'claimed';
+      return row?.status === 'pending';
     },
     acceptOwnerMessage: (input) =>
       runtime.accept({
@@ -592,6 +592,9 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
         await options.onFailed?.(row, reason, null);
         // Core parks the orphan uncertain, preserving its receipt and any result.
         throw new Error(reason);
+      }
+      if (row.nativeDelivery?.state === 'uncertain') {
+        throw new Error(`${row.kind} remains uncertain after restart; no stored result`);
       }
       return 'unresolved';
     },
