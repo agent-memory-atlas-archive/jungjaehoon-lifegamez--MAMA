@@ -112,7 +112,7 @@ export function createDispatcher(
         `principal ${context.access.principalId} states no action grant`
       );
     }
-    if (!granted.includes(call.action)) {
+    if (!granted.includes(registration.contract.name)) {
       return fail(
         call,
         'denied',

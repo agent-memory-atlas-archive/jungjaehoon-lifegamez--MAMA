@@ -65,7 +65,13 @@ export function createClient(options: ClientOptions): Client {
 
   const payloadHash = (call: ClientCall, operationId: string): string =>
     createHash('sha256')
-      .update(canonicalizeJSON({ action: call.action, input: call.input ?? null, operationId }))
+      .update(
+        canonicalizeJSON(
+          JSON.parse(
+            JSON.stringify({ action: call.action, input: call.input ?? null, operationId })
+          )
+        )
+      )
       .digest('hex');
 
   const call = async (request: ClientCall): Promise<ActionResult> => {

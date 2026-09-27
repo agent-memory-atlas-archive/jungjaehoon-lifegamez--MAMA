@@ -6,6 +6,14 @@ import {
 } from '../../src/memory/secret-filter.js';
 
 describe('secret-shaped trace redaction', () => {
+  it.each([
+    ['openai-key', 'sk-' + 'proj-' + 'aB_9-'.repeat(12)],
+    ['github-token', 'github_' + 'pat_' + 'aB09_'.repeat(16)],
+  ])('scans and fully redacts modern %s credentials', (name, credential) => {
+    expect(scanForSecrets(credential).matches).toContain(name);
+    expect(redactSecretPatterns(`before ${credential} after`)).toBe('before [REDACTED] after');
+  });
+
   it('masks every provider-shaped credential while retaining ordinary version hashes', () => {
     const credential = 'gh' + 'p_' + 'b'.repeat(30);
     const hash = 'abcdef0123456789'.repeat(4);

@@ -44,28 +44,28 @@ export const DEFAULT_QUESTION_VOCABULARY: QuestionVocabulary = [
   {
     type: 'correction',
     pattern:
-      /\b(fix|revert|correct|correction|supersede|superseded|revise|revision|수정|되돌|정정|교정)\b/i, // Korean: keywords
+      /\b(fix|revert|correct|correction|supersede|superseded|revise|revision)\b|수정|되돌|정정|교정/i,
   },
   {
     type: 'artifact',
     pattern:
-      /\b(file|doc|docs|document|image|video|pdf|attachment|artifact|파일|문서|이미지|영상|첨부)\b/i, // Korean: keywords
+      /\b(file|doc|docs|document|image|video|pdf|attachment|artifact)\b|파일|문서|이미지|영상|첨부/i,
   },
   {
     type: 'timeline',
     pattern:
-      /\b(when|history|before|after|around|timeline|chronology|언제|이력|히스토리|전|후|즈음)\b|\bon\s+\d{4}(?:-\d{1,2})?(?:-\d{1,2})?\b|\b\d{4}-\d{1,2}-\d{1,2}\b/i, // Korean: keywords
+      /\b(when|history|before|after|around|timeline|chronology)\b|언제|이력|히스토리|(?:^|\s)(?:전|후)(?=$|\s|[?.!,]|에|의|로|부터|까지|는|를|가|와|도)|즈음|\bon\s+\d{4}(?:-\d{1,2})?(?:-\d{1,2})?\b|\b\d{4}-\d{1,2}-\d{1,2}\b/i,
   },
   {
     type: 'status',
     pattern:
-      /\b(status|state|current|currently|now|latest|progress|blocked|done|상태|현재|최신|진행|진척)\b/i, // Korean: keywords
+      /\b(status|state|current|currently|now|latest|progress|blocked|done)\b|상태|현재|최신|진행|진척/i,
   },
-  { type: 'decision_reason', pattern: /\b(why|reason|because|rationale|근거|이유|왜|때문)\b/i }, // Korean: keywords
+  { type: 'decision_reason', pattern: /\b(why|reason|because|rationale)\b|근거|이유|왜|때문/i },
   {
     type: 'how_to',
     pattern:
-      /\b(how\s+to|how\s+do|setup|set\s+up|configure|configuration|install|설정|구성|어떻게)\b/i, // Korean: keywords
+      /\b(how\s+to|how\s+do|setup|set\s+up|configure|configuration|install)\b|설정|구성|어떻게/i,
   },
 ];
 

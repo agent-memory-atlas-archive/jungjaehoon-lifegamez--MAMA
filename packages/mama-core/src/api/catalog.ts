@@ -1034,6 +1034,25 @@ export function coreActionRegistrations(
             'memory.update outcome must be SUCCESS, FAILED, or PARTIAL'
           );
         }
+        const bindings = adapter
+          .prepare(
+            `SELECT s.kind, s.external_id AS id FROM memory_scope_bindings b
+           JOIN memory_scopes s ON s.id = b.scope_id WHERE b.memory_id = ?`
+          )
+          .all(id) as MemoryScopeRef[];
+        if (
+          bindings.length > 0 &&
+          !bindings.some((binding) =>
+            context.access.scopes.some(
+              (scope) => scope.kind === binding.kind && scope.id === binding.id
+            )
+          )
+        ) {
+          throw new JudgmentError(
+            'SCOPE_DENIED',
+            'Memory record is outside the admitted write scopes'
+          );
+        }
         await updateOutcomeInAdapter(adapter, id, {
           outcome,
           failure_reason: body.failure_reason ?? null,
@@ -1046,6 +1065,7 @@ export function coreActionRegistrations(
     {
       contract: {
         name: 'memory.checkpoint.save',
+        recallableWrite: true,
         summary:
           'Write one session checkpoint — the durable hand-off record a later turn restores work from. Not a judgment and not scope-bound; the row is what it says.',
         inputSchema: {
@@ -1724,6 +1744,12 @@ export function coreActionRegistrations(
         const connector =
           body.source?.connector ??
           (body.source?.source_type ? `conversation:${body.source.source_type}` : 'explicit');
+        if (connector.startsWith('owner-message:') || connector.startsWith('owner-result:')) {
+          throw new JudgmentError(
+            'INVALID_INPUT',
+            'source.ingest cannot use a reserved source prefix'
+          );
+        }
         const receipt = await ingestSource(
           {
             commandId,

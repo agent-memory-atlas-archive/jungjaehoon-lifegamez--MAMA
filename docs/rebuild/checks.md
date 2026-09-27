@@ -955,3 +955,123 @@ The implementation writes raw/index data during import only. Replay is the owner
   auth_failed and alerted. Now an unauthenticated request that was served is public_asset (recorded, no
   alert); only a refused one is auth_failed. API tests 200/200 (the new test fails without the fix; five
   tests that encoded the false alarm now use a refused route).
+
+### Review F3.1 — fixed (Answer/Learn)
+
+- Modern project API keys and fine-grained repository tokens escaped the shared scanner and redactor.
+- Added both shapes to the shared pattern list; both regression cases failed before the fix.
+- Evidence: core `vitest run tests/memory/secret-filter.test.ts` passes; live owner acceptance remains separate.
+
+### Review F3.13 — fixed (Answer)
+
+- ASCII word boundaries prevented Korean vocabulary from matching attached particles.
+- Separated Korean alternatives from English boundaries; six Korean regression cases failed before the fix.
+- Evidence: core `vitest run tests/knowledge/question-type.test.ts` passes; live owner acceptance remains separate.
+
+### Review F3.2 — fixed (shared engine / Answer / Learn)
+
+- Consumer migration numbers entered core-only handlers and repair; both paths now require the core source.
+- Red evidence: Consumer SQL at 72/73/74/77/79 did not run; a consumer file triggered core index repair.
+- Green evidence: core `pnpm exec vitest run tests/migrations/review-f3.test.ts`; live owner acceptance remains untested.
+
+### Review F3.3 — fixed (shared engine / Answer / Learn)
+
+- Instance recall expanded through the global DB; expansion now uses the supplied adapter.
+- Red evidence: Two real databases with identical IDs returned foreign graph content before the fix.
+- Green evidence: core `pnpm exec vitest run tests/unit/recall-graph-expansion.test.ts`; live owner acceptance remains untested.
+
+### Review F3.4 — fixed (shared engine / Answer / Learn)
+
+- Observation LIKE search deleted literal metacharacters; it now escapes them with an explicit SQL escape character.
+- Red evidence: All three literal percent/underscore/backslash searches returned the wrong observation.
+- Green evidence: core `pnpm exec vitest run tests/knowledge/review-f3-graph.test.ts`; live owner acceptance remains untested.
+
+### Review F3.5 — fixed (shared engine / Answer / Learn)
+
+- Timeline slicing preceded recorded-time filtering and lost overflow evidence; filtering now precedes slicing and has_more reaches page coverage.
+- Red evidence: A later matching record disappeared behind limit=1; overflow was unreported.
+- Green evidence: core `pnpm exec vitest run tests/knowledge/review-f3-graph.test.ts`; live owner acceptance remains untested.
+
+### Review F3.6 — fixed (shared engine / Answer / Learn)
+
+- Run-finished observer exceptions escaped after commit; synchronous and async observer failures are logged without failing the committed turn.
+- Red evidence: The synchronous observer rejected the turn; the async observer produced an unhandled rejection.
+- Green evidence: core `pnpm exec vitest run tests/runtime/native-turn.test.ts`; live owner acceptance remains untested.
+
+### Review F3.7 — fixed (shared engine / Answer / Learn)
+
+- Pending coalescing could select already dispatched native inputs; it now excludes native states other than prepared.
+- Red evidence: Dispatching, accepted and uncertain rows absorbed fresh work before the fix.
+- Green evidence: core `pnpm exec vitest run tests/runtime/mailbox-payload.test.ts`; live owner acceptance remains untested.
+
+### Review F3.8 — fixed (shared engine / Answer / Learn)
+
+- Read scopes used ambiguous concatenation and rejected overlapping admitted scopes; tuple keys deduplicate admitted reads while explicit duplicate requests still fail.
+- Red evidence: Overlapping access/readScopes threw; collision cases are covered in the same regression.
+- Green evidence: core `pnpm exec vitest run tests/api/review-f3.test.ts`; live owner acceptance remains untested.
+
+### Review F3.9 — fixed (shared engine / Answer / Learn)
+
+- Path count/depth did not bound unreachable dense searches; frontier is capped at 1000 paths and raw edge work at 10000 candidates, with limit_reached.
+- Red evidence: Disconnected fanout and 11000 hidden edges returned no truncation reason; bounded scan is asserted.
+- Green evidence: core `pnpm exec vitest run tests/knowledge/review-f3-graph.test.ts`; live owner acceptance remains untested.
+
+### Review F3.10 — fixed (shared engine / Answer / Learn)
+
+- memory.update ignored target scope bindings; scoped targets now require at least one admitted write scope, with read-only scopes excluded.
+- Red evidence: Foreign-scoped update completed before the fix; the regression verifies unchanged outcome and permitted same-scope update.
+- Green evidence: core `pnpm exec vitest run tests/api/review-f3.test.ts`; live owner acceptance remains untested.
+
+### Review F3.11 — fixed (shared engine / Answer / Learn)
+
+- Checkpoint writes lacked the recallableWrite contract flag; the existing shared secret gate now runs before checkpoint persistence.
+- Red evidence: A credential in open_files was persisted before the fix.
+- Green evidence: core `pnpm exec vitest run tests/api/review-f3.test.ts`; live owner acceptance remains untested.
+
+### Review F3.12 — fixed (shared engine / Answer / Learn)
+
+- Current-history hydration followed merged identities without rechecking visibility; the resolved identity is now checked before hydration.
+- Red evidence: After a scope change on a merged survivor, the old visible seed exposed the restricted survivor.
+- Green evidence: core `pnpm exec vitest run tests/knowledge/review-f3-graph.test.ts`; live owner acceptance remains untested.
+
+### Review F3.14 — fixed (shared engine / Answer / Learn)
+
+- External source.ingest accepted reserved owner-message:/owner-result: source prefixes; it now rejects them before ingestion.
+- Red evidence: Both reserved connector inputs were persisted before the fix.
+- Green evidence: core `pnpm exec vitest run tests/api/review-f3.test.ts`; live owner acceptance remains untested.
+
+### Review F3.15 — fixed (shared engine / Answer / Learn)
+
+- IPC encoding could throw inside connect and leave the Promise unsettled; encoding now rejects before connect and settle clears the deadline.
+- Red evidence: Circular/oversized inputs timed out with uncaught errors; settled responses retained a timer.
+- Green evidence: core `pnpm exec vitest run tests/runtime/ipc-settlement.test.ts`; live owner acceptance remains untested.
+
+### Review F3.16 — fixed (shared engine / Answer / Learn)
+
+- Applied 095 had an unguarded JSON join expression; new migration 097 guards it independently without editing any applied migration.
+- Red evidence: A principal-filtered view read over malformed historical JSON raised malformed JSON before 097.
+- Green evidence: core `pnpm exec vitest run tests/migrations/review-f3.test.ts`; live owner acceptance remains untested.
+
+### Review F3.17 — fixed (shared engine / Answer / Learn)
+
+- Unknown scope kinds had NaN sort ranks, grants used aliases verbatim, and journal hashing rejected optional undefined fields; all three contracts are normalized.
+- Red evidence: Reversed custom scopes hashed differently, canonical grants denied aliases, and undefined input failed before send.
+- Green evidence: core `pnpm exec vitest run tests/api/review-f3.test.ts tests/runtime/ipc-settlement.test.ts`; live owner acceptance remains untested.
+
+### Review F3.18 — fixed (Answer / Learn)
+
+- Stdio smoke options now match the advertised camelCase schema and assert the saved decision is returned.
+- Red evidence: the old option names / missing precedence failed the added contract assertions.
+- Green evidence: MCP `pnpm exec vitest run tests/integration/stdio.test.js`; no live owner acceptance is claimed.
+
+### Review F3.19 — fixed (Answer / Learn)
+
+- Configure now documents MAMA_DB_PATH, then MAMA_DATABASE_PATH, then the default; the resolver is verified under temporary HOME.
+- Red evidence: the old option names / missing precedence failed the added contract assertions.
+- Green evidence: plugin `pnpm exec vitest run tests/core/configure-database.test.js`; no live owner acceptance is claimed.
+
+### Review F3 — final verification and limits
+
+- All 19 items fixed after red/green verification; detailed file counts and commands: [review-f3-results.md](review-f3-results.md). No standalone edits or commits.
+- Core focused 93/93; full core 870 pass / 44 fail across 7 socket-dependent files (listen EPERM and its cleanup error). MCP 139/139; plugin 170/170; build, typecheck and changed-file lint pass.
+- Live owner acceptance and deployment remain untested. MAMA MCP decision save was refused by the tool approval policy (never); contract decisions are retained in the result document.

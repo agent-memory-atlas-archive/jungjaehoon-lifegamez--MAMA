@@ -818,7 +818,7 @@ export class NodeSQLiteAdapter implements DatabaseInstance {
         continue;
       }
 
-      if (version === 72) {
+      if (isCore && version === 72) {
         // `observation_versions` is the core's own table. This used to skip the
         // migration entirely when `connector_event_index` was absent -- back when
         // the connector index WAS the substrate -- so a consumer without the
@@ -835,13 +835,13 @@ export class NodeSQLiteAdapter implements DatabaseInstance {
         continue;
       }
 
-      if (version === 73) {
+      if (isCore && version === 73) {
         this.recoverRegistryCorrectionsMigration073(migrationsDir);
         info(`[node-sqlite-adapter] Migration ${file} reconciled successfully`);
         continue;
       }
 
-      if (version === 74) {
+      if (isCore && version === 74) {
         if (!this.tableExists('twin_edges')) {
           continue;
         }
@@ -850,7 +850,7 @@ export class NodeSQLiteAdapter implements DatabaseInstance {
         continue;
       }
 
-      if (version === 77) {
+      if (isCore && version === 77) {
         this.recoverLegacyRecordKindMigration077();
         info(`[node-sqlite-adapter] Migration ${file} reconciled successfully`);
         continue;
@@ -859,7 +859,7 @@ export class NodeSQLiteAdapter implements DatabaseInstance {
       // Extending the twin_edges relation CHECK needs the same dynamic rebuild
       // as 074 so custom columns, indexes, triggers, and FK children survive;
       // the static SQL file cannot express that. Reconcile instead of exec'ing.
-      if (version === 79) {
+      if (isCore && version === 79) {
         if (!this.tableExists('twin_edges')) {
           continue;
         }
@@ -929,7 +929,9 @@ export class NodeSQLiteAdapter implements DatabaseInstance {
       }
     }
 
-    this.repairSkippedFeatureMigrations(migrationsDir);
+    if (isCore) {
+      this.repairSkippedFeatureMigrations(migrationsDir);
+    }
 
     const embeddingsTables = this.prepare(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='embeddings'`

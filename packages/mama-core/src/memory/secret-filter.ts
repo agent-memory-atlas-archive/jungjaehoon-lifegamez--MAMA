@@ -19,8 +19,14 @@ const SECRET_PATTERNS: Array<{ name: string; pattern: RegExp }> = [
   // Built via concatenation so the literals never form secret shapes at rest
   // (the repo's own PII/secret scanners would flag them - correctly).
   { name: 'anthropic-key', pattern: new RegExp('\\bsk-' + 'ant-[a-zA-Z0-9_-]{8,}') },
-  { name: 'openai-key', pattern: new RegExp('\\bsk-' + '[a-zA-Z0-9]{20,}\\b') },
-  { name: 'github-token', pattern: new RegExp('\\bgh' + '[pousr]_[A-Za-z0-9]{20,}\\b') },
+  {
+    name: 'openai-key',
+    pattern: new RegExp('\\bsk-' + '(?:proj-[A-Za-z0-9_-]{20,}|[A-Za-z0-9]{20,}\\b)'),
+  },
+  {
+    name: 'github-token',
+    pattern: new RegExp('\\b(?:gh' + '[pousr]_[A-Za-z0-9]{20,}\\b|github_pat_[A-Za-z0-9_]{20,})'),
+  },
   { name: 'slack-token', pattern: new RegExp('\\bxox' + '[baprs]-[A-Za-z0-9-]{10,}\\b') },
   {
     name: 'telegram-bot-token',

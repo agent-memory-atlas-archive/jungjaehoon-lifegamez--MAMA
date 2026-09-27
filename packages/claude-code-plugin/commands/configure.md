@@ -13,7 +13,8 @@ from an environment variable or is fixed in the code.
 
 ## What to report
 
-1. **Database.** `MAMA_DB_PATH` if it is set in the environment; otherwise `~/.claude/mama-memory.db`
+1. **Database.** Use the first nonempty environment value in this order: `MAMA_DB_PATH`, then
+   `MAMA_DATABASE_PATH`; when neither is set, use `~/.claude/mama-memory.db`
    (the plugin's development-memory database, shared by the hooks and the MCP server). Report whether
    the file exists and its size. This database is separate from the MAMA OS daemon's state in `~/.mama/`.
 2. **Embedding model.** Fixed in the core: `Xenova/multilingual-e5-large`, 1024 dimensions, cached in
@@ -26,6 +27,7 @@ from an environment variable or is fixed in the code.
 ## How to change something
 
 - Another database: set `MAMA_DB_PATH` before Claude Code starts (for example in the shell profile).
+  `MAMA_DATABASE_PATH` also works when the higher-priority variable is unset or empty.
 - Turn hooks off: set `MAMA_DISABLE_HOOKS=true`.
 
 ## Output format

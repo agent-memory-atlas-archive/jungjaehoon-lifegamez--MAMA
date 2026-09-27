@@ -345,6 +345,7 @@ export class Mailbox {
       `SELECT id, preview_json FROM mailbox_inputs
         WHERE status = 'pending' AND coalesce_key = ? AND principal_id = ?
           AND payload_json IS ? AND kind IS ? AND channel_key = ? AND reply_to IS ?
+          AND NOT EXISTS (SELECT 1 FROM native_input_deliveries n WHERE n.input_id=mailbox_inputs.id AND n.state!='prepared')
         ORDER BY id ASC LIMIT 1`
     );
     this.stmtAppendPreview = this.db.prepare(

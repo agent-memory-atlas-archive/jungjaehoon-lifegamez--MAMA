@@ -509,12 +509,12 @@ export interface IngestConversationResult {
 // Two scope lists naming the same scopes are the same list. The order and the hash below
 // are what makes that true, so they live with the type rather than with any one reader.
 
-const SCOPE_ORDER: Record<MemoryScopeRef['kind'], number> = {
-  project: 0,
-  channel: 1,
-  user: 2,
-  global: 3,
-};
+const SCOPE_ORDER = new Map([
+  ['project', 0],
+  ['channel', 1],
+  ['user', 2],
+  ['global', 3],
+]);
 
 function assertScope(scope: MemoryScopeRef): MemoryScopeRef {
   // A kind is nonblank text. Which kinds exist is the consumer's statement, not a
@@ -536,11 +536,11 @@ function scopeKey(scope: MemoryScopeRef): string {
 
 function sortScopes(scopes: MemoryScopeRef[]): MemoryScopeRef[] {
   return [...scopes].sort((left, right) => {
-    const orderDiff = SCOPE_ORDER[left.kind] - SCOPE_ORDER[right.kind];
+    const orderDiff = (SCOPE_ORDER.get(left.kind) ?? 4) - (SCOPE_ORDER.get(right.kind) ?? 4);
     if (orderDiff !== 0) {
       return orderDiff;
     }
-    return left.id.localeCompare(right.id);
+    return left.kind.localeCompare(right.kind) || left.id.localeCompare(right.id);
   });
 }
 

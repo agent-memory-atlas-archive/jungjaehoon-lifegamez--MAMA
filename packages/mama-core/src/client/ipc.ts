@@ -98,6 +98,18 @@ export function sendIpcRequest(
   options: { timeoutMs?: number } = {}
 ): Promise<IpcResponse> {
   return new Promise((resolve, reject) => {
+    let frame: Buffer;
+    try {
+      frame = encodeFrame(request);
+    } catch (error) {
+      reject(
+        new IpcTransportError(
+          'connect',
+          `ipc encode failed: ${error instanceof Error ? error.message : String(error)}`
+        )
+      );
+      return;
+    }
     let connected = false;
     let settled = false;
     const socket = createConnection(socketPath);
@@ -108,6 +120,7 @@ export function sendIpcRequest(
         return;
       }
       settled = true;
+      clearTimeout(timer);
       socket.destroy();
       complete();
     };
@@ -128,7 +141,7 @@ export function sendIpcRequest(
 
     socket.once('connect', () => {
       connected = true;
-      socket.write(encodeFrame(request), (error?: Error | null) => {
+      socket.write(frame, (error?: Error | null) => {
         if (error) {
           settle(() =>
             reject(new IpcTransportError('exchange', `ipc write failed: ${error.message}`))
@@ -197,8 +210,6 @@ export function sendIpcRequest(
         )
       );
     });
-
-    void timer;
   });
 }
 

@@ -267,7 +267,7 @@ export interface NativeSessionHost<
     modelRunId: string | null;
     prompt: string;
     response: string;
-  }): void;
+  }): void | Promise<void>;
 }
 
 async function drainBackgroundTasks(tasks: Promise<unknown>[]): Promise<void> {
@@ -1425,14 +1425,22 @@ export class NativeSessionRunner<TToolContext extends HostExecutionContext = Hos
           `Model run ${ownedModelRunId} may remain uncommitted; provenance reported as commit_failed`
         );
       }
-      host.onRunFinished?.({
-        request,
-        result,
-        channelKey,
-        modelRunId: ownedModelRunId,
-        prompt: runPrompt,
-        response: finalResponse,
-      });
+      try {
+        await host.onRunFinished?.({
+          request,
+          result,
+          channelKey,
+          modelRunId: ownedModelRunId,
+          prompt: runPrompt,
+          response: finalResponse,
+        });
+      } catch (observerError) {
+        logger.error(
+          `Run-finished observer failed: ${
+            observerError instanceof Error ? observerError.message : String(observerError)
+          }`
+        );
+      }
       if (stoppedBy) {
         // Budget interruption is returned structurally; keep admission uncertain.
         nativeEffects.failure(new Error('Native run stopped by token budget'));

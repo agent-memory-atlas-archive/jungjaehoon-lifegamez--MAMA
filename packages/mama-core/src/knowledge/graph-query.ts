@@ -23,7 +23,12 @@ import {
   TwinRefNotVisibleError,
   visibleTwinRefKeysRecursive,
 } from '../knowledge/access.js';
-import { getTwinEdge, JudgmentError, type JudgmentAccess } from './judgments.js';
+import {
+  getTwinEdge,
+  listTwinEdgesForRefs,
+  JudgmentError,
+  type JudgmentAccess,
+} from './judgments.js';
 import { getObservationVersion } from './observations.js';
 import { expandCaseChainForAssembly, resolveCanonicalCaseChain } from './case-store.js';
 import {
@@ -333,6 +338,7 @@ export interface AgentGraphPath {
 
 export interface GraphPathsResult {
   paths: AgentGraphPath[];
+  limit_reached: boolean;
   current_projection: AgentGraphCurrentProjection[];
 }
 
@@ -356,6 +362,8 @@ export interface GraphTimelineInput {
   edge_filters?: AgentGraphEdgeFilters;
   from_ms?: number;
   to_ms?: number;
+  recorded_from_ms?: number;
+  recorded_to_ms?: number;
   as_of_ms?: number | null;
   limit?: number;
 }
@@ -419,12 +427,16 @@ export type AgentGraphTimelineEvent =
 export interface GraphTimelineResult {
   ref: TwinRef;
   events: AgentGraphTimelineEvent[];
+  has_more: boolean;
   current_projection: AgentGraphCurrentProjection[];
 }
 
 const DEFAULT_GRAPH_LIMIT = 100;
 const DEFAULT_PATH_LIMIT = 10;
 const MAX_DEPTH = 5;
+// A path count cannot bound a dense graph with an unreachable target.
+const MAX_PATH_FRONTIER = 1000;
+const MAX_PATH_EDGE_WORK = 10000;
 
 function refKey(ref: TwinRef): string {
   return `${ref.kind}:${ref.id}`;
@@ -963,12 +975,14 @@ export function getGraphPaths(
 ): GraphPathsResult {
   const maxDepth = normalizeDepth(input.max_depth, 3);
   const limit = normalizeLimit(input.limit, DEFAULT_PATH_LIMIT);
-  const visibility = graphVisibility(input);
+  const visibility = { ...graphVisibility(input), asOfMs: input.as_of_ms };
   assertRefsVisible(adapter, [input.from_ref, input.to_ref], visibility, input.as_of_ms);
 
   const targetKey = refKey(input.to_ref);
   const queue: AgentGraphPath[] = [{ refs: [input.from_ref], edges: [] }];
   const paths: AgentGraphPath[] = [];
+  let edgeWork = 0;
+  let limitReached = false;
 
   while (queue.length > 0 && paths.length < limit) {
     const path = queue.shift();
@@ -979,11 +993,31 @@ export function getGraphPaths(
     if (!current || path.edges.length >= maxDepth) {
       continue;
     }
-    const edges = listFilteredEdges(adapter, [current], {
-      visibility,
-      edge_filters: input.edge_filters,
-      as_of_ms: input.as_of_ms,
+    const remaining = MAX_PATH_EDGE_WORK - edgeWork;
+    if (remaining === 0) {
+      limitReached = true;
+      break;
+    }
+    // Bound raw candidates before visibility filtering: hidden edges also cost work.
+    const candidates = listTwinEdgesForRefs(adapter, [current], {
+      newest: true,
+      limit: remaining + 1,
+      edgeTypes: input.edge_filters?.edge_types,
+      asOfMs: input.as_of_ms,
     });
+    if (candidates.length > remaining) limitReached = true;
+    const bounded = candidates.slice(0, remaining);
+    edgeWork += bounded.length;
+    const visible = visibleTwinRefKeysRecursive(
+      adapter,
+      bounded.flatMap((edge) => [edge.subject_ref, edge.object_ref]),
+      visibility
+    );
+    const edges = bounded.filter(
+      (edge) =>
+        visible.has(`${edge.subject_ref.kind}\0${edge.subject_ref.id}`) &&
+        visible.has(`${edge.object_ref.kind}\0${edge.object_ref.id}`)
+    );
     for (const edge of edges) {
       for (const next of oppositeRef(edge, current)) {
         if (path.refs.some((ref) => refKey(ref) === refKey(next))) {
@@ -995,8 +1029,9 @@ export function getGraphPaths(
           if (paths.length >= limit) {
             break;
           }
-        } else {
-          queue.push(nextPath);
+        } else if (nextPath.edges.length < maxDepth) {
+          if (queue.length < MAX_PATH_FRONTIER) queue.push(nextPath);
+          else limitReached = true;
         }
       }
       if (paths.length >= limit) {
@@ -1010,6 +1045,7 @@ export function getGraphPaths(
   ];
   return {
     paths,
+    limit_reached: limitReached || paths.length >= limit,
     current_projection: projectCurrentEdges(adapter, pathEdges, visibility),
   };
 }
@@ -1082,16 +1118,24 @@ export function getGraphTimeline(
     )
   );
 
+  const ordered = events
+    .filter((event) => {
+      const recorded = eventRecordedAt(event);
+      return (
+        (input.recorded_from_ms === undefined || recorded >= input.recorded_from_ms) &&
+        (input.recorded_to_ms === undefined || recorded <= input.recorded_to_ms)
+      );
+    })
+    .sort(
+      (left, right) =>
+        left.at_ms - right.at_ms ||
+        eventKindRank(left.kind) - eventKindRank(right.kind) ||
+        eventKey(left).localeCompare(eventKey(right))
+    );
   return {
     ref: input.ref,
-    events: events
-      .sort(
-        (left, right) =>
-          left.at_ms - right.at_ms ||
-          eventKindRank(left.kind) - eventKindRank(right.kind) ||
-          eventKey(left).localeCompare(eventKey(right))
-      )
-      .slice(0, limit),
+    events: ordered.slice(0, limit),
+    has_more: ordered.length > limit,
     current_projection: projectCurrentEdges(adapter, edges, visibility),
   };
 }
@@ -1194,12 +1238,12 @@ function resolveSearchSeeds(
     }
   }
   if (wants('observation')) {
-    const like = `%${text.replace(/[%_\\]/g, '')}%`;
+    const like = `%${text.replace(/[%_\\]/g, '\\$&')}%`;
     const rows = adapter
       .prepare(
         `SELECT observation_id
            FROM observation_versions
-          WHERE source_id LIKE ? OR author LIKE ? OR metadata_json LIKE ?
+          WHERE source_id LIKE ? ESCAPE '\\' OR author LIKE ? ESCAPE '\\' OR metadata_json LIKE ? ESCAPE '\\'
           LIMIT ?`
       )
       .all(like, like, like, SEARCH_SEED_LIMIT) as Array<{ observation_id: string }>;
@@ -1970,7 +2014,7 @@ export function queryGraph(
         as_of_ms: query.asOf ?? null,
         limit,
       });
-      if (result.paths.length >= limit) reasons.add('limit_reached');
+      if (result.limit_reached) reasons.add('limit_reached');
       for (const path of result.paths) {
         for (const ref of path.refs) addRefNode(ref, sequence++);
         for (const edge of path.edges) addEdge(edge);
@@ -1993,24 +2037,18 @@ export function queryGraph(
           edge_filters: edgeFilters,
           from_ms: query.eventRange?.start,
           to_ms: query.eventRange?.end,
+          recorded_from_ms: query.recordedRange?.start,
+          recorded_to_ms: query.recordedRange?.end,
           as_of_ms: query.asOf ?? null,
           limit,
         });
+        if (result.has_more) reasons.add('limit_reached');
         for (const event of result.events) {
           merged.set(`${event.kind}${eventKey(event)}`, event);
         }
         mergeProjections(projections, result.current_projection);
       }
       let events = [...merged.values()];
-      if (query.recordedRange) {
-        const { start, end } = query.recordedRange;
-        events = events.filter((event) => {
-          const recorded = eventRecordedAt(event);
-          return (
-            (start === undefined || recorded >= start) && (end === undefined || recorded <= end)
-          );
-        });
-      }
       events.sort(
         (left, right) =>
           left.at_ms - right.at_ms ||
@@ -2066,6 +2104,14 @@ export function queryGraph(
     if (history === 'current') {
       if (resolved === null) {
         reasons.add('resolved_away');
+        continue;
+      }
+      const visible = visibleTwinRefKeysRecursive(adapter, [resolved], {
+        ...visibility,
+        asOfMs: query.asOf ?? null,
+      });
+      if (!visible.has(`${resolved.kind}\0${resolved.id}`)) {
+        reasons.add('resolved_not_visible');
         continue;
       }
       if (emitted.has(refKey(resolved))) {

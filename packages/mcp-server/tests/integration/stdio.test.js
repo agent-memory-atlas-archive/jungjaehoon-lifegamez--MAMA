@@ -94,13 +94,22 @@ describe('public MCP stdio', () => {
       });
       expect(ingested.success, JSON.stringify(ingested)).toBe(true);
       expect(typeof ingested.raw_id).toBe('string');
-      const contracts = await call(client, 'search_decisions_and_contracts', {
+      const contractOptions = {
         query: 'local SQLite database',
-        decision_limit: 5,
-        contract_limit: 0,
-        similarity_threshold: 0.5,
-      });
+        decisionLimit: 5,
+        contractLimit: 0,
+        similarityThreshold: 0.5,
+      };
+      const contractSchema = tools.find(
+        (tool) => tool.name === 'search_decisions_and_contracts'
+      ).inputSchema;
+      for (const option of Object.keys(contractOptions)) {
+        expect(contractSchema.properties, `Undocumented option: ${option}`).toHaveProperty(option);
+      }
+      const contracts = await call(client, 'search_decisions_and_contracts', contractOptions);
       expect(contracts.success).toBe(true);
+      expect(contracts.decisionResults.some((row) => row.id === saved.id)).toBe(true);
+      expect(contracts.contractResults).toEqual([]);
       const db = new Database(join(home, 'memory.db'), { readonly: true });
       try {
         expect(

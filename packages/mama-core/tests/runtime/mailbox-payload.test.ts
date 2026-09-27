@@ -42,6 +42,38 @@ afterEach(() => {
 });
 
 describe('v7 R2: consumer input survives acceptance and restart', () => {
+  it.each(['dispatching', 'accepted', 'uncertain', 'settled'] as const)(
+    'F3.7 never coalesces fresh work into a pending row with native state %s',
+    (state) => {
+      const db = open(join(directory(), 'state.db'));
+      const mailbox = new Mailbox(db);
+      const first = mailbox.enqueue(input(null, { coalesceKey: 'group', preview: ['first'] }))!;
+      const native = mailbox.nativeInputs.prepare(first);
+      mailbox.nativeInputs.dispatch(first, {
+        backend: 'codex',
+        sessionId: 'session',
+        inputId: native.invocationId!,
+      });
+      if (state === 'accepted' || state === 'settled')
+        mailbox.nativeInputs.accept(first, {
+          backend: 'codex',
+          sessionId: 'session',
+          turnId: 'turn',
+        });
+      if (state === 'settled') mailbox.nativeInputs.settle(first);
+      if (state === 'uncertain')
+        db.prepare("UPDATE native_input_deliveries SET state='uncertain' WHERE input_id=?").run(
+          first
+        );
+      const second = mailbox.enqueue(
+        input(null, { id: 'request-2', coalesceKey: 'group', preview: ['second'] })
+      );
+      expect(second).not.toBe(first);
+      expect(mailbox.claimNext()?.stimulusId).toBe('request-2');
+      expect(mailbox.readInput('request-1', 'consumer-1')?.preview).toEqual(['first']);
+    }
+  );
+
   it('inspects only the served principal input without claiming it or sharing payload objects', () => {
     const mailbox = new Mailbox(open(join(directory(), 'state.db')));
     mailbox.enqueue(input({ body: 'accepted' }));

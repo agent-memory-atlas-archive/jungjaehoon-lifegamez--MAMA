@@ -3,6 +3,19 @@ import { describe, expect, it } from 'vitest';
 import { classifyQuestionType } from '../../src/knowledge/question-type.js';
 
 describe('Phase 3 Task 10: question type classifier', () => {
+  it.each([
+    ['수정해 주세요', 'correction'],
+    ['문서를 찾아줘', 'artifact'],
+    ['이력을 보여줘', 'timeline'],
+    ['상태는 어떤가요', 'status'],
+    ['이유가 뭔가요', 'decision_reason'],
+    ['설정을 알려줘', 'how_to'],
+    ['전체 상태는 어떤가요', 'status'],
+    ['회의 후에는 무슨 일이 있었나요', 'timeline'],
+  ])('classifies Korean with attached particles: %s', (query, expected) => {
+    expect(classifyQuestionType(query)).toBe(expected);
+  });
+
   it('classifies correction questions', () => {
     expect(classifyQuestionType('fix the stale case status')).toBe('correction');
   });

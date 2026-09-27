@@ -693,8 +693,9 @@ export function boundReadScopesFor(
   requested?: MemoryScopeRef[]
 ): MemoryScopeRef[] {
   const readable = [...access.scopes, ...(access.readScopes ?? [])];
-  const effective = requested ?? readable;
-  const admitted = new Set(readable.map((scope) => `${scope.kind}${scope.id}`));
+  const scopeKey = (scope: MemoryScopeRef): string => JSON.stringify([scope.kind, scope.id]);
+  const admitted = new Map(readable.map((scope) => [scopeKey(scope), scope]));
+  const effective = requested ?? [...admitted.values()];
   const seen = new Set<string>();
   return effective.map((scope) => {
     if (
@@ -707,7 +708,7 @@ export function boundReadScopesFor(
     ) {
       throw new JudgmentError('INVALID_SCOPE', 'scope kind is invalid');
     }
-    const key = `${scope.kind}${scope.id}`;
+    const key = scopeKey(scope);
     if (seen.has(key)) {
       throw new JudgmentError('INVALID_SCOPE', 'Read scopes must be unique');
     }
@@ -1521,24 +1522,7 @@ export async function recallMemory(
         created_at: m.created_at,
         similarity: m.confidence ?? 0.5,
       }));
-      interface GraphExpandedCandidate {
-        id: string;
-        topic: string;
-        decision: string;
-        confidence?: number;
-        similarity?: number;
-        created_at?: number | string;
-        graph_source?: string;
-        graph_rank?: number;
-      }
-      interface MamaApiDefault {
-        expandWithGraph: (
-          candidates: GraphExpandedCandidate[]
-        ) => Promise<GraphExpandedCandidate[]>;
-      }
-      const mamaApiModule = await import('../mama-api.js');
-      const mamaDefault: MamaApiDefault = mamaApiModule.default as unknown as MamaApiDefault;
-      const expanded = await mamaDefault.expandWithGraph(candidates);
+      const expanded = await expandWithGraphInAdapter(adapter, candidates);
       const primaryIds = new Set(matched.map((m) => m.id));
       let expandedOnly = expanded.filter((e) => !primaryIds.has(e.id));
       let expandedScopeMap = new Map<string, MemoryScopeRef[]>();

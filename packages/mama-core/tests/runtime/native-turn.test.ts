@@ -16,7 +16,8 @@ afterEach(() => {
 function runnerWithPrompt(
   prompt: IModelRunner['prompt'],
   maxTurns = 30,
-  modelRun?: NativeModelRunPort
+  modelRun?: NativeModelRunPort,
+  onRunFinished?: NativeSessionHost<Record<string, never>>['onRunFinished']
 ) {
   const pool = new SessionPool();
   pools.push(pool);
@@ -50,6 +51,7 @@ function runnerWithPrompt(
     hostToolDefinitions: () => [tool],
     callTool: async (_name, input) => ({ success: true, data: input }),
     modelRun,
+    onRunFinished,
   };
   return createNativeSessionRunner(host);
 }
@@ -65,6 +67,37 @@ function toolCall(index: number, input: Record<string, unknown>): HostToolCall {
 }
 
 describe('native host-tool loop signatures', () => {
+  it.each(['sync', 'async'])(
+    'F3.6 keeps a committed turn successful when its %s observer fails',
+    async (mode) => {
+      const states: string[] = [];
+      const observer = () => {
+        if (mode === 'async') return Promise.reject(new Error('observer failed'));
+        throw new Error('observer failed');
+      };
+      const runner = runnerWithPrompt(
+        async () => promptResult(),
+        30,
+        {
+          begin: async () => 'run:observer',
+          commit: async () => {
+            states.push('committed');
+          },
+          fail: async () => {
+            states.push('failed');
+          },
+        },
+        observer
+      );
+      await expect(runner.runTurn([{ type: 'text', text: 'fixture' }])).resolves.toMatchObject({
+        response: 'done',
+        modelRunId: 'run:observer',
+        modelRunProvenance: 'available',
+      });
+      expect(states).toEqual(['committed']);
+    }
+  );
+
   it.each(['completed', 'failed', 'commit_failed'] as const)(
     'exposes the created model run before a %s turn settles',
     async (outcome) => {
