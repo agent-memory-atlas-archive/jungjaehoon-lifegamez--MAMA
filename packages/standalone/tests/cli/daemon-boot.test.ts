@@ -127,6 +127,25 @@ describe('daemon bootstrap', () => {
     }
   });
 
+  it.each(['downloads', 'downloads/inner', '.'])(
+    'refuses a workspace overlapping the daemon downloads directory (%s)',
+    async (relativeWorkspace) => {
+      const root = mkdtempSync(join(tmpdir(), 'daemon-overlap-'));
+      roots.push(root);
+      const options = config(root);
+      options.agent.codex_cwd = join(root, relativeWorkspace);
+      await expect(
+        bootDaemon({
+          config: options,
+          home: root,
+          configPath: join(root, 'config.yaml'),
+          logger: { info: () => {}, error: () => {} },
+          dependencies: { ensureIsolation: () => {} },
+        })
+      ).rejects.toThrow(/must not contain or sit inside/);
+    }
+  );
+
   it('refuses enabled Telegram without its environment token and never logs an injected config token', async () => {
     const root = mkdtempSync(join(tmpdir(), 'daemon-token-'));
     roots.push(root);

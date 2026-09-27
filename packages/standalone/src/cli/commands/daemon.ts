@@ -1,5 +1,5 @@
 import { closeSync, existsSync, fchmodSync, mkdirSync, openSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import type { MailboxRow } from '@jungjaehoon/mama-core/runtime/mailbox';
@@ -174,6 +174,14 @@ function stimulusDelivered(logger: DaemonLogger, row: MailboxRow, modelRunId: st
   );
 }
 
+function pathsOverlap(left: string, right: string): boolean {
+  const inside = (parent: string, child: string): boolean => {
+    const local = relative(resolve(parent), resolve(child));
+    return local === '' || (local !== '..' && !local.startsWith(`..${sep}`) && !isAbsolute(local));
+  };
+  return inside(left, right) || inside(right, left);
+}
+
 function pathsFor(configPath: string, config: W1Config): DaemonPaths {
   const mamaRoot = dirname(configPath);
   const runtimeRoot = join(mamaRoot, 'runtime');
@@ -181,11 +189,17 @@ function pathsFor(configPath: string, config: W1Config): DaemonPaths {
   const pluginDir = join(mamaRoot, '.empty-plugins');
   const mcpConfigPath = config.agent.tools?.mcp_config ?? join(runtimeRoot, 'mama-mcp-config.json');
   const connectorsRoot = join(mamaRoot, 'connectors');
+  const downloadsDir = join(mamaRoot, 'downloads');
+  // The unsandboxed daemon writes downloads; the agent writes the workspace. Overlap would let the
+  // agent swap download directories for symlinks and redirect the daemon's writes.
+  if (pathsOverlap(workspaceDir, downloadsDir)) {
+    throw new Error(`agent.codex_cwd must not contain or sit inside ${downloadsDir}`);
+  }
   return {
     mamaRoot,
     runtimeRoot,
     workspaceDir,
-    downloadsDir: join(mamaRoot, 'downloads'),
+    downloadsDir,
     pluginDir,
     mcpConfigPath,
     socketPath: join(mamaRoot, 'runtime.sock'),

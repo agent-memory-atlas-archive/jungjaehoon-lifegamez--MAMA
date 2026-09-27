@@ -1091,4 +1091,5 @@ The implementation writes raw/index data during import only. Replay is the owner
 - A third Codex pass (§F6): repeated cross-process swaps still beat the path recheck (Node has no
   openat), so the daemon now downloads only into daemon-owned `~/.mama/downloads/` (agent read-only)
   and the recheck code is deleted (+164/−221); the delivered-receipt exception is opt-in for outbound
-  text only, so a different file under one operation id is refused again. Live download not exercised.
+  text only, so a different file under one operation id is refused again; the final pass made the
+  daemon refuse an `agent.codex_cwd` overlapping downloads. Live: `~/.mama/downloads` created 0700 at boot.

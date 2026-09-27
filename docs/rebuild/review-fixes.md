@@ -127,3 +127,5 @@ Codex re-read every item against the code: all F1–F3 defects resolved except t
    workspace files to modify, unzip or deliver it.
 2. P2 The delivered-receipt exception also answered file sends with another file's receipt; only the
    outbound text path opts in.
+3. P2 (final pass) `agent.codex_cwd` could place the workspace at or around the downloads directory and
+   make it agent-writable again; the daemon refuses overlapping paths at boot.
