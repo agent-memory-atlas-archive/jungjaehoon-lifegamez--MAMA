@@ -118,8 +118,8 @@ describe('minimal source actions', () => {
             source_at: '2026-09-27T00:00:00.000Z',
             content_preview: 'x'.repeat(240),
             source_id: 'message-a',
+            // The stored reader's compact hit carries the channel key only.
             channel_id: 'channel-a',
-            metadata: { channelName: 'Synthetic room' },
             score: 1,
           },
         ],
@@ -165,7 +165,7 @@ describe('minimal source actions', () => {
         hits: [
           {
             author: 'Writer',
-            channel: 'Synthetic room',
+            channel: 'channel-a',
             text: 'x'.repeat(200),
             observationRef: 'obs-a',
           },

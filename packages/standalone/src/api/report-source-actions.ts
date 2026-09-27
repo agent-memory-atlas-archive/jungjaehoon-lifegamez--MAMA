@@ -212,7 +212,8 @@ function recentAction(ports: ReportReadPorts): ActionRegistration {
           const connector = String(row.connector_name);
           const knownChannels = ports.adapter
             .prepare(
-              `SELECT DISTINCT source_connector, channel, metadata_json FROM connector_event_index WHERE source_connector = ?`
+              `SELECT source_connector, channel, json_extract(metadata_json, '$.channelName') AS channel_name
+               FROM connector_event_index WHERE source_connector = ? GROUP BY source_connector, channel`
             )
             .all(connector) as Row[];
           const failedChannels = [
@@ -220,11 +221,10 @@ function recentAction(ports: ReportReadPorts): ActionRegistration {
               allowedRows(knownChannels, context.access, ports.ownerPrincipalId)
                 .filter((event) => event.source_connector === connector)
                 .map((event) => {
-                  const metadata = decodeMetadata(event.metadata_json);
                   const key = String(event.channel ?? '');
                   return [
                     key,
-                    typeof metadata.channelName === 'string' ? metadata.channelName : key,
+                    typeof event.channel_name === 'string' ? event.channel_name : key,
                   ] as const;
                 })
             ).values(),

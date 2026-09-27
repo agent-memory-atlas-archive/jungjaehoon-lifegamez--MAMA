@@ -297,6 +297,33 @@ describe('knowledge/commitments: committing owner work', () => {
     ).rejects.toThrow(/reference/i);
   });
 
+  it('refuses a withdraw that omits its revision at runtime', async () => {
+    const created = await createWork(
+      {
+        commandId: 'work-withdraw-norev',
+        topic: 'withdraw',
+        summary: 'to be dropped',
+        set: { title: 'Work to drop', status: 'pending' },
+        scopes: access.scopes,
+      },
+      access,
+      { adapter: getAdapter() }
+    );
+    await expect(
+      withdrawWork(
+        {
+          commandId: 'work-withdraw-norev-2',
+          topic: 'withdraw',
+          summary: 'dropped without a revision',
+          commitmentId: created.commitmentId,
+          scopes: access.scopes,
+        } as unknown as Parameters<typeof withdrawWork>[0],
+        access,
+        { adapter: getAdapter() }
+      )
+    ).rejects.toThrow();
+  });
+
   it('a withdrawn commitment keeps its values and refuses further revision', async () => {
     const created = await createWork(
       {

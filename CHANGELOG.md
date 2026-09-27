@@ -4,8 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## mama-os [0.57.0] / mama-core [4.0.0] / mcp-server [2.2.1] / plugin [2.0.1] - 2026-09-27
 
-This is an unreleased rebuild. Published packages still describe the previous product until this
-version is released.
+This is the first npm release since mama-os 0.53.1, mama-core 2.4.1 and mcp-server 1.15.0: versions
+0.53.2 through 0.56.0 were prepared on main but never published. If you install from npm, read the
+entries below this one down to 0.53.2 as well; the breaking changes listed here are relative to the
+last entry, 0.56.0.
 
 ### Highlights
 

@@ -463,31 +463,52 @@ function boundedStimulus(
   return lines.join('\n');
 }
 
-function stimulusText(row: MailboxRow): string {
-  if (!row.payload || typeof row.payload !== 'object' || Array.isArray(row.payload)) return '';
-  const refs = row.payload.refs;
-  return Array.isArray(refs)
-    ? refs
-        .flatMap((ref) =>
-          ref && typeof ref === 'object' && !Array.isArray(ref)
-            ? [textField(ref.contentPreview)]
-            : []
-        )
-        .join(' ')
-    : '';
+function sourcePayloadObject(row: MailboxRow): Record<string, JsonValue> | null {
+  return row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
+    ? (row.payload as Record<string, JsonValue>)
+    : null;
 }
 
+function payloadRefs(payload: Record<string, JsonValue>): Array<Record<string, JsonValue>> {
+  return Array.isArray(payload.refs)
+    ? payload.refs.filter(
+        (ref): ref is Record<string, JsonValue> =>
+          ref !== null && typeof ref === 'object' && !Array.isArray(ref)
+      )
+    : [];
+}
+
+/** The delta's text: its bounded preview lines (what the collector saw) and any ref previews. */
+function stimulusText(row: MailboxRow): string {
+  const payload = sourcePayloadObject(row);
+  if (!payload) return '';
+  const preview = Array.isArray(payload.preview)
+    ? payload.preview.filter((line): line is string => typeof line === 'string')
+    : [];
+  return [...preview, ...payloadRefs(payload).map((ref) => textField(ref.contentPreview))]
+    .filter(Boolean)
+    .join(' ');
+}
+
+/** The delta's channel key and the channel labels its refs carry. */
 function stimulusChannels(row: MailboxRow): Set<string> {
-  if (!row.payload || typeof row.payload !== 'object' || Array.isArray(row.payload))
-    return new Set();
-  const refs = row.payload.refs;
-  if (!Array.isArray(refs)) return new Set();
+  const payload = sourcePayloadObject(row);
+  if (!payload) return new Set();
   return new Set(
-    refs.flatMap((ref) =>
-      ref && typeof ref === 'object' && !Array.isArray(ref)
-        ? [textField(ref.channel), textField(ref.channelName)].filter(Boolean)
-        : []
-    )
+    [
+      textField(payload.channel),
+      ...payloadRefs(payload).flatMap((ref) => {
+        const metadata =
+          ref.metadata && typeof ref.metadata === 'object' && !Array.isArray(ref.metadata)
+            ? (ref.metadata as Record<string, JsonValue>)
+            : {};
+        return [
+          textField(ref.channel),
+          textField(ref.channelName),
+          textField(metadata.channelName),
+        ];
+      }),
+    ].filter(Boolean)
   );
 }
 

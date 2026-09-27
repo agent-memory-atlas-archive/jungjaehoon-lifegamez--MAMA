@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCatalog, createDispatcher, type ActionContext } from '@jungjaehoon/mama-core';
 import { reportSourceActionRegistrations } from '../../src/api/report-source-actions.js';
 import { createTimeZoneSetting, localDateKey } from '../../src/runtime/timezone.js';
@@ -71,8 +71,22 @@ function setup(sourceRows = rows) {
               last_error_at: new Date(now).toISOString(),
             },
           ];
-        if (sql.includes('SELECT DISTINCT source_connector'))
-          return sourceRows.filter((row) => row.source_connector === 'chat');
+        if (sql.includes('GROUP BY source_connector, channel'))
+          return [
+            ...new Map(
+              sourceRows
+                .filter((row) => row.source_connector === 'chat')
+                .map((row) => [
+                  row.channel,
+                  {
+                    source_connector: row.source_connector,
+                    channel: row.channel,
+                    channel_name: (JSON.parse(row.metadata_json) as { channelName?: string })
+                      .channelName,
+                  },
+                ])
+            ).values(),
+          ];
         if (sql.includes('ROW_NUMBER()'))
           return sourceRows.filter(
             (row) => row.source_connector === 'calendar' || row.source_connector === 'ical'
@@ -102,6 +116,10 @@ function setup(sourceRows = rows) {
 }
 
 describe('report source reads', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('classifies an unparseable source.recent since value as invalid input', async () => {
     const { dispatch, access } = setup();
     const result = await dispatch(
@@ -174,6 +192,8 @@ describe('report source reads', () => {
   });
 
   it('sorts upcoming events by parsed time and omits a cancelled latest version', async () => {
+    // The fixtures name fixed October 2026 events; fix the clock so they stay upcoming.
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-09-28T00:00:00.000Z') });
     const local = {
       ...rows[2]!,
       source_id: 'event-local',
@@ -218,6 +238,8 @@ describe('report source reads', () => {
   });
 
   it('sorts mixed iCal date forms by epoch and excludes an all-day event at its exclusive end', async () => {
+    // The fixtures name fixed October 2026 events; fix the clock so they stay upcoming.
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-09-28T00:00:00.000Z') });
     const today = localDateKey(Date.now(), 'America/Los_Angeles');
     const [year, month, day] = today.split('-').map(Number);
     const prior = new Date(Date.UTC(year!, month! - 1, day! - 1)).toISOString().slice(0, 10);

@@ -265,8 +265,12 @@ function workListLexicalScore(
   return Math.min(1, overlap * 0.8 + exactSubstringBonus);
 }
 
-/** The title-only form of the same lexical rank used by work.list text search. */
+/**
+ * The title-only form of the same lexical rank used by work.list text search. A delta whose text
+ * has no searchable tokens (only attachments or symbols) overlaps no title.
+ */
 export function workListTitleTextScore(query: string, title: string): number {
+  if (workListTokens(query).length === 0) return 0;
   return workListLexicalScore(query, { title, description: '' });
 }
 

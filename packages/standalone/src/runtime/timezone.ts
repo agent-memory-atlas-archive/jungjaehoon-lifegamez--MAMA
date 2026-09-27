@@ -103,7 +103,7 @@ export function epochForCalendarValue(
     case 'utc':
     case 'offset': {
       const normalized = value
-        .replace(/^(\d{4})(\d{2})(\d{2})T/, '$1-$2-$3T')
+        .replace(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})/, '$1-$2-$3T$4:$5:$6')
         .replace(/([+-]\d{2})(\d{2})$/, '$1:$2');
       return Date.parse(normalized);
     }

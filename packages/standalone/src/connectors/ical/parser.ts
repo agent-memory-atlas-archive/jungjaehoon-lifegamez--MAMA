@@ -49,10 +49,21 @@ export function parseICalendar(source: string): ParsedICalEvent[] {
   const unfolded = source.replace(/\r?\n[ \t]/g, '').split(/\r?\n/);
   const events: Map<string, string>[] = [];
   let current: Map<string, string> | undefined;
+  // Components nested in a VEVENT (VALARM and the like) carry their own SUMMARY or DESCRIPTION;
+  // their lines are skipped so they never overwrite the event's properties.
+  let nested = 0;
   for (const line of unfolded) {
     if (line === 'BEGIN:VEVENT') {
       if (current) throw new Error('nested VEVENT');
       current = new Map();
+      continue;
+    }
+    if (current && line.startsWith('BEGIN:')) {
+      nested += 1;
+      continue;
+    }
+    if (current && nested > 0) {
+      if (line.startsWith('END:')) nested -= 1;
       continue;
     }
     if (line === 'END:VEVENT') {

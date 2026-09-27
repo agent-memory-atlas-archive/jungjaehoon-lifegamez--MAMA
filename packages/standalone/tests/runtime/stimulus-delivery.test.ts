@@ -152,14 +152,24 @@ describe('one stimulus intake and delivery', () => {
         attempts: 1,
         createdAt: now,
         coalesceKey: null,
+        // The production source_delta payload: the channel key, refs without text, preview lines.
         payload: {
+          kind: 'source_delta',
+          collector: 'collector',
+          channel: 'synthetic-room',
           refs: [
             {
-              channel: 'synthetic-room',
-              contentPreview: 'proposal progress update',
+              connector: 'collector',
+              observationRef: 'obs-1',
+              sourceId: 'source-1',
+              sourceEntityId: 'source-1',
               sourceAt: new Date(now).toISOString(),
+              observedAt: new Date(now).toISOString(),
+              contentHash: null,
+              metadata: { channelName: 'Synthetic Room' },
             },
           ],
+          preview: ['proposal progress update'],
         },
       } as never,
       {
@@ -185,6 +195,59 @@ describe('one stimulus intake and delivery', () => {
     expect(section).toContain(overlapping.commitmentId);
     expect(prompt).toContain('manage.wiki.update');
     expect(section).not.toContain(old.commitmentId);
+  });
+
+  it('matches same-channel work when the delta text has nothing searchable', async () => {
+    const now = Date.parse('2026-09-28T00:00:00.000Z');
+    const delivery = createDelivery({
+      guidanceResolver: async () => [],
+      openWorkCandidates: async () => [
+        {
+          commitmentId: 'commitment-same-channel',
+          title: 'Design review',
+          stage: 'doing',
+          assignee: '',
+          sourceChannel: 'synthetic-room',
+          updatedAt: now - 1_000,
+        },
+      ],
+    });
+    let prompt = '';
+    await delivery.deliver(
+      {
+        id: 'symbol-delta',
+        stimulusId: 'symbol-delta',
+        principalId: 'owner',
+        kind: 'source_delta',
+        channelKey: 'synthetic-room',
+        occurredAt: now,
+        refs: [{ sourceAt: new Date(now).toISOString() }],
+        preview: [],
+        status: 'claimed',
+        attempts: 1,
+        createdAt: now,
+        coalesceKey: null,
+        payload: { channel: 'synthetic-room', refs: [], preview: ['📎'] },
+      } as never,
+      {
+        nativeInputId: 'symbol-delta',
+        resultForReceipt: () => null,
+        run: async (content: Array<{ text?: string }>, request?: NativeInvocationOptions) => {
+          content =
+            (await request?.prepareSessionContent?.({
+              sessionId: 'symbol-session',
+              isNewSession: false,
+            })) ?? content;
+          prompt = content[0]?.text ?? '';
+          return {} as never;
+        },
+        steer: vi.fn(),
+        wasDispatched: () => false,
+        onInputDispatch: vi.fn(),
+        onAccepted: vi.fn(),
+      } as never
+    );
+    expect(prompt.split('candidates (you decide):')[1] ?? '').toContain('commitment-same-channel');
   });
 
   it('omits the candidate heading when no open work is relevant', async () => {

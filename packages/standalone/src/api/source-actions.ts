@@ -225,6 +225,7 @@ export function sourceActionRegistrations(ports: SourcePorts): ActionRegistratio
                       hit.channelName ??
                       metadata.channelName ??
                       hit.channel ??
+                      hit.channel_id ??
                       null,
                     time: Number.isFinite(timestamp)
                       ? `${new Date(timestamp).toLocaleString('ko-KR', { timeZone: ports.timeZone.get() })} (${ports.timeZone.get()})`

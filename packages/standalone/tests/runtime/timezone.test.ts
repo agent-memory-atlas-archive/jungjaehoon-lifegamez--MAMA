@@ -3,6 +3,7 @@ import {
   createTimeZoneSetting,
   epochAtLocalDateTime,
   calendarValueKind,
+  epochForCalendarValue,
   localDateKey,
 } from '../../src/runtime/timezone.js';
 
@@ -32,6 +33,15 @@ describe('owner timezone setting', () => {
     ['20260927T120000', 'floating'],
   ])('derives the calendar kind from %s', (value, kind) => {
     expect(calendarValueKind(value)).toBe(kind);
+  });
+
+  it('reads compact iCal UTC and offset times', () => {
+    expect(epochForCalendarValue('20261001T060000Z', undefined, 'Asia/Seoul')).toBe(
+      Date.parse('2026-10-01T06:00:00Z')
+    );
+    expect(epochForCalendarValue('20261001T150000+0900', undefined, 'UTC')).toBe(
+      Date.parse('2026-10-01T06:00:00Z')
+    );
   });
 
   it('rejects an unknown calendar value naming the value', () => {

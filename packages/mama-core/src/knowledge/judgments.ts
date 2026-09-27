@@ -827,8 +827,9 @@ async function appendJudgmentOnAdapter(
             `Commitment is unavailable: ${work.commitmentId}`
           );
         }
+        // Only revise may omit the revision (it appends to the head); withdraw always states it.
         if (
-          work.expectedRevision !== undefined &&
+          (work.expectedRevision !== undefined || work.operation === 'withdraw') &&
           current.current_revision !== work.expectedRevision
         ) {
           throw new JudgmentError('STALE_REVISION', 'Commitment revision is stale');

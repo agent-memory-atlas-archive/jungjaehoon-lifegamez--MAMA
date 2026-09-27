@@ -62,6 +62,28 @@ describe('iCal connector', () => {
     ]);
   });
 
+  it('keeps the event summary when a nested alarm has its own', () => {
+    const parsed = parseICalendar(
+      [
+        'BEGIN:VCALENDAR',
+        'BEGIN:VEVENT',
+        'UID:alarm-event',
+        'DTSTART:20261001T060000Z',
+        'DTEND:20261001T070000Z',
+        'SUMMARY:Event title',
+        'BEGIN:VALARM',
+        'ACTION:EMAIL',
+        'SUMMARY:Alarm title',
+        'TRIGGER:-PT15M',
+        'END:VALARM',
+        'END:VEVENT',
+        'END:VCALENDAR',
+      ].join('\r\n')
+    );
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]).toMatchObject({ uid: 'alarm-event', summary: 'Event title' });
+  });
+
   it('accepts duration and missing end properties while retaining date kinds', () => {
     const parsed = parseICalendar(
       [
