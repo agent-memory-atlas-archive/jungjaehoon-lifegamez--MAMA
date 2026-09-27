@@ -1,3 +1,9 @@
+---
+title: Messengers
+parent: Guides
+nav_order: 1
+---
+
 # Talk to MAMA on Telegram, Discord, or Slack
 
 MAMA accepts owner messages through enabled Telegram, Discord, and Slack gateways. A direct reply returns through the gateway that accepted the message. Scheduled reports, `[notify]` results, and viewer security alerts each use their configured single messenger route.

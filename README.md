@@ -122,7 +122,7 @@ Each source is optional; enable the ones you use in `~/.mama/connectors.json` or
 **Messengers.** You talk to MAMA in Telegram, Discord or Slack. Only your own account in the chats
 you allow is answered; everyone else is ignored and logged. You choose which messenger receives
 reports, notifications and security alerts. See [Sources](docs/guides/connectors.md) and
-[Messengers](docs/guides/telegram.md).
+[Messengers](docs/guides/messengers.md).
 
 ## Security
 
@@ -170,7 +170,7 @@ What still needs live confirmation is listed in the [changelog](CHANGELOG.md) un
 ## Documentation
 
 - [Your first day with MAMA](docs/start/tutorial.md) · [Owner setup](docs/start/owner-setup.md)
-- [Sources](docs/guides/connectors.md) · [Messengers](docs/guides/telegram.md) ·
+- [Sources](docs/guides/connectors.md) · [Messengers](docs/guides/messengers.md) ·
   [Reports and board](docs/guides/reports-and-board.md) ·
   [Corrections and learning](docs/guides/corrections-and-learning.md)
 - [CLI](docs/reference/cli.md) · [Configuration](docs/reference/configuration.md) ·

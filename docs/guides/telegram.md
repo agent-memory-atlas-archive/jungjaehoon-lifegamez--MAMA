@@ -1,3 +1,9 @@
+---
+title: Telegram
+parent: Guides
+nav_order: 5
+---
+
 # Telegram owner gateway
 
 For setup and shared Telegram, Discord, and Slack delivery rules, see the [messengers guide](messengers.md).

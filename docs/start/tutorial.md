@@ -7,9 +7,8 @@ nav_order: 1
 # Your first day with MAMA
 
 This walkthrough builds MAMA OS from source, connects Telegram and one work source, and shows
-where to inspect the results. Examples use fictional work and synthetic identifiers. MAMA OS
-currently replies to its owner in Telegram; Discord and Slack are selectable messengers. See the
-[Telegram guide](../guides/telegram.md).
+where to inspect the results. Examples use fictional work and synthetic identifiers. This walkthrough uses Telegram;
+Discord and Slack work the same way. See the [messengers guide](../guides/messengers.md).
 
 ## 1. Install dependencies and build
 
@@ -176,7 +175,7 @@ viewer and the Telegram message for the final result.
 
 **If not:** confirm the Telegram message reached the bot and inspect the daemon log for attachment
 or delivery errors. The first live download-copy-deliver run has not yet been observed; see the
-[viewer guide](../guides/viewer.md) and [Telegram guide](../guides/telegram.md).
+[viewer guide](../guides/viewer.md) and [messengers guide](../guides/messengers.md).
 
 To stop a manually started daemon, use:
 

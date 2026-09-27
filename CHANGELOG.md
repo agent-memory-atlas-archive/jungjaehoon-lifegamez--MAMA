@@ -13,8 +13,8 @@ version is released.
   reports, a board, wiki pages, and corrections on your computer.
 - Development memory is available through Claude Code commands, hooks, and an MCP server that
   uses the shared engine in-process without the MAMA OS daemon.
-- Telegram is the owner messenger today. Discord and Slack are selectable messengers. See the
-  [Telegram guide](docs/guides/telegram.md).
+- Telegram, Discord and Slack are selectable owner messengers. See the
+  [messengers guide](docs/guides/messengers.md).
 
 ### Changed since 0.56
 

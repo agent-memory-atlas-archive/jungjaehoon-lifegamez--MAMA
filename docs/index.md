@@ -20,7 +20,7 @@ model receive the information needed for each task.
 
 ## Guides
 
-Read about [sources](guides/connectors.md), [Telegram](guides/telegram.md),
+Read about [sources](guides/connectors.md), [messengers](guides/messengers.md),
 [reports and the board](guides/reports-and-board.md), [corrections](guides/corrections-and-learning.md),
 and [security](guides/security.md).
 
