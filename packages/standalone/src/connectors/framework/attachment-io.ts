@@ -1,8 +1,14 @@
-import { mkdirSync, realpathSync, renameSync, rmSync } from 'node:fs';
-import { open } from 'node:fs/promises';
-import { isAbsolute, relative, sep } from 'node:path';
-import { Readable, Transform } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
+import {
+  closeSync,
+  constants,
+  mkdirSync,
+  openSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 
 /** Resolve the actual destination before a daemon writes an owner attachment. */
 export function resolveAttachmentDirectory(workspace: string, directory: string): string {
@@ -33,7 +39,37 @@ export function requireHttpsUrl(value: unknown, field: string): string {
 // Cap connector downloads at 50 MiB (52,428,800 bytes), based on Bot API document delivery.
 const ATTACHMENT_DOWNLOAD_LIMIT = 50 * 1024 * 1024;
 
-export async function saveResponseBody(response: Response, targetPath: string): Promise<number> {
+/** Validate and open without yielding to an agent that can replace workspace directories. */
+export function saveAttachmentBytes(
+  workspace: string,
+  targetPath: string,
+  bytes: Uint8Array
+): void {
+  const directory = resolveAttachmentDirectory(workspace, dirname(targetPath));
+  const finalPath = join(directory, basename(targetPath));
+  const temporaryPath = `${finalPath}.${process.pid}.${Date.now()}.part`;
+  const fd = openSync(
+    temporaryPath,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+    0o600
+  );
+  try {
+    writeFileSync(fd, bytes);
+  } catch (error) {
+    closeSync(fd);
+    rmSync(temporaryPath, { force: true });
+    throw error;
+  }
+  closeSync(fd);
+  // rename replaces the final name itself (a symlink placed there is replaced, never followed).
+  renameSync(temporaryPath, finalPath);
+}
+
+export async function saveResponseBody(
+  response: Response,
+  targetPath: string,
+  workspace: string
+): Promise<number> {
   if (!response.body) throw new Error('attachment download response has no body');
   const limitError = new Error('attachment download exceeds the 50 MiB (52428800 bytes) limit');
   if (Number(response.headers.get('content-length')) > ATTACHMENT_DOWNLOAD_LIMIT) {
@@ -41,28 +77,16 @@ export async function saveResponseBody(response: Response, targetPath: string): 
     await response.body.cancel().catch(() => undefined);
     throw limitError;
   }
-  const temporaryPath = `${targetPath}.${process.pid}.${Date.now()}.part`;
   let size = 0;
   try {
-    const handle = await open(temporaryPath, 'wx', 0o600);
-    try {
-      await pipeline(
-        Readable.fromWeb(response.body as ReadableStream),
-        new Transform({
-          transform(chunk: Buffer, _encoding, callback) {
-            size += chunk.byteLength;
-            if (size > ATTACHMENT_DOWNLOAD_LIMIT) callback(limitError);
-            else callback(null, chunk);
-          },
-        }),
-        handle.createWriteStream()
-      );
-      renameSync(temporaryPath, targetPath);
-      return size;
-    } finally {
-      await handle.close();
-      rmSync(temporaryPath, { force: true });
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of response.body) {
+      size += chunk.byteLength;
+      if (size > ATTACHMENT_DOWNLOAD_LIMIT) throw limitError;
+      chunks.push(chunk);
     }
+    saveAttachmentBytes(workspace, targetPath, Buffer.concat(chunks));
+    return size;
   } catch (error) {
     if (error === limitError) throw error;
     // Transport and filesystem errors can contain authenticated URLs or local paths.

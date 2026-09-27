@@ -35,6 +35,7 @@ import { buildMemoryAgentBootstrap } from './bootstrap-builder.js';
 import { resolveMemoryEvolution } from './evolution-engine.js';
 import { recordChannelAudit } from './channel-summary-state-store.js';
 import { warn } from '../debug-logger.js';
+import { scanMemoryWriteInput, SecretMaterialRefusedError } from './secret-filter.js';
 import { createEmptyRecallBundle, createMemoryAuditAck } from './types.js';
 import { getChannelSummary, upsertChannelSummary } from './channel-summary-store.js';
 import {
@@ -3227,6 +3228,9 @@ export async function saveCheckpointInAdapter(
   if (!summary) {
     throw new Error('Summary is required for checkpoint');
   }
+  const scan = scanMemoryWriteInput({ summary, open_files: openFiles, next_steps: nextSteps });
+  if (!scan.clean) throw new SecretMaterialRefusedError(scan.matches);
+  if (scan.warnings.length > 0) warn(`Checkpoint content warnings: ${scan.warnings.join(', ')}`);
 
   try {
     const stmt = adapter.prepare(`

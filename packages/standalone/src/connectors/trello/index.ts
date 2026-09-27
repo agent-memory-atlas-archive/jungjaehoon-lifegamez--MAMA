@@ -221,8 +221,7 @@ export class TrelloConnector implements IConnector {
     if (!this.apiKey || !this.token) throw new Error('TrelloConnector not initialized');
 
     const items: NormalizedItem[] = [];
-    let hadError = false;
-    let failedBoards = 0;
+    const failedBoards = new Set<string>();
     let polledBoards = 0;
     const pendingCardStates = new Map(
       [...this.lastCardStates].map(([boardId, states]) => [boardId, new Map(states)])
@@ -245,8 +244,7 @@ export class TrelloConnector implements IConnector {
         const res = await this.fetchWithTimeout(url);
 
         if (!res.ok) {
-          hadError = true;
-          failedBoards += 1;
+          failedBoards.add(boardId);
           this.lastError = `Board ${boardId}: HTTP ${res.status}`;
           continue;
         }
@@ -267,7 +265,7 @@ export class TrelloConnector implements IConnector {
           for (const card of list.cards) {
             const activityTime = Date.parse(card.dateLastActivity);
             if (!Number.isFinite(activityTime)) {
-              hadError = true;
+              failedBoards.add(boardId);
               this.lastError = 'Trello board item has an invalid activity timestamp';
               const previousState = prevCardState.get(card.id);
               if (previousState !== undefined) {
@@ -349,17 +347,16 @@ export class TrelloConnector implements IConnector {
         // Update card state snapshot for this board
         pendingCardStates.set(boardId, newCardState);
       } catch (err) {
-        hadError = true;
-        failedBoards += 1;
+        failedBoards.add(boardId);
         this.lastError = err instanceof Error ? err.message : String(err);
       }
     }
 
-    if (hadError) {
+    if (failedBoards.size > 0) {
       this.pendingCardStates = null;
       this.pollCommitDeferred = false;
       throw new Error(
-        `Trello poll failed for ${failedBoards} of ${polledBoards} configured boards; last error: ${this.lastError}`
+        `Trello poll failed for ${failedBoards.size} of ${polledBoards} configured boards; last error: ${this.lastError}`
       );
     }
 

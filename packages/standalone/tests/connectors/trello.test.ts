@@ -20,6 +20,68 @@ function lists(cards: unknown[]): unknown[] {
 }
 
 describe('TrelloConnector', () => {
+  it.each([false, true])(
+    'counts a board with multiple invalid timestamps once, even with a later catch=%s',
+    async (laterCatch) => {
+      const invalid = {
+        id: 'invalid-card',
+        name: 'invalid',
+        idMembers: [],
+        labels: [],
+        dateLastActivity: 'invalid',
+      };
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () =>
+          Response.json(
+            lists([
+              invalid,
+              { ...invalid, id: 'second-invalid' },
+              ...(laterCatch
+                ? [{ ...invalid, id: 'throwing-card', dateLastActivity: '2024-01-01', labels: {} }]
+                : []),
+            ])
+          )
+        )
+      );
+      const connector = new TrelloConnector(config, join(root, 'state.json'));
+      await connector.init();
+      await expect(connector.poll(new Date(0))).rejects.toThrow(
+        /failed for 1 of 1 configured boards; last error:/
+      );
+    }
+  );
+
+  it('counts timestamp, HTTP and caught failures across distinct boards and resets each poll', async () => {
+    let failing = true;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (!failing || url.includes('/healthy/')) return Response.json([]);
+        if (url.includes('/http/')) return new Response(null, { status: 503 });
+        if (url.includes('/caught/')) throw new Error('fixture transport error');
+        return Response.json(
+          lists([
+            { id: 'invalid-card', name: 'invalid', idMembers: [], dateLastActivity: 'invalid' },
+          ])
+        );
+      })
+    );
+    const channels = Object.fromEntries(
+      ['invalid', 'http', 'caught', 'healthy'].map((id) => [
+        id,
+        { role: 'truth' as const, boardId: id },
+      ])
+    );
+    const connector = new TrelloConnector({ ...config, channels }, join(root, 'state.json'));
+    await connector.init();
+    await expect(connector.poll(new Date(0))).rejects.toThrow(
+      'failed for 3 of 4 configured boards; last error: fixture transport error'
+    );
+    failing = false;
+    await expect(connector.poll(new Date(0))).resolves.toEqual([]);
+  });
+
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'trello-connector-'));
     vi.stubEnv('HOME', root);

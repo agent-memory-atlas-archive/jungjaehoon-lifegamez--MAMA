@@ -24,6 +24,7 @@ export interface AttachmentDownloadRequest {
   roomId: string;
   fileId: string;
   targetPath: string;
+  workspaceDir: string;
 }
 
 export interface AttachmentConnector {

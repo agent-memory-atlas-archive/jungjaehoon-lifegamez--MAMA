@@ -9,6 +9,8 @@ import {
   realpathSync,
   readFileSync,
   existsSync,
+  renameSync,
+  readdirSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -108,6 +110,98 @@ const chatworkFile = {
 };
 
 describe('attachment actions', () => {
+  it('rejects a destination swapped for an outside symlink during download', async () => {
+    const workspace = root();
+    const outside = root();
+    const directory = join(workspace, 'files', 'chatwork', '501');
+    const http = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith('/files/901')) return Response.json(chatworkFile);
+      if (url.endsWith('/files/901?create_download_url=1')) {
+        return Response.json({
+          ...chatworkFile,
+          download_url: 'https://download.example.test/901',
+        });
+      }
+      if (url === 'https://download.example.test/901') {
+        renameSync(directory, `${directory}-original`);
+        symlinkSync(outside, directory);
+        return new Response('bytes');
+      }
+      throw new Error('Unexpected fixture request');
+    });
+    const download = action(
+      portsFor(
+        workspace,
+        observation('chatwork', { roomId: '501', chatworkFileIds: ['901'] }),
+        await chatwork(http)
+      ),
+      'source.attachment.download'
+    );
+    await expect(
+      download(
+        { observationRef: 'obs-test', fileId: '901' },
+        { access, operationId: 'swapped-directory' }
+      )
+    ).rejects.toThrow();
+    expect(readdirSync(outside)).toEqual([]);
+  });
+
+  it.each(['metadata', 'text_marker'])(
+    'downloads only the requested attachment with an unavailable sibling (%s)',
+    async (kind) => {
+      const workspace = root();
+      const http = vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.endsWith('/files/902')) return new Response(null, { status: 404 });
+        if (url.endsWith('/files/901')) return Response.json(chatworkFile);
+        if (url.endsWith('/files/901?create_download_url=1')) {
+          return Response.json({
+            ...chatworkFile,
+            download_url: 'https://download.example.test/901',
+          });
+        }
+        if (url === 'https://download.example.test/901') return new Response('bytes');
+        throw new Error('Unexpected fixture request');
+      });
+      const stored = observation('chatwork', {
+        roomId: '501',
+        ...(kind === 'metadata' ? { chatworkFileIds: ['901', '902'] } : {}),
+      });
+      if (kind === 'text_marker')
+        stored.content = '[download:901] valid [download:902] unavailable';
+      const download = action(
+        portsFor(workspace, stored, await chatwork(http)),
+        'source.attachment.download'
+      );
+      const result = (await download(
+        { observationRef: 'obs-test', fileId: '901' },
+        { access, operationId: 'requested-file' }
+      )) as { path: string };
+      expect(readFileSync(result.path, 'utf8')).toBe('bytes');
+      expect(http.mock.calls.some(([url]) => String(url).includes('/files/902'))).toBe(false);
+    }
+  );
+
+  it('refuses delivery when the files root itself is replaced by a symlink', async () => {
+    const workspace = root();
+    const outside = root();
+    writeFileSync(join(outside, 'private.txt'), 'outside bytes');
+    symlinkSync(outside, join(workspace, 'files'));
+    const sender = { sendFile: vi.fn().mockResolvedValue({ size: 13, sentAs: 'document' }) };
+    const deliver = action(
+      { workspaceDir: workspace, telegram: () => sender },
+      'deliver.telegram.file'
+    );
+    await expect(
+      deliver(
+        { path: join(workspace, 'files', 'private.txt') },
+        { access, operationId: 'root-symlink' }
+      )
+    ).rejects.toThrow(/files.*directory|symlink/);
+    expect(sender.sendFile).not.toHaveBeenCalled();
+  });
+
   it.each([
     {
       metadata: { roomId: '501', chatworkFileIds: [901] },
@@ -428,6 +522,7 @@ describe('attachment actions', () => {
       roomId: '501',
       fileId: '901',
       targetPath: expected,
+      workspaceDir: workspace,
     });
     expect(result).toEqual({
       observationRef: 'obs-test',

@@ -89,5 +89,19 @@ Owner decision recorded here: the credential boundary covers MAMA's own credenti
 18. MINOR (CR) MCP stdio test uses the schema option names and asserts a result.
 19. MAJOR (CR) `/mama:configure` documents MAMA_DATABASE_PATH precedence.
 
-Not taken: CR's migration 093 backfill change (an applied migration is not edited; the backfill already
-ran on every database).
+Not taken: CR's migration 093 backfill change (an applied migration is not edited; whether its backfill
+matched every row cannot be shown from source, and `~/.mama` is a disposable testbed).
+
+## F4 — re-verification by Codex after F1–F3 (2026-09-27)
+
+Codex re-read every item against the code: all F1–F3 defects resolved except these, fixed in one commit.
+
+1. P1 F1.10: the target directory could be swapped for a symlink during the download await; the bytes
+   are fetched first, then containment is rechecked and the file opened with no await in between.
+2. P1 F1.18: a symlinked `workspace/files` moved the delivery boundary; the root must be a real directory.
+3. P1 F3.11: MCP checkpoint saves bypassed the secret scan; core `saveCheckpoint` scans.
+4. P1 F1.6 regression: one undeliverable recovered outbound entry blocked Telegram polling.
+5. P2 F1.20 regression: a regenerated report hit a binding mismatch on its delivered key.
+6. P2 F1.25 regression: an unavailable sibling attachment failed a valid download.
+7. P2 F3.9: the recursive visibility CTE grew with reconverging paths; it recurses per edge with UNION.
+8. P3 Trello: a board failing only on an invalid timestamp was not counted in the poll error.

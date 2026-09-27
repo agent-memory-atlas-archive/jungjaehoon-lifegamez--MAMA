@@ -1,5 +1,5 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, read, realpathSync } from 'node:fs';
-import { extname, resolve, sep } from 'node:path';
+import { basename, dirname, extname, join, resolve, sep } from 'node:path';
 
 export const TELEGRAM_MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 export const TELEGRAM_MAX_PHOTO_BYTES = 10 * 1024 * 1024;
@@ -40,7 +40,15 @@ export function openWorkspaceFile(
   filesRoot: string,
   inputPath: string
 ): ValidatedWorkspaceFile & { fd: number } {
-  const root = realpathSync(resolve(filesRoot));
+  const rootPath = resolve(filesRoot);
+  const rootMetadata = lstatSync(rootPath);
+  if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) {
+    throw new Error('workspace files root must be a directory, not a symlink');
+  }
+  const root = realpathSync(rootPath);
+  if (root !== join(realpathSync(dirname(rootPath)), basename(rootPath))) {
+    throw new Error('workspace files root must resolve to its own directory');
+  }
   const resolved = resolve(inputPath);
   const metadata = lstatSync(resolved);
   if (metadata.isSymbolicLink() || !metadata.isFile()) {

@@ -265,7 +265,14 @@ export function createAttachmentActionRegistrations(
         const observation = await readObservation(ports, values, context);
         const roomId = roomIdFor(observation);
         const provider = providerFor(ports, observation.source);
-        const listed = await provider.listAttachments(attachmentRequest(observation));
+        const request = attachmentRequest(observation);
+        const unrelated = request.fileIds !== undefined && !request.fileIds.includes(fileId);
+        const listed = unrelated
+          ? []
+          : await provider.listAttachments({
+              ...request,
+              ...(request.fileIds === undefined ? {} : { fileIds: [fileId] }),
+            });
         const descriptor = listed.find((file) => file.fileId === fileId);
         if (!descriptor) {
           throw new Error(
@@ -280,7 +287,12 @@ export function createAttachmentActionRegistrations(
           targetDir,
           `${safeFileName(fileId)}_${safeFileName(descriptor.name)}`
         );
-        const downloaded = await provider.downloadAttachment({ roomId, fileId, targetPath });
+        const downloaded = await provider.downloadAttachment({
+          roomId,
+          fileId,
+          targetPath,
+          workspaceDir: ports.workspaceDir!,
+        });
         const size = statSync(targetPath).size;
         if (size !== downloaded.size) {
           throw new Error(`Downloaded file ${fileId} size changed while saving`);

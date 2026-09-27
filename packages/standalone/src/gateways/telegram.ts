@@ -185,7 +185,7 @@ export class TelegramGateway extends BaseGateway {
       throw new Error('Telegram message ledger path is required');
     }
     this.messageLedger = new TelegramMessageLedger(ledgerPath, {
-      log: (line) => console.error(line),
+      log: this.log,
     });
   }
 
@@ -209,7 +209,6 @@ export class TelegramGateway extends BaseGateway {
       this.connected = true;
       this.lastError = null;
       this.emitEvent({ type: 'connected', source: 'telegram', timestamp: new Date() });
-      await this.recoverPendingResponses();
       if (this.config.polling !== false) {
         // Polling runs for the life of the process; a failure here means no owner message
         // is ever received, so it is logged, not swallowed.
@@ -223,6 +222,7 @@ export class TelegramGateway extends BaseGateway {
       } else {
         console.log('telegram polling disabled by config');
       }
+      await this.recoverPendingResponses();
     } catch (error) {
       this.lastError = telegramErrorMessage(error);
       if (this.bot) await this.bot.stop().catch(() => {});
@@ -497,31 +497,39 @@ export class TelegramGateway extends BaseGateway {
 
   async recoverPendingResponses(): Promise<void> {
     for (const entry of this.messageLedger.listUndelivered()) {
-      if (entry.deliveryUncertain) {
-        this.log(
-          `telegram delivery requires reconciliation key=${entry.key} state=${entry.state} next_chunk_index=${entry.nextChunkIndex ?? 0}`
-        );
-        continue;
-      }
-      if (entry.key.startsWith('outbound:') && entry.state === 'ready') {
-        const chatId = entry.deliveryTarget?.slice('telegram:'.length);
-        if (!entry.deliveryTarget?.startsWith('telegram:') || !chatId) {
-          throw new Error('Telegram outbound entry has no valid destination');
+      try {
+        if (entry.deliveryUncertain) {
+          this.log(
+            `telegram delivery requires reconciliation key=${entry.key} state=${entry.state} next_chunk_index=${entry.nextChunkIndex ?? 0}`
+          );
+          continue;
         }
+        if (entry.key.startsWith('outbound:') && entry.state === 'ready') {
+          const chatId = entry.deliveryTarget?.slice('telegram:'.length);
+          if (!entry.deliveryTarget?.startsWith('telegram:') || !chatId) {
+            throw new Error('Telegram outbound entry has no valid destination');
+          }
+          if (!this.config.allowedChats?.includes(chatId)) continue;
+          await this.runInChatQueue(chatId, () => this.deliverOutboundEntry(entry.key, chatId));
+          continue;
+        }
+        if (!entry.key.startsWith('telegram:')) continue;
+        const chatId = chatIdFromSourceMessageRef(entry.key);
         if (!this.config.allowedChats?.includes(chatId)) continue;
-        await this.runInChatQueue(chatId, () => this.deliverOutboundEntry(entry.key, chatId));
-        continue;
-      }
-      if (!entry.key.startsWith('telegram:')) continue;
-      const chatId = chatIdFromSourceMessageRef(entry.key);
-      if (!this.config.allowedChats?.includes(chatId)) continue;
-      if (entry.state === 'ready' && entry.response !== undefined) {
-        await this.deliverReadyEntry(entry.key);
-        continue;
-      }
-      if (entry.state === 'processing' && !this.intake.isPending?.(entry.key)) {
-        this.messageLedger.markReady(entry.key, INTERRUPTED_RESPONSE, 'html-v1');
-        await this.deliverReadyEntry(entry.key);
+        if (entry.state === 'ready' && entry.response !== undefined) {
+          await this.deliverReadyEntry(entry.key);
+          continue;
+        }
+        if (entry.state === 'processing' && !this.intake.isPending?.(entry.key)) {
+          this.messageLedger.markReady(entry.key, INTERRUPTED_RESPONSE, 'html-v1');
+          await this.deliverReadyEntry(entry.key);
+        }
+      } catch (error) {
+        const detail = telegramErrorMessage(error);
+        this.log(`telegram recovery failed key=${entry.key} error=${detail}`);
+        if (isDefinitiveTelegramRejection(error)) {
+          this.messageLedger.markFailed(entry.key, detail, false);
+        }
       }
     }
   }

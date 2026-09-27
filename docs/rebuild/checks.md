@@ -1075,3 +1075,12 @@ The implementation writes raw/index data during import only. Replay is the owner
 - All 19 items fixed after red/green verification; detailed file counts and commands: [review-f3-results.md](review-f3-results.md). No standalone edits or commits.
 - Core focused 93/93; full core 870 pass / 44 fail across 7 socket-dependent files (listen EPERM and its cleanup error). MCP 139/139; plugin 170/170; build, typecheck and changed-file lint pass.
 - Live owner acceptance and deployment remain untested. MAMA MCP decision save was refused by the tool approval policy (never); contract decisions are retained in the result document.
+
+### F4 — Codex re-verification of F1–F3 (2026-09-27)
+
+- Codex re-read all 49 items against the code: resolved except eight, listed in
+  [review-fixes.md](review-fixes.md) §F4 (attachment write race, symlinked delivery root, MCP checkpoint
+  secret scan, Telegram recovery blocking polling, regenerated report key, sibling attachment, recursive
+  edge CTE, Trello failed-board count). All eight fixed with a red/green test each; a re-download of the
+  same attachment still replaces the earlier file (temp file + rename in the rechecked directory).
+- Live: not exercised; the Trello count is proven by fixtures while the live token returns 401.

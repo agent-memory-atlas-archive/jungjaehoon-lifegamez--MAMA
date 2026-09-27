@@ -562,13 +562,11 @@ function preloadRecursiveEdgeVisibility(
   if (rootEdgeIds.length > 0) {
     const rows = adapter
       .prepare(
-        `WITH RECURSIVE edge_tree(edge_id, path, depth) AS (
-           SELECT CAST(value AS TEXT), char(0) || CAST(value AS TEXT) || char(0), 0
+        `WITH RECURSIVE edge_tree(edge_id) AS (
+           SELECT CAST(value AS TEXT)
              FROM json_each(?)
-           UNION ALL
-           SELECT CAST(child.value AS TEXT),
-                  tree.path || CAST(child.value AS TEXT) || char(0),
-                  tree.depth + 1
+           UNION
+           SELECT CAST(child.value AS TEXT)
              FROM edge_tree tree
              JOIN twin_edges parent ON parent.edge_id = tree.edge_id
              JOIN json_each(json_array(
@@ -576,13 +574,8 @@ function preloadRecursiveEdgeVisibility(
                CASE WHEN parent.object_kind = 'edge' THEN parent.object_id END
              )) child
             WHERE child.value IS NOT NULL
-              AND tree.depth < 255
-              AND instr(
-                tree.path,
-                char(0) || CAST(child.value AS TEXT) || char(0)
-              ) = 0
          )
-         SELECT DISTINCT edge.*
+         SELECT edge.*
            FROM edge_tree
            JOIN twin_edges edge ON edge.edge_id = edge_tree.edge_id`
       )

@@ -22,7 +22,7 @@ import {
   type ActionContext,
   type MemoryReadAllowance,
 } from './catalog.js';
-import { scanMemoryWriteInput } from '../memory/secret-filter.js';
+import { scanMemoryWriteInput, SecretMaterialRefusedError } from '../memory/secret-filter.js';
 
 export type ActionDispatcher = ((
   call: ActionCall,
@@ -336,7 +336,7 @@ function failureKind(error: unknown): 'invalid_input' | 'denied' | 'failed' | 'i
   if (error instanceof TwinRefNotVisibleError) {
     return 'denied';
   }
-  if (error instanceof AgentGraphValidationError) {
+  if (error instanceof AgentGraphValidationError || error instanceof SecretMaterialRefusedError) {
     return 'invalid_input';
   }
   if (

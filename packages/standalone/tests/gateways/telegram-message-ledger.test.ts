@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -6,6 +6,28 @@ import { createHash } from 'node:crypto';
 import { TelegramMessageLedger } from '../../src/gateways/telegram-message-ledger.js';
 
 describe('TelegramMessageLedger', () => {
+  it('keeps the delivered receipt when a regenerated payload has the same delivery key', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ledger-regenerated-'));
+    try {
+      const path = join(root, 'ledger.json');
+      const first = new TelegramMessageLedger(path);
+      const binding = { deliveryTarget: 'telegram:7', payloadIdentity: 'a'.repeat(64) };
+      first.claim('outbound:report', binding);
+      first.markDelivered('outbound:report');
+      const log = vi.fn();
+      const reopened = new TelegramMessageLedger(path, { log });
+      expect(
+        reopened.claim('outbound:report', { ...binding, payloadIdentity: 'b'.repeat(64) })
+      ).toMatchObject({ claimed: false, entry: { state: 'delivered', ...binding } });
+      expect(log.mock.calls.flat().join('\n')).toMatch(/payload.*identity.*key=outbound:report/);
+      expect(new TelegramMessageLedger(path).get('outbound:report')?.payloadIdentity).toBe(
+        binding.payloadIdentity
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('loads pre-trace outbound receipts without inventing ids or allowing a duplicate', () => {
     const root = mkdtempSync(join(tmpdir(), 'legacy-ledger-'));
     try {

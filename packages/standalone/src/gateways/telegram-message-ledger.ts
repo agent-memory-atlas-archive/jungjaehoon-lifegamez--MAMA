@@ -21,6 +21,7 @@ export interface TelegramMessageLedgerEntry {
   response?: string;
   nextChunkIndex?: number;
   deliveryUncertain?: boolean;
+  error?: string;
   /** Missing on pre-formatting receipts, whose original chunk boundaries must survive. */
   chunkFormat?: TelegramChunkFormat;
   deliveryTarget?: string;
@@ -119,6 +120,10 @@ export class TelegramMessageLedger {
         (existing.deliveryTarget !== binding.deliveryTarget ||
           existing.payloadIdentity !== binding.payloadIdentity)
       ) {
+        if (existing.state === 'delivered') {
+          this.log(`telegram delivered payload identity differs key=${key}`);
+          return { claimed: false, entry: { ...existing } };
+        }
         throw new Error(`Telegram delivery binding mismatch for ${key}`);
       }
       if (binding?.idempotencyKey !== undefined && existing.idempotencyKey === undefined) {
@@ -195,13 +200,14 @@ export class TelegramMessageLedger {
   }
 
   /** A transport failure can leave remote delivery unknown; never keep it as active work. */
-  markFailed(key: string): void {
+  markFailed(key: string, error?: string, deliveryUncertain = true): void {
     const entry = this.requireEntry(key);
     this.commit(() => {
       this.entries.set(key, {
         ...entry,
         state: 'failed',
-        deliveryUncertain: true,
+        deliveryUncertain,
+        ...(error === undefined ? {} : { error }),
         updatedAt: this.now(),
         ownerId: this.ownerId,
       });
@@ -416,6 +422,7 @@ function isLedgerEntry(value: unknown): value is TelegramMessageLedgerEntry {
     (item.nextChunkIndex === undefined ||
       (Number.isSafeInteger(item.nextChunkIndex) && (item.nextChunkIndex as number) >= 0)) &&
     (item.deliveryUncertain === undefined || typeof item.deliveryUncertain === 'boolean') &&
+    (item.error === undefined || typeof item.error === 'string') &&
     (item.idempotencyKey === undefined || typeof item.idempotencyKey === 'string') &&
     (item.messageIds === undefined ||
       (Array.isArray(item.messageIds) &&

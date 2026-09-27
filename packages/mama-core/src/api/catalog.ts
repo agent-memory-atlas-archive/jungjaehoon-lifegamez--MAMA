@@ -1065,7 +1065,6 @@ export function coreActionRegistrations(
     {
       contract: {
         name: 'memory.checkpoint.save',
-        recallableWrite: true,
         summary:
           'Write one session checkpoint — the durable hand-off record a later turn restores work from. Not a judgment and not scope-bound; the row is what it says.',
         inputSchema: {

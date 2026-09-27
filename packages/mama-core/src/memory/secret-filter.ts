@@ -53,6 +53,15 @@ export interface SecretScanResult {
   warnings: string[];
 }
 
+export class SecretMaterialRefusedError extends Error {
+  constructor(matches: readonly string[]) {
+    super(
+      `refusing to persist content matching ${matches.join(', ')} — a secret written here comes back through recall`
+    );
+    this.name = 'secret_material_refused';
+  }
+}
+
 /** Scan text for secret-shaped material. */
 export function scanForSecrets(text: string): SecretScanResult {
   const matches = SECRET_PATTERNS.filter(({ pattern }) => pattern.test(text)).map(

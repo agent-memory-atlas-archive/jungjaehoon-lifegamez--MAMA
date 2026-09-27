@@ -1,9 +1,10 @@
-import { open, rename, rm } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { Bot, Context } from 'grammy';
 import { safeFileName } from '../api/attachment-actions.js';
-import { resolveAttachmentDirectory } from '../connectors/framework/attachment-io.js';
+import {
+  resolveAttachmentDirectory,
+  saveAttachmentBytes,
+} from '../connectors/framework/attachment-io.js';
 
 type TelegramMessage = NonNullable<Context['message']>;
 const DOWNLOAD_LIMIT = 20 * 1024 * 1024;
@@ -121,16 +122,7 @@ export async function downloadTelegramFiles(
           join(options.workspaceDir, 'files', 'telegram')
         );
         const path = join(directory, `${options.messageId}_${name}`);
-        const temporaryPath = `${path}.${randomUUID()}.part`;
-        const temporary = await open(temporaryPath, 'wx', 0o600);
-        try {
-          await temporary.writeFile(Buffer.concat(chunks));
-          await temporary.close();
-          await rename(temporaryPath, path);
-        } finally {
-          await temporary.close();
-          await rm(temporaryPath, { force: true });
-        }
+        saveAttachmentBytes(options.workspaceDir, path, Buffer.concat(chunks));
         return { path, name, mimeType, size };
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);

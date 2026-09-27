@@ -42,6 +42,7 @@ vi.mock('grammy', async (importOriginal) => ({
 import { TelegramGateway } from '../../src/gateways/telegram.js';
 import type { OwnerMessageInput, TurnIntake } from '../../src/gateways/turn-contract.js';
 import { TelegramMessageLedger } from '../../src/gateways/telegram-message-ledger.js';
+import { createReportScheduler } from '../../src/runtime/report-scheduler.js';
 
 const temporaryRoots: string[] = [];
 
@@ -103,8 +104,84 @@ async function gatewayFor(
 }
 
 describe('TelegramGateway', () => {
+  it.each([400, 403, 429, 503, undefined])(
+    'starts polling and continues recovery after a send error (%s)',
+    async (code) => {
+      const root = mkdtempSync(join(tmpdir(), 'telegram-recovery-error-'));
+      temporaryRoots.push(root);
+      const path = join(root, 'ledger.json');
+      const ledger = new TelegramMessageLedger(path);
+      for (const key of ['outbound:failed', 'outbound:next']) {
+        ledger.claim(key, { deliveryTarget: 'telegram:7', payloadIdentity: 'a'.repeat(64) });
+        ledger.markReady(key, key);
+      }
+      const log = vi.fn();
+      let pollingStartedBeforeRecovery = false;
+      seams.api.sendMessage.mockImplementationOnce(async () => {
+        pollingStartedBeforeRecovery = seams.start.mock.calls.length === 1;
+        throw Object.assign(new Error('fixture send error'), { error_code: code });
+      });
+      const gateway = new TelegramGateway({
+        token: 'fixture-token',
+        intake: intakeFor([]),
+        messageLedgerPath: path,
+        config: { allowedChats: ['7'] },
+        log,
+      });
+      try {
+        await expect(gateway.start()).resolves.toBeUndefined();
+        expect(pollingStartedBeforeRecovery).toBe(true);
+        expect(seams.start).toHaveBeenCalledOnce();
+        const entries = new TelegramMessageLedger(path);
+        expect(entries.get('outbound:failed')).toMatchObject({
+          state: code !== undefined && code < 500 ? 'failed' : 'ready',
+          ...(code !== undefined && code < 500
+            ? { error: 'fixture send error', deliveryUncertain: false }
+            : {}),
+        });
+        expect(entries.get('outbound:next')?.state).toBe('delivered');
+        expect(log.mock.calls.flat().join('\n')).toMatch(
+          /recovery failed key=outbound:failed.*fixture send error/
+        );
+      } finally {
+        await gateway.stop();
+      }
+    }
+  );
+
+  it('skips a regenerated report after its first delivery even when schedule persistence failed', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'telegram-report-regenerated-'));
+    temporaryRoots.push(root);
+    const gateway = await gatewayFor(intakeFor([]), join(root, 'ledger.json'));
+    const statePath = join(root, 'schedule.json');
+    const scheduler = createReportScheduler({
+      config: { full_report_hours: [13], reminder_start_hour: 9, reminder_end_hour: 21 },
+      statePath,
+      intake: { acceptScheduled: () => ({ state: 'accepted', inputId: 'fixture' }) },
+      hasPendingReport: () => false,
+      sendToOwner: (text, key) => gateway.sendToOwner(text, key),
+      onError: () => {},
+    });
+    const row = {
+      stimulusId: 'report-attempt',
+      payload: { report: 'full', hourKey: '2026-01-01:13' },
+    };
+    mkdirSync(`${statePath}.tmp`);
+    try {
+      await expect(scheduler.onResult(row, { response: 'first report' })).rejects.toThrow();
+      rmSync(`${statePath}.tmp`, { recursive: true });
+      await expect(
+        scheduler.onResult(row, { response: 'regenerated report' })
+      ).resolves.toBeUndefined();
+      expect(seams.api.sendMessage).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(readFileSync(statePath, 'utf8')).lastFullKey).toBe('2026-01-01:13');
+    } finally {
+      await gateway.stop();
+    }
+  });
+
   it.each(['chunkFormat', 'nextChunkIndex'])(
-    'fails loud when outbound recovery lacks %s',
+    'logs an incomplete outbound recovery entry lacking %s without aborting startup',
     async (field) => {
       const root = mkdtempSync(join(tmpdir(), 'outbound-incomplete-'));
       temporaryRoots.push(root);
@@ -120,10 +197,14 @@ describe('TelegramGateway', () => {
       const stored = JSON.parse(readFileSync(ledgerPath, 'utf8'));
       delete stored.entries[0][field];
       writeFileSync(ledgerPath, JSON.stringify(stored));
-      await expect(gatewayFor(intakeFor([]), ledgerPath)).rejects.toThrow(
-        'incomplete delivery metadata'
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const restarted = await gatewayFor(intakeFor([]), ledgerPath);
+      expect(log.mock.calls.flat().join('\n')).toMatch(
+        /recovery failed key=.*incomplete delivery metadata/
       );
+      expect(new TelegramMessageLedger(ledgerPath).get(stored.entries[0].key)?.state).toBe('ready');
       expect(seams.api.sendMessage).toHaveBeenCalledOnce();
+      await restarted.stop();
     }
   );
 
@@ -501,7 +582,7 @@ describe('TelegramGateway', () => {
     await gateway.stop();
   });
 
-  it('sends a non-image file as a document and rejects a changed payload under one operation id', async () => {
+  it('sends a document only once when an already delivered operation id has a changed payload', async () => {
     const root = mkdtempSync(join(tmpdir(), 'mama-telegram-document-'));
     temporaryRoots.push(root);
     const filesRoot = join(root, 'files');
@@ -513,9 +594,9 @@ describe('TelegramGateway', () => {
     const gateway = await gatewayFor(intakeFor([]), join(root, 'telegram-ledger.json'), filesRoot);
 
     await gateway.sendFile(documentPath, undefined, 'document-operation');
-    await expect(gateway.sendFile(changedPath, undefined, 'document-operation')).rejects.toThrow(
-      /binding mismatch/
-    );
+    await expect(
+      gateway.sendFile(changedPath, undefined, 'document-operation')
+    ).resolves.toMatchObject({ idempotent: true });
 
     expect(seams.api.sendDocument).toHaveBeenCalledTimes(1);
     expect(seams.api.sendPhoto).not.toHaveBeenCalled();

@@ -334,7 +334,7 @@ export class ChatworkConnector implements IConnector {
     if (!download.ok) {
       throw new Error(`Chatwork file ${request.fileId} download failed: HTTP ${download.status}`);
     }
-    const size = await saveResponseBody(download, request.targetPath);
+    const size = await saveResponseBody(download, request.targetPath, request.workspaceDir);
     return { descriptor, size };
   }
 
