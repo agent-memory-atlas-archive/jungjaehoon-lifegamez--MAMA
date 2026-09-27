@@ -118,3 +118,12 @@ Codex re-read every item against the code: all F1–F3 defects resolved except t
 5. P2 Edge visibility is memoized per call; an edge met while being decided lies on a cycle and is
    invisible from any root, so the answers match the path-by-path evaluation.
    Also: the Chatwork poll error names failed/polled rooms and the last error, like Trello.
+
+## F6 — Codex review of the F4 and F5 commits (2026-09-27)
+
+1. P1 Repeated directory swaps across processes still beat the realpath and inode recheck; Node has no
+   openat. The daemon now writes downloads only into daemon-owned `~/.mama/downloads/` (0700), which the
+   agent can read but not write; the recheck code is deleted. The agent copies a download into
+   workspace files to modify, unzip or deliver it.
+2. P2 The delivered-receipt exception also answered file sends with another file's receipt; only the
+   outbound text path opts in.

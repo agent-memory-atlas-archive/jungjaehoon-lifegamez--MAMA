@@ -56,7 +56,7 @@ export interface TelegramGatewayOptions {
   config?: Partial<TelegramGatewayConfig>;
   messageLedgerPath?: string;
   filesRoot?: string;
-  workspaceDir?: string;
+  downloadsDir?: string;
   log?: (line: string) => void;
   onFatalError?: (error: unknown) => void;
 }
@@ -140,7 +140,7 @@ export class TelegramGateway extends BaseGateway {
   private readonly token: string;
   private readonly config: TelegramGatewayConfig;
   private readonly filesRoot?: string;
-  private readonly workspaceDir?: string;
+  private readonly downloadsDir?: string;
   private readonly log: (line: string) => void;
   private readonly onFatalError: (error: unknown) => void;
   private readonly messageLedger: TelegramMessageLedger;
@@ -171,7 +171,7 @@ export class TelegramGateway extends BaseGateway {
       ...(options.config?.polling === undefined ? {} : { polling: options.config.polling }),
     };
     this.filesRoot = options.filesRoot;
-    this.workspaceDir = options.workspaceDir;
+    this.downloadsDir = options.downloadsDir;
     this.onFatalError =
       options.onFatalError ??
       ((error) => {
@@ -408,7 +408,7 @@ export class TelegramGateway extends BaseGateway {
       const attachments = await downloadTelegramFiles(files, {
         api: this.bot!.api,
         token: this.token,
-        workspaceDir: this.workspaceDir,
+        downloadsDir: this.downloadsDir,
         messageId: message.message_id,
       });
       const input: OwnerMessageInput = {
@@ -548,6 +548,7 @@ export class TelegramGateway extends BaseGateway {
       deliveryTarget: `telegram:${chatId}`,
       payloadIdentity: createHash('sha256').update(text).digest('hex'),
       idempotencyKey,
+      keepDeliveredOnPayloadChange: true,
     };
     const existing = this.messageLedger.claim(key, binding).entry;
     if (existing.state === 'delivered') return;

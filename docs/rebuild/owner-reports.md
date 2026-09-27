@@ -59,9 +59,11 @@ Code: [daemon assembly](../../packages/standalone/src/cli/commands/daemon.ts),
 
 Chatwork and Slack observations retain attachment descriptors. Attachment lookup also supports
 known-file and uploader/time-scoped discovery; missing descriptors or downloads surface errors.
-`source.attachment.download` uses connector credentials to save into the workspace.
+`source.attachment.download` uses connector credentials to save into `~/.mama/downloads/<source>/<safe room>/`.
 `deliver.telegram.file` sends a regular, non-symlink file from `workspace/files/` to the configured
-owner, with size checks and idempotency. Telegram owner uploads enter `workspace/files/telegram/`.
+owner, with size checks and idempotency. Telegram owner uploads enter `~/.mama/downloads/telegram/`.
+Downloads are read-only for the agent; copy them into `workspace/files/` before modifying,
+unzipping, or delivering them.
 
 Both owner backends provide native shell and web access with workspace write boundaries.
 Core shell/web defaults remain off. Current credential exclusions and runtime settings are

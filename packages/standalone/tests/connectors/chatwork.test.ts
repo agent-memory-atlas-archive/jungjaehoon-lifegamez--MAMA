@@ -445,7 +445,6 @@ describe('ChatworkConnector', () => {
       roomId: 'room-key',
       fileId: '901',
       targetPath: target,
-      workspaceDir: root,
     });
 
     expect(result.size).toBe(9);
@@ -470,7 +469,6 @@ describe('ChatworkConnector', () => {
         roomId: 'other-room',
         fileId: '901',
         targetPath: '/tmp/unused',
-        workspaceDir: '/tmp',
       })
     ).rejects.toThrow(/not available in room other-room.*404/);
     expect(http.mock.calls.map(([url]) => url)).toEqual([

@@ -271,7 +271,7 @@ export class SlackConnector implements IConnector {
           : `Slack file download failed: HTTP ${response.status}`
       );
     }
-    const size = await saveResponseBody(response, request.targetPath, request.workspaceDir);
+    const size = await saveResponseBody(response, request.targetPath);
     return { descriptor, size };
   }
 

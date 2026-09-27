@@ -36,6 +36,7 @@ export interface TelegramDeliveryBinding {
   deliveryTarget: string;
   payloadIdentity: string;
   idempotencyKey?: string;
+  keepDeliveredOnPayloadChange?: boolean;
 }
 
 interface LedgerStateV3 {
@@ -120,7 +121,11 @@ export class TelegramMessageLedger {
           existing.payloadIdentity !== binding.payloadIdentity)
       ) {
         // A regenerated report reuses its delivered key with new wording; the first copy stands.
-        if (existing.state === 'delivered' && existing.deliveryTarget === binding.deliveryTarget) {
+        if (
+          binding.keepDeliveredOnPayloadChange === true &&
+          existing.state === 'delivered' &&
+          existing.deliveryTarget === binding.deliveryTarget
+        ) {
           this.log(`telegram delivered payload identity differs key=${key}`);
           return { claimed: false, entry: { ...existing } };
         }
@@ -141,7 +146,11 @@ export class TelegramMessageLedger {
       state: 'processing',
       updatedAt: this.now(),
       ownerId: this.ownerId,
-      ...(binding ?? {}),
+      ...(binding && {
+        deliveryTarget: binding.deliveryTarget,
+        payloadIdentity: binding.payloadIdentity,
+        idempotencyKey: binding.idempotencyKey,
+      }),
     };
     this.commit(() => {
       this.entries.set(key, entry);

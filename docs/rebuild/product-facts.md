@@ -26,7 +26,8 @@ Every reader-facing document must agree with this page; if the code changes, thi
 - Files: `~/.mama/config.yaml` (no secrets), `~/.mama/connectors.json` (no secrets), `~/.mama/auth.env`
   (0600, onboarding-managed tokens; the owner agent cannot read it), `~/.mama/start.sh` (sources auth.env, sets PATH),
   launchd `com.mama.server` (KeepAlive) runs start.sh, logs in `~/.mama/logs/` (daemon.log 0600,
-  security-events.jsonl 0600), runtime state in `~/.mama/runtime/`, workspace `~/.mama/workspace/`.
+  security-events.jsonl 0600), runtime state in `~/.mama/runtime/`, workspace `~/.mama/workspace/`,
+  daemon-owned downloads `~/.mama/downloads/` (0700; readable but not writable by the agent).
 - config.yaml keys read: `version: 1`, `agent {backend, model, effort, max_turns, timeout,
 run_token_budget, codex_home, codex_cwd, codex_sandbox, tools.mcp_config}`, `database.path`,
   `logging {level, file}`, `telegram {enabled, owner_chat_id, allowed_chats, owner_user_ids, polling}`,
@@ -41,7 +42,8 @@ reminder_start_hour 9, reminder_end_hour 21}`. Other keys are logged as ignored;
   (Codex app-server; dynamic tools; shell and web search; permission profile). Both: the backend gets the
   daemon environment without secret-shaped names; credential files are unreadable to the agent.
 - Gateway: Telegram only. Only the owner (allowed chat + owner user id) is answered; others are dropped
-  and logged with hashed ids. Files the owner sends are downloaded to `workspace/files/telegram`.
+  and logged with hashed ids. Files the owner sends are downloaded to `~/.mama/downloads/telegram/`;
+  copy into `workspace/files/` before modifying, unzipping, or delivering them.
 - Connectors: chatwork, slack, trello (API tokens), kagemusha (read-only bridge to a local Kagemusha
   database: kakao, line, telegram, feedback chats), calendar (Google Calendar via the gws CLI, 90-day
   window). Channel roles: truth, hub, deliverable, spoke, reference, ignore.

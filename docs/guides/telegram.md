@@ -29,12 +29,15 @@ inbound polling but does not prove another process is receiving messages.
 ## Send originals and receive results
 
 Send a document or image with a caption explaining the request. Accepted files are
-stored under `~/.mama/workspace/files/telegram/` and attached to the owner turn.
-Telegram downloads are limited to 20 MiB.
+stored under `~/.mama/downloads/telegram/` and attached to the owner turn.
+The agent can read this directory but cannot write to it. Before modifying, unzipping,
+or delivering a download, copy it into `~/.mama/workspace/files/`. Telegram downloads
+are limited to 20 MiB.
 
 For a source attachment, ask MAMA to find the original message and inspect its
 files. The current attachment actions list and download Chatwork and Slack files;
-shared connector downloads are limited to 50 MiB.
+shared connector downloads go to `~/.mama/downloads/<source>/<safe room>/` and are
+limited to 50 MiB.
 
 Ask MAMA to save edited output as a new file and send it back. The
 `deliver.telegram.file` action sends a regular file inside the workspace's

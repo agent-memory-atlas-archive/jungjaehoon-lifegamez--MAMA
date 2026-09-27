@@ -31,7 +31,7 @@ describe('attachment response storage', () => {
     writeFileSync(outside, 'untouched');
     const temporary = `${target}.${process.pid}.123.part`;
     symlinkSync(outside, temporary);
-    await expect(saveResponseBody(new Response('replacement'), target, root)).rejects.toThrow(
+    await expect(saveResponseBody(new Response('replacement'), target)).rejects.toThrow(
       /saving body/
     );
     expect(readFileSync(outside, 'utf8')).toBe('untouched');
@@ -40,7 +40,7 @@ describe('attachment response storage', () => {
 
   it('replaces an earlier download of the same attachment', async () => {
     writeFileSync(target, 'previous version');
-    expect(await saveResponseBody(new Response('new version'), target, root)).toBe(11);
+    expect(await saveResponseBody(new Response('new version'), target)).toBe(11);
     expect(readFileSync(target, 'utf8')).toBe('new version');
     expect(readdirSync(root)).toEqual(['attachment.bin']);
   });
@@ -49,7 +49,7 @@ describe('attachment response storage', () => {
     const outside = join(root, 'outside');
     writeFileSync(outside, 'untouched');
     symlinkSync(outside, target);
-    await saveResponseBody(new Response('replacement'), target, root);
+    await saveResponseBody(new Response('replacement'), target);
     expect(readFileSync(outside, 'utf8')).toBe('untouched');
     expect(lstatSync(target).isFile()).toBe(true);
     expect(readFileSync(target, 'utf8')).toBe('replacement');
@@ -57,8 +57,9 @@ describe('attachment response storage', () => {
 
   it('saves exactly 50 MiB without a content-length header', async () => {
     const response = new Response(new Uint8Array(50 * 1024 * 1024));
-    expect(await saveResponseBody(response, target, root)).toBe(52_428_800);
+    expect(await saveResponseBody(response, target)).toBe(52_428_800);
     expect(statSync(target).size).toBe(52_428_800);
+    expect(statSync(target).mode & 0o777).toBe(0o600);
     expect(readdirSync(root)).toEqual(['attachment.bin']);
   });
 
@@ -81,9 +82,7 @@ describe('attachment response storage', () => {
       ),
       { headers: { 'content-length': '52428801' } }
     );
-    await expect(saveResponseBody(response, target, root)).rejects.toThrow(
-      /50 MiB \(52428800 bytes\)/
-    );
+    await expect(saveResponseBody(response, target)).rejects.toThrow(/50 MiB \(52428800 bytes\)/);
     expect(pulled).toBe(false);
     expect(cancelled).toBe(true);
     expect(readdirSync(root)).toEqual([]);
@@ -111,9 +110,7 @@ describe('attachment response storage', () => {
         ),
         kind === 'missing' ? {} : { headers: { 'content-length': '1' } }
       );
-      await expect(saveResponseBody(response, target, root)).rejects.toThrow(
-        /50 MiB \(52428800 bytes\)/
-      );
+      await expect(saveResponseBody(response, target)).rejects.toThrow(/50 MiB \(52428800 bytes\)/);
       expect(cancelled).toBe(true);
       expect(readFileSync(target, 'utf8')).toBe('previous version');
       expect(readdirSync(root)).toEqual(['attachment.bin']);
@@ -129,7 +126,7 @@ describe('attachment response storage', () => {
         },
       })
     );
-    await expect(saveResponseBody(response, target, root)).rejects.toThrow(
+    await expect(saveResponseBody(response, target)).rejects.toThrow(
       /^attachment download failed while saving body$/
     );
     expect(readdirSync(root)).toEqual([]);

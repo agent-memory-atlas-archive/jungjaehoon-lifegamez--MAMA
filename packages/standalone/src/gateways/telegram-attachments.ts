@@ -1,10 +1,7 @@
 import { join } from 'node:path';
 import type { Bot, Context } from 'grammy';
 import { safeFileName } from '../api/attachment-actions.js';
-import {
-  resolveAttachmentDirectory,
-  saveAttachmentBytes,
-} from '../connectors/framework/attachment-io.js';
+import { saveAttachmentBytes } from '../connectors/framework/attachment-io.js';
 
 type TelegramMessage = NonNullable<Context['message']>;
 const DOWNLOAD_LIMIT = 20 * 1024 * 1024;
@@ -83,7 +80,7 @@ export function telegramFiles(
 /** Download only after the gateway has authenticated the owner and deduplicated the message. */
 export async function downloadTelegramFiles(
   files: ReturnType<typeof telegramFiles>,
-  options: { api: Bot['api']; token: string; workspaceDir?: string; messageId: number }
+  options: { api: Bot['api']; token: string; downloadsDir?: string; messageId: number }
 ): Promise<OwnerAttachment[]> {
   return Promise.all(
     files.map(async ({ file, name: originalName, mimeType }): Promise<OwnerAttachment> => {
@@ -91,8 +88,8 @@ export async function downloadTelegramFiles(
       try {
         name = safeFileName(name);
         if ((file.file_size ?? 0) > DOWNLOAD_LIMIT) throw new Error(LIMIT_ERROR);
-        if (!options.workspaceDir?.trim())
-          throw new Error('Attachment workspace directory is not configured');
+        if (!options.downloadsDir?.trim())
+          throw new Error('Attachment downloads directory is not configured');
         const remote = await options.api.getFile(file.file_id);
         if ((remote.file_size ?? 0) > DOWNLOAD_LIMIT) throw new Error(LIMIT_ERROR);
         if (!remote.file_path) throw new Error('Telegram getFile returned no file path');
@@ -117,12 +114,8 @@ export async function downloadTelegramFiles(
           if (size > DOWNLOAD_LIMIT) throw new Error(LIMIT_ERROR);
           chunks.push(chunk);
         }
-        const directory = resolveAttachmentDirectory(
-          options.workspaceDir,
-          join(options.workspaceDir, 'files', 'telegram')
-        );
-        const path = join(directory, `${options.messageId}_${name}`);
-        saveAttachmentBytes(options.workspaceDir, path, Buffer.concat(chunks));
+        const path = join(options.downloadsDir, 'telegram', `${options.messageId}_${name}`);
+        saveAttachmentBytes(path, Buffer.concat(chunks));
         return { path, name, mimeType, size };
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);

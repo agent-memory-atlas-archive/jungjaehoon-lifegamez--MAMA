@@ -1087,3 +1087,8 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Codex's review of that commit found five more (review-fixes.md §F5: cross-process directory swap,
   checkpoint transcript scan, recovery chunk reset and polling race, destination binding, exponential
   visibility evaluation); fixed with tests (a 24-level DAG fails on the old evaluator).
+
+- A third Codex pass (§F6): repeated cross-process swaps still beat the path recheck (Node has no
+  openat), so the daemon now downloads only into daemon-owned `~/.mama/downloads/` (agent read-only)
+  and the recheck code is deleted (+164/−221); the delivered-receipt exception is opt-in for outbound
+  text only, so a different file under one operation id is refused again. Live download not exercised.

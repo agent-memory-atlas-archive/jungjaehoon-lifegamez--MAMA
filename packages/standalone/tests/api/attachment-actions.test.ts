@@ -12,7 +12,7 @@ import {
   renameSync,
   readdirSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { ActionContext } from '@jungjaehoon/mama-core';
 import type { StoredSourceReader } from '../../src/api/stored-source-reader.js';
@@ -41,7 +41,9 @@ const access = {
 function root(): string {
   const value = mkdtempSync(join(tmpdir(), 'mama-attachment-actions-'));
   roots.push(value);
-  return value;
+  const workspace = join(realpathSync(value), 'workspace');
+  mkdirSync(workspace);
+  return workspace;
 }
 
 function observation(source: 'chatwork' | 'slack', metadata: Record<string, unknown>) {
@@ -83,6 +85,7 @@ function portsFor(
     stored,
     connectors: () => registry as never,
     workspaceDir,
+    downloadsDir: join(dirname(workspaceDir), 'downloads'),
     telegram: () => telegram as never,
   };
 }
@@ -110,10 +113,11 @@ const chatworkFile = {
 };
 
 describe('attachment actions', () => {
-  it('rejects a destination swapped for an outside symlink during download', async () => {
+  it('downloads outside the workspace when its directory is swapped during download', async () => {
     const workspace = root();
     const outside = root();
     const directory = join(workspace, 'files', 'chatwork', '501');
+    mkdirSync(directory, { recursive: true });
     const http = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
       if (url.endsWith('/files/901')) return Response.json(chatworkFile);
@@ -143,7 +147,10 @@ describe('attachment actions', () => {
         { observationRef: 'obs-test', fileId: '901' },
         { access, operationId: 'swapped-directory' }
       )
-    ).rejects.toThrow();
+    ).resolves.toMatchObject({
+      path: join(dirname(workspace), 'downloads', 'chatwork', '501', '901_fixture.pdf'),
+      size: 5,
+    });
     expect(readdirSync(outside)).toEqual([]);
   });
 
@@ -309,8 +316,8 @@ describe('attachment actions', () => {
     );
 
     const expectedPath = join(
-      realpathSync(workspace),
-      'files',
+      dirname(workspace),
+      'downloads',
       'chatwork',
       '501',
       '901_fixture.pdf'
@@ -437,7 +444,7 @@ describe('attachment actions', () => {
     }
   );
 
-  it('rejects a connector download directory symlinked outside the workspace', async () => {
+  it('ignores a symlink in the former workspace download directory', async () => {
     const workspace = root();
     const outside = root();
     mkdirSync(join(workspace, 'files'));
@@ -470,11 +477,14 @@ describe('attachment actions', () => {
         { observationRef: 'obs-test', fileId: '901' },
         { access, operationId: 'outside-directory' }
       )
-    ).rejects.toThrow(/outside.*workspace/i);
+    ).resolves.toMatchObject({
+      path: join(dirname(workspace), 'downloads', 'chatwork', '501', '901_file.txt'),
+      size: 5,
+    });
     expect(existsSync(join(outside, '501', '901_file.txt'))).toBe(false);
   });
 
-  it('downloads into the workspace connector room directory and returns its size', async () => {
+  it('downloads into the daemon downloads connector room directory and returns its size', async () => {
     const workspace = root();
     mkdirSync(join(workspace, 'files'), { recursive: true });
     const connector = {
@@ -512,8 +522,8 @@ describe('attachment actions', () => {
     );
 
     const expected = join(
-      realpathSync(workspace),
-      'files',
+      dirname(workspace),
+      'downloads',
       'chatwork',
       '501',
       '901_feedback bad.pdf'
@@ -522,7 +532,6 @@ describe('attachment actions', () => {
       roomId: '501',
       fileId: '901',
       targetPath: expected,
-      workspaceDir: workspace,
     });
     expect(result).toEqual({
       observationRef: 'obs-test',

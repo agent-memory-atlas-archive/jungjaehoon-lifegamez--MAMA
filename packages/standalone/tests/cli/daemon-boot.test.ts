@@ -313,6 +313,8 @@ describe('daemon bootstrap', () => {
         createOwnerRuntime: vi.fn(async (options) => {
           expect(options.connectors).toContain('calendar');
           expect(options.replayKeyFile).toBe(join(mamaRoot, 'custom-replay-key'));
+          expect(options.attachmentPorts?.downloadsDir).toBe(join(mamaRoot, 'downloads'));
+          expect(statSync(join(mamaRoot, 'downloads')).mode & 0o777).toBe(0o700);
           order.push('owner:start');
           return owner as never;
         }),
@@ -333,7 +335,7 @@ describe('daemon bootstrap', () => {
           expect(options.token === 'fixture-env-telegram').toBe(true);
           expect(options.config?.ownerChatId).toBe('chat');
           expect(options.filesRoot).toBe(join(mamaRoot, 'workspace', 'files'));
-          expect(options.workspaceDir).toBe(join(mamaRoot, 'workspace'));
+          expect(options.downloadsDir).toBe(join(mamaRoot, 'downloads'));
           return gateway;
         }),
       },

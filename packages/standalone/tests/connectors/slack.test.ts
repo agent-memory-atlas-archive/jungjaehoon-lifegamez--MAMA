@@ -166,7 +166,6 @@ describe('SlackConnector', () => {
       roomId: 'channel-key',
       fileId: 'F-901',
       targetPath: target,
-      workspaceDir: root,
     });
 
     expect(result.size).toBe(9);
@@ -217,7 +216,6 @@ describe('SlackConnector', () => {
         roomId: 'channel-key',
         fileId: 'F-901',
         targetPath: join(root, 'fixture.pdf'),
-        workspaceDir: root,
       })
     ).rejects.toThrow(/Slack file url_private/);
     expect(http).not.toHaveBeenCalled();
@@ -253,7 +251,6 @@ describe('SlackConnector', () => {
         roomId: 'channel-key',
         fileId: 'F-901',
         targetPath: join(root, 'fixture.pdf'),
-        workspaceDir: root,
       })
     ).rejects.toThrow(/^Slack file download redirects are not allowed$/);
     expect(outboundTokens).toEqual([]);
@@ -271,7 +268,6 @@ describe('SlackConnector', () => {
         roomId: 'channel-key',
         fileId: 'F-901',
         targetPath: '/unused-target',
-        workspaceDir: '/tmp',
       })
     ).rejects.toThrow(/^Slack file download request failed$/);
   });

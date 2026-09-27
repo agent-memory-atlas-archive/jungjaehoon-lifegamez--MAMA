@@ -1,4 +1,4 @@
-import { statSync } from 'node:fs';
+import { mkdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type {
   ActionContext,
@@ -12,7 +12,6 @@ import {
   type AttachmentMatchRule,
   type AttachmentListRequest,
 } from '../connectors/framework/attachments.js';
-import { resolveAttachmentDirectory } from '../connectors/framework/attachment-io.js';
 import { extractChatworkFileIds } from '../connectors/chatwork/index.js';
 import { extractSlackFileIds } from '../connectors/slack/index.js';
 import type { StoredSourceReader } from './stored-source-reader.js';
@@ -22,6 +21,7 @@ export interface AttachmentActionPorts {
   stored?: StoredSourceReader | null;
   connectors?: () => ConnectorRegistry | null;
   workspaceDir?: string;
+  downloadsDir?: string;
   telegram?: () => TelegramFileSender | null;
 }
 
@@ -248,7 +248,7 @@ export function createAttachmentActionRegistrations(
       contract: {
         name: 'source.attachment.download',
         summary:
-          'Download a file belonging to the cited Chatwork or Slack observation into the owner workspace files directory and return its saved path and size.',
+          'Download a file belonging to the cited Chatwork or Slack observation into the daemon downloads directory (read-only for the agent) and return its saved path and size.',
         inputSchema: attachmentDownloadSchema,
         examples: [
           {
@@ -279,10 +279,10 @@ export function createAttachmentActionRegistrations(
             `File ${fileId} does not belong to observation ${observation.observationRef} room ${roomId}`
           );
         }
-        const targetDir = resolveAttachmentDirectory(
-          ports.workspaceDir!,
-          join(workspaceFilesRoot(ports), observation.source, safeFileName(roomId))
-        );
+        if (!ports.downloadsDir?.trim())
+          throw new Error('Attachment downloads directory is not configured');
+        const targetDir = join(ports.downloadsDir, observation.source, safeFileName(roomId));
+        mkdirSync(targetDir, { recursive: true, mode: 0o700 });
         const targetPath = join(
           targetDir,
           `${safeFileName(fileId)}_${safeFileName(descriptor.name)}`
@@ -291,7 +291,6 @@ export function createAttachmentActionRegistrations(
           roomId,
           fileId,
           targetPath,
-          workspaceDir: ports.workspaceDir!,
         });
         const size = statSync(targetPath).size;
         if (size !== downloaded.size) {

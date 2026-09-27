@@ -579,7 +579,7 @@ describe('TelegramGateway', () => {
     await gateway.stop();
   });
 
-  it('sends a document only once when an already delivered operation id has a changed payload', async () => {
+  it('rejects a changed file payload for a delivered operation id and sends once', async () => {
     const root = mkdtempSync(join(tmpdir(), 'mama-telegram-document-'));
     temporaryRoots.push(root);
     const filesRoot = join(root, 'files');
@@ -591,9 +591,9 @@ describe('TelegramGateway', () => {
     const gateway = await gatewayFor(intakeFor([]), join(root, 'telegram-ledger.json'), filesRoot);
 
     await gateway.sendFile(documentPath, undefined, 'document-operation');
-    await expect(
-      gateway.sendFile(changedPath, undefined, 'document-operation')
-    ).resolves.toMatchObject({ idempotent: true });
+    await expect(gateway.sendFile(changedPath, undefined, 'document-operation')).rejects.toThrow(
+      /binding mismatch/
+    );
 
     expect(seams.api.sendDocument).toHaveBeenCalledTimes(1);
     expect(seams.api.sendPhoto).not.toHaveBeenCalled();

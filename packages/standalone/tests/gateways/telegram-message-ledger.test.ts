@@ -17,7 +17,11 @@ describe('TelegramMessageLedger', () => {
       const log = vi.fn();
       const reopened = new TelegramMessageLedger(path, { log });
       expect(
-        reopened.claim('outbound:report', { ...binding, payloadIdentity: 'b'.repeat(64) })
+        reopened.claim('outbound:report', {
+          ...binding,
+          payloadIdentity: 'b'.repeat(64),
+          keepDeliveredOnPayloadChange: true,
+        })
       ).toMatchObject({ claimed: false, entry: { state: 'delivered', ...binding } });
       expect(log.mock.calls.flat().join('\n')).toMatch(/payload.*identity.*key=outbound:report/);
       expect(new TelegramMessageLedger(path).get('outbound:report')?.payloadIdentity).toBe(
@@ -84,24 +88,28 @@ describe('TelegramMessageLedger', () => {
     }
   });
 
-  it('refuses a changed payload for the same delivery identity', () => {
-    const root = mkdtempSync(join(tmpdir(), 'mama-telegram-ledger-'));
-    try {
-      const ledger = new TelegramMessageLedger(join(root, 'ledger.json'));
-      ledger.claim('outbound:answer', {
-        deliveryTarget: 'telegram:7',
-        payloadIdentity: createHash('sha256').update('first').digest('hex'),
-      });
-      expect(() =>
+  it.each(['processing', 'delivered'])(
+    'refuses a changed payload for a %s identity without opt-in',
+    (state) => {
+      const root = mkdtempSync(join(tmpdir(), 'mama-telegram-ledger-'));
+      try {
+        const ledger = new TelegramMessageLedger(join(root, 'ledger.json'));
         ledger.claim('outbound:answer', {
           deliveryTarget: 'telegram:7',
-          payloadIdentity: createHash('sha256').update('second').digest('hex'),
-        })
-      ).toThrow(/binding mismatch/);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
+          payloadIdentity: createHash('sha256').update('first').digest('hex'),
+        });
+        if (state === 'delivered') ledger.markDelivered('outbound:answer');
+        expect(() =>
+          ledger.claim('outbound:answer', {
+            deliveryTarget: 'telegram:7',
+            payloadIdentity: createHash('sha256').update('second').digest('hex'),
+          })
+        ).toThrow(/binding mismatch/);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it('keeps a delivered receipt for new wording but refuses another destination', () => {
     const root = mkdtempSync(join(tmpdir(), 'mama-telegram-ledger-'));
@@ -115,12 +123,14 @@ describe('TelegramMessageLedger', () => {
         ledger.claim('outbound:report', {
           deliveryTarget: 'telegram:7',
           payloadIdentity: hash('b'),
+          keepDeliveredOnPayloadChange: true,
         })
       ).toMatchObject({ claimed: false, entry: { state: 'delivered' } });
       expect(() =>
         ledger.claim('outbound:report', {
           deliveryTarget: 'telegram:8',
           payloadIdentity: hash('a'),
+          keepDeliveredOnPayloadChange: true,
         })
       ).toThrow(/binding mismatch/);
     } finally {

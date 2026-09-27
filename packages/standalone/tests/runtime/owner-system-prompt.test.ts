@@ -56,7 +56,7 @@ describe('owner standing prompt', () => {
   it('explains the attachment list, download, and Telegram file delivery actions', () => {
     const prompt = ownerSystemPrompt('codex');
     expect(prompt).toContain(
-      "A message's attachments are listed with source.attachment.list and fetched with source.attachment.download into the workspace; a file is sent to the owner with deliver.telegram.file."
+      "A message's attachments are listed with source.attachment.list and fetched with source.attachment.download into the daemon downloads directory (read-only for the agent); copy a download into workspace files before modifying, unzipping, or sending it with deliver.telegram.file."
     );
   });
 

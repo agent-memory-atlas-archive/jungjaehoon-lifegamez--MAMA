@@ -45,7 +45,7 @@ beforeEach(async () => {
   gateway = new TelegramGateway({
     token: 'fixture-token',
     messageLedgerPath: join(root, 'ledger.json'),
-    workspaceDir: root,
+    downloadsDir: join(root, 'downloads'),
     config: { allowedChats: ['7'], ownerUserIds: ['9'], polling: false },
     intake: {
       acceptOwnerMessage: (input) => {
@@ -94,7 +94,7 @@ describe('owner Telegram attachments', () => {
       'use this existing file as the reference'
     );
     expect(received[0]?.text).toBe('use this existing file as the reference');
-    const path = join(root, 'files/telegram/11_書式.xlsx');
+    const path = join(root, 'downloads/telegram/11_書式.xlsx');
     expect(attachment()).toEqual({
       path,
       name: '書式.xlsx',
@@ -117,16 +117,19 @@ describe('owner Telegram attachments', () => {
     });
     expect(received[0]?.payload).toHaveProperty('attachments', [attachment()]);
     expect(download).toHaveBeenCalledTimes(1);
-    expect(readFileSync(join(root, 'files/telegram/11_clip.gif'))).toHaveLength(4);
+    expect(readFileSync(join(root, 'downloads/telegram/11_clip.gif'))).toHaveLength(4);
   });
 
-  it('refuses an attachment directory symlink escaping the workspace', async () => {
+  it('ignores a symlink in the former workspace attachment directory', async () => {
     const outside = mkdtempSync(join(tmpdir(), 'telegram-outside-'));
-    mkdirSync(join(root, 'files'));
-    symlinkSync(outside, join(root, 'files', 'telegram'));
+    mkdirSync(join(root, 'workspace', 'files'), { recursive: true });
+    symlinkSync(outside, join(root, 'workspace', 'files', 'telegram'));
     try {
       await send({ document: { ...file, file_name: 'sample.bin' } });
-      expect(attachment()).toMatchObject({ error: expect.stringMatching(/workspace/) });
+      expect(attachment()).toMatchObject({
+        path: join(root, 'downloads', 'telegram', '11_sample.bin'),
+        size: 4,
+      });
       expect(readdirSync(outside)).toEqual([]);
     } finally {
       rmSync(outside, { recursive: true, force: true });
@@ -136,11 +139,11 @@ describe('owner Telegram attachments', () => {
   it('replaces a target symlink without writing through it', async () => {
     const outside = join(root, 'outside.bin');
     writeFileSync(outside, 'unchanged');
-    mkdirSync(join(root, 'files', 'telegram'), { recursive: true });
-    symlinkSync(outside, join(root, 'files', 'telegram', '11_sample.bin'));
+    mkdirSync(join(root, 'downloads', 'telegram'), { recursive: true });
+    symlinkSync(outside, join(root, 'downloads', 'telegram', '11_sample.bin'));
     await send({ document: { ...file, file_name: 'sample.bin' } });
     expect(readFileSync(outside, 'utf8')).toBe('unchanged');
-    expect(readFileSync(join(root, 'files', 'telegram', '11_sample.bin'))).toHaveLength(4);
+    expect(readFileSync(join(root, 'downloads', 'telegram', '11_sample.bin'))).toHaveLength(4);
   });
 
   it('selects the largest photo even when sizes arrive out of order', async () => {
@@ -152,7 +155,7 @@ describe('owner Telegram attachments', () => {
     });
     expect(bot.getFile).toHaveBeenCalledWith('largest');
     expect(attachment()).toEqual({
-      path: join(root, 'files/telegram/11_photo_large.jpg'),
+      path: join(root, 'downloads/telegram/11_photo_large.jpg'),
       name: 'photo_large.jpg',
       mimeType: 'image/jpeg',
       size: 4,
@@ -175,10 +178,10 @@ describe('owner Telegram attachments', () => {
       expect(received[0]?.text).toBe(`[file: ${name}]`);
       expect(attachment()).toMatchObject({
         name,
-        path: join(root, `files/telegram/11_${name}`),
+        path: join(root, `downloads/telegram/11_${name}`),
         size: 4,
       });
-      expect(readFileSync(join(root, `files/telegram/11_${name}`))).toHaveLength(4);
+      expect(readFileSync(join(root, `downloads/telegram/11_${name}`))).toHaveLength(4);
     }
   );
 
@@ -190,7 +193,7 @@ describe('owner Telegram attachments', () => {
   it('keeps Unicode and punctuation readable and removes path separators and controls', async () => {
     await send({ document: { ...file, file_name: '../書式\\資料:様式\u0000\u007f.xlsx' } });
     expect(attachment()).toMatchObject({ name: '.._書式_資料:様式__.xlsx' });
-    expect(readdirSync(join(root, 'files/telegram'))).toEqual(['11_.._書式_資料:様式__.xlsx']);
+    expect(readdirSync(join(root, 'downloads/telegram'))).toEqual(['11_.._書式_資料:様式__.xlsx']);
   });
 
   it('reports an invalid filename without losing the caption', async () => {

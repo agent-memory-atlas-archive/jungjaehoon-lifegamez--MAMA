@@ -85,7 +85,7 @@ describe('one stimulus intake and delivery', () => {
       text: '[file: 書式.xlsx]',
       payload: {
         attachments: [
-          { path: '/workspace/files/telegram/11_書式.xlsx', name: '書式.xlsx', size: 128 },
+          { path: '/downloads/telegram/11_書式.xlsx', name: '書式.xlsx', size: 128 },
           { name: 'large.zip', error: 'Telegram Bot API download limit is 20 MB' },
         ],
       },
@@ -119,7 +119,7 @@ describe('one stimulus intake and delivery', () => {
       } as never
     );
     expect(prompt.split('\n')).toContain(
-      'attachment: name="書式.xlsx" path="/workspace/files/telegram/11_書式.xlsx" size=128 bytes'
+      'attachment: name="書式.xlsx" path="/downloads/telegram/11_書式.xlsx" size=128 bytes'
     );
     expect(prompt.split('\n')).toContain(
       'attachment: name="large.zip" error="Telegram Bot API download limit is 20 MB"'

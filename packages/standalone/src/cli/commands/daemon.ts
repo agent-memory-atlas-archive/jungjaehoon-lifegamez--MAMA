@@ -69,6 +69,7 @@ export interface DaemonPaths {
   mamaRoot: string;
   runtimeRoot: string;
   workspaceDir: string;
+  downloadsDir: string;
   pluginDir: string;
   mcpConfigPath: string;
   socketPath: string;
@@ -184,6 +185,7 @@ function pathsFor(configPath: string, config: W1Config): DaemonPaths {
     mamaRoot,
     runtimeRoot,
     workspaceDir,
+    downloadsDir: join(mamaRoot, 'downloads'),
     pluginDir,
     mcpConfigPath,
     socketPath: join(mamaRoot, 'runtime.sock'),
@@ -200,6 +202,7 @@ function pathsFor(configPath: string, config: W1Config): DaemonPaths {
 /** Create only the native-process isolation files; never remove product state. */
 export function ensureDaemonIsolation(options: DaemonIsolationOptions): void {
   const { config, paths } = options;
+  mkdirSync(paths.downloadsDir, { recursive: true, mode: 0o700 });
   mkdirSync(paths.workspaceDir, { recursive: true });
   const gitDir = join(paths.workspaceDir, '.git');
   mkdirSync(gitDir, { recursive: true });
@@ -376,6 +379,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
       ...(config.agent.backend === 'claude' ? { mcpConfigPath: paths.mcpConfigPath } : {}),
       pluginDir: paths.pluginDir,
       attachmentPorts: {
+        downloadsDir: paths.downloadsDir,
         connectors: () => connectors?.registry ?? null,
         telegram: () => gateway,
       },
@@ -534,7 +538,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
           process.exit(1);
         },
         filesRoot: join(paths.workspaceDir, 'files'),
-        workspaceDir: paths.workspaceDir,
+        downloadsDir: paths.downloadsDir,
       });
       await gateway.start();
       stage(logger, 'telegram');

@@ -81,7 +81,7 @@ export interface OwnerRuntimeOptions {
   /** Keep accepted inputs queued while product delivery ports are starting. */
   deliveryReady?: () => boolean;
   maxTurns: number;
-  attachmentPorts?: Pick<AttachmentActionPorts, 'connectors' | 'telegram'>;
+  attachmentPorts?: Pick<AttachmentActionPorts, 'connectors' | 'telegram' | 'downloadsDir'>;
 }
 
 export interface OwnerRuntime {
