@@ -1188,3 +1188,10 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Evidence: report action, pipeline, calendar first-poll, iCal parser/connector, prompt and credential-boundary tests pass; `pnpm build`, `pnpm typecheck` and changed-file ESLint pass.
 - Standalone suite: 1,039 passed; 24 listener/socket `EPERM` failures across eight files, isolated to sandboxed binds.
 - Still open: no live provider poll or owner report was run; `~/.mama` and `~/.claude` were not accessed.
+
+### W17 — incremental owner deltas (2026-09-27)
+
+- Result: live deltas now revise/create work, update only an affected board slot, append a dated wiki line when enabled, and finish in one turn; first sessions receive the compact open pipeline, and calendar/iCal first snapshots stay collect-only.
+- Evidence: focused prompt, candidate, scheduling, calendar, and iCal regressions pass; `pnpm build`, `pnpm typecheck`, and ESLint on changed files pass.
+- Standalone suite: 1,062 passed; 25 failures are socket `EPERM` across eight files (Unix runtime sockets and viewer HTTP binds).
+- Still open: no live owner turn or provider poll was run; `~/.mama` and `~/.claude` were not accessed.

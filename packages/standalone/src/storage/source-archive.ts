@@ -27,6 +27,8 @@ export interface NormalizedItem {
   timestamp: Date;
   contentHash?: string;
   sourceCursor?: string;
+  /** First complete feed snapshots are stored without admitting them as live deltas. */
+  collectOnly?: boolean;
   tenantId?: string;
   projectId?: string;
   memoryScopeKind?: string;

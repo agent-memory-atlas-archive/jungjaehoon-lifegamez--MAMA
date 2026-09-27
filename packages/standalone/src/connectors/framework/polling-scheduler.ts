@@ -217,7 +217,10 @@ export class PollingScheduler {
           },
         ];
       });
-      if (canonicalItems.length > 0) this.rawStore.save(name, canonicalItems);
+      const collectOnly = canonicalItems.filter((item) => item.collectOnly === true);
+      const live = canonicalItems.filter((item) => item.collectOnly !== true);
+      if (collectOnly.length > 0) this.rawStore.save(name, collectOnly, { collectOnly: true });
+      if (live.length > 0) this.rawStore.save(name, live);
 
       const pending: PendingProjection[] = [];
       let afterSequence = 0;

@@ -232,6 +232,7 @@ export class CalendarConnector implements IConnector {
               type: 'event',
               sourceCursor: ev.updated,
               metadata: { ...observation, observedAt },
+              ...(!this.synced.has(calendar.key) ? { collectOnly: true } : {}),
             });
           }
 

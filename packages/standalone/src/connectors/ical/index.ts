@@ -5,6 +5,7 @@ import type {
   IConnector,
   NormalizedItem,
 } from '../framework/types.js';
+import { readConnectorState, writeConnectorState } from '../framework/connector-state.js';
 import { parseICalendar } from './parser.js';
 
 export class ICalConnector implements IConnector {
@@ -14,13 +15,36 @@ export class ICalConnector implements IConnector {
   private lastPollTime: Date | null = null;
   private lastPollCount = 0;
   private lastError: string | undefined;
+  private readonly synced: Set<string>;
+  private pendingSynced: Set<string> | null = null;
 
-  constructor(config: ConnectorConfig) {
+  constructor(
+    config: ConnectorConfig,
+    private readonly statePath: string
+  ) {
     this.feeds = Object.entries(config.channels).map(([key, channel]) => ({
       key,
       name: channel.feedName ?? channel.name ?? key,
       envName: `MAMA_ICAL_URL_${key.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`,
     }));
+    this.synced = new Set(
+      readConnectorState(statePath, (value) => {
+        const synced = (value as { synced?: unknown } | null)?.synced;
+        if (!Array.isArray(synced) || !synced.every((key) => typeof key === 'string')) {
+          throw new Error('iCal connector state must list synced feed keys');
+        }
+        return synced as string[];
+      }) ?? []
+    );
+  }
+  commitPoll(): void {
+    if (this.pendingSynced === null) return;
+    for (const key of this.pendingSynced) this.synced.add(key);
+    this.pendingSynced = null;
+    writeConnectorState(this.statePath, { synced: [...this.synced].sort() });
+  }
+  abortPollHandoff(): void {
+    this.pendingSynced = null;
   }
   async init(): Promise<void> {
     for (const feed of this.feeds) {
@@ -50,6 +74,7 @@ export class ICalConnector implements IConnector {
   async poll(_since: Date): Promise<NormalizedItem[]> {
     const output: NormalizedItem[] = [];
     try {
+      const pendingSynced = new Set<string>();
       for (const feed of this.feeds) {
         const url = process.env[feed.envName];
         if (!url) throw new Error(`iCal feed ${feed.name} has no configured secret`);
@@ -82,8 +107,9 @@ export class ICalConnector implements IConnector {
         }
         for (const event of events) {
           const fields = { ...event, feedName: feed.name, feedKey: feed.key };
+          const { revisionTime: _revisionTime, ...revisionFields } = fields;
           const version = createHash('sha256')
-            .update(JSON.stringify(fields))
+            .update(JSON.stringify(revisionFields))
             .digest('hex')
             .slice(0, 24);
           output.push({
@@ -103,9 +129,12 @@ export class ICalConnector implements IConnector {
               summary: event.summary,
               status: event.status,
             },
+            ...(!this.synced.has(feed.key) ? { collectOnly: true } : {}),
           });
         }
+        pendingSynced.add(feed.key);
       }
+      this.pendingSynced = pendingSynced;
       this.lastPollTime = new Date();
       this.lastPollCount = output.length;
       this.lastError = undefined;

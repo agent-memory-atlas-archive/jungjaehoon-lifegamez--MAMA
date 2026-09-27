@@ -67,6 +67,82 @@ async function boot(model: NativeSessionHandle['runTurn']) {
 }
 
 describe('one stimulus intake and delivery', () => {
+  it('attaches at most five recent channel or title candidates for the agent to judge', async () => {
+    const now = Date.parse('2026-09-27T00:00:00.000Z');
+    const tasks = Array.from({ length: 7 }, (_, index) => ({
+      commitmentId: `work-${index}`,
+      title: index === 0 ? 'Planning review' : `Planning work ${index}`,
+      stage: 'doing',
+      assignee: `person-${index}`,
+      latest_change: now - index * 1_000,
+      sourceChannel: index === 1 ? 'other-room' : 'room-a',
+    }));
+    tasks.push({
+      commitmentId: 'old-work',
+      title: 'Planning old',
+      stage: 'doing',
+      assignee: 'old',
+      latest_change: now - 15 * 24 * 60 * 60 * 1_000,
+      sourceChannel: 'room-a',
+    });
+    const delivery = createStimulusDelivery({
+      guidanceResolver: async () => [],
+      wikiEnabled: true,
+      openWorkPipeline: async () => ({ stages: [{ stage: 'doing', tasks }] }),
+    });
+    let prompt = '';
+    await delivery.deliver(
+      {
+        id: 'delta-input',
+        stimulusId: 'delta-input',
+        principalId: 'owner',
+        kind: 'source_delta',
+        channelKey: 'collector:room-a',
+        occurredAt: now,
+        refs: [{ sourceAt: new Date(now).toISOString() }],
+        preview: [],
+        status: 'claimed',
+        attempts: 1,
+        createdAt: now,
+        coalesceKey: null,
+        payload: {
+          refs: [
+            {
+              channel: 'room-a',
+              contentPreview: 'planning review update',
+              sourceAt: new Date(now).toISOString(),
+            },
+          ],
+        },
+      } as never,
+      {
+        nativeInputId: 'delta-input',
+        resultForReceipt: () => null,
+        run: async (content: Array<{ text?: string }>, request?: NativeInvocationOptions) => {
+          content =
+            (await request?.prepareSessionContent?.({
+              sessionId: 'delta-session',
+              isNewSession: false,
+            })) ?? content;
+          prompt = content[0]?.text ?? '';
+          return {} as never;
+        },
+        steer: vi.fn(),
+        wasDispatched: () => false,
+        onInputDispatch: vi.fn(),
+        onAccepted: vi.fn(),
+      } as never
+    );
+    const section = prompt.split('candidates (you decide):')[1] ?? '';
+    expect(section.match(/\| work-\d/g)).toHaveLength(5);
+    expect(section).toContain('Planning review');
+    expect(section).toContain('room-a');
+    expect(prompt).toContain('dated line to the item wiki page');
+    expect(prompt).toContain('manage.wiki.update');
+    expect(section).not.toContain('old-work');
+    expect(section).not.toContain('work-6');
+  });
+
   it('renders owner attachment paths, names, sizes and errors from the intake payload', async () => {
     let accepted: Record<string, unknown> = {};
     const intake = createStimulusIntake(
@@ -139,7 +215,14 @@ describe('one stimulus intake and delivery', () => {
         updated_at: 1,
       },
     ]);
-    const delivery = createStimulusDelivery({ guidanceResolver });
+    const delivery = createStimulusDelivery({
+      guidanceResolver,
+      openWorkPipeline: async () => ({
+        success: true,
+        view: 'pipeline',
+        stages: [{ stage: 'doing', count: 1, tasks: [{ title: 'Open item' }] }],
+      }),
+    });
     let prompt = '';
     const context = {
       nativeInputId: 'input-lesson',
@@ -185,6 +268,8 @@ describe('one stimulus intake and delivery', () => {
 
     expect(guidanceResolver).toHaveBeenCalledWith();
     expect(prompt).toContain('<guidance-index>');
+    expect(prompt).toContain('<open-work-pipeline>');
+    expect(prompt).toContain('Open item');
     expect(prompt).toContain(
       'legacy-guidance | lesson | release review | summary: Use the verified owner workflow for release review.'
     );
@@ -654,15 +739,15 @@ describe('one stimulus intake and delivery', () => {
           expect(prompt).toContain(part);
       } else {
         for (const part of [
-          'source.recent',
+          'what this owner session already knows',
           'view="pipeline"',
-          'schedule.upcoming',
           '5–8',
           '3–6',
           'action_required',
-          'last full report',
         ])
           expect(prompt).toContain(part);
+        expect(prompt).not.toContain('source.recent');
+        expect(prompt).not.toContain('report.read');
       }
     }
   );

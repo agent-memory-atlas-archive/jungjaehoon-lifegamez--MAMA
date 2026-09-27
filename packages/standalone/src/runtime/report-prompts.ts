@@ -29,7 +29,7 @@ export function buildScheduledReportPrompt(
   options: { wikiEnabled?: boolean; messenger?: string } = {}
 ): string {
   const { report } = scheduledReport(payload);
-  const common = [
+  const fullReportChecklist = [
     `Current time: ${now.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })} (KST)`,
     'Checklist: call source.recent since the last full report (or 24h ago), work.list with view="pipeline", and schedule.upcoming with days=14.',
     'Read originals with source.read when a recent line changes the report; distinguish an empty result from failed or stale collection.',
@@ -41,7 +41,7 @@ export function buildScheduledReportPrompt(
     report === 'full'
       ? [
           '[scheduled_full_report]',
-          ...common,
+          ...fullReportChecklist,
           ...buildBoardPublishLines(),
           ...(options.wikiEnabled === false
             ? []
@@ -52,9 +52,9 @@ export function buildScheduledReportPrompt(
         ]
       : [
           '[scheduled_task_reminder]',
-          ...common,
-          'Use the checklist evidence to select the 5–8 most urgent open items. Include every item waiting on an owner decision and any deadline affected by a calendar event or holiday.',
-          'Update action_required with report.publish({ slots: { action_required: "<html>" } }); the full reports and delta turns refresh the other slots and the wiki.',
+          'Use what this owner session already knows and call work.list with view="pipeline" for the compact open-work list. Read source originals only when needed to resolve a material uncertainty.',
+          'Select the 5–8 most urgent open items. Include every item waiting on an owner decision and any deadline affected by a calendar event or holiday.',
+          'Update only action_required with report.publish({ slots: { action_required: "<html>" } }); scheduled full reports handle the other slots and wiki resync.',
           'Return only a concise Korean reminder of 3–6 lines, most urgent or nearest deadline first, under a short Korean title that names the top N priorities.',
         ];
   return [

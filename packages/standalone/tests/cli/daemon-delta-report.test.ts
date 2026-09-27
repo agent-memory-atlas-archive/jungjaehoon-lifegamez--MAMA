@@ -290,39 +290,20 @@ describe('live delta reports', () => {
     ['last notify wins', '[ack] earlier\n[notify] final', 'final', 'notify'],
     ['last repeated notify wins', '[notify] earlier\n[notify] final', 'final', 'notify'],
     ['empty notify', '[notify]  ', null, 'notify'],
-  ])('routes %s and enqueues exactly one board pass', async (_name, response, sent, route) => {
+  ])('routes %s without queuing a second board pass', async (_name, response, sent, route) => {
     const { root, daemon, logs, prompts, ownerOptions } = await boot(response!);
     const input = delta();
     const id = sourceDeltaStimulusId(input);
     daemon.owner.acceptSourceDelta(input);
-    await vi.waitFor(() => expect(prompts).toHaveLength(2));
-    await vi.waitFor(() =>
-      expect(daemon.owner.runtime.mailbox?.readInput(`delta-board:${id}`, 'owner')?.status).toBe(
-        'acked'
-      )
-    );
-    expect(prompts.map((prompt) => prompt.source)).toEqual(['source_delta', 'native_event']);
+    await vi.waitFor(() => expect(prompts).toHaveLength(1));
+    expect(prompts.map((prompt) => prompt.source)).toEqual(['source_delta']);
     expect(prompts[0]!.text).toContain('[notify]');
     expect(prompts[0]!.text).toContain('[ack]');
-    const board = prompts[1]!.text;
-    for (const instruction of [
-      'work.list',
-      'report.read',
-      'report.publish',
-      'briefing',
-      'action_required',
-      'decisions',
-      'pipeline',
-      '[ack]',
-    ]) {
-      expect(board).toContain(instruction);
-    }
-    expect(board).not.toContain('manage.wiki.');
+    expect(prompts[0]!.text).toContain('report.publish');
+    expect(prompts[0]!.text).toContain('affected board slot');
     expect(logs).toContain(`delta report route=${route} id=${id}`);
     expect(logs).toContain(`stimulus delivered kind=source_delta id=${id} model_run_id=run:1`);
-    expect(logs).toContain(
-      `stimulus delivered kind=native_event id=delta-board:${id} model_run_id=run:2`
-    );
+    expect(logs).not.toContain(expect.stringContaining(`delta-board:${id}`));
     if (sent === null) expect(telegram.sendMessage).not.toHaveBeenCalled();
     else {
       expect(telegram.sendMessage).toHaveBeenCalledOnce();
@@ -341,11 +322,11 @@ describe('live delta reports', () => {
     const row = daemon.owner.runtime.mailbox!.readInput(id, 'owner')!;
     await ownerOptions.onSourceResult!(row, { response } as NativeTurnResult);
     await daemon.owner.runtime.drainOnce();
-    expect(prompts).toHaveLength(2);
+    expect(prompts).toHaveLength(1);
     expect(telegram.sendMessage).toHaveBeenCalledTimes(sent === null ? 0 : 1);
   });
 
-  it('keeps a failed send uncertain, reports a bounded reason, and still runs the board pass', async () => {
+  it('keeps a failed send uncertain and reports a bounded reason', async () => {
     const { daemon, prompts, logs, failures } = await boot('[notify] The file arrived.');
     telegram.sendMessage.mockRejectedValue(new Error(`send failed\n${'x'.repeat(900)}`));
     const id = sourceDeltaStimulusId(delta());
@@ -355,7 +336,7 @@ describe('live delta reports', () => {
         'uncertain'
       )
     );
-    await vi.waitFor(() => expect(prompts).toHaveLength(2));
+    await vi.waitFor(() => expect(prompts).toHaveLength(1));
     expect(failures).toHaveBeenCalledOnce();
     const reason = failures.mock.calls[0]![1];
     expect(typeof reason).toBe('string');
@@ -367,7 +348,7 @@ describe('live delta reports', () => {
     );
     await daemon.owner.runtime.drainOnce();
     expect(telegram.sendMessage).toHaveBeenCalledOnce();
-    expect(prompts).toHaveLength(2);
+    expect(prompts).toHaveLength(1);
     expect(daemon.owner.runtime.mailbox?.readInput(id, 'owner')?.status).toBe('claimed');
     // Restarting Telegram must not recover an outbound delta as an owner reply.
     await daemon.gateway!.stop();
@@ -375,28 +356,23 @@ describe('live delta reports', () => {
     expect(telegram.sendMessage).toHaveBeenCalledOnce();
   });
 
-  it('enqueues a board pass for each distinct completed delta turn', async () => {
+  it('delivers each distinct delta once without queuing board events', async () => {
     const { daemon, prompts } = await boot('[ack]');
     const first = delta();
     daemon.owner.acceptSourceDelta(first);
-    await vi.waitFor(() => expect(prompts).toHaveLength(2));
+    await vi.waitFor(() => expect(prompts).toHaveLength(1));
     const second = delta();
     second.refs = [
       { ...second.refs[0]!, observationRef: 'next-observation', sourceId: 'next-source' },
     ];
     daemon.owner.acceptSourceDelta(second);
-    await vi.waitFor(() => expect(prompts).toHaveLength(4));
-    expect(prompts.map((prompt) => prompt.source)).toEqual([
-      'source_delta',
-      'native_event',
-      'source_delta',
-      'native_event',
-    ]);
+    await vi.waitFor(() => expect(prompts).toHaveLength(2));
+    expect(prompts.map((prompt) => prompt.source)).toEqual(['source_delta', 'source_delta']);
     expect(telegram.sendMessage).not.toHaveBeenCalled();
   });
 
   it.each(['replay daemon', 'replay payload'])(
-    'does not route or enqueue a live board pass for %s',
+    'does not route a live notification for %s',
     async (replayCase) => {
       const { daemon, prompts, logs } = await boot(
         '[notify] historical update',

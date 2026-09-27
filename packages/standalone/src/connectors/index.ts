@@ -44,7 +44,11 @@ const loaders: Record<
       paths.connectorStatePath
     );
   },
-  ical: async (config) => new (await import('./ical/index.js')).ICalConnector(config),
+  ical: async (config, paths) => {
+    if (paths?.connectorStatePath === undefined)
+      throw new Error('iCal connector state path is not configured');
+    return new (await import('./ical/index.js')).ICalConnector(config, paths.connectorStatePath);
+  },
   gmail: async (config) => new (await import('./gmail/index.js')).GmailConnector(config),
   drive: async (config, paths) => {
     if (paths?.connectorStatePath === undefined)

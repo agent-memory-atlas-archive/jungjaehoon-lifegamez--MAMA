@@ -47,7 +47,6 @@ import {
 import { resolvePackageVersion } from '../../package-version.js';
 import { readViewerMemoryStats } from '../../api/viewer-data.js';
 import type { OwnerFileDeliveryResult } from '../../api/file-delivery.js';
-import { buildBoardPublishLines } from '../../operator/board-slot-instructions.js';
 import { createReportScheduler, type ReportScheduler } from '../../runtime/report-scheduler.js';
 
 const OWNER_PRINCIPAL_ID = 'owner';
@@ -388,32 +387,6 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
       row: MailboxRow,
       result: NativeTurnResult
     ): Promise<void> => {
-      // Queue before sending: a delivery failure must not leave the board stale.
-      const boardId = `delta-board:${row.stimulusId}`;
-      const receipt = owner!.intake.acceptNativeEvent({
-        id: boardId,
-        channelKey: row.channelKey,
-        occurredAt: row.occurredAt,
-        payload: {
-          text: [
-            'Reconcile the board after the source delta turn.',
-            'Read current work with work.list and the current board with report.read; read source context as needed.',
-            ...(config.wiki?.enabled
-              ? [
-                  'Update the wiki page for each work item changed since the last wiki update with manage.wiki.update (or manage.wiki.publish for a new case), before or with the board publish; choose the pages yourself; when several pages change, split them across subagents inside this turn.',
-                ]
-              : []),
-            'Write all four slots from current work so the board and the work ledger show the same state.',
-            ...buildBoardPublishLines(),
-            'Owner-facing text carries no commitment, observation, judgment or channel ids.',
-            'Finish with [ack]. Do not use [notify].',
-          ].join('\n'),
-          sourceStimulusId: row.stimulusId,
-          refs: row.refs.map((ref) => ({ ...ref })),
-        },
-      });
-      stimulusAccepted(logger, 'native_event', boardId, receipt);
-
       const text = result.response.trim();
       const tagIndex = Math.max(text.lastIndexOf('[notify]'), text.lastIndexOf('[ack]'));
       const routed = tagIndex >= 0 ? text.slice(tagIndex) : '';

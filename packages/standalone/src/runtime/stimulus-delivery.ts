@@ -16,8 +16,9 @@ import type { NativeTurnResultRecord } from '@jungjaehoon/mama-core/runtime/nati
 import type { SourceDelta } from '../connectors/framework/polling-scheduler.js';
 import type { QueueCandidateScore, QueueLine, WindowQueue } from '../replay/window-queue.js';
 import { renderRecentOwnerExchanges, type OwnerExchange } from './recent-owner-exchanges.js';
-import { LIVE_DELTA_ROUTING_INSTRUCTION } from './owner-system-prompt.js';
+import { liveDeltaRoutingInstruction, type OwnerRuntimeBackend } from './owner-system-prompt.js';
 import { buildScheduledReportPrompt } from './report-prompts.js';
+import { workListTitleTextScore } from '../api/work-actions.js';
 
 export const OWNER_RUNTIME_SESSION_KEY = 'owner:runtime';
 
@@ -55,6 +56,8 @@ export interface StimulusIntake {
 
 export interface StimulusDeliveryOptions {
   guidanceResolver: GuidanceResolver;
+  backend?: OwnerRuntimeBackend;
+  openWorkPipeline?: () => Promise<unknown>;
   wikiEnabled?: boolean;
   formattingRoutes?: { reports: string; notifications: string };
   readResult?: (row: MailboxRow) => NativeTurnResultRecord | null;
@@ -347,7 +350,8 @@ export function renderWindowQueue(queue: WindowQueue): string {
 function boundedStimulus(
   row: MailboxRow,
   liveSourceDelta: boolean,
-  options: Pick<StimulusDeliveryOptions, 'wikiEnabled' | 'formattingRoutes'>
+  options: Pick<StimulusDeliveryOptions, 'wikiEnabled' | 'formattingRoutes' | 'backend'>,
+  candidates: readonly string[] = []
 ): string {
   if (row.kind === 'scheduled')
     return buildScheduledReportPrompt(row.payload, new Date(row.occurredAt), {
@@ -388,8 +392,11 @@ function boundedStimulus(
   if (messages === null) lines.push(`refs: ${JSON.stringify(row.refs)}`);
   if (row.kind === 'source_delta') {
     if (liveSourceDelta) {
-      lines.push(`response_routing: ${LIVE_DELTA_ROUTING_INSTRUCTION}`);
+      lines.push(
+        `response_routing: ${liveDeltaRoutingInstruction(options.backend ?? 'codex', options.wikiEnabled)}`
+      );
       lines.push(`formatting: ${options.formattingRoutes?.notifications ?? 'telegram'}`);
+      lines.push('candidates (you decide):', ...candidates);
     }
     lines.push(
       row.refs.length === 0
@@ -436,6 +443,84 @@ function boundedStimulus(
       `payload: ${row.kind === 'source_delta' ? wrapUntrustedContent('source_delta', JSON.stringify(row.payload)) : JSON.stringify(row.payload)}`
     );
   return lines.join('\n');
+}
+
+function stimulusText(row: MailboxRow): string {
+  if (!row.payload || typeof row.payload !== 'object' || Array.isArray(row.payload)) return '';
+  const refs = row.payload.refs;
+  return Array.isArray(refs)
+    ? refs
+        .flatMap((ref) =>
+          ref && typeof ref === 'object' && !Array.isArray(ref)
+            ? [textField(ref.contentPreview)]
+            : []
+        )
+        .join(' ')
+    : '';
+}
+
+function stimulusChannels(row: MailboxRow): Set<string> {
+  if (!row.payload || typeof row.payload !== 'object' || Array.isArray(row.payload))
+    return new Set();
+  const refs = row.payload.refs;
+  if (!Array.isArray(refs)) return new Set();
+  return new Set(
+    refs.flatMap((ref) =>
+      ref && typeof ref === 'object' && !Array.isArray(ref)
+        ? [textField(ref.channel), textField(ref.channelName)].filter(Boolean)
+        : []
+    )
+  );
+}
+
+function pipelineText(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function pipelineTime(value: unknown): string {
+  const time = typeof value === 'number' ? value : Date.parse(pipelineText(value));
+  return Number.isFinite(time) ? new Date(time).toISOString() : '';
+}
+
+function relatedWorkCandidates(row: MailboxRow, pipeline: unknown): string[] {
+  const rows: unknown[] =
+    pipeline && typeof pipeline === 'object' && !Array.isArray(pipeline)
+      ? ((pipeline as { stages?: Array<{ tasks?: unknown[] }> }).stages?.flatMap(
+          (stage) => stage.tasks ?? []
+        ) ?? [])
+      : Array.isArray(pipeline)
+        ? pipeline
+        : [];
+  const channels = stimulusChannels(row);
+  const query = stimulusText(row);
+  const cutoff = row.occurredAt - 14 * 24 * 60 * 60 * 1000;
+  const candidates = rows.flatMap((raw) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
+    const item = raw as Record<string, unknown>;
+    const title = pipelineText(item.title);
+    const commitmentId = pipelineText(item.commitmentId);
+    const changedAt =
+      typeof item.latest_change === 'number'
+        ? item.latest_change
+        : Date.parse(pipelineText(item.latest_change));
+    if (!title || !commitmentId || !Number.isFinite(changedAt) || changedAt < cutoff) return [];
+    const sameChannel = channels.has(pipelineText(item.sourceChannel));
+    const overlap = workListTitleTextScore(query, title);
+    if (!sameChannel && overlap === 0) return [];
+    return [{ item, title, commitmentId, overlap, sameChannel, changedAt }];
+  });
+  return candidates
+    .sort(
+      (a, b) =>
+        Number(b.sameChannel) - Number(a.sameChannel) ||
+        b.overlap - a.overlap ||
+        b.changedAt - a.changedAt
+    )
+    .slice(0, 5)
+    .map(
+      ({ item, title, commitmentId }) =>
+        `${title} | ${pipelineText(item.stage) || '-'} | ${pipelineText(item.assignee) || '-'} | ${pipelineTime(item.latest_change)} | ${commitmentId}`
+    );
 }
 
 function oneLine(value: string): string {
@@ -499,12 +584,15 @@ function assembledContent(
   row: MailboxRow,
   sessionBlocks: readonly string[],
   liveSourceDelta: boolean,
-  options: Pick<StimulusDeliveryOptions, 'wikiEnabled' | 'formattingRoutes'>
+  options: Pick<StimulusDeliveryOptions, 'wikiEnabled' | 'formattingRoutes' | 'backend'>,
+  candidates: readonly string[] = []
 ): ContentBlock[] {
   return [
     {
       type: 'text',
-      text: [...sessionBlocks, boundedStimulus(row, liveSourceDelta, options)].join('\n\n'),
+      text: [...sessionBlocks, boundedStimulus(row, liveSourceDelta, options, candidates)].join(
+        '\n\n'
+      ),
     },
   ];
 }
@@ -586,11 +674,18 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
         },
         prepareSessionContent: async ({ isNewSession }) => {
           const sessionBlocks: string[] = [];
+          const pipeline =
+            isNewSession || liveSourceDelta ? await options.openWorkPipeline?.() : undefined;
           const entries = await options.guidanceResolver();
           const sessionKey = OWNER_RUNTIME_SESSION_KEY;
           const lastDelivered = guidanceBySessionKey.get(sessionKey);
           if (isNewSession) {
             sessionBlocks.push(renderGuidanceIndex(entries));
+            if (pipeline !== undefined) {
+              sessionBlocks.push(
+                `<open-work-pipeline>\n${JSON.stringify(pipeline)}\n</open-work-pipeline>`
+              );
+            }
             const exchanges = renderRecentOwnerExchanges(
               (await options.recentOwnerExchanges?.(row)) ?? []
             );
@@ -604,7 +699,13 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
           pendingGuidanceState = new Map(
             entries.map((entry) => [entry.id, guidanceVersion(entry)])
           );
-          return assembledContent(row, sessionBlocks, liveSourceDelta, options);
+          return assembledContent(
+            row,
+            sessionBlocks,
+            liveSourceDelta,
+            options,
+            relatedWorkCandidates(row, pipeline)
+          );
         },
         sessionKey: OWNER_RUNTIME_SESSION_KEY,
         source: row.kind,

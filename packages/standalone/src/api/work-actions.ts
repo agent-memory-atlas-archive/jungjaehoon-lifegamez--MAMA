@@ -251,6 +251,11 @@ function workListLexicalScore(
   return Math.min(1, overlap * 0.8 + exactSubstringBonus);
 }
 
+/** The title-only form of the same lexical rank used by work.list text search. */
+export function workListTitleTextScore(query: string, title: string): number {
+  return workListLexicalScore(query, { title, description: '' });
+}
+
 function workListStatus(item: CommitmentView): PublicWorkStatus {
   const value = workListValueObject(item.values).status;
   if (typeof value === 'string' && WORK_LIST_STATUSES.includes(value as PublicWorkStatus)) {

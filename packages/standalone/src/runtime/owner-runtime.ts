@@ -18,6 +18,7 @@ import type { ServerResponse } from 'node:http';
 import type { NativeSessionHandle } from '@jungjaehoon/mama-core/runtime/runtime';
 import type { NativeModelRunPort } from '@jungjaehoon/mama-core/runtime/native-turn';
 import { createStoredSourceReader } from '../api/stored-source-reader.js';
+import { runWorkListView } from '../api/work-actions.js';
 import type { AttachmentActionPorts } from '../api/attachment-actions.js';
 import { createPersistentReportStore } from '../api/report-persistence.js';
 import { ObsidianWriter } from '../wiki/obsidian-writer.js';
@@ -265,6 +266,7 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       });
     }
     delivery = createStimulusDelivery({
+      backend: options.backend,
       wikiEnabled: options.wiki?.enabled ?? false,
       formattingRoutes: options.formattingRoutes ?? {
         reports: 'telegram',
@@ -292,6 +294,7 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
             kind: ['lesson', 'preference', 'constraint', 'workflow'],
           })
         ).filter(isOwnerGuidanceRecord),
+      openWorkPipeline: async () => runWorkListView({ view: 'pipeline' }, { knowledge, access }),
       ...(options.onOwnerResult === undefined ? {} : { onOwnerResult: options.onOwnerResult }),
       ...(options.onSourceResult === undefined ? {} : { onSourceResult: options.onSourceResult }),
       ...(options.onScheduledResult === undefined

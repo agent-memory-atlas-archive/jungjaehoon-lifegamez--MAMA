@@ -4,12 +4,9 @@ import type { ConnectorConfig } from '../../src/connectors/framework/types.js';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createCatalog, createDispatcher, type ActionContext } from '@jungjaehoon/mama-core';
 import { startConnectorRuntime } from '../../src/runtime/connectors.js';
 import { openCoreDatabase } from '../../src/runtime/core-db.js';
 import { RawStore } from '../../src/storage/source-archive.js';
-import { sourceActionRegistrations } from '../../src/api/source-actions.js';
-import { createStoredSourceReader } from '../../src/api/stored-source-reader.js';
 import { storedSourceFamilies } from '../../src/connectors/framework/stored-index-read.js';
 import { ownerSystemPrompt } from '../../src/runtime/owner-system-prompt.js';
 
@@ -146,12 +143,14 @@ describe('CalendarConnector (ported from the pre-stub connector)', () => {
 
   it('collects the complete first calendar window and uses updatedMin after a cursor exists', async () => {
     const connector = await initialized();
-    await connector.poll(since, { hasCursor: false });
+    const initial = await connector.poll(since, { hasCursor: false });
+    expect(initial.every((item) => item.collectOnly === true)).toBe(true);
     const first = JSON.parse(gws.run.mock.calls[0]![0]!.at(-1)!) as Record<string, unknown>;
     expect(first).not.toHaveProperty('updatedMin');
     connector.commitPoll?.();
     gws.run.mockClear();
-    await connector.poll(since, { hasCursor: true });
+    const laterItems = await connector.poll(since, { hasCursor: true });
+    expect(laterItems.every((item) => item.collectOnly !== true)).toBe(true);
     const later = JSON.parse(gws.run.mock.calls[0]![0]!.at(-1)!) as Record<string, unknown>;
     expect(later.updatedMin).toBe(since.toISOString());
   });
@@ -379,7 +378,7 @@ describe('CalendarConnector (ported from the pre-stub connector)', () => {
 
 describe('calendar through the daemon connector runtime', () => {
   it.each([false, true])(
-    'honors enabled=%s and exposes stored schedule evidence to the owner',
+    'honors enabled=%s and keeps the first schedule snapshot collect-only',
     async (enabled) => {
       const root = mkdtempSync(join(tmpdir(), 'calendar-runtime-'));
       const database = await openCoreDatabase({ path: join(root, 'core.db') });
@@ -431,80 +430,17 @@ describe('calendar through the daemon connector runtime', () => {
           return;
         }
         expect(runtime.registry.get('calendar')?.name).toBe('calendar');
-        expect(accept).toHaveBeenCalledTimes(1);
-        const refs = accept.mock.calls[0]![0].refs;
-        expect(refs).toHaveLength(2);
-        expect(refs[0]).toMatchObject({
-          connector: 'calendar',
-          sourceEntityId: 'fixture-event',
-          observationRef: expect.any(String),
-        });
+        expect(accept).not.toHaveBeenCalled();
         expect(rawStore.query('calendar', new Date(0))).toHaveLength(2);
         const families = storedSourceFamilies(database.adapter, ['calendar']);
-        expect(families).toEqual([{ source: 'calendar', family: null, count: 2 }]);
+        expect(families).toEqual([]);
         for (const backend of ['claude', 'codex'] as const) {
           expect(ownerSystemPrompt(backend, null, families)).toContain(
-            'Readable sources: calendar (2)'
+            'Readable sources: none stored'
           );
         }
-        const access: ActionContext['access'] = {
-          principalId: 'fixture-owner',
-          agentId: 'fixture-agent',
-          actions: ['source.search', 'source.read'],
-          connectors: ['calendar'],
-          scopes: [],
-        };
-        const stored = createStoredSourceReader({
-          adapter: database.adapter,
-          ownerPrincipalId: () => 'fixture-owner',
-          rawStore: () => rawStore,
-        });
-        const dispatch = createDispatcher(createCatalog(sourceActionRegistrations({ stored })));
-        const found = await dispatch(
-          {
-            action: 'source.search',
-            input: {
-              source: 'calendar',
-              from: '2024-01-14T00:00:00Z',
-              to: '2024-01-29T00:00:00Z',
-            },
-          },
-          { access }
-        );
-        expect(found).toMatchObject({
-          status: 'completed',
-          data: {
-            hits: expect.arrayContaining([
-              expect.objectContaining({ content_preview: expect.stringContaining('Lodging stay') }),
-              expect.objectContaining({
-                content_preview: expect.stringContaining('Upcoming deadline'),
-              }),
-            ]),
-          },
-        });
-        const read = await dispatch(
-          {
-            action: 'source.read',
-            input: { source: 'calendar', observationRef: refs[0].observationRef },
-          },
-          { access }
-        );
-        expect(read).toMatchObject({
-          status: 'completed',
-          data: {
-            content: expect.stringContaining('Lodging stay'),
-            metadata: {
-              start: '2024-01-16',
-              end: '2024-01-19',
-              location: 'Meeting room',
-              allDay: true,
-              endExclusive: true,
-              organizer: { displayName: 'Fixture organizer' },
-            },
-          },
-        });
         await runtime.pollNow();
-        expect(accept).toHaveBeenCalledTimes(1);
+        expect(accept).not.toHaveBeenCalled();
         expect(storedSourceFamilies(database.adapter, ['calendar'])).toEqual(families);
         // A failed page must not advance the cursor or publish a partial schedule.
         const cursor = runtime.scheduler.getLastPollTime('calendar');
@@ -514,7 +450,7 @@ describe('calendar through the daemon connector runtime', () => {
         vi.setSystemTime(new Date(now.getTime() + 300_000));
         await runtime.pollNow();
         expect(runtime.scheduler.getLastPollTime('calendar')).toEqual(cursor);
-        expect(accept).toHaveBeenCalledTimes(1);
+        expect(accept).not.toHaveBeenCalled();
         expect(rawStore.query('calendar', new Date(0))).toHaveLength(2);
       } finally {
         await runtime?.stop();

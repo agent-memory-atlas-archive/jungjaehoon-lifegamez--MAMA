@@ -31,7 +31,7 @@ describe('owner standing prompt', () => {
     expect(prompt).toContain('Only live source-delta turns end with [notify] or [ack]');
     expect(prompt).toContain('Answers to owner messages never carry these markers');
     expect(prompt).toContain(
-      'Refresh the board with report.publish in delta and report turns; in an owner answer, do so only when the owner asks.'
+      'A delta updates only its affected board slot; scheduled full reports rewrite all four slots.'
     );
     expect(prompt).toContain(
       'The final message is delivered to the owner exactly as written: give only the answer, with no working notes, narration about answering, or record or observation ids.'
@@ -40,11 +40,8 @@ describe('owner standing prompt', () => {
 
   it('tells the owner how to record source deltas and separates evidence from the ledger', () => {
     const prompt = ownerSystemPrompt('codex');
-    // Wiki is organized from its table of contents with a daily journal; relations beyond
-    // derived_from are offered; a memory is traced to its sources with provenance.
-    expect(prompt).toContain('Read Home.md');
-    expect(prompt).toContain('daily/YYYY-MM-DD.md');
-    expect(prompt).toContain('not per task');
+    // Relations beyond derived_from are offered; a memory is traced to its sources.
+    expect(prompt).toContain("append a dated line to the affected item's wiki page");
     expect(prompt).toContain(
       'contradicts when a newer instruction or fact reverses an earlier one'
     );
@@ -56,12 +53,13 @@ describe('owner standing prompt', () => {
       "source.read can read a delta's refs in one batched call with observationRefs"
     );
     expect(prompt).toContain(
-      "When a work item moved, record it now in the work ledger: call work.list with view=items first (a replay window's ledgerDigest already lists current work; call it only for what the digest does not show), then work.revise for the existing item or work.create for a new item."
+      'When a work item moved, record it now in the work ledger: revise an item you already know with work.revise, or create a new one with work.create. Look up an item with work.list text search or view=detail only when you do not know it.'
     );
+    expect(prompt).not.toContain('call work.list with view=items first');
     expect(prompt).toContain(
       "Other systems' task rows or statuses (for example, task rows or cards) are evidence to cite, not the owner's work ledger."
     );
-    expect(prompt).toContain('[notify] <message text>');
+    expect(prompt).toContain('[notify] <text>');
     expect(prompt).toContain('[ack]');
     expect(prompt).toContain('live source delta');
     expect(prompt).toContain('owner');

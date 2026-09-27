@@ -298,18 +298,17 @@ describe('W1 owner question integration', () => {
     ).toBe(true);
 
     const database = owner!.database.adapter;
-    // The source delta, the owner question, and the board pass the delta turn queued.
+    // The source delta and the owner question; the delta turn updates the board itself.
     expect(
       database
         .prepare('SELECT kind, COUNT(*) AS count FROM mailbox_inputs GROUP BY kind ORDER BY kind')
         .all()
     ).toEqual([
-      { kind: 'native_event', count: 1 },
       { kind: 'owner_message', count: 1 },
       { kind: 'source_delta', count: 1 },
     ]);
     expect(database.prepare('SELECT COUNT(*) AS count FROM model_runs').get()).toEqual({
-      count: 3,
+      count: 2,
     });
     expect(database.prepare('SELECT COUNT(*) AS count FROM tool_traces').get()).toEqual({
       count: 4,
