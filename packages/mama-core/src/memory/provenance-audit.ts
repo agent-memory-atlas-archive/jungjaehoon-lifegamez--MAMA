@@ -1,4 +1,7 @@
-import { getAdapter, initDB } from '../db-manager.js';
+import type { DatabaseAdapter } from '../db-manager.js';
+
+// Read-only audit queries: a prepare-capable adapter is sufficient.
+type ProvenanceAuditAdapter = Pick<DatabaseAdapter, 'prepare'>;
 import { listMemoryEventsForMemory } from './event-store.js';
 import type { MemoryEventRecord, MemoryScopeRef } from './types.js';
 
@@ -34,10 +37,9 @@ type AuditRow = {
 };
 
 export async function getMemoryProvenanceAudit(
+  adapter: ProvenanceAuditAdapter,
   memoryId: string
 ): Promise<MemoryProvenanceAuditRecord | null> {
-  await initDB();
-  const adapter = getAdapter();
   const row = adapter
     .prepare(
       `
@@ -49,14 +51,13 @@ export async function getMemoryProvenanceAudit(
     )
     .get(memoryId) as AuditRow | undefined;
 
-  return row ? toAuditRecord(row) : null;
+  return row ? toAuditRecord(adapter, row) : null;
 }
 
 export async function listMemoryProvenanceAudit(
+  adapter: ProvenanceAuditAdapter,
   options: MemoryProvenanceAuditListOptions
 ): Promise<MemoryProvenanceAuditRecord[]> {
-  await initDB();
-  const adapter = getAdapter();
   const filter = buildAuditFilter(options);
   const rows = adapter
     .prepare(
@@ -73,7 +74,7 @@ export async function listMemoryProvenanceAudit(
 
   const records: MemoryProvenanceAuditRecord[] = [];
   for (const row of rows) {
-    records.push(await toAuditRecord(row));
+    records.push(await toAuditRecord(adapter, row));
   }
   return records;
 }
@@ -100,9 +101,12 @@ function buildAuditFilter(options: MemoryProvenanceAuditListOptions): {
   return { sql: filters[0], params };
 }
 
-async function toAuditRecord(row: AuditRow): Promise<MemoryProvenanceAuditRecord> {
-  const events = await listMemoryEventsForMemory(row.id);
-  const scopeRefs = listScopeRefs(row.id);
+async function toAuditRecord(
+  adapter: ProvenanceAuditAdapter,
+  row: AuditRow
+): Promise<MemoryProvenanceAuditRecord> {
+  const events = await listMemoryEventsForMemory(adapter, row.id);
+  const scopeRefs = listScopeRefs(adapter, row.id);
   const provenance = parseObject(row.provenance_json);
   const legacyCaveats: string[] = [];
   if (provenance.source_type === 'legacy') {
@@ -126,8 +130,7 @@ async function toAuditRecord(row: AuditRow): Promise<MemoryProvenanceAuditRecord
   };
 }
 
-function listScopeRefs(memoryId: string): MemoryScopeRef[] {
-  const adapter = getAdapter();
+function listScopeRefs(adapter: ProvenanceAuditAdapter, memoryId: string): MemoryScopeRef[] {
   const rows = adapter
     .prepare(
       `

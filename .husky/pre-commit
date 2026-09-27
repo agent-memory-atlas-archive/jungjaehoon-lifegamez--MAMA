@@ -9,9 +9,14 @@ fi
 
 # Korean hardcoding check: block non-functional Korean in source files
 # Allows: regex patterns, string literals in keyword arrays, meta[] lookups, Unicode ranges
+#
+# LC_ALL is pinned because the Hangul range is a COLLATION range: under the
+# locale a git hook inherits it also matches emoji, so any added line carrying
+# one (the reasoning-header fixtures, for instance) was reported as Korean.
+# The check is not loosened by this - it is the range meaning what it says.
 if git diff --cached --name-only | grep -qE '\.tsx?$'; then
   KOREAN_IN_SOURCE=$(git diff --cached -U0 -- '*.ts' '*.tsx' | grep '^+' | grep -v '^+++' | \
-    grep '[가-힣]' | \
+    LC_ALL=en_US.UTF-8 grep '[가-힣]' | \
     grep -v -E '(/(가-힣|[가-힣])/|/[^/]*\\\\[가-힣]|meta\[|RegExp|new Set|Keywords|keywords|Patterns|patterns|IGNORE_PATTERNS|INCOMPLETE_PATTERNS|COMPLETION_MARKERS|가-힣_|// Korean:|includes\(|lowerContent\.|\.match\(|\.includes\()' || true)
   if [ -n "$KOREAN_IN_SOURCE" ]; then
     echo "❌ Korean text detected in staged .ts files:"
@@ -44,7 +49,7 @@ fi
 
 # Sync doc versions with package.json (auto-stage if changed)
 node scripts/sync-versions.js
-git diff --quiet -- README.md docs/ || git add README.md docs/guides/deployment.md docs/architecture/package-structure.md 2>/dev/null
+git diff --quiet -- README.md packages/*/README.md || git add README.md packages/*/README.md
 
 # Run typecheck for standalone package
 echo "Running typecheck..."

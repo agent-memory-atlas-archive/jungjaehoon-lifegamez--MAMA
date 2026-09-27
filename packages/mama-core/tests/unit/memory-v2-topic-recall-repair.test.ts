@@ -14,7 +14,7 @@ const vectorSearchMock = vi.fn();
 let decisionRows: Array<Record<string, unknown>> = [];
 const currencyRows: Array<{ id: string; topic: string; created_at: number | string | null }> = [];
 
-vi.mock('../../src/embeddings.js', () => ({
+vi.mock('../../src/embedding/embedder.js', () => ({
   generateEmbedding: generateEmbeddingMock,
   generateEnhancedEmbedding: generateEmbeddingMock,
   isForceTier3Enabled: () => false,
@@ -45,7 +45,7 @@ vi.mock('../../src/db-manager.js', async (importOriginal) => {
       },
     })),
     insertDecisionWithEmbedding: vi.fn(),
-    ensureMemoryScopeInAdapter: vi.fn(() => 1),
+    ensureMemoryScope: vi.fn(() => 1),
   };
 });
 
@@ -69,6 +69,8 @@ function decisionRow(id: string, topic: string, decision: string, created_at: nu
     summary: decision,
   };
 }
+
+const { getAdapter } = await import('../../src/db-manager.js');
 
 describe('AC1: topicAffinityBoost math', () => {
   it('scores exact topic match > all-tokens-in-topic > partial > none', async () => {
@@ -126,7 +128,7 @@ describe('AC2: topic-anchored recall ranks the topic own rows above body-text no
 
   it('puts operator_report_cadence rows at the top for the topic query', async () => {
     const { recallMemory } = await import('../../src/memory/api.js');
-    const bundle = await recallMemory('operator report cadence', {
+    const bundle = await recallMemory(getAdapter(), 'operator report cadence', {
       limit: 2,
       includeProfile: false,
     });

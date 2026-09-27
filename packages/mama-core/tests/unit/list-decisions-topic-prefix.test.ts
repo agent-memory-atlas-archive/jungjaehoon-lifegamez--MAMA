@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import mama from '../../src/mama-api.js';
 import { getAdapter } from '../../src/db-manager.js';
-import { cleanupTestDB, initTestDB } from '../../src/test-utils.js';
+import { cleanupTestDB, initTestDB } from '../helpers/test-utils.js';
 
 /**
  * A topic prefix read is a ledger lookup: every fact filed under one item key, exactly.

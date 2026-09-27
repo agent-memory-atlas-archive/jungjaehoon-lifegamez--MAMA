@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-09-27
+
+### Added
+
+- Recall takes one memory kind or a non-empty list; native tool calls are traced; backend
+  processes accept a consumer-supplied environment; migration 096 drops an unused full-text index.
+
 ### Removed
 
 Breaking. The unified-core refactor removed published surface that no in-repo caller

@@ -7,7 +7,7 @@ import { join } from 'node:path';
 // (query) resolve to fixed 1024-dim vectors; we only assert the role argument.
 const generateEmbeddingMock = vi.fn(async () => new Float32Array(1024).fill(0.01));
 const generateEnhancedEmbeddingMock = vi.fn(async () => new Float32Array(1024).fill(0.01));
-vi.mock('../../src/embeddings.js', () => ({
+vi.mock('../../src/embedding/embedder.js', () => ({
   generateEmbedding: generateEmbeddingMock,
   generateEnhancedEmbedding: generateEnhancedEmbeddingMock,
   generateBatchEmbeddings: vi.fn(async (texts: string[]) =>
@@ -24,14 +24,14 @@ vi.mock('../../src/embeddings.js', () => ({
 const tmpDir = mkdtempSync(join(tmpdir(), 'recall-query-role-'));
 process.env.MAMA_DB_PATH = join(tmpDir, 'test-memory.db');
 
-const { initDB, closeDB } = await import('../../src/db-manager.js');
+const { initDB, closeDB, getAdapter } = await import('../../src/db-manager.js');
 const { saveMemory, recallMemory } = await import('../../src/memory/api.js');
 
 describe('M5: recall embeds queries with the query role', () => {
   beforeAll(async () => {
     await initDB();
     for (let i = 0; i < 4; i++) {
-      await saveMemory({
+      await saveMemory(getAdapter(), {
         topic: `deploy-note-${i}`,
         kind: 'decision',
         summary: `Deployment rollout note ${i} about the canary pipeline`,
@@ -50,7 +50,7 @@ describe('M5: recall embeds queries with the query role', () => {
   beforeEach(() => generateEmbeddingMock.mockClear());
 
   it('recallMemory passes role="query" to every generateEmbedding call', async () => {
-    await recallMemory('deployment canary', { limit: 3 });
+    await recallMemory(getAdapter(), 'deployment canary', { limit: 3 });
     expect(generateEmbeddingMock).toHaveBeenCalled();
     for (const call of generateEmbeddingMock.mock.calls) {
       expect(call[1]).toBe('query');

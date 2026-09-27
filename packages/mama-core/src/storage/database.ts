@@ -10,10 +10,9 @@
  * @module storage/database
  */
 
-import os from 'node:os';
 import path from 'node:path';
 import { createAdapter } from '../db-adapter/index.js';
-import type { DatabaseAdapter } from '../db-manager.js';
+import type { DatabaseInstance } from '../db-manager.js';
 import { assertEmbeddingSchemeCurrent } from '../db-manager.js';
 import { info } from '../debug-logger.js';
 import { logComplete, logSearching } from '../progress-indicator.js';
@@ -21,18 +20,23 @@ import { logComplete, logSearching } from '../progress-indicator.js';
 /** Migrations ship beside the compiled output, two levels up from `dist/storage`. */
 export const MIGRATIONS_DIR = path.join(__dirname, '..', '..', 'db', 'migrations');
 
-/** The path a normal install writes to. A test process must never open it. */
-const REAL_USER_DB_PATH = path.join(os.homedir(), '.claude', 'mama-memory.db');
-
 export interface OpenDatabaseOptions {
   /** Where to open. Falls back to the adapter's own resolution when omitted. */
   path?: string;
-  /** Directory holding the migration files. Defaults to the shipped one. */
+  /** Directory holding the core's migration files. Defaults to the shipped one. */
   migrationsDir?: string;
+  /**
+   * Migrations this consumer brings of its own, run after the core's.
+   *
+   * A package that needs a table has somewhere to put it other than inside the
+   * core. Each source namespaces its own version numbers, so the core's next
+   * number is not spoken for by somebody else.
+   */
+  migrations?: ReadonlyArray<{ name: string; dir: string }>;
 }
 
 export interface DatabaseHandle {
-  adapter: DatabaseAdapter;
+  adapter: DatabaseInstance;
   /** The value `connect()` returned, for callers that still need the raw driver. */
   connection: unknown;
   /** Where this handle actually opened, or a description when the adapter cannot say. */
@@ -46,22 +50,55 @@ export function isTestMode(): boolean {
   );
 }
 
-function expandHomePath(value: string): string {
-  const home = os.homedir();
-  if (value === '~') {
-    return home;
+/**
+ * A path a consumer states must already be resolved.
+ *
+ * The core used to expand `~` and `${HOME}` itself, which made it the thing that
+ * decides what home means. Two consumers with different homes then got the same
+ * answer from a library neither of them configured. Expansion belongs to whoever owns
+ * the home directory; this only refuses to guess.
+ */
+function requireResolvedPath(value: string, source: string): string {
+  if (value === '~' || value.startsWith('~/') || value.includes('${HOME}')) {
+    throw new Error(
+      `[db-boundary] ${source} is not a resolved path (${value}). ` +
+        'Expand it where the home directory is known and state the result.'
+    );
   }
-  if (value.startsWith('~/')) {
-    return path.join(home, value.slice(2));
-  }
-  return value.replaceAll('${HOME}', home);
+  return path.resolve(value);
 }
 
 /**
- * Refuse to open the real user database from a test process.
+ * Databases a product has declared as its live one.
  *
- * A test that reaches the real database corrupts the owner's memory and the
- * failure surfaces far from the cause, so this throws before `connect()`.
+ * The core used to hold one such path itself, `~/.claude/mama-memory.db`, which meant
+ * a shared library knew where one product kept its data in order to protect it. Each
+ * product declares its own now, and the guard below refuses all of them.
+ */
+const productionDatabasePaths = new Set<string>();
+
+/**
+ * Declare where this product's live database is, as a resolved absolute path.
+ * Call once, before opening anything.
+ */
+export function declareProductionDatabasePath(value: string): void {
+  productionDatabasePaths.add(requireResolvedPath(value, 'the declared production database path'));
+}
+
+/** Test seam: forget what was declared. */
+export function clearProductionDatabasePaths(): void {
+  productionDatabasePaths.clear();
+}
+
+/**
+ * Refuse, in a test process, to open a database nobody named or one a product
+ * declared as live.
+ *
+ * This used to compare against one hard-coded path, `~/.claude/mama-memory.db`, which
+ * meant the core held a product's data location in order to protect it. The rule is
+ * the same and says no product's name: a test that did not state where it wanted to
+ * write is about to write somewhere it did not choose, and that failure surfaces far
+ * from its cause.
  */
 export function assertTestProcessIsNotUsingRealDb(
   effectivePath?: string,
@@ -79,15 +116,22 @@ export function assertTestProcessIsNotUsingRealDb(
     configuredPaths.push({ name: effectivePathSource, value: effectivePath });
   }
 
+  const named = configuredPaths.find((configuredPath) => Boolean(configuredPath.value));
+  if (!named) {
+    throw new Error(
+      '[db-boundary] Refusing to open an unnamed database from a test process. ' +
+        'Set MAMA_DB_PATH to a temporary path first.'
+    );
+  }
+
   for (const configuredPath of configuredPaths) {
     if (!configuredPath.value) {
       continue;
     }
-
-    const resolvedPath = path.resolve(expandHomePath(configuredPath.value));
-    if (resolvedPath === path.resolve(REAL_USER_DB_PATH)) {
+    const resolvedPath = requireResolvedPath(configuredPath.value, configuredPath.name);
+    if (productionDatabasePaths.has(resolvedPath)) {
       throw new Error(
-        `[db-boundary] Refusing to open real DB ${REAL_USER_DB_PATH} ` +
+        `[db-boundary] Refusing to open the live database ${resolvedPath} ` +
           `from a test process (${configuredPath.name}=${configuredPath.value}). ` +
           'Set MAMA_DB_PATH to a temporary path first.'
       );
@@ -95,7 +139,7 @@ export function assertTestProcessIsNotUsingRealDb(
   }
 }
 
-export function resolveAdapterDbPath(adapter: DatabaseAdapter): string | undefined {
+export function resolveAdapterDbPath(adapter: DatabaseInstance): string | undefined {
   if (typeof adapter.getDbPath === 'function') {
     return adapter.getDbPath();
   }
@@ -115,13 +159,16 @@ export async function openDatabase(options: OpenDatabaseOptions = {}): Promise<D
 
   const adapter = createAdapter(
     options.path ? { dbPath: options.path } : {}
-  ) as unknown as DatabaseAdapter;
+  ) as unknown as DatabaseInstance;
   assertTestProcessIsNotUsingRealDb(resolveAdapterDbPath(adapter), 'adapter.getDbPath()');
 
   let connection: unknown;
   try {
     connection = await adapter.connect();
-    await adapter.runMigrations(options.migrationsDir ?? MIGRATIONS_DIR);
+    await adapter.runMigrations([
+      { name: 'core', dir: options.migrationsDir ?? MIGRATIONS_DIR },
+      ...(options.migrations ?? []),
+    ]);
 
     // New tables and rows exist only after migrations run.
     if (typeof adapter.reloadVectorCache === 'function') {

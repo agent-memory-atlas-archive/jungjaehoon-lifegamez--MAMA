@@ -12,8 +12,8 @@
  * - serialize normalized value via JSON.stringify (after normalization)
  * - hash canonical JSON string with SHA-256 over UTF-8 bytes → 32-byte Buffer
  *
- * No top-level await. No ESM-only runtime dependency. Safe for CJS consumers
- * (mcp-server, claude-code-plugin) via package export `./canonicalize`.
+ * No top-level await. No ESM-only runtime dependency. Safe for CJS callers via the
+ * package export `./canonicalize`.
  *
  * @module canonicalize
  */
@@ -79,7 +79,7 @@ function normalize(value: unknown, path = '$'): unknown {
   if (type === 'object') {
     const obj = value as Record<string, unknown>;
     const sortedKeys = Object.keys(obj).sort();
-    const out: Record<string, unknown> = {};
+    const out: Record<string, unknown> = Object.create(null);
     for (const key of sortedKeys) {
       out[key] = normalize(obj[key], `${path}.${key}`);
     }

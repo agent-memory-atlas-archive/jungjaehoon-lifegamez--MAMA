@@ -1,5 +1,5 @@
 import type { MemoryEventRecord, MemoryScopeRef } from './types.js';
-import type { TwinRef } from '../edges/types.js';
+import type { TwinRef } from '../knowledge/twin-edge-types.js';
 
 export type JsonValue =
   | null
@@ -30,28 +30,58 @@ export interface RecordLink {
   attrs?: { role?: string; slot?: string; [key: string]: JsonValue | undefined };
 }
 
+/**
+ * What a revision sets on a piece of work.
+ *
+ * The core reads exactly three of these: the date fields, because a commitment's due
+ * time is something it reasons about. Everything else round-trips as JSON through
+ * `set_json` and is never destructured here -- it is one product's board vocabulary
+ * (status, priority, assignee, resolution) and the product's own action schema is
+ * where it is spelled out and checked.
+ */
 export interface OwnerWorkPatch {
-  title?: string | null;
-  description?: string | null;
-  status?: string | null;
-  priority?: string | null;
   dueAt?: string | null;
   deadline?: string | null;
-  completionCriteria?: string | null;
-  assigneeText?: string | null;
-  latestEvent?: string | null;
-  resolutionKind?: string | null;
-  confirmed?: boolean | null;
-  roles?: Array<{ person: { kind: 'registry'; id: string }; role: string }> | null;
-  data?: Record<string, JsonValue> | null;
+  /**
+   * The offset (minutes from UTC, -840..840) a bare `deadline`'s day starts in.
+   * Pairs with the date fields: an exact `dueAt` derives it, a bare deadline
+   * may state it alone. Absent means the owner's zone answers.
+   */
+  deadlineOffsetMinutes?: number | null;
+  [field: string]: JsonValue | undefined;
 }
+
+/**
+ * The named lifecycle judgments an owner row accepts. A reclassification is a
+ * revision whose status and resolutionKind are the SAME statement: completed
+ * work and an item that was never a task must not close identically.
+ */
+export const WORK_RECLASSIFY_DISPOSITIONS = [
+  'completed_evidence',
+  'completed_no_issue',
+  'non_task_record',
+  'non_task_memory',
+  'reopen',
+] as const;
+export type WorkReclassifyDisposition = (typeof WORK_RECLASSIFY_DISPOSITIONS)[number];
 
 export type WorkAssignment = {
   set?: OwnerWorkPatch;
   clear?: Array<keyof OwnerWorkPatch>;
 } & (
-  | { operation: 'create' }
-  | { operation: 'revise' | 'withdraw'; commitmentId: string; expectedRevision: number }
+  | {
+      operation: 'create';
+      /**
+       * Import vocabulary: the identity this work already had in a predecessor
+       * store. A migration that brings existing owner rows into the commitment
+       * log names their task id and revision so the log keeps the row's number
+       * and CAS history instead of minting a new identity. Absent for work
+       * first stated through this command log.
+       */
+      imported?: { rowId: number; revision?: number; createdAt?: number };
+    }
+  | { operation: 'revise'; commitmentId: string; expectedRevision?: number }
+  | { operation: 'withdraw'; commitmentId: string; expectedRevision: number }
 );
 
 /**
@@ -193,29 +223,37 @@ export interface JudgmentReceipt {
   diagnostics: Array<{ stage: string; code: string; message: string }>;
 }
 
+export type IdentityCorrectionAssignment = {
+  edgeId: string;
+  endpoint: 'from' | 'to';
+} & (
+  | { targetNodeId: string | null; targetClientKey?: never }
+  | { targetClientKey: string; targetNodeId?: never }
+);
+
 export type IdentityCorrection = {
   commandId: string;
   expectedRevision: number;
   reason: string;
   scopes?: MemoryScopeRef[];
-  evidence?: Array<{ kind: 'observation'; id: string }>;
+  evidence?: ReadonlyArray<{ kind: 'observation'; id: string }>;
 } & (
   | { operation: 'add_alias'; nodeId: string; alias: string }
-  | { operation: 'merge'; survivorId: string; memberIds: string[] }
+  | { operation: 'merge'; survivorId: string; memberIds: readonly string[] }
   | {
       operation: 'split';
       parentId: string;
-      children: Array<{ clientKey: string; name: string; aliases?: string[] }>;
-      assignments: Array<{ edgeId: string; endpoint: 'from' | 'to'; childKey: string }>;
+      children: ReadonlyArray<{
+        clientKey?: string;
+        name: string;
+        aliases?: readonly string[];
+      }>;
+      assignments: readonly IdentityCorrectionAssignment[];
     }
   | {
       operation: 'assign_refs';
       parentId: string;
-      assignments: Array<{
-        edgeId: string;
-        endpoint: 'from' | 'to';
-        targetNodeId: string | null;
-      }>;
+      assignments: readonly IdentityCorrectionAssignment[];
     }
 );
 
@@ -230,7 +268,7 @@ export interface IdentityCorrectionReceipt {
 export interface WorkGraphQuery {
   seeds?: WorkReference[];
   search?: { text: string; kinds?: WorkReference['kind'][] };
-  view: 'overview' | 'neighbors' | 'timeline' | 'paths' | 'detail';
+  view: 'overview' | 'browse' | 'neighbors' | 'timeline' | 'paths' | 'detail';
   section?: 'summary' | 'reasoning' | 'payload';
   textOffset?: number;
   textLimit?: number;
@@ -251,6 +289,8 @@ export type WorkGraphNodeData =
   | {
       kind: 'memory';
       recordKind: 'legacy' | 'judgment' | 'commitment';
+      /** Stored classification, independent of the graph reference kind. */
+      memoryKind?: string | null;
       topic: string;
       summary: string;
       recordedAt: number;
@@ -259,14 +299,27 @@ export type WorkGraphNodeData =
       stateAtSnapshot: 'current' | 'replaced' | 'withdrawn' | 'not_yet_effective' | 'expired';
       replaces: string[];
       payload: Record<string, JsonValue>;
+      /** The commitment this record is a revision of, when it is one. */
+      work: {
+        commitmentId: string;
+        rowId: number;
+        revision: number;
+        latestJudgmentRef: WorkReference;
+      } | null;
+      /**
+       * Whether `summary` holds the whole selected section text. When it does not,
+       * `nextRead` is the same query with the offset advanced past what was returned.
+       */
+      content: { complete: boolean; nextRead: WorkGraphQuery | null };
     }
   | {
       kind: 'registry';
       nodeKind: 'item' | 'person' | 'client';
       name: string;
+      parentId: string | null;
       visibleAliases: string[];
       identityRevision: number;
-      visibleChildren: Array<{ kind: 'registry'; id: string }>;
+      visibleChildren: Array<{ kind: 'registry'; id: string; name: string }>;
       unresolvedSlots: Array<{ edgeId: string; endpoint: 'from' | 'to' }>;
     }
   | {

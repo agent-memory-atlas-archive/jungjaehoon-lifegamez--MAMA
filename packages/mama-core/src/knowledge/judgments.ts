@@ -1,16 +1,22 @@
 import crypto from 'node:crypto';
 
-import {
-  ensureMemoryScopeInAdapter,
-  getAdapter,
-  initDB,
-  insertPreparedDecision,
-} from '../db-manager.js';
-import type { DatabaseAdapter } from '../db-manager.js';
+import { ensureMemoryScope, insertPreparedDecision } from '../db-manager.js';
+import type { DatabaseAdapter, DatabaseInstance } from '../db-manager.js';
 import { canonicalizeJSON } from '../canonicalize.js';
-import { insertTwinEdge } from '../edges/store.js';
+import {
+  TWIN_EDGE_SOURCES,
+  TWIN_EDGE_TYPES,
+  TWIN_REF_KINDS,
+  type TwinEdgeInsert,
+  type TwinEdgeRecord,
+  type TwinEdgeSource,
+  type TwinEdgeType,
+  type TwinProjectRef,
+  type TwinRef,
+  type TwinRefKind,
+} from './twin-edge-types.js';
 import { insertMemoryEventInTransaction } from '../memory/event-store.js';
-import { writeRecordIdentityInAdapter } from '../registry/record-identity.js';
+import { writeRecordIdentity } from '../registry/record-identity.js';
 import type {
   JudgmentAmendment,
   JudgmentCommand,
@@ -25,11 +31,68 @@ import type { MemoryScopeRef } from '../memory/types.js';
 export interface JudgmentAccess {
   principalId: string;
   agentId: string;
+  /** Host-stated origin of authored links; a mechanical import is code, not an agent turn. */
+  edgeSource?: TwinEdgeSource;
   scopes: readonly MemoryScopeRef[];
+  /**
+   * Scopes admitted for READS only, beside `scopes`.
+   *
+   * A run allowed to read a channel's raw events may recall what was extracted
+   * from it, which is not permission to write there. Stating that as a second
+   * field on the principal is what lets a read bound itself more widely than a
+   * write without anyone consulting the name of the tool being called.
+   */
+  readScopes?: readonly MemoryScopeRef[];
+  /**
+   * Connectors the caller's grant resolver admits. Carried on the boundary for the
+   * same reason it is carried on reader inputs: a cited observation or graph ref must
+   * satisfy the same visibility rule as a row the reader would have returned. The
+   * caller supplies the projection; input JSON never grants it.
+   */
+  connectors?: readonly string[];
+  /** Connector-wide stored observation reads granted by the host, never query input. */
+  connectorWideRead?: readonly string[];
+  /** Channels of each granted connector that may be read. */
+  channels?: Readonly<Record<string, readonly string[]>>;
+  /** Project partitions the caller's authority admits; query input never grants it. */
+  projectRefs?: readonly TwinProjectRef[];
+  tenantId?: string | null;
+  /**
+   * The newest observation time this caller may see, as epoch milliseconds.
+   * An as-of question asked of the grant: absent means no clamp. It sits beside
+   * the other three window fields because a citation answers the same question
+   * a read does -- a clamp that reached only one of them would let a citation
+   * out-read reading in time.
+   */
+  maxObservedMs?: number | null;
+  /** Inclusive source/event-time ceiling for replay raw and observation reads. */
+  maxSourceMs?: number | null;
+  /**
+   * Actions this principal may call. Dispatch compares `call.action` against
+   * this list before exec, so an ungranted action is `denied` and the action
+   * body never runs. The list is configuration the product states per
+   * principal — it is never derived from the call, the channel, or the turn.
+   * Exact names only: a wildcard would make the grant depend on what the
+   * catalog happens to hold later.
+   */
+  actions: readonly string[];
+  /**
+   * Destinations this principal may send to. An irreversible send compares its
+   * target against this list inside the adapter that performs it. Empty means
+   * this principal sends nowhere, which is the honest default for a principal
+   * that only reads.
+   */
+  destinations?: readonly DestinationRef[];
+}
+
+/** One place a send can land. `kind` names the transport, `id` the address. */
+export interface DestinationRef {
+  kind: string;
+  id: string;
 }
 
 export interface JudgmentKnowledgeOptions {
-  adapter: DatabaseAdapter;
+  adapter: DatabaseInstance;
   embedder?: {
     /** A null result is the explicit no-vector mode (Tier 3); a failure must throw. */
     embed(text: string, role: 'query' | 'passage'): Promise<Float32Array | null>;
@@ -74,8 +137,6 @@ function requireText(value: string, field: string): void {
   }
 }
 
-const SCOPE_KINDS = ['global', 'user', 'channel', 'project'] as const;
-
 function scopeIdFor(scope: MemoryScopeRef): string {
   return `scope_${scope.kind}_${Buffer.from(scope.id).toString('base64url')}`;
 }
@@ -89,9 +150,7 @@ function scopeKey(scope: MemoryScopeRef): string {
 export function admittedScopeIds(access: JudgmentAccess): string[] {
   const seen = new Set<string>();
   return access.scopes.map((scope) => {
-    if (!SCOPE_KINDS.includes(scope.kind as (typeof SCOPE_KINDS)[number])) {
-      throw new JudgmentError('INVALID_SCOPE', 'scope kind is invalid');
-    }
+    requireText(scope.kind, 'scope kind');
     requireText(scope.id, 'scope id');
     const key = scopeKey(scope);
     if (seen.has(key)) {
@@ -118,9 +177,10 @@ export function boundScopeIdsFor(
   const admitted = new Set(access.scopes.map(scopeKey));
   const seen = new Set<string>();
   return scopes.map((scope) => {
-    if (!SCOPE_KINDS.includes(scope.kind as (typeof SCOPE_KINDS)[number])) {
-      throw new JudgmentError('INVALID_SCOPE', 'scope kind is invalid');
-    }
+    // A kind is nonblank text. Which kinds exist is the writer's statement; this
+    // compared against a list the core kept, so a consumer whose world had a kind
+    // of its own could not append a judgment at all.
+    requireText(scope.kind, 'scope kind');
     requireText(scope.id, 'scope id');
     const key = scopeKey(scope);
     if (seen.has(key)) {
@@ -307,7 +367,11 @@ function validateLinks(
     }
     keys.add(key);
     if (!referenceExists(adapter, link.target, admittedScopeIds)) {
-      throw new JudgmentError('REFERENCE_NOT_FOUND', 'A judgment reference is unavailable');
+      // Echo only the caller's own input: an unavailable id reads the same whether wrong or outside scope.
+      throw new JudgmentError(
+        'REFERENCE_NOT_FOUND',
+        `A judgment reference is unavailable: ${link.target.kind} ${link.target.id}`
+      );
     }
   }
 }
@@ -368,7 +432,7 @@ function applyProjections(
   const projections = command.projections;
   if (!projections) return;
   if (projections.recordIdentity) {
-    writeRecordIdentityInAdapter(adapter, {
+    writeRecordIdentity(adapter, {
       recordId,
       itemId: projections.recordIdentity.itemId,
       actors: projections.recordIdentity.actors ?? [],
@@ -477,8 +541,11 @@ function insertLink(
     object_ref: link.target,
     relation_attrs: attrs,
     confidence: 1.0,
-    source: 'agent',
-    agent_id: access.agentId,
+    source: access.edgeSource ?? 'agent',
+    agent_id: Object.hasOwn(command, 'agentId') ? (command.agentId ?? undefined) : access.agentId,
+    model_run_id: command.modelRunId ?? undefined,
+    reason_text:
+      typeof link.attrs?.reason === 'string' ? link.attrs.reason : (command.reasoning ?? undefined),
     evidence_refs: command.replaces?.length ? command.replaces : undefined,
     content_hash: contentHash,
     created_at: now,
@@ -491,7 +558,7 @@ function workPatch(value: WorkAssignment | undefined): OwnerWorkPatch {
 }
 
 async function appendJudgmentOnAdapter(
-  adapter: DatabaseAdapter,
+  adapter: DatabaseInstance,
   command: JudgmentCommand,
   access: JudgmentAccess,
   embedder?: JudgmentKnowledgeOptions['embedder']
@@ -615,7 +682,7 @@ async function appendJudgmentOnAdapter(
       );
     for (const [index, scopeId] of boundScopeIdList.entries()) {
       const scope = effectiveScopes[index]!;
-      ensureMemoryScopeInAdapter(adapter, scope.kind, scope.id);
+      ensureMemoryScope(adapter, scope.kind, scope.id);
       adapter
         .prepare(
           'INSERT INTO memory_scope_bindings (memory_id, scope_id, is_primary) VALUES (?, ?, ?)'
@@ -639,7 +706,11 @@ async function appendJudgmentOnAdapter(
           adapter,
           { ...command, links: [] },
           recordId,
-          { relation: 'supersedes', target: { kind: 'memory', id: replacement.id } },
+          {
+            relation: 'supersedes',
+            target: { kind: 'memory', id: replacement.id },
+            attrs: { reason: replacement.reason },
+          },
           edgeIds.length,
           access,
           now
@@ -653,39 +724,114 @@ async function appendJudgmentOnAdapter(
       applyAmendment(adapter, amendment, domainNow);
     }
     applyProjections(adapter, command, recordId, effectiveScopes, domainNow);
+    // A commitment's own clock is domain time, like the record's: `updated_at`
+    // is what the board sorts and filters on, so a caller that states when a
+    // revision happened must see that time on the row, not the wall clock the
+    // write happened to land on.
     if (command.recordKind === 'commitment' && command.work) {
       const work = command.work;
       if (work.operation === 'create') {
         const commitmentId = commitmentIdForCommand(command);
-        adapter
-          .prepare(
-            `INSERT INTO commitments
-             (commitment_id, current_revision, head_record_id, withdrawn, created_at, updated_at)
-             VALUES (?, 1, ?, 0, ?, ?)`
-          )
-          .run(commitmentId, recordId, now, now);
+        const imported = work.imported;
+        if (imported !== undefined) {
+          if (!Number.isSafeInteger(imported.rowId) || imported.rowId <= 0) {
+            throw new JudgmentError(
+              'INVALID_COMMAND',
+              `imported.rowId must be a positive integer (got: ${imported.rowId})`
+            );
+          }
+          if (
+            imported.revision !== undefined &&
+            (!Number.isSafeInteger(imported.revision) || imported.revision <= 0)
+          ) {
+            throw new JudgmentError(
+              'INVALID_COMMAND',
+              `imported.revision must be a positive integer (got: ${imported.revision})`
+            );
+          }
+          if (
+            imported.createdAt !== undefined &&
+            (!Number.isFinite(imported.createdAt) || imported.createdAt < 0)
+          ) {
+            throw new JudgmentError(
+              'INVALID_COMMAND',
+              `imported.createdAt must be a finite nonnegative epoch (got: ${imported.createdAt})`
+            );
+          }
+        }
+        const revision = imported?.revision ?? 1;
+        const createdAt = imported?.createdAt ?? domainNow;
+        if (imported !== undefined) {
+          // An imported row keeps the task id it already had; sqlite_sequence
+          // moves with the explicit insert, so work first stated here still
+          // takes the next number after it.
+          adapter
+            .prepare(
+              `INSERT INTO commitments
+               (row_id, commitment_id, current_revision, head_record_id, withdrawn, created_at, updated_at, agent_id, model_run_id)
+               VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)`
+            )
+            .run(
+              imported.rowId,
+              commitmentId,
+              revision,
+              recordId,
+              createdAt,
+              domainNow,
+              access.agentId,
+              command.modelRunId ?? null
+            );
+        } else {
+          adapter
+            .prepare(
+              `INSERT INTO commitments
+               (commitment_id, current_revision, head_record_id, withdrawn, created_at, updated_at, agent_id, model_run_id)
+               VALUES (?, ?, ?, 0, ?, ?, ?, ?)`
+            )
+            .run(
+              commitmentId,
+              revision,
+              recordId,
+              createdAt,
+              domainNow,
+              access.agentId,
+              command.modelRunId ?? null
+            );
+        }
         adapter
           .prepare(
             `INSERT INTO commitment_assignments
-             (commitment_id, revision, record_id, operation, set_json, clear_json, created_at)
-            VALUES (?, 1, ?, 'create', ?, ?, ?)`
+             (commitment_id, revision, record_id, operation, set_json, clear_json, applies_from, applies_until, created_at, agent_id, model_run_id)
+            VALUES (?, ?, ?, 'create', ?, ?, ?, ?, ?, ?, ?)`
           )
           .run(
             commitmentId,
+            revision,
             recordId,
             canonicalizeJSON(workPatch(work)),
             canonicalizeJSON(work.clear ?? []),
-            now
+            command.eventDatetime ?? null,
+            command.appliesUntil ?? null,
+            domainNow,
+            access.agentId,
+            command.modelRunId ?? null
           );
-        workReceipt = { commitmentId, revision: 1 };
+        workReceipt = { commitmentId, revision };
       } else {
         const current = adapter
           .prepare('SELECT current_revision, withdrawn FROM commitments WHERE commitment_id = ?')
           .get(work.commitmentId) as { current_revision: number; withdrawn: number } | undefined;
         if (!current) {
-          throw new JudgmentError('REFERENCE_NOT_FOUND', 'Commitment is unavailable');
+          throw new JudgmentError(
+            'REFERENCE_NOT_FOUND',
+            `Commitment is unavailable: ${work.commitmentId}`
+          );
         }
-        if (current.current_revision !== work.expectedRevision) {
+        // Only revise may omit the revision (it appends to the head); withdraw always states it.
+        if (
+          (work.expectedRevision !== undefined || work.operation === 'withdraw') &&
+          current.current_revision !== work.expectedRevision
+        ) {
           throw new JudgmentError('STALE_REVISION', 'Commitment revision is stale');
         }
         if (work.operation === 'revise' && current.withdrawn === 1) {
@@ -698,8 +844,8 @@ async function appendJudgmentOnAdapter(
         adapter
           .prepare(
             `INSERT INTO commitment_assignments
-             (commitment_id, revision, record_id, operation, set_json, clear_json, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`
+             (commitment_id, revision, record_id, operation, set_json, clear_json, applies_from, applies_until, created_at, agent_id, model_run_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           )
           .run(
             work.commitmentId,
@@ -708,13 +854,25 @@ async function appendJudgmentOnAdapter(
             work.operation,
             canonicalizeJSON(workPatch(work)),
             canonicalizeJSON(work.clear ?? []),
-            now
+            command.eventDatetime ?? null,
+            command.appliesUntil ?? null,
+            domainNow,
+            access.agentId,
+            command.modelRunId ?? null
           );
         adapter
           .prepare(
-            'UPDATE commitments SET current_revision = ?, head_record_id = ?, withdrawn = ?, updated_at = ? WHERE commitment_id = ?'
+            'UPDATE commitments SET current_revision = ?, head_record_id = ?, withdrawn = ?, updated_at = ?, agent_id = ?, model_run_id = ? WHERE commitment_id = ?'
           )
-          .run(revision, recordId, work.operation === 'withdraw' ? 1 : 0, now, work.commitmentId);
+          .run(
+            revision,
+            recordId,
+            work.operation === 'withdraw' ? 1 : 0,
+            domainNow,
+            access.agentId,
+            command.modelRunId ?? null,
+            work.commitmentId
+          );
         workReceipt = { commitmentId: work.commitmentId, revision };
       }
     }
@@ -785,13 +943,17 @@ function refreshDecisionStatusCaches(
 export async function appendJudgment(
   command: JudgmentCommand,
   access: JudgmentAccess,
-  options?: Partial<JudgmentKnowledgeOptions>
+  options: JudgmentKnowledgeOptions
 ): Promise<JudgmentReceipt> {
-  if (options?.adapter) {
-    return appendJudgmentOnAdapter(options.adapter, command, access, options.embedder);
+  // The command boundary no longer reaches the process-global store: the
+  // caller names the database this judgment commits to.
+  if (!options?.adapter) {
+    throw new JudgmentError(
+      'INVALID_COMMAND',
+      'appendJudgment requires an explicit adapter; the process-global store is not a write path'
+    );
   }
-  await initDB();
-  return appendJudgmentOnAdapter(getAdapter(), command, access, options?.embedder);
+  return appendJudgmentOnAdapter(options.adapter, command, access, options.embedder);
 }
 
 export function createJudgmentWriter(options: JudgmentKnowledgeOptions) {
@@ -799,4 +961,240 @@ export function createJudgmentWriter(options: JudgmentKnowledgeOptions) {
     appendJudgment: (command: JudgmentCommand, access: JudgmentAccess) =>
       appendJudgmentOnAdapter(options.adapter, command, access, options.embedder),
   };
+}
+
+// ── Twin-edge store ────────────────────────────────────────────────────────────
+// The single write boundary for twin_edges lives beside the judgment writer:
+// a link is part of the same transaction as the judgment it records.
+
+type TwinEdgeReadAdapter = Pick<DatabaseAdapter, 'prepare'>;
+
+const EDGE_TYPE_SET = new Set<string>(TWIN_EDGE_TYPES);
+const REF_KIND_SET = new Set<string>(TWIN_REF_KINDS);
+const SOURCE_SET = new Set<string>(TWIN_EDGE_SOURCES);
+
+function nullableString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function requireNonEmptyString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`twin_edges.${field} must be a non-empty string`);
+  }
+  return value;
+}
+
+function normalizeEdgeType(value: unknown): TwinEdgeType {
+  if (typeof value === 'string' && EDGE_TYPE_SET.has(value)) {
+    return value as TwinEdgeType;
+  }
+  throw new Error(`Unsupported twin edge type: ${String(value)}`);
+}
+
+function normalizeSource(value: unknown): TwinEdgeSource {
+  if (typeof value === 'string' && SOURCE_SET.has(value)) {
+    return value as TwinEdgeSource;
+  }
+  throw new Error(`Unsupported twin edge source: ${String(value)}`);
+}
+
+function normalizeRef(ref: TwinRef, field: string): TwinRef {
+  if (!ref || typeof ref !== 'object') {
+    throw new Error(`${field} must be a TwinRef`);
+  }
+  if (!REF_KIND_SET.has(ref.kind)) {
+    throw new Error(`${field}.kind is unsupported: ${String(ref.kind)}`);
+  }
+  return {
+    kind: ref.kind,
+    id: requireNonEmptyString(ref.id, `${field}.id`),
+  } as TwinRef;
+}
+
+function parseJsonField(value: unknown, field: string, edgeId: string): unknown | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const text = String(value);
+  if (text.length === 0) {
+    return null;
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid twin_edges.${field} for ${edgeId}: ${message}`);
+  }
+}
+
+function toBuffer(value: unknown): Buffer {
+  if (Buffer.isBuffer(value)) {
+    return value;
+  }
+  if (value instanceof Uint8Array) {
+    return Buffer.from(value);
+  }
+  throw new Error('twin_edges.content_hash must be a 32-byte Buffer');
+}
+
+export function mapTwinEdgeRow(row: Record<string, unknown>): TwinEdgeRecord {
+  const edgeId = String(row.edge_id);
+  return {
+    edge_id: edgeId,
+    edge_type: normalizeEdgeType(row.edge_type),
+    subject_ref: {
+      kind: String(row.subject_kind) as TwinRefKind,
+      id: String(row.subject_id),
+    } as TwinRef,
+    object_ref: {
+      kind: String(row.object_kind) as TwinRefKind,
+      id: String(row.object_id),
+    } as TwinRef,
+    relation_attrs_json: nullableString(row.relation_attrs_json),
+    relation_attrs: parseJsonField(row.relation_attrs_json, 'relation_attrs_json', edgeId),
+    confidence: Number(row.confidence),
+    source: normalizeSource(row.source),
+    agent_id: nullableString(row.agent_id),
+    model_run_id: nullableString(row.model_run_id),
+    envelope_hash: nullableString(row.envelope_hash),
+    human_actor_id: nullableString(row.human_actor_id),
+    human_actor_role: nullableString(row.human_actor_role),
+    authority_scope_json: nullableString(row.authority_scope_json),
+    authority_scope: parseJsonField(row.authority_scope_json, 'authority_scope_json', edgeId),
+    reason_classification: nullableString(row.reason_classification),
+    reason_text: nullableString(row.reason_text),
+    evidence_refs_json: nullableString(row.evidence_refs_json),
+    evidence_refs: parseJsonField(row.evidence_refs_json, 'evidence_refs_json', edgeId),
+    request_idempotency_key: nullableString(row.request_idempotency_key),
+    edge_idempotency_key: nullableString(row.edge_idempotency_key),
+    content_hash: toBuffer(row.content_hash),
+    created_at: Number(row.created_at),
+  };
+}
+
+function jsonColumn(value: unknown): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return typeof value === 'string' ? value : canonicalizeJSON(value);
+}
+
+/**
+ * The single write boundary for twin_edges. Both former write sites (the
+ * alias_of edge inside the alias write and the judgment-command link insert)
+ * now resolve their columns into a TwinEdgeInsert and call here, inside the
+ * caller's transaction. The row is read back so callers get the stored record.
+ */
+export function insertTwinEdge(
+  adapter: TwinEdgeReadAdapter,
+  input: TwinEdgeInsert
+): TwinEdgeRecord {
+  adapter
+    .prepare(
+      `
+        INSERT INTO twin_edges (
+          edge_id, edge_type, subject_kind, subject_id, object_kind, object_id,
+          relation_attrs_json, confidence, source, agent_id, model_run_id, envelope_hash,
+          human_actor_id, human_actor_role, authority_scope_json, reason_classification,
+          reason_text, evidence_refs_json, request_idempotency_key, edge_idempotency_key,
+          content_hash, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `
+    )
+    .run(
+      input.edge_id,
+      input.edge_type,
+      input.subject_ref.kind,
+      input.subject_ref.id,
+      input.object_ref.kind,
+      input.object_ref.id,
+      jsonColumn(input.relation_attrs),
+      input.confidence ?? 1,
+      input.source,
+      input.agent_id ?? null,
+      input.model_run_id ?? null,
+      input.envelope_hash ?? null,
+      input.human_actor_id ?? null,
+      input.human_actor_role ?? null,
+      jsonColumn(input.authority_scope_json),
+      input.reason_classification ?? null,
+      input.reason_text ?? null,
+      jsonColumn(input.evidence_refs),
+      input.request_idempotency_key ?? null,
+      input.edge_idempotency_key ?? null,
+      input.content_hash,
+      input.created_at
+    );
+  const record = getTwinEdge(adapter, input.edge_id);
+  if (!record) {
+    throw new Error(`Twin edge was not written: ${input.edge_id}`);
+  }
+  return record;
+}
+
+export function getTwinEdge(adapter: TwinEdgeReadAdapter, edgeId: string): TwinEdgeRecord | null {
+  const row = adapter.prepare('SELECT * FROM twin_edges WHERE edge_id = ?').get(edgeId) as
+    | Record<string, unknown>
+    | undefined;
+  return row ? mapTwinEdgeRow(row) : null;
+}
+
+export function listTwinEdgesForRefs(
+  adapter: TwinEdgeReadAdapter,
+  refs: readonly TwinRef[],
+  page?: {
+    /** Newest-first storage scan for a bounded visible page. Omitted keeps the old full scan. */
+    newest: true;
+    limit: number;
+    after?: { createdAt: number; edgeId: string };
+    edgeTypes?: readonly TwinEdgeType[];
+    startMs?: number | null;
+    asOfMs?: number | null;
+  }
+): TwinEdgeRecord[] {
+  const normalizedRefs = refs.map((ref, index) => normalizeRef(ref, `refs[${index}]`));
+  if (normalizedRefs.length === 0) {
+    return [];
+  }
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+  for (const ref of normalizedRefs) {
+    clauses.push('(subject_kind = ? AND subject_id = ?)');
+    params.push(ref.kind, ref.id);
+    clauses.push('(object_kind = ? AND object_id = ?)');
+    params.push(ref.kind, ref.id);
+  }
+  const where = [`(${clauses.join(' OR ')})`];
+  if (page?.edgeTypes?.length) {
+    where.push(`edge_type IN (${page.edgeTypes.map(() => '?').join(', ')})`);
+    params.push(...page.edgeTypes);
+  }
+  if (typeof page?.startMs === 'number') {
+    where.push('created_at >= ?');
+    params.push(page.startMs);
+  }
+  if (typeof page?.asOfMs === 'number') {
+    where.push('created_at <= ?');
+    params.push(page.asOfMs);
+  }
+  if (page?.after) {
+    where.push('(created_at < ? OR (created_at = ? AND edge_id > ?))');
+    params.push(page.after.createdAt, page.after.createdAt, page.after.edgeId);
+  }
+  if (page && (!Number.isSafeInteger(page.limit) || page.limit < 1)) {
+    throw new Error('Twin edge scan limit must be a positive safe integer');
+  }
+  const rows = adapter
+    .prepare(
+      `
+        SELECT *
+        FROM twin_edges
+        WHERE ${where.join(' AND ')}
+        ORDER BY created_at ${page ? 'DESC' : 'ASC'}, edge_id ASC
+        ${page ? 'LIMIT ?' : ''}
+      `
+    )
+    .all(...params, ...(page ? [page.limit] : [])) as Array<Record<string, unknown>>;
+  return rows.map(mapTwinEdgeRow);
 }

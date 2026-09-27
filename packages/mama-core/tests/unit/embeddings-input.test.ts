@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { EMBEDDING_MAX_TOKENISH_SEGMENTS, prepareEmbeddingText } from '../../src/embeddings.js';
+import {
+  EMBEDDING_MAX_TOKENISH_SEGMENTS,
+  prepareEmbeddingText,
+} from '../../src/embedding/embedder.js';
 
 describe('STORY-M1.4: Embedding input limits - AC1', () => {
   it('keeps short embedding text unchanged', () => {

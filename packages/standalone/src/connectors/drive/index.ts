@@ -1,13 +1,8 @@
 /**
  * DriveConnector — polls Google Drive changes via the gws CLI tool.
- * Uses short synchronous gws checks during setup and asynchronous calls while polling.
+ * Uses argv-based asynchronous gws CLI calls.
  * Emits file_change NormalizedItems for files modified in configured folders.
  */
-
-import { execSync } from 'child_process';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { join } from 'path';
-import { homedir } from 'os';
 
 import type {
   AuthRequirement,
@@ -16,9 +11,8 @@ import type {
   IConnector,
   NormalizedItem,
 } from '../framework/types.js';
-import { execGwsAsync } from '../framework/gws-utils.js';
-
-const MAX_CHANGE_PAGES_PER_POLL = 2;
+import { execGwsAsync, execGwsTextAsync } from '../framework/gws-utils.js';
+import { readConnectorState, writeConnectorState } from '../framework/connector-state.js';
 
 interface DriveFile {
   name: string;
@@ -47,6 +41,11 @@ interface StartPageTokenResult {
   startPageToken: string;
 }
 
+interface DriveState {
+  pageTokens: Record<string, string>;
+  fileChannels: Record<string, string>;
+}
+
 export class DriveConnector implements IConnector {
   readonly name = 'drive';
   readonly type = 'api' as const;
@@ -56,24 +55,22 @@ export class DriveConnector implements IConnector {
   private lastPollCount = 0;
   private lastError: string | undefined = undefined;
 
-  /** Stored page tokens per poll session (single global token for Drive changes API) */
-  private pageTokens: Map<string, string> = new Map();
+  private pageTokens = new Map<string, string>();
+  private fileChannels = new Map<string, string>();
+  private pendingPageTokens: Map<string, string> | null = null;
+  private pendingFileChannels: Map<string, string> | null = null;
+  private pollCommitDeferred = false;
+  private stateFilePath: string;
 
-  private readonly stateFilePath = join(
-    homedir(),
-    '.mama',
-    'connectors',
-    'drive',
-    'drive-state.json'
-  );
-
-  constructor(config: ConnectorConfig) {
+  constructor(config: ConnectorConfig, stateFilePath: string) {
     this.config = config;
+    if (!stateFilePath.trim()) throw new Error('Drive state file path is required');
+    this.stateFilePath = stateFilePath;
   }
 
   async init(): Promise<void> {
     try {
-      execSync('gws --version', { stdio: 'pipe' });
+      await execGwsTextAsync(['--version']);
     } catch {
       throw new Error('gws CLI not found. Install it and run: gws auth login');
     }
@@ -81,28 +78,33 @@ export class DriveConnector implements IConnector {
   }
 
   private loadState(): void {
-    if (existsSync(this.stateFilePath)) {
-      try {
-        const data = JSON.parse(readFileSync(this.stateFilePath, 'utf-8'));
-        for (const [k, v] of Object.entries(data.pageTokens ?? {})) {
-          this.pageTokens.set(k, v as string);
-        }
-      } catch {
-        /* ignore corrupt state */
+    const state = readConnectorState(this.stateFilePath, (value): DriveState => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error('Drive connector state must contain an object');
       }
-    }
-  }
-
-  private saveState(): void {
-    const dir = join(homedir(), '.mama', 'connectors', 'drive');
-    mkdirSync(dir, { recursive: true });
-    const obj: Record<string, string> = {};
-    for (const [k, v] of this.pageTokens) obj[k] = v;
-    writeFileSync(this.stateFilePath, JSON.stringify({ pageTokens: obj }));
+      const raw = value as Record<string, unknown>;
+      const readMap = (field: string): Record<string, string> => {
+        const candidate = raw[field];
+        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+          throw new Error(`Drive connector state ${field} must contain an object`);
+        }
+        const entries = Object.entries(candidate);
+        if (entries.some(([, item]) => typeof item !== 'string' || item === '')) {
+          throw new Error(`Drive connector state ${field} must contain nonblank text values`);
+        }
+        return Object.fromEntries(entries) as Record<string, string>;
+      };
+      return { pageTokens: readMap('pageTokens'), fileChannels: readMap('fileChannels') };
+    });
+    if (state === undefined) return;
+    this.pageTokens = new Map(Object.entries(state.pageTokens));
+    this.fileChannels = new Map(Object.entries(state.fileChannels));
   }
 
   async dispose(): Promise<void> {
     this.pageTokens.clear();
+    this.fileChannels.clear();
+    this.abortPollHandoff();
   }
 
   async healthCheck(): Promise<ConnectorHealth> {
@@ -127,7 +129,7 @@ export class DriveConnector implements IConnector {
 
   async authenticate(): Promise<boolean> {
     try {
-      execSync('gws auth status', { stdio: 'pipe' });
+      await execGwsTextAsync(['auth', 'status']);
       return true;
     } catch {
       return false;
@@ -138,12 +140,12 @@ export class DriveConnector implements IConnector {
    * Find which channel config matches based on a file's parent folder IDs.
    * Returns [channelKey, channelName] or null if no match.
    */
-  private findChannelByParent(parents: string[]): [string, string] | null {
+  private findChannelByParent(parents: string[]): string | null {
     for (const [channelKey, channelCfg] of Object.entries(this.config.channels)) {
       if (channelCfg.role === 'ignore') continue;
       if (!channelCfg.folderId) continue;
       if (parents.includes(channelCfg.folderId)) {
-        return [channelKey, channelCfg.name ?? channelKey];
+        return channelKey;
       }
     }
     return null;
@@ -157,7 +159,7 @@ export class DriveConnector implements IConnector {
     const drives: Array<{ driveId: string; channelKey: string }> = [];
     for (const [key, cfg] of Object.entries(this.config.channels)) {
       const driveId = cfg.driveId as string | undefined;
-      if (driveId) {
+      if (driveId && cfg.role !== 'ignore') {
         drives.push({ driveId, channelKey: key });
       }
     }
@@ -169,8 +171,13 @@ export class DriveConnector implements IConnector {
    * Returns items and updates the page token.
    */
   private async pollDrive(tokenKey: string, driveId?: string): Promise<NormalizedItem[]> {
+    const pageTokens = this.pendingPageTokens;
+    const fileChannels = this.pendingFileChannels;
+    if (pageTokens === null || fileChannels === null) {
+      throw new Error('Drive poll handoff has not been prepared');
+    }
     // Get or initialize page token
-    let pageToken = this.pageTokens.get(tokenKey);
+    let pageToken = pageTokens.get(tokenKey);
     if (!pageToken) {
       const tokenParams: Record<string, unknown> = {};
       if (driveId) {
@@ -184,8 +191,11 @@ export class DriveConnector implements IConnector {
         '--params',
         JSON.stringify(tokenParams),
       ])) as StartPageTokenResult;
+      if (typeof tokenResult.startPageToken !== 'string' || tokenResult.startPageToken === '') {
+        throw new Error(`Drive ${tokenKey} start page token was empty`);
+      }
       pageToken = tokenResult.startPageToken;
-      this.pageTokens.set(tokenKey, pageToken);
+      pageTokens.set(tokenKey, pageToken);
     }
 
     const items: NormalizedItem[] = [];
@@ -194,7 +204,7 @@ export class DriveConnector implements IConnector {
     let terminalStartPageToken: string | undefined;
     let reachedTerminalPage = false;
 
-    for (let page = 0; page < MAX_CHANGE_PAGES_PER_POLL; page += 1) {
+    while (!reachedTerminalPage) {
       if (visitedPageTokens.has(requestPageToken)) {
         throw new Error(`Drive changes pagination repeated a page token for ${tokenKey}`);
       }
@@ -205,7 +215,7 @@ export class DriveConnector implements IConnector {
         pageSize: 100,
         fields:
           'changes(fileId,time,removed,file(name,mimeType,modifiedTime,lastModifyingUser,parents,driveId)),nextPageToken,newStartPageToken',
-        includeRemoved: false,
+        includeRemoved: true,
         includeItemsFromAllDrives: true,
         supportsAllDrives: true,
       };
@@ -222,45 +232,47 @@ export class DriveConnector implements IConnector {
       ])) as DriveChangeList;
 
       for (const change of changeList.changes) {
-        if (!change.file) continue;
-
         const file = change.file;
-        const parents = file.parents ?? [];
-
-        // Match by parent folder or by shared drive ID
-        let channelName: string | null = null;
-        const folderMatch = this.findChannelByParent(parents);
-        if (folderMatch) {
-          channelName = folderMatch[1];
-        } else if (driveId) {
-          // For shared drives: use the channel key as channel name
-          for (const [key, cfg] of Object.entries(this.config.channels)) {
-            if (cfg.driveId === driveId) {
-              channelName = cfg.name ?? key;
-              break;
-            }
+        const parents = file?.parents ?? [];
+        let channelKey = fileChannels.get(change.fileId) ?? null;
+        if (file) {
+          let fileChannelKey = this.findChannelByParent(parents);
+          if (fileChannelKey === null && driveId) {
+            fileChannelKey =
+              Object.entries(this.config.channels).find(
+                ([, cfg]) => cfg.role !== 'ignore' && cfg.driveId === driveId
+              )?.[0] ?? null;
+          }
+          if (!change.removed) {
+            channelKey = fileChannelKey;
+            if (channelKey !== null) fileChannels.set(change.fileId, channelKey);
+          } else if (channelKey === null) {
+            channelKey = fileChannelKey;
           }
         }
+        if (!channelKey) continue;
+        if (change.removed) fileChannels.delete(change.fileId);
+        if (!file && !change.removed) continue;
 
-        if (!channelName) continue;
-
-        const author = file.lastModifyingUser?.displayName ?? 'unknown';
+        const author = file?.lastModifyingUser?.displayName ?? 'unknown';
         items.push({
           source: 'drive',
           sourceId: `${change.fileId}:${change.time}`,
           sourceEntityId: change.fileId,
-          channel: channelName,
+          channel: channelKey,
           author,
-          content: `modified: ${file.name} (${file.mimeType})`,
+          content: change.removed
+            ? `removed: ${file?.name ?? 'file'}`
+            : `modified: ${file!.name} (${file!.mimeType})`,
           timestamp: new Date(change.time),
           type: 'file_change',
           metadata: {
             fileId: change.fileId,
-            fileName: file.name,
-            mimeType: file.mimeType,
-            modifiedTime: file.modifiedTime,
-            parents,
-            driveId: driveId || undefined,
+            ...(file ? { fileName: file.name, mimeType: file.mimeType } : {}),
+            ...(file?.modifiedTime ? { modifiedTime: file.modifiedTime } : {}),
+            ...(parents.length > 0 ? { parents } : {}),
+            ...(driveId ? { driveId } : {}),
+            ...(change.removed ? { removed: true } : {}),
           },
         });
       }
@@ -276,59 +288,95 @@ export class DriveConnector implements IConnector {
       requestPageToken = changeList.nextPageToken;
     }
 
-    if (!reachedTerminalPage) {
-      this.pageTokens.set(tokenKey, requestPageToken);
-      return items;
-    }
-
     if (typeof terminalStartPageToken !== 'string' || terminalStartPageToken.length === 0) {
       throw new Error(
         `Drive changes terminal page omitted the new start page token for ${tokenKey}`
       );
     }
-    this.pageTokens.set(tokenKey, terminalStartPageToken);
+    pageTokens.set(tokenKey, terminalStartPageToken);
 
     return items;
   }
 
   async poll(_since: Date): Promise<NormalizedItem[]> {
+    if (this.pendingPageTokens !== null || this.pendingFileChannels !== null) {
+      throw new Error('Drive poll handoff is already active');
+    }
+    this.pendingPageTokens = new Map(this.pageTokens);
+    this.pendingFileChannels = new Map(this.fileChannels);
     const allItems: NormalizedItem[] = [];
-    let hadError = false;
-
+    const hasFolderChannels = Object.values(this.config.channels).some(
+      (channel) => channel.role !== 'ignore' && channel.folderId && !channel.driveId
+    );
+    const sharedDrives = this.getSharedDriveIds();
+    const targets = (hasFolderChannels ? 1 : 0) + sharedDrives.length;
+    let failedTargets = 0;
+    let lastTargetError: string | undefined;
     try {
-      // 1. Poll personal drive (for folder-based channels)
-      const hasFolderChannels = Object.values(this.config.channels).some(
-        (c) => c.folderId && !c.driveId
-      );
       if (hasFolderChannels) {
-        allItems.push(...(await this.pollDrive('drive')));
-      }
-
-      // 2. Poll each shared drive
-      for (const { driveId, channelKey } of this.getSharedDriveIds()) {
         try {
-          allItems.push(...(await this.pollDrive(`shared:${driveId}`, driveId)));
-        } catch (err) {
-          hadError = true;
-          this.lastError =
-            err instanceof Error
-              ? `Shared drive ${channelKey}: ${err.message}`
-              : `Shared drive ${channelKey}: ${String(err)}`;
-          console.error(`[drive] Shared drive ${channelKey} poll error:`, err);
+          allItems.push(...(await this.pollDrive('drive')));
+        } catch (error) {
+          failedTargets += 1;
+          lastTargetError = error instanceof Error ? error.message : String(error);
         }
       }
-
-      this.saveState();
-    } catch (err) {
-      hadError = true;
-      this.lastError = err instanceof Error ? err.message : String(err);
-      throw err;
+      for (const { driveId, channelKey } of sharedDrives) {
+        try {
+          allItems.push(...(await this.pollDrive(`shared:${driveId}`, driveId)));
+        } catch (error) {
+          failedTargets += 1;
+          lastTargetError = `${channelKey}: ${error instanceof Error ? error.message : String(error)}`;
+        }
+      }
+      if (failedTargets > 0) {
+        throw new Error(
+          `Drive poll failed for ${failedTargets} of ${targets} configured drives; last error: ${lastTargetError}`
+        );
+      }
+      this.lastError = undefined;
+      this.lastPollTime = new Date();
+      this.lastPollCount = allItems.length;
+      if (!this.pollCommitDeferred) this.commitPoll();
+      return allItems;
+    } catch (error) {
+      this.lastError = error instanceof Error ? error.message : String(error);
+      this.lastPollTime = new Date();
+      this.lastPollCount = allItems.length;
+      if (!this.pollCommitDeferred) this.abortPollHandoff();
+      throw error instanceof Error ? error : new Error(String(error));
     }
+  }
 
-    this.lastPollTime = new Date();
-    this.lastPollCount = allItems.length;
-    if (!hadError) this.lastError = undefined;
+  commitPoll(): void {
+    if (this.pendingPageTokens === null || this.pendingFileChannels === null) {
+      throw new Error('Drive poll state is unavailable to commit');
+    }
+    writeConnectorState(this.stateFilePath, {
+      pageTokens: Object.fromEntries(this.pendingPageTokens),
+      fileChannels: Object.fromEntries(this.pendingFileChannels),
+    } satisfies DriveState);
+    this.pageTokens = this.pendingPageTokens;
+    this.fileChannels = this.pendingFileChannels;
+    this.pendingPageTokens = null;
+    this.pendingFileChannels = null;
+    this.pollCommitDeferred = false;
+  }
 
-    return allItems;
+  beginPollHandoff(): void {
+    if (
+      this.pollCommitDeferred ||
+      this.pendingPageTokens !== null ||
+      this.pendingFileChannels !== null
+    ) {
+      throw new Error('Drive poll handoff is already active');
+    }
+    this.pollCommitDeferred = true;
+  }
+
+  abortPollHandoff(): void {
+    this.pendingPageTokens = null;
+    this.pendingFileChannels = null;
+    this.pollCommitDeferred = false;
   }
 }

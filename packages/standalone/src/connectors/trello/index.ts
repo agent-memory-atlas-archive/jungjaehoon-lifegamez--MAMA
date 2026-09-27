@@ -1,6 +1,6 @@
 /**
  * TrelloConnector — polls Trello boards via native fetch.
- * Auth token format: "apiKey:token" stored in config.auth.token or TRELLO_TOKEN env var.
+ * API key and token are separate values read from the daemon environment.
  * Emits kanban_card NormalizedItems for new/moved/updated cards.
  *
  * A card's operational state is more than its list: production boards track the
@@ -12,8 +12,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { dirname, join } from 'path';
-import { homedir } from 'os';
+import { dirname } from 'path';
 
 import type {
   AuthRequirement,
@@ -100,11 +99,13 @@ export class TrelloConnector implements IConnector {
 
   private readonly stateFilePath: string;
 
-  constructor(config: ConnectorConfig, options?: { stateFilePath?: string }) {
+  constructor(config: ConnectorConfig, options: { stateFilePath: string } | string) {
     this.config = config;
-    this.stateFilePath =
-      options?.stateFilePath ??
-      join(homedir(), '.mama', 'connectors', 'trello', 'trello-state.json');
+    const stateFilePath = typeof options === 'string' ? options : options?.stateFilePath;
+    if (typeof stateFilePath !== 'string' || stateFilePath.trim() === '') {
+      throw new Error('Trello state file path is required');
+    }
+    this.stateFilePath = stateFilePath;
   }
 
   private loadState(): void {
@@ -131,19 +132,15 @@ export class TrelloConnector implements IConnector {
   }
 
   async init(): Promise<void> {
-    const rawToken =
-      this.config.auth.token ?? process.env[this.config.auth.tokenName ?? 'TRELLO_TOKEN'];
-    if (!rawToken) {
+    const apiKey = process.env.MAMA_TRELLO_KEY;
+    const token = process.env[this.config.auth.tokenName ?? 'MAMA_TRELLO_TOKEN'];
+    if (!apiKey?.trim() || !token?.trim()) {
       throw new Error(
-        'Trello token not found. Set TRELLO_TOKEN environment variable (format: apiKey:token).'
+        'Trello credentials missing. Run mama secret set MAMA_TRELLO_KEY and mama secret set MAMA_TRELLO_TOKEN, then restart through ~/.mama/start.sh.'
       );
     }
-    const parts = rawToken.split(':');
-    if (parts.length < 2) {
-      throw new Error('Trello token format invalid. Expected "apiKey:token".');
-    }
-    this.apiKey = parts[0] ?? null;
-    this.token = parts.slice(1).join(':');
+    this.apiKey = apiKey;
+    this.token = token;
     this.loadState();
   }
 
@@ -168,9 +165,13 @@ export class TrelloConnector implements IConnector {
     return [
       {
         type: 'token',
-        tokenName: 'TRELLO_TOKEN',
-        description:
-          'Trello API credentials in format "apiKey:token". Get from https://trello.com/app-key',
+        tokenName: 'MAMA_TRELLO_KEY',
+        description: 'Trello API key. Enter it with mama secret set MAMA_TRELLO_KEY.',
+      },
+      {
+        type: 'token',
+        tokenName: this.config.auth.tokenName ?? 'MAMA_TRELLO_TOKEN',
+        description: 'Trello token. Enter it with mama secret set MAMA_TRELLO_TOKEN.',
       },
     ];
   }
@@ -216,11 +217,12 @@ export class TrelloConnector implements IConnector {
     return names;
   }
 
-  async poll(_since: Date): Promise<NormalizedItem[]> {
+  async poll(since: Date): Promise<NormalizedItem[]> {
     if (!this.apiKey || !this.token) throw new Error('TrelloConnector not initialized');
 
     const items: NormalizedItem[] = [];
-    let hadError = false;
+    const failedBoards = new Set<string>();
+    let polledBoards = 0;
     const pendingCardStates = new Map(
       [...this.lastCardStates].map(([boardId, states]) => [boardId, new Map(states)])
     );
@@ -228,6 +230,7 @@ export class TrelloConnector implements IConnector {
     for (const [channelKey, channelCfg] of Object.entries(this.config.channels)) {
       if (channelCfg.role === 'ignore') continue;
       if (!channelCfg.boardId) continue;
+      polledBoards += 1;
 
       const channelName = channelCfg.name ?? channelKey;
       const boardId = channelCfg.boardId;
@@ -241,7 +244,7 @@ export class TrelloConnector implements IConnector {
         const res = await this.fetchWithTimeout(url);
 
         if (!res.ok) {
-          hadError = true;
+          failedBoards.add(boardId);
           this.lastError = `Board ${boardId}: HTTP ${res.status}`;
           continue;
         }
@@ -262,7 +265,7 @@ export class TrelloConnector implements IConnector {
           for (const card of list.cards) {
             const activityTime = Date.parse(card.dateLastActivity);
             if (!Number.isFinite(activityTime)) {
-              hadError = true;
+              failedBoards.add(boardId);
               this.lastError = 'Trello board item has an invalid activity timestamp';
               const previousState = prevCardState.get(card.id);
               if (previousState !== undefined) {
@@ -274,6 +277,11 @@ export class TrelloConnector implements IConnector {
             const assignees = card.idMembers.map((id) => memberNames.get(id) ?? id);
             const current: CardState = { list: list.name, labels, members: assignees };
             newCardState.set(card.id, encodeCardState(current));
+
+            // The first snapshot is bounded by the frozen bootstrap window. Keep the
+            // state fingerprint for older cards so a later change is still observable,
+            // but do not emit an old open card as a new source item.
+            if (activityTime <= since.getTime()) continue;
 
             const prevRaw = prevCardState.get(card.id);
             const isNew = prevRaw === undefined;
@@ -339,9 +347,17 @@ export class TrelloConnector implements IConnector {
         // Update card state snapshot for this board
         pendingCardStates.set(boardId, newCardState);
       } catch (err) {
-        hadError = true;
+        failedBoards.add(boardId);
         this.lastError = err instanceof Error ? err.message : String(err);
       }
+    }
+
+    if (failedBoards.size > 0) {
+      this.pendingCardStates = null;
+      this.pollCommitDeferred = false;
+      throw new Error(
+        `Trello poll failed for ${failedBoards.size} of ${polledBoards} configured boards; last error: ${this.lastError}`
+      );
     }
 
     this.pendingCardStates = pendingCardStates;
@@ -350,8 +366,7 @@ export class TrelloConnector implements IConnector {
     }
     this.lastPollTime = new Date();
     this.lastPollCount = items.length;
-    // lastError was set in catch blocks; clear only if no error occurred this pass
-    if (!hadError) this.lastError = undefined;
+    this.lastError = undefined;
 
     return items;
   }

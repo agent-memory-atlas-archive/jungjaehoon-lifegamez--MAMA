@@ -5,152 +5,178 @@
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://jungjaehoon-lifegamez.github.io/MAMA/)
 
 [Documentation](https://jungjaehoon-lifegamez.github.io/MAMA/) ·
-[Getting started](#getting-started) · [How it works](#how-it-works) · [Security](#security) ·
-[Roadmap](#status-and-roadmap)
+[Your first day](docs/start/tutorial.md) · [How it works](#how-it-works) ·
+[What you can connect](#what-you-can-connect) · [Security](#security) · [Status](#status)
 
-MAMA is a **memory store** that runs on your own computer, and an **AI assistant** that works
-from it. It keeps what flows through your connected messengers, mail, documents, and calendars
-as-is, and the assistant reads that record to tell you what changed and do what you ask.
-MAMA runs no hosted service; the record stays on your machine. Only the content a run needs
-leaves it, through the AI CLI and the connectors you configured.
+MAMA is a **work agent that runs on your own computer**. It follows the conversations, files and
+schedules in the tools you connect, keeps them as they were, and keeps a history of each piece of
+work: what changed, why, who did it and what the feedback was. You talk to it in your messenger.
+It answers from that history, sends you reports, and remembers how you want things done.
+
+The same repository also gives Claude Code a **development memory** (decisions and checkpoints
+that survive a new session), and both are built on **mama-core**, a shared engine other products
+can use.
+
+MAMA runs no hosted service. The record stays on your machine. Only the content a run needs
+leaves it, through the AI CLI you logged into and the services you connected.
 
 ## Why
 
-An AI assistant is only useful with memory, and memory kept on a company's server disappears
-when the service changes or shuts down. MAMA keeps the record of what you did and decided on
-your own computer, in the original form, so a better model can read the same record tomorrow.
-The memory layer is fixed; which sources you connect and what work you hand over is up to you.
+An assistant is only as useful as what it remembers, and memory kept on someone else's server
+disappears when the service changes. MAMA keeps the record of your work on your computer, in its
+original form, so today's model and a better one tomorrow can read the same history. You decide
+which sources to connect and what to hand over.
 
 ## Principles
 
 In order of importance.
 
-1. **Never lose the record.** Original text, time, source, and later changes are kept, not
+1. **Never lose the record.** Original text, time, source and every later change are kept, not
    overwritten.
-2. **Know why it changed.** Every change the assistant makes names the message or event behind
-   it, or is marked "no cause".
-3. **Act only where allowed.** Sending messages, paying, deleting: anything with outside effect
-   requires prior permission for that target.
-4. **Remember corrections.** Say "keep reports short" or "cards on the dashboard" once; it is
-   stored as a rule and applied from then on.
-5. **Stay independent of the model vendor.** The assistant's brain (Claude, Codex, Cline) is
-   swappable; the record's format is not.
+2. **Know why it changed.** Each change to a piece of work names the message or file behind it.
+3. **Act only where allowed.** MAMA sends only to the owner destinations you configured, and its
+   agent writes files only inside its own workspace.
+4. **Remember corrections.** Say "reports should be short" or "translate feedback into the usual
+   spreadsheet" once. MAMA keeps it as guidance or as a workflow and applies it from then on.
+5. **Stay independent of the model vendor.** Claude or Codex runs the agent; the record's format
+   does not depend on either.
 6. **Everything else.** Speed and convenience improve only within the five above.
 
-## Parts
+## What it looks like
 
-| Name                       | What it does                                                     | Version |
-| -------------------------- | ---------------------------------------------------------------- | ------- |
-| `@jungjaehoon/mama-os`     | The server: sources, assistant, messenger links, operational API | 0.56.x  |
-| `@jungjaehoon/mama-core`   | The memory store: format, search, change log                     | 3.2.x   |
-| `@jungjaehoon/mama-server` | MCP bridge for Claude Desktop and other MCP clients              | 2.2.x   |
-| Claude Code plugin         | Decision memory for coding sessions                              | 2.0.x   |
-| MemoryBench                | Measures how accurate memory retrieval is                        | 1.0.x   |
+> **You:** Who is working on what right now?
+>
+> **MAMA:** 12 items are in progress. Two need you today: the sample poster review is waiting for
+> your decision on the color variant, and the launch checklist is overdue since yesterday 17:00.
+
+> **You:** From now on, when feedback arrives as a PDF, translate it into our feedback spreadsheet
+> and send it back as a file.
+>
+> **MAMA:** Saved as a workflow. I will use it for the next feedback PDF.
+
+At 08:00, 13:00 and 18:00 it sends a full report. Urgent changes arrive as soon as they happen;
+the rest are gathered into an hourly reminder between 09:00 and 21:00.
 
 ## Getting started
 
-Requires Node 22.13+ and a logged-in `claude` or `codex` CLI.
-
-```bash
-claude auth login                   # or: codex login
-npm install -g @jungjaehoon/mama-os
-mama --help                         # tells you the next step
-mama status                         # setup is done when the first report arrives
-```
-
-- Messenger: `mama gateway telegram --token-stdin` (Slack and Discord work the same way)
-- Sources: `mama connector add <name>`, then `mama connector status`
-- Runtime status: `mama status`; operational health: `http://127.0.0.1:3847/health`
-- For scripted installs, follow the `missing` list from `mama status --json` in order; it is
-  finished only when `complete: true`.
-
-Claude Code plugin: `/plugin install mama`. MCP:
-`{"mcpServers":{"mama":{"command":"npx","args":["@jungjaehoon/mama-server"]}}}`.
-
-## How it works
-
-```
-What you add      sources to connect · work to hand over · rules you correct
-The assistant     one assistant · a tool catalog · permission scopes · a rule store
-The memory store  SQLite on your machine: originals · decision history · change causes · run logs · local search index
-```
-
-**Memory store.** Per-source originals live in `~/.mama/connectors/<name>/raw.db`; decisions
-and change logs under `~/.mama/`. Changing a decision adds a "this replaced that" link instead
-of deleting the old one. Each change log row holds what changed and what caused it; a row with
-a faked cause is rejected at write time. The search index (embeddings) is built locally.
-
-**Assistant.** Your messages, scheduled reports, new source content, and timed jobs all reach one
-assistant. It picks tools from the catalog and hands long reads and background work to helper
-agents, taking back only the result. Every run carries a permission scope saying what it may
-touch and until when. Your corrections are stored as rules and offered as candidates in similar
-situations. Reports and the board are edited from the last published version, not rebuilt.
-
-**What you add.** A new source is one `IConnector` implementation; polling and storage are
-handled. A new kind of work is one entry in the tool catalog. A new rule is one message.
-
-## Sources
-
-calendar, chatwork, discord, drive, gmail, imessage, notion, obsidian, sheets, slack, telegram,
-trello, claude-code. Config in `~/.mama/connectors.json`; status via `mama connector status`.
-Each channel gets a role (truth, hub, deliverable, spoke, reference) used in reports.
-
-## Security
-
-- The server answers only on your machine (`127.0.0.1`) by default.
-- Sending, uploading, paying, and deleting happen only toward allowed targets. Unattended work
-  (scheduled reports, incoming-content handling) has no send permission.
-- Only allow-listed chats are accepted from messengers (`allowedChatIds` for Telegram).
-- Values that look like passwords or keys are not stored in memory.
-- Outbound connections go only to the services you connected and the AI CLI you logged into.
-  There is no MAMA company server; you run it yourself.
-
-**Running on another host or reaching it from outside.** The operational API can drive the
-assistant, and the assistant can read and write files and run commands. Exposing the API
-exposes that machine. If you open it up:
-
-1. Set `MAMA_AUTH_TOKEN`. Never expose the server without it, and treat the token and tunnel
-   URL as secrets.
-2. For anything beyond a short test, put it behind Cloudflare Zero Trust (or mTLS / IP
-   allow-listing) in addition to the token. Token-only access is for temporary testing.
-3. Keep the messenger allow-list, and restrict `~/.mama/` to the operating account.
-4. Back up `~/.mama/` together with `~/.claude/mama-memory.db`.
-
-Details: [Security guide](docs/guides/security.md), [Remote access](docs/guides/mobile-access.md).
-
-## Status and roadmap
-
-| Stage                    | What                                                               | Status        |
-| ------------------------ | ------------------------------------------------------------------ | ------------- |
-| Memory store             | Originals kept, decision history, change causes, local search      | done          |
-| Single-owner assistant   | Scheduled reports, board and journal, corrections become rules     | done          |
-| Helpers and continuation | Long work to helper agents; reports continue from the last version | done (0.52.0) |
-| Team members             | Verified people share the same memory within their own permissions | next          |
-| File work                | Request → read → new version → approval → delivery → follow-up     | next          |
-| Extension guide          | How to add your own sources, tools, and rules                      | next          |
-
-Before 1.0, config and storage format changes ship with automatic migration; APIs may change.
-
-## Read more
-
-- [Documentation site](https://jungjaehoon-lifegamez.github.io/MAMA/)
-- [Intent](INTENT.md) · [Architecture](docs/explanation/architecture.md) ·
-  [Correcting rules](docs/guides/procedure-corrections.md) · [Configuration](docs/reference/configuration-options.md)
-- [Developer playbook](docs/development/developer-playbook.md) · [Release process](docs/development/release-process.md)
-
-## Build
+You need Node.js 22.13+, pnpm, a logged-in `claude` or `codex` CLI, and a Telegram bot for your
+owner chat. This branch is an unreleased rebuild, so build it from the checkout:
 
 ```bash
 pnpm install
 pnpm build
-pnpm test
+node packages/standalone/dist/cli/index.js init    # asks for settings; tokens are typed at hidden prompts
+~/.mama/start.sh                                   # or the launchctl command init prints
 ```
 
-## Contributing
+Then send your bot a message. Setup is done when MAMA answers you, not when the process is
+running. The [first-day tutorial](docs/start/tutorial.md) walks through connecting a source,
+asking about work, giving a correction, reports, the viewer and sending files.
 
-Open an issue or discussion first. Discuss the design before building a feature. Changes to the
-storage format must come with a migration script.
+Claude Code development memory is separate and needs no daemon: `/plugin install mama`, or add the
+MCP server `{"mcpServers":{"mama":{"command":"npx","args":["@jungjaehoon/mama-server"]}}}`.
+See [Claude Code plugin](docs/start/claude-code-plugin.md).
+
+## How it works
+
+```
+What you connect   work sources · a messenger · corrections you give
+The agent          one owner agent on Claude or Codex, reading and writing through MAMA's actions
+The record         SQLite on your machine: originals · work history · guidance · reports · run logs · local search index
+```
+
+**The record.** Every collected message, file notice or calendar change is stored as an original
+observation. Work items keep revisions: each one says what changed, why, the evidence it came from
+and who was involved. Search runs locally over originals, work history and memory.
+
+**The agent.** Your messages, new source changes and scheduled reports all reach one agent
+session. It reads the stored work and sources before answering, updates the work history, writes
+the board and the wiki pages of the work it touched, and can split larger jobs across subagents
+inside the same turn. Every tool call it makes is recorded with the run that made it.
+
+**Guidance and workflows.** Your corrections are kept as lessons, preferences, constraints and
+workflows, each with a line saying when it applies. The agent sees that list at the start of a
+session, reads the full entry when it applies, and can add, revise or retire workflows as you
+agree on them. Every change keeps its history.
+
+**The viewer.** `http://127.0.0.1:3847` shows the board, work items with their history, the memory
+graph, the wiki and logs.
+
+## What you can connect
+
+Each source is optional; enable the ones you use in `~/.mama/connectors.json` or during `mama init`.
+
+| Source                                | What MAMA collects                                                   | How it connects                   |
+| ------------------------------------- | -------------------------------------------------------------------- | --------------------------------- |
+| Chatwork, Slack                       | Messages in the rooms and channels you choose, and their attachments | API token                         |
+| Discord                               | Messages in the channels you choose                                  | Bot token                         |
+| Trello                                | Card and list changes on the boards you choose                       | API key and token                 |
+| Notion                                | Pages shared with the integration                                    | API token                         |
+| Telegram (source)                     | Messages in groups you add a separate source bot to                  | Bot token                         |
+| Google Calendar, Gmail, Drive, Sheets | Changed events, mail, files and rows                                 | The logged-in `gws` command       |
+| Obsidian                              | Notes in the vault folders you choose                                | Local folder                      |
+| iMessage                              | Messages in the chats you choose                                     | Local database (Full Disk Access) |
+| Claude Code                           | Conversations in the projects you choose                             | Local folder                      |
+| Kagemusha bridge                      | A read-only view of a local Kagemusha database                       | Local database                    |
+
+**Messengers.** You talk to MAMA in Telegram, Discord or Slack. Only your own account in the chats
+you allow is answered; everyone else is ignored and logged. You choose which messenger receives
+reports, notifications and security alerts. See [Sources](docs/guides/connectors.md) and
+[Messengers](docs/guides/messengers.md).
+
+## Security
+
+- Tokens are typed by you at a terminal prompt and stored only in `~/.mama/auth.env` (mode 0600).
+  The configuration files hold none, and the agent cannot read MAMA's credential files.
+- The agent writes only inside its workspace. Files you send it are saved by MAMA into a folder the
+  agent can read but not change.
+- Messages, files and pages from other people reach the agent marked as untrusted evidence, never
+  as instructions.
+- The viewer answers only on your machine (`127.0.0.1`) by default and serves read-only pages.
+
+**Reaching the viewer from outside.** If you expose it through a tunnel:
+
+1. Put it behind Cloudflare Access and set `MAMA_CF_ACCESS_ISSUER` and `MAMA_CF_ACCESS_AUD` so MAMA
+   verifies the Access token itself, or set `MAMA_AUTH_TOKEN` for short tests only.
+2. List your hostnames in `MAMA_VIEWER_HOSTNAMES`; requests for other hosts are refused.
+3. Every outside request is logged as a security event, and suspicious ones alert you in your
+   messenger.
+
+Details: [Security guide](docs/guides/security.md), [Viewer](docs/guides/viewer.md).
+
+## Packages
+
+These are the current package manifests for the unreleased rebuild.
+
+| Package                                                     | Role                             | Version |
+| ----------------------------------------------------------- | -------------------------------- | ------- |
+| [MAMA OS](packages/standalone/README.md)                    | Owner agent and `mama` command   | 0.57.0  |
+| [mama-core](packages/mama-core/README.md)                   | Shared engine and public exports | 4.0.0   |
+| [Public MCP server](packages/mcp-server/README.md)          | Development memory over stdio    | 2.2.1   |
+| [Claude Code plugin](packages/claude-code-plugin/README.md) | Development commands and hooks   | 2.0.1   |
+
+## Status
+
+| Stage                  | What                                                                     | Status                            |
+| ---------------------- | ------------------------------------------------------------------------ | --------------------------------- |
+| The record             | Originals kept, work history with evidence, local search                 | done                              |
+| One owner agent        | Answers, reports, board, wiki, guidance and workflows on Claude or Codex | done, live checks in progress     |
+| Sources and messengers | The sources above; Telegram, Discord and Slack                           | restored in this release          |
+| History import         | Import past messages per source and replay them day by day               | script only; product command next |
+| Team members           | Verified people share the same record within their own permissions       | after the owner flow              |
+
+What still needs live confirmation is listed in the [changelog](CHANGELOG.md) under known issues.
+
+## Documentation
+
+- [Your first day with MAMA](docs/start/tutorial.md) · [Owner setup](docs/start/owner-setup.md)
+- [Sources](docs/guides/connectors.md) · [Messengers](docs/guides/messengers.md) ·
+  [Reports and board](docs/guides/reports-and-board.md) ·
+  [Corrections and learning](docs/guides/corrections-and-learning.md)
+- [CLI](docs/reference/cli.md) · [Configuration](docs/reference/configuration.md) ·
+  [Architecture](docs/explanation/architecture.md)
+- [Security](docs/guides/security.md) · [Contributing](docs/development/contributing.md)
 
 ## License
 
-MIT © jungjaehoon
+[MIT](LICENSE).

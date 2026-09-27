@@ -42,7 +42,7 @@ describe('Story M5: e5 role prefixes', () => {
   describe('AC #1: model inputs carry the e5 role prefix', () => {
     it('prepends "passage: " by default and "query: " on request', async () => {
       mockPipeline(1024);
-      const mod = await import('../../src/embeddings.js');
+      const mod = await import('../../src/embedding/embedder.js');
       mod.embeddingCache.clear();
       await mod.generateEmbedding('hello world'); // default
       await mod.generateEmbedding('hello world', 'query'); // query
@@ -52,7 +52,7 @@ describe('Story M5: e5 role prefixes', () => {
 
     it('generateEnhancedEmbedding forwards role to the model input', async () => {
       mockPipeline(1024);
-      const mod = await import('../../src/embeddings.js');
+      const mod = await import('../../src/embedding/embedder.js');
       mod.embeddingCache.clear();
       await mod.generateEnhancedEmbedding({ topic: 't', decision: 'd' }, 'passage');
       expect(captured.some((c) => c.startsWith('passage: Topic: t'))).toBe(true);
@@ -62,7 +62,7 @@ describe('Story M5: e5 role prefixes', () => {
   describe('AC #2: the embedding cache is role-aware', () => {
     it('same text, different roles -> two model calls; same role -> cache hit', async () => {
       mockPipeline(1024);
-      const mod = await import('../../src/embeddings.js');
+      const mod = await import('../../src/embedding/embedder.js');
       mod.embeddingCache.clear();
       await mod.generateEmbedding('same text', 'passage');
       await mod.generateEmbedding('same text', 'query');

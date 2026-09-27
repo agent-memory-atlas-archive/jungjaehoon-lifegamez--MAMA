@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,6 +9,20 @@ import { NodeSQLiteAdapter } from '../../src/db-adapter/node-sqlite-adapter.js';
 
 const MIGRATIONS_DIR = join(__dirname, '..', '..', 'db', 'migrations');
 let tempDir: string | null = null;
+
+/**
+ * The highest version the migration directory declares, read rather than written down.
+ * Pinning the number here meant every new migration broke three unrelated tests, which
+ * says nothing about the runner; what the assertion is for is that the runner applied
+ * everything it found.
+ */
+function latestMigrationVersion(): number {
+  return Math.max(
+    ...readdirSync(MIGRATIONS_DIR)
+      .map((file) => Number(file.slice(0, file.indexOf('-'))))
+      .filter((n) => Number.isInteger(n))
+  );
+}
 
 function cleanupTempDir(): void {
   if (tempDir) {
@@ -165,7 +179,7 @@ describe('Story PR4: migration 077 legacy record-kind recovery', () => {
       db.prepare('SELECT record_kind FROM decisions WHERE id = ?').get('explicit-judgment')
     ).toEqual({ record_kind: 'judgment' });
     expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({
-      version: 80,
+      version: latestMigrationVersion(),
     });
     db.close();
   });
@@ -445,7 +459,7 @@ describe('Story PR3B: migrations 072-074 structural recovery', () => {
     setup.exec(`
       CREATE TABLE observation_versions (
         observation_id TEXT PRIMARY KEY,
-        source_connector TEXT NOT NULL,
+        source TEXT NOT NULL,
         source_id TEXT NOT NULL,
         producer_version_id TEXT,
         body TEXT,
@@ -460,9 +474,8 @@ describe('Story PR3B: migrations 072-074 structural recovery', () => {
         CHECK ((body IS NOT NULL AND body_location_json IS NULL)
           OR (body IS NULL AND body_location_json IS NOT NULL)),
         CHECK (note IS NULL OR note <> 'forbidden'),
-        UNIQUE (source_connector, source_id, note)
+        UNIQUE (source, source_id, note)
       );
-      ALTER TABLE connector_event_index ADD COLUMN current_observation_id TEXT;
       INSERT INTO observation_versions VALUES
         ('obs-kept', 'synthetic', 'source-1', NULL, 'body', NULL, 'author', 1, 2,
          'hash', '{}', '{}', 'kept');
@@ -498,26 +511,12 @@ describe('Story PR3B: migrations 072-074 structural recovery', () => {
       db
         .prepare(
           `INSERT INTO observation_versions
-        (observation_id,source_connector,source_id,body,observed_at,content_hash,metadata_json,scope_json,note)
+        (observation_id,source,source_id,body,observed_at,content_hash,metadata_json,scope_json,note)
         VALUES ('obs-bad','synthetic','source-2','body',3,'hash-2','{}','{}','forbidden')`
         )
         .run()
     ).toThrow(/constraint/i);
     expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
-    expect(
-      (
-        db
-          .prepare("SELECT * FROM pragma_foreign_key_list('connector_event_index')")
-          .all() as Array<{
-          from: string;
-          table: string;
-        }>
-      ).some(
-        (foreignKey) =>
-          foreignKey.from === 'current_observation_id' &&
-          foreignKey.table === 'observation_versions'
-      )
-    ).toBe(true);
     db.close();
   });
 
@@ -529,15 +528,13 @@ describe('Story PR3B: migrations 072-074 structural recovery', () => {
     applyThrough(setup, 71);
     setup.exec(`
       CREATE TABLE observation_versions (
-        observation_id TEXT PRIMARY KEY, source_connector TEXT NOT NULL, source_id TEXT NOT NULL,
+        observation_id TEXT PRIMARY KEY, source TEXT NOT NULL, source_id TEXT NOT NULL,
         producer_version_id TEXT, body TEXT COLLATE NOCASE, body_location_json TEXT, author TEXT,
         source_at INTEGER, observed_at INTEGER NOT NULL, content_hash TEXT NOT NULL,
         metadata_json TEXT NOT NULL, scope_json TEXT NOT NULL,
         CHECK ((body IS NOT NULL AND body_location_json IS NULL)
           OR (body IS NULL AND body_location_json IS NOT NULL))
       );
-      ALTER TABLE connector_event_index ADD COLUMN current_observation_id TEXT
-        REFERENCES observation_versions(observation_id);
       INSERT INTO observation_versions VALUES
         ('obs-kept', 'synthetic', 'source-1', NULL, 'body', NULL, NULL, NULL, 1, 'hash', '{}', '{}');
       INSERT INTO schema_version(version, description) VALUES (72, 'unsupported observation');
@@ -889,35 +886,8 @@ describe('Story PR3B: migrations 072-074 structural recovery', () => {
     adapter.disconnect();
   });
 
-  it.each([
-    ['wrong type', 'current_observation_id BLOB'],
-    ['wrong nullability', "current_observation_id TEXT NOT NULL DEFAULT ''"],
-    ['extra inline check', 'current_observation_id TEXT CHECK(length(current_observation_id) > 0)'],
-  ])('refuses stamped 072 connector observation ref with %s', (_label, column) => {
-    tempDir = mkdtempSync(join(tmpdir(), 'mama-migration-observation-ref-shape-'));
-    const dbPath = join(tempDir, 'observation-ref-shape.db');
-    const setup = new Database(dbPath);
-    applyThrough(setup, 71);
-    const migration = readFileSync(
-      join(MIGRATIONS_DIR, '072-observation-versions.sql'),
-      'utf8'
-    ).replace('current_observation_id TEXT\n  REFERENCES', `${column}\n  REFERENCES`);
-    setup.exec(migration);
-    const stored = tableSql(setup, 'connector_event_index');
-    setup.close();
-
-    const adapter = new NodeSQLiteAdapter({ dbPath });
-    adapter.connect();
-    expect(() => adapter.runMigrations(MIGRATIONS_DIR)).toThrow(/072|current_observation_id/i);
-    expect(
-      (
-        adapter
-          .prepare("SELECT sql FROM sqlite_master WHERE name='connector_event_index'")
-          .get() as { sql: string }
-      ).sql
-    ).toBe(stored);
-    adapter.disconnect();
-  });
+  // The stamped-072 refusals for the index's observation ref moved with the index:
+  // migration 072 declares the evidence table and names no connector.
 
   it('keeps the PR3A alias schema and preserves custom graph objects and FK children', () => {
     tempDir = mkdtempSync(join(tmpdir(), 'mama-migration-correction-graph-'));
@@ -1158,276 +1128,16 @@ describe('Story PR3A: adapter cache rollback', () => {
   });
 });
 
-describe('Story M2.3: Migration 034 duplicate-column recovery', () => {
-  afterEach(cleanupTempDir);
-
-  describe('Acceptance Criteria', () => {
-    describe('AC #1: partial connector event scope migration recovery', () => {
-      it('repairs a partially applied 034 migration when source_cursor already exists', () => {
-        tempDir = mkdtempSync(join(tmpdir(), 'mama-migration-034-'));
-        const dbPath = join(tempDir, 'partial-034.db');
-        const setupDb = new Database(dbPath);
-        setupDb.pragma('foreign_keys = ON');
-        applyThrough(setupDb, 33);
-        setupDb.exec('ALTER TABLE connector_event_index ADD COLUMN source_cursor TEXT');
-        setupDb.close();
-
-        const adapter = new NodeSQLiteAdapter({ dbPath });
-        adapter.connect();
-        adapter.runMigrations(MIGRATIONS_DIR);
-        adapter.disconnect();
-
-        const db = new Database(dbPath);
-        for (const column of [
-          'source_cursor',
-          'tenant_id',
-          'project_id',
-          'memory_scope_kind',
-          'memory_scope_id',
-        ]) {
-          expect(columnExists(db, 'connector_event_index', column)).toBe(true);
-        }
-        expect(indexExists(db, 'idx_connector_event_scope')).toBe(true);
-        expect(indexExists(db, 'idx_connector_event_source_cursor')).toBe(true);
-
-        const row = db.prepare('SELECT version FROM schema_version WHERE version = 34').get() as
-          | { version: number }
-          | undefined;
-        expect(row?.version).toBe(34);
-        db.close();
-      });
-    });
-  });
-});
-
-describe('Story M2.4: Migration 039 duplicate-column recovery', () => {
-  afterEach(cleanupTempDir);
-
-  describe('Acceptance Criteria', () => {
-    describe('AC #1: partial connector operator sequence migration recovery', () => {
-      it('repairs a partially applied 039 migration when operator_ingest_seq already exists', () => {
-        tempDir = mkdtempSync(join(tmpdir(), 'mama-migration-039-'));
-        const dbPath = join(tempDir, 'partial-039.db');
-        const setupDb = new Database(dbPath);
-        setupDb.pragma('foreign_keys = ON');
-        applyThrough(setupDb, 38);
-        setupDb.exec(`
-          ALTER TABLE connector_event_index
-            ADD COLUMN operator_ingest_seq INTEGER CHECK (
-              operator_ingest_seq IS NULL OR operator_ingest_seq >= 1
-            )
-        `);
-        setupDb.close();
-
-        const adapter = new NodeSQLiteAdapter({ dbPath });
-        adapter.connect();
-        adapter.runMigrations(MIGRATIONS_DIR);
-        adapter.disconnect();
-
-        const db = new Database(dbPath);
-        expect(columnExists(db, 'connector_event_index', 'operator_ingest_seq')).toBe(true);
-        expect(tableExists(db, 'connector_event_index_operator_seq_cursors')).toBe(true);
-        expect(indexExists(db, 'idx_connector_event_index_operator_scope_seq')).toBe(true);
-        expect(indexExists(db, 'idx_connector_event_index_operator_cursor_order')).toBe(true);
-        expect(triggerExists(db, 'trg_connector_event_index_operator_ingest_seq_ai')).toBe(true);
-        expect(triggerExists(db, 'trg_connector_event_index_operator_ingest_seq_explicit_ai')).toBe(
-          true
-        );
-
-        const row = db.prepare('SELECT version FROM schema_version WHERE version = 39').get() as
-          | { version: number }
-          | undefined;
-        expect(row?.version).toBe(39);
-        db.close();
-      });
-    });
-  });
-});
-
-describe('Story M2.5: Migration 062 duplicate-column recovery', () => {
-  afterEach(cleanupTempDir);
-
-  describe('Acceptance Criteria', () => {
-    describe('AC #1: partial connector observation sequence migration recovery', () => {
-      it('repairs a partially applied 062 migration when operator_observation_seq already exists', () => {
-        tempDir = mkdtempSync(join(tmpdir(), 'mama-migration-062-'));
-        const dbPath = join(tempDir, 'partial-062.db');
-        const setupDb = new Database(dbPath);
-        setupDb.pragma('foreign_keys = ON');
-        applyThrough(setupDb, 61);
-        setupDb.exec(`
-          ALTER TABLE connector_event_index
-            ADD COLUMN operator_observation_seq INTEGER CHECK (
-              operator_observation_seq IS NULL OR operator_observation_seq >= 1
-            )
-        `);
-        setupDb.close();
-
-        const adapter = new NodeSQLiteAdapter({ dbPath });
-        adapter.connect();
-        adapter.runMigrations(MIGRATIONS_DIR);
-        adapter.disconnect();
-
-        const db = new Database(dbPath);
-        expect(columnExists(db, 'connector_event_index', 'operator_observation_seq')).toBe(true);
-        expect(tableExists(db, 'connector_event_index_observation_cursors')).toBe(true);
-        expect(indexExists(db, 'idx_connector_event_index_observation_seq')).toBe(true);
-        expect(triggerExists(db, 'trg_connector_event_index_operator_ingest_seq_au')).toBe(true);
-        expect(triggerExists(db, 'trg_connector_event_index_observation_seq_ai')).toBe(true);
-        expect(triggerExists(db, 'trg_connector_event_index_observation_seq_au')).toBe(true);
-        expect(triggerExists(db, 'trg_connector_event_index_observation_seq_explicit_ai')).toBe(
-          true
-        );
-
-        const row = db.prepare('SELECT version FROM schema_version WHERE version = 62').get() as
-          | { version: number }
-          | undefined;
-        expect(row?.version).toBe(62);
-        db.close();
-      });
-
-      it('repairs migration 062 when the observation cursor table already exists', () => {
-        tempDir = mkdtempSync(join(tmpdir(), 'mama-migration-062-cursor-'));
-        const dbPath = join(tempDir, 'partial-062-cursor.db');
-        const setupDb = new Database(dbPath);
-        setupDb.pragma('foreign_keys = ON');
-        applyThrough(setupDb, 61);
-        setupDb
-          .prepare(
-            `INSERT INTO connector_event_index (
-              event_index_id, source_connector, source_type, source_id, content,
-              source_timestamp_ms, metadata_json, content_hash, indexed_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          )
-          .run(
-            'evt-partial-cursor',
-            'kagemusha',
-            'kanban_card',
-            'task:partial-cursor',
-            'pending',
-            1_775_260_800_000,
-            '{}',
-            Buffer.alloc(32, 14),
-            '2026-08-02T00:00:00.000Z',
-            '2026-08-02T00:00:00.000Z'
-          );
-        setupDb.exec(`
-          CREATE TABLE connector_event_index_observation_cursors (
-            source_connector TEXT PRIMARY KEY,
-            next_seq INTEGER NOT NULL CHECK (next_seq >= 1)
-          );
-          INSERT INTO connector_event_index_observation_cursors (source_connector, next_seq)
-          VALUES ('kagemusha', 7)
-        `);
-        setupDb.close();
-
-        const adapter = new NodeSQLiteAdapter({ dbPath });
-        expect(() => {
-          adapter.connect();
-          adapter.runMigrations(MIGRATIONS_DIR);
-        }).not.toThrow();
-        adapter.disconnect();
-
-        const db = new Database(dbPath);
-        expect(columnExists(db, 'connector_event_index', 'operator_observation_seq')).toBe(true);
-        expect(indexExists(db, 'idx_connector_event_index_observation_seq')).toBe(true);
-        expect(triggerExists(db, 'trg_connector_event_index_observation_seq_ai')).toBe(true);
-        expect(
-          db
-            .prepare(
-              `SELECT next_seq FROM connector_event_index_observation_cursors
-               WHERE source_connector = 'kagemusha'`
-            )
-            .get()
-        ).toEqual({ next_seq: 7 });
-        expect(
-          db.prepare('SELECT version FROM schema_version WHERE version = 62').get()
-        ).toMatchObject({ version: 62 });
-        db.close();
-      });
-
-      it('preserves arrival-ordered observation ordinals while repairing a missing 062 trigger', () => {
-        tempDir = mkdtempSync(join(tmpdir(), 'mama-migration-062-ordering-'));
-        const dbPath = join(tempDir, 'partial-062-ordering.db');
-        const setupDb = new Database(dbPath);
-        setupDb.pragma('foreign_keys = ON');
-        applyThrough(setupDb, 62);
-
-        const insert = setupDb.prepare(
-          `INSERT INTO connector_event_index (
-            event_index_id, source_connector, source_type, source_id, content,
-            source_timestamp_ms, metadata_json, content_hash, indexed_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        );
-        insert.run(
-          'evt-arrival-first',
-          'kagemusha',
-          'kanban_card',
-          'task:arrival-first',
-          'arrived first with a later timestamp',
-          2,
-          '{}',
-          Buffer.alloc(32, 1),
-          '2026-08-02T00:00:00.000Z',
-          '2026-08-02T00:00:00.000Z'
-        );
-        insert.run(
-          'evt-arrival-second',
-          'kagemusha',
-          'kanban_card',
-          'task:arrival-second',
-          'arrived second with an earlier timestamp',
-          1,
-          '{}',
-          Buffer.alloc(32, 2),
-          '2026-08-02T00:00:00.000Z',
-          '2026-08-02T00:00:00.000Z'
-        );
-        setupDb.exec('DROP TRIGGER trg_connector_event_index_observation_seq_ai');
-        setupDb.close();
-
-        const adapter = new NodeSQLiteAdapter({ dbPath });
-        expect(() => {
-          adapter.connect();
-          adapter.runMigrations(MIGRATIONS_DIR);
-        }).not.toThrow();
-        adapter.disconnect();
-
-        const db = new Database(dbPath);
-        expect(
-          db
-            .prepare(
-              `SELECT event_index_id, operator_observation_seq
-               FROM connector_event_index
-               WHERE source_connector = 'kagemusha'
-               ORDER BY event_index_id`
-            )
-            .all()
-        ).toEqual([
-          { event_index_id: 'evt-arrival-first', operator_observation_seq: 1 },
-          { event_index_id: 'evt-arrival-second', operator_observation_seq: 2 },
-        ]);
-        expect(
-          db
-            .prepare(
-              `SELECT next_seq
-               FROM connector_event_index_observation_cursors
-               WHERE source_connector = 'kagemusha'`
-            )
-            .get()
-        ).toEqual({ next_seq: 3 });
-        db.close();
-      });
-    });
-  });
-});
+// The three connector duplicate-column recoveries (034 / 039 / 062) left with the
+// table they repaired. A core that declares no connector index has nothing to
+// recover: see standalone/tests/connectors/.
 
 describe('Story M2.4: Legacy high schema-version structural recovery', () => {
   afterEach(cleanupTempDir);
 
   describe('Acceptance Criteria', () => {
     describe('AC #1: skipped feature migrations', () => {
-      it('repairs provenance and connector structures when legacy schema_version is already newer', () => {
+      it('repairs provenance structures when legacy schema_version is already newer', () => {
         tempDir = mkdtempSync(join(tmpdir(), 'mama-migration-high-version-'));
         const dbPath = join(tempDir, 'legacy-high-version.db');
         const setupDb = new Database(dbPath);
@@ -1453,11 +1163,6 @@ describe('Story M2.4: Legacy high schema-version structural recovery', () => {
           CREATE TABLE embeddings (
             rowid INTEGER PRIMARY KEY,
             embedding BLOB NOT NULL
-          );
-          CREATE TABLE connector_event_index (
-            event_index_id TEXT PRIMARY KEY,
-            source_connector TEXT NOT NULL,
-            channel TEXT
           );
         `);
         setupDb.close();
@@ -1491,30 +1196,12 @@ describe('Story M2.4: Legacy high schema-version structural recovery', () => {
         ]) {
           expect(columnExists(db, 'decisions', column)).toBe(true);
         }
-        for (const column of [
-          'source_cursor',
-          'tenant_id',
-          'project_id',
-          'memory_scope_kind',
-          'memory_scope_id',
-          'operator_ingest_seq',
-        ]) {
-          expect(columnExists(db, 'connector_event_index', column)).toBe(true);
-        }
-        expect(tableExists(db, 'connector_event_index_operator_seq_cursors')).toBe(true);
         expect(indexExists(db, 'idx_model_runs_envelope_hash')).toBe(true);
         expect(indexExists(db, 'idx_tool_traces_model_run_id')).toBe(true);
         expect(indexExists(db, 'idx_decisions_envelope_hash')).toBe(true);
         expect(indexExists(db, 'idx_decisions_model_run_id')).toBe(true);
         expect(indexExists(db, 'idx_decisions_gateway_call_id')).toBe(true);
         expect(indexExists(db, 'idx_memory_events_memory_created')).toBe(true);
-        expect(indexExists(db, 'idx_connector_event_source_cursor')).toBe(true);
-        expect(indexExists(db, 'idx_connector_event_index_operator_scope_seq')).toBe(true);
-        expect(indexExists(db, 'idx_connector_event_index_operator_cursor_order')).toBe(true);
-        expect(triggerExists(db, 'trg_connector_event_index_operator_ingest_seq_ai')).toBe(true);
-        expect(triggerExists(db, 'trg_connector_event_index_operator_ingest_seq_explicit_ai')).toBe(
-          true
-        );
         expect(indexExists(db, 'idx_context_packets_scope_hash')).toBe(true);
         expect(indexExists(db, 'idx_vnext_operator_commits_cursor_seq')).toBe(true);
         expect(indexExists(db, 'idx_operator_no_updates_scope_created')).toBe(true);
@@ -1525,10 +1212,6 @@ describe('Story M2.4: Legacy high schema-version structural recovery', () => {
           | { version: number }
           | undefined;
         expect(row?.version).toBe(38);
-        const operatorSeqRow = db
-          .prepare('SELECT version FROM schema_version WHERE version = 39')
-          .get() as { version: number } | undefined;
-        expect(operatorSeqRow?.version).toBe(39);
         const memoryIntentRow = db
           .prepare('SELECT version FROM schema_version WHERE version = 40')
           .get() as { version: number } | undefined;
@@ -1708,6 +1391,73 @@ describe('Story M2.4: Legacy high schema-version structural recovery', () => {
   });
 });
 
+describe('Migration 098 workflow memory kind', () => {
+  afterEach(cleanupTempDir);
+
+  it('adds workflow without changing earlier records or their full-text entries', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'mama-migration-workflow-'));
+    const dbPath = join(tempDir, 'workflow-kind.db');
+    const before098 = join(tempDir, 'migrations-through-097');
+    mkdirSync(before098);
+    for (const file of migrationFilesThrough(97)) {
+      writeFileSync(join(before098, file), readFileSync(join(MIGRATIONS_DIR, file)));
+    }
+
+    const adapter = new NodeSQLiteAdapter({ dbPath });
+    adapter.connect();
+    adapter.runMigrations(before098);
+    adapter
+      .prepare(
+        `INSERT INTO decisions (
+           id, topic, decision, reasoning, kind, status, summary, created_at, updated_at,
+           record_kind, payload_json
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        'legacy-guidance-record',
+        'legacy workflow topic',
+        'existing lesson decision',
+        'existing summary without applies when',
+        'lesson',
+        'active',
+        'existing lesson summary',
+        10,
+        11,
+        'judgment',
+        '{}'
+      );
+    adapter.runMigrations(MIGRATIONS_DIR);
+
+    expect(
+      adapter
+        .prepare(
+          'SELECT topic, decision, reasoning, kind, status, summary, payload_json FROM decisions WHERE id = ?'
+        )
+        .get('legacy-guidance-record')
+    ).toEqual({
+      topic: 'legacy workflow topic',
+      decision: 'existing lesson decision',
+      reasoning: 'existing summary without applies when',
+      kind: 'lesson',
+      status: 'active',
+      summary: 'existing lesson summary',
+      payload_json: '{}',
+    });
+    expect(
+      adapter
+        .prepare('SELECT rowid FROM decisions_fts WHERE decisions_fts MATCH ?')
+        .get('"existing lesson decision"')
+    ).toBeDefined();
+    adapter
+      .prepare(
+        `INSERT INTO decisions (id, topic, decision, kind, status, summary, created_at, updated_at)
+         VALUES ('workflow-after-migration', 'workflow topic', 'procedure', 'workflow', 'active', 'procedure', 12, 12)`
+      )
+      .run();
+    adapter.disconnect();
+  });
+});
+
 describe('TG-03/04/05: migration 068 runtime scope overlap recovery', () => {
   afterEach(cleanupTempDir);
 
@@ -1796,7 +1546,7 @@ describe('TG-03/04/05: migration 068 runtime scope overlap recovery', () => {
         evidence_json: null,
       });
       expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({
-        version: 80,
+        version: latestMigrationVersion(),
       });
       db.close();
     });

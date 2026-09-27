@@ -33,57 +33,22 @@ const memoryTools = createMemoryTools();
 const mama = require('@jungjaehoon/mama-core/mama-api');
 
 // Import core modules from mama-core
-const { initDB } = require('@jungjaehoon/mama-core/db-manager');
+const { initDB, declareProductionDatabasePath } = require('@jungjaehoon/mama-core/db-manager');
+const { declareEmbeddingCacheDir } = require('@jungjaehoon/mama-core/embeddings');
+const os = require('node:os');
+const path = require('node:path');
 const { version: PACKAGE_VERSION } = require('../package.json');
 
-const REQUIRED_ENV_VARS = ['MAMA_DB_PATH'];
-
-// Default values for development
-const ENV_DEFAULTS = {
-  MAMA_DB_PATH: process.env.HOME
-    ? `${process.env.HOME}/.claude/mama-memory.db`
-    : './mama-memory.db',
-};
-
-/**
- * Validate and set default environment variables if missing.
- * In production, missing vars would cause exit(1).
- * In development, defaults are provided with a warning.
- */
+/** Name this consumer's storage and model cache before core initialization. */
 function validateEnvironment() {
-  const missingVars = REQUIRED_ENV_VARS.filter((key) => {
-    const value = process.env[key];
-    return value === undefined || value === null || value.toString().trim() === '';
-  });
-
-  if (missingVars.length > 0) {
-    // Development mode: Set defaults and warn
-    if (process.env.NODE_ENV !== 'production') {
-      console.error(
-        '[MAMA MCP] Warning: Using default values for missing env vars:',
-        missingVars.join(', ')
-      );
-      missingVars.forEach((key) => {
-        process.env[key] = ENV_DEFAULTS[key];
-      });
-      return;
-    }
-
-    // Production mode: Exit with error
-    const errorPayload = {
-      error: {
-        code: 'MISSING_ENV_VARS',
-        message: `Missing required environment variables: ${missingVars.join(', ')}`,
-        details: {
-          missing: missingVars,
-          required: REQUIRED_ENV_VARS,
-        },
-      },
-    };
-
-    console.error(JSON.stringify(errorPayload, null, 2));
-    process.exit(1);
+  const defaultPath = path.join(os.homedir(), '.claude', 'mama-memory.db');
+  declareProductionDatabasePath(defaultPath);
+  declareEmbeddingCacheDir(path.join(os.homedir(), '.cache', 'huggingface', 'transformers'));
+  // The core also accepts the older MAMA_DATABASE_PATH name; a path set under either wins.
+  if (!process.env.MAMA_DB_PATH && !process.env.MAMA_DATABASE_PATH) {
+    process.env.MAMA_DB_PATH = defaultPath;
   }
+  return process.env.MAMA_DB_PATH || process.env.MAMA_DATABASE_PATH;
 }
 
 /**
@@ -419,7 +384,7 @@ After failure → save a NEW decision and explicitly reference any relationship 
       if (!topic || !decision || !reasoning) {
         return { success: false, message: '❌ Decision requires: topic, decision, reasoning' };
       }
-      const id = await mama.save({
+      const saved = await mama.save({
         type: 'user_decision',
         topic,
         decision,
@@ -430,9 +395,12 @@ After failure → save a NEW decision and explicitly reference any relationship 
         ...(item && { item }),
         ...(actors && { actors }),
       });
+      if (!saved.success) {
+        return saved;
+      }
       return {
         success: true,
-        id,
+        id: saved.id,
         type: 'decision',
         message: `✅ Decision saved: ${topic}`,
       };
@@ -496,6 +464,7 @@ After failure → save a NEW decision and explicitly reference any relationship 
 
     const results = [];
     let searchDiagnostics;
+    let searchMeta;
 
     // Search decisions
     if (type === 'all' || type === 'decision') {
@@ -549,9 +518,14 @@ After failure → save a NEW decision and explicitly reference any relationship 
           return forwarded;
         }
         searchDiagnostics = suggestResult.diagnostics;
+        searchMeta = suggestResult.meta;
         decisions = Array.isArray(suggestResult.results) ? suggestResult.results : [];
       } else {
-        decisions = await mama.list({ limit, ...(scopes && { scopes }) });
+        decisions = await mama.list({
+          limit,
+          ...(scopes && { scopes }),
+          ...(topicPrefix !== undefined && { topicPrefix }),
+        });
       }
       if (Array.isArray(decisions)) {
         results.push(
@@ -624,6 +598,7 @@ After failure → save a NEW decision and explicitly reference any relationship 
       count: limited.length,
       results: limited,
       ...(searchDiagnostics !== undefined ? { diagnostics: searchDiagnostics } : {}),
+      ...(searchMeta !== undefined ? { meta: searchMeta } : {}),
     };
   }
 
@@ -688,4 +663,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { MAMAServer, validateEnvironment, REQUIRED_ENV_VARS };
+module.exports = { MAMAServer, validateEnvironment };

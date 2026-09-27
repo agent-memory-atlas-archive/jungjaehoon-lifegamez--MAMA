@@ -14,26 +14,22 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { NativeEffectReplayBoundary } from '../../src/agent/native-effect-observer.js';
-import { CodexAppServerProcess } from '../../src/agent/codex-app-server-process.js';
-import { HostToolTerminalError } from '../../src/agent/model-runner.js';
+import { createNativeSessionRunner } from '@jungjaehoon/mama-core/runtime/native-turn';
+import { SessionPool } from '@jungjaehoon/mama-core/runtime/session-pool';
+import { NativeEffectReplayBoundary } from '@jungjaehoon/mama-core/runtime/native-session';
+import { CodexAppServerProcess } from '@jungjaehoon/mama-core/runtime/drivers/codex-app-server-process';
+// The protocol class the driver throws — same module the driver loads.
+import {
+  HostToolTerminalError,
+  NativeSteeringTargetUnavailableError,
+} from '@jungjaehoon/mama-core/runtime/drivers/types';
 import type {
   HostToolBridge,
   HostToolCall,
   HostToolCallResult,
   HostToolDefinition,
-} from '../../src/agent/model-runner.js';
-import {
-  CodexRuntimeProcess,
-  type SubagentBridge,
-  type SubagentBridgeRequest,
-  type SubagentEvent,
-} from '../../src/multi-agent/runtime-process.js';
-import { AgentProcessManager } from '../../src/multi-agent/agent-process-manager.js';
-import { GatewayToolExecutor } from '../../src/agent/gateway-tool-executor.js';
-import type { MAMAApiInterface } from '../../src/agent/types.js';
-import type { MultiAgentConfig } from '../../src/multi-agent/types.js';
-
+} from '@jungjaehoon/mama-core/runtime/drivers/types';
+import { CodexRuntimeProcess } from '@jungjaehoon/mama-core/runtime/runtime-process';
 const roots: string[] = [];
 
 interface FixtureTurn {
@@ -186,14 +182,14 @@ import fs from 'node:fs';
 import readline from 'node:readline';
 const mode = ${JSON.stringify(mode)};
 const capture = ${JSON.stringify(capture)};
-fs.appendFileSync(capture, JSON.stringify({argv:process.argv.slice(2),home:process.env.HOME,codexHome:process.env.CODEX_HOME,secret:process.env.TEST_SECRET,pid:process.pid})+'\\n');
+fs.appendFileSync(capture, JSON.stringify({argv:process.argv.slice(2),home:process.env.HOME,codexHome:process.env.CODEX_HOME,secret:process.env.TEST_SECRET,privateEnvPresent:Object.hasOwn(process.env,'PRIVATE_PASSWORD'),pid:process.pid})+'\\n');
 if (${JSON.stringify(secret)}) process.stderr.write(${JSON.stringify(secret)}+'\\n');
 const send = value => { const wire = mode === 'no-jsonrpc' ? Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'jsonrpc')) : value; process.stdout.write(JSON.stringify(wire)+'\\n'); };
 let thread = 0;
 let turn = 0;
 let overloaded = false;
 const toolReplies = new Map();
-const fullTurn = (id,status='inProgress',error=null) => ({...${JSON.stringify(turnFixture)},id,status,error,completedAt:status==='inProgress'?null:2,durationMs:status==='inProgress'?null:1});
+const fullTurn = (id,status='inProgress',error=null) => ({...${JSON.stringify(turnFixture)},id,items:status==='completed'&&mode!=='missing-final'?[{id:'final-'+id,type:'agentMessage',...(mode==='unphased-final'?{}:{phase:'final_answer'}),text:'hello'}]:[],status,error,completedAt:status==='inProgress'?null:2,durationMs:status==='inProgress'?null:1});
 const fullThread = id => ({...${JSON.stringify(threadFixture)},id});
 const rl = readline.createInterface({input:process.stdin});
 rl.on('line', line => {
@@ -227,15 +223,24 @@ rl.on('line', line => {
     if (mode === 'unknown-response') setTimeout(()=>send({jsonrpc:'2.0',id:999,result:{}}),5);
     return;
   }
-  const threadResult = (id,params) => { const sandbox=params.sandbox === 'workspace-write'?{type:'workspaceWrite',writableRoots:[params.cwd],networkAccess:false,excludeTmpdirEnvVar:false,excludeSlashTmp:false}:params.sandbox === 'read-only'?{type:'readOnly',networkAccess:false}:{type:'dangerFullAccess'}; const instructionSources=mode==='symlink-source'?[params.cwd+'/AGENTS.md']:fs.existsSync(${JSON.stringify(join(root, 'bad-source'))})?['/outside/AGENTS.md']:[]; const result={...${JSON.stringify(responseFixture)},thread:fullThread(id),model:mode === 'bad-policy'?'unexpected-model':params.model,cwd:params.cwd,instructionSources,sandbox}; if(mode==='bad-thread-schema') delete result.thread.sessionId; return result; };
+  const threadResult = (id,params) => { const sandbox=(params.sandbox === 'workspace-write'||params.permissions === 'host-workspace')?{type:'workspaceWrite',writableRoots:[params.cwd],networkAccess:false,excludeTmpdirEnvVar:false,excludeSlashTmp:false}:params.sandbox === 'read-only'?{type:'readOnly',networkAccess:false}:{type:'dangerFullAccess'}; const instructionSources=mode==='symlink-source'?[params.cwd+'/AGENTS.md']:fs.existsSync(${JSON.stringify(join(root, 'bad-source'))})?['/outside/AGENTS.md']:[]; const result={...${JSON.stringify(responseFixture)},thread:fullThread(id),model:mode === 'bad-policy'?'unexpected-model':params.model,cwd:params.cwd,instructionSources,sandbox}; if(mode==='bad-thread-schema') delete result.thread.sessionId; return result; };
   if (message.method === 'thread/start') return send({jsonrpc:'2.0',id:message.id,result:threadResult('thread-'+(++thread),message.params)});
+  if (message.method === 'thread/resume' && mode === 'resume-missing') return send({jsonrpc:'2.0',id:message.id,error:{code:-32600,message:'no rollout found for thread id'}});
   if (message.method === 'thread/resume') return send({jsonrpc:'2.0',id:message.id,result:threadResult(message.params.threadId,message.params)});
   if (message.method === 'command/exec') return send({jsonrpc:'2.0',id:message.id,result:{exitCode:0,stdout:'sandboxed command',stderr:''}});
+  if (message.method === 'turn/steer') {
+    if (fs.existsSync(${JSON.stringify(join(root, 'reject-steer'))})) {
+      return send({id:message.id,error:{code:-32602,message:'turn cannot accept this input'}});
+    }
+    const turnId = fs.existsSync(${JSON.stringify(join(root, 'bad-steer-ack'))}) ? 'different-turn' : message.params.expectedTurnId;
+    return send({id:message.id,result:{turnId}});
+  }
   if (message.method === 'turn/start') {
     if (mode === 'overloaded-once' && !overloaded) { overloaded = true; return send({jsonrpc:'2.0',id:message.id,error:{code:-32001,message:'Server overloaded; retry later.'}}); }
     if (mode === 'timeout') return;
     if (mode === 'timeout-once' && !fs.existsSync(${JSON.stringify(join(root, 'timed-out'))})) { fs.writeFileSync(${JSON.stringify(join(root, 'timed-out'))},'1'); return; }
     if (mode === 'exit') return process.exit(17);
+    if (mode === 'first-turn-rejected-once' && !fs.existsSync(${JSON.stringify(join(root, 'first-turn-rejected'))})) { fs.writeFileSync(${JSON.stringify(join(root, 'first-turn-rejected'))},'1'); return send({jsonrpc:'2.0',id:message.id,error:{code:-32602,message:'Input exceeds the maximum length'}}); }
     const id = 'turn-'+(++turn);
     if (['turn-start-error-held-once','turn-start-malformed-held-once'].includes(mode) && !fs.existsSync(${JSON.stringify(join(root, 'held-turn-start'))})) {
       fs.writeFileSync(${JSON.stringify(join(root, 'held-turn-start'))},'1');
@@ -254,13 +259,11 @@ rl.on('line', line => {
     }
     const requestBase = 700 + turn * 10;
     const earlyTool = mode === 'tool-early';
-    const toolParams = mode === 'code-act-tool-success'
-      ? {threadId:message.params.threadId,turnId:id,callId:'call-1',namespace:null,tool:'code_act',arguments:{code:'({ ok: true })'}}
-      : mode === 'auxiliary-write'
+    const toolParams = mode === 'auxiliary-write'
       ? {threadId:message.params.threadId,turnId:id,callId:'call-1',namespace:null,tool:'Write',arguments:{path:${JSON.stringify(join(root, 'auxiliary-output.txt'))},content:'written'}}
       : mode === 'auxiliary-bash'
       ? {threadId:message.params.threadId,turnId:id,callId:'call-1',namespace:null,tool:'Bash',arguments:{command:'pwd',workdir:${JSON.stringify(root)}}}
-      : {threadId:message.params.threadId,turnId:id,callId:'call-1',namespace:null,tool:'synthetic_lookup',arguments:{topic:'status'}};
+      : {threadId:message.params.threadId,turnId:id,callId:'call-1',namespace:null,tool:mode==='tool-dotted'?'deliver_drive':'synthetic_lookup',arguments:{topic:'status'}};
     const requestTool = (requestId, params, callback) => { toolReplies.set(requestId, callback); send({jsonrpc:'2.0',id:requestId,method:'item/tool/call',params}); };
     let toolReplyCount = 0;
     const afterToolReply = () => { toolReplyCount += 1; const expected=['tool-duplicate','tool-duplicate-conflict','tool-serialized'].includes(mode) ? 2 : 1; if(toolReplyCount === expected) complete(); };
@@ -287,7 +290,16 @@ rl.on('line', line => {
     send({jsonrpc:'2.0',method:'turn/completed',params:{threadId:message.params.threadId,turn:fullTurn('wrong-turn','completed')}});
     send({jsonrpc:'2.0',method:'turn/completed',params:{threadId:message.params.threadId,turn:fullTurn(id,'inProgress')}});
     const complete = () => {
-    send({jsonrpc:'2.0',method:'item/agentMessage/delta',params:{threadId:message.params.threadId,turnId:id,delta:'hello'}});
+    if (mode === 'commentary-final' || mode === 'missing-final') {
+      send({jsonrpc:'2.0',method:'item/started',params:{threadId:message.params.threadId,turnId:id,item:{id:'comment-'+id,type:'agentMessage',phase:'commentary',text:''}}});
+      send({jsonrpc:'2.0',method:'item/agentMessage/delta',params:{threadId:message.params.threadId,turnId:id,itemId:'comment-'+id,delta:'Checking status...'}});
+      send({jsonrpc:'2.0',method:'item/completed',params:{threadId:message.params.threadId,turnId:id,item:{id:'comment-'+id,type:'agentMessage',phase:'commentary',text:'Checking status...'}}});
+    }
+    if (mode !== 'missing-final') {
+      if (mode !== 'progress-delayed') send({jsonrpc:'2.0',method:'item/started',params:{threadId:message.params.threadId,turnId:id,item:{id:'final-'+id,type:'agentMessage',...(mode==='unphased-final'?{}:{phase:'final_answer'}),text:''}}});
+      send({jsonrpc:'2.0',method:'item/agentMessage/delta',params:{threadId:message.params.threadId,turnId:id,itemId:'final-'+id,delta:'hello'}});
+      send({jsonrpc:'2.0',method:'item/completed',params:{threadId:message.params.threadId,turnId:id,item:{id:'final-'+id,type:'agentMessage',...(mode==='unphased-final'?{}:{phase:'final_answer'}),text:'hello'}}});
+    }
     // Cumulative totals continue across turns AND child restarts (file-backed
     // counter), like a real durable thread - pins that resumed-history offsets
     // are never attributed to the current turn.
@@ -313,7 +325,11 @@ rl.on('line', line => {
     send({jsonrpc:'2.0',method:'turn/completed',params:{threadId:message.params.threadId,turn:fullTurn(id,'completed')}});
     if (mode === 'exit-after-turn') setTimeout(() => process.exit(23), 5);
     };
-    if (['tool-success','code-act-tool-success','auxiliary-write','auxiliary-bash','tool-failure','tool-null-result','tool-error-stop','tool-abort-completed-first','tool-terminal-exit','tool-interrupt-hang','tool-malformed','tool-malformed-once','tool-malformed-turn','tool-malformed-call','tool-malformed-tool','tool-malformed-namespace','tool-unknown','tool-duplicate','tool-duplicate-conflict','tool-serialized','tool-queue-cancel','tool-stop','tool-stale'].includes(mode)) {
+    if (mode === 'held-for-steer') {
+      const interval=setInterval(()=>{if(fs.existsSync(${JSON.stringify(join(root, 'release-held-turn'))})){clearInterval(interval);complete();}},5);
+      return;
+    }
+    if (['tool-success','tool-dotted','auxiliary-write','auxiliary-bash','tool-failure','tool-null-result','tool-error-stop','tool-abort-completed-first','tool-terminal-exit','tool-interrupt-hang','tool-malformed','tool-malformed-once','tool-malformed-turn','tool-malformed-call','tool-malformed-tool','tool-malformed-namespace','tool-unknown','tool-duplicate','tool-duplicate-conflict','tool-serialized','tool-queue-cancel','tool-stop','tool-stale'].includes(mode)) {
       if (mode === 'tool-stale' && fs.existsSync(${JSON.stringify(join(root, 'tool-issued'))})) { complete(); return; }
       if (mode === 'tool-stale') fs.writeFileSync(${JSON.stringify(join(root, 'tool-issued'))},'1');
       if (mode === 'tool-malformed-once' && fs.existsSync(${JSON.stringify(join(root, 'malformed-tool-issued'))})) { complete(); return; }
@@ -331,7 +347,8 @@ rl.on('line', line => {
       return;
     }
     if (earlyTool) return;
-    if (mode === 'progress-delayed') { let progress=0; const interval=setInterval(()=>{progress += 1;send({jsonrpc:'2.0',method:'item/agentMessage/delta',params:{threadId:message.params.threadId,turnId:id,delta:'tick'}});if(progress===4){clearInterval(interval);complete();}},25); }
+    if (mode === 'progress-reasoning') { let ticks=0; const interval=setInterval(()=>{ticks += 1;send({jsonrpc:'2.0',method:'item/completed',params:{threadId:message.params.threadId,turnId:id,item:{id:'reasoning-'+id+'-'+ticks,type:'reasoning',summary:[],content:[]}}});if(ticks===8){clearInterval(interval);complete();}},30); }
+    else if (mode === 'progress-delayed') { send({jsonrpc:'2.0',method:'item/started',params:{threadId:message.params.threadId,turnId:id,item:{id:'final-'+id,type:'agentMessage',phase:'final_answer',text:''}}}); let progress=0; const interval=setInterval(()=>{progress += 1;send({jsonrpc:'2.0',method:'item/agentMessage/delta',params:{threadId:message.params.threadId,turnId:id,itemId:'final-'+id,delta:'tick'}});if(progress===4){clearInterval(interval);complete();}},25); }
     else if (mode === 'delayed') { const interval=setInterval(()=>{if(fs.existsSync(${JSON.stringify(join(root, 'release'))})){clearInterval(interval);complete();}},5); } else if(mode === 'unknown-response') setTimeout(complete,20);
     else if (mode.startsWith('subagent')) {
       const RELEASE_LATE = ${JSON.stringify(join(root, 'release-late'))};
@@ -429,6 +446,10 @@ process.on('SIGTERM', () => { if (mode !== 'ignore-term') process.exit(0); });
       codexHome,
       isolatedHome,
       registryRoot,
+      // Where this fixture's "installed CLI" keeps its credential. The driver used to
+      // find it under $HOME; it is stated now, because a shared driver does not know
+      // whose home it is running in. The cases below write to this exact path.
+      authSourcePath: join(root, 'source-home', '.codex', 'auth.json'),
     },
   };
 }
@@ -464,6 +485,268 @@ afterEach(() => {
 });
 
 describe('Story: Codex app-server process', () => {
+  it('keeps the sanitized process environment and deny-read profile on spawn, start and resume', async () => {
+    const item = fixture();
+    vi.stubEnv('PRIVATE_PASSWORD', 'synthetic');
+    const options = {
+      ...item.options,
+      processEnv: { PATH: process.env.PATH },
+      deniedReadPaths: [join(item.root, 'private')],
+    };
+    const first = new CodexAppServerProcess(options);
+    try {
+      await first.prompt('first');
+    } finally {
+      await first.stop();
+    }
+    const second = new CodexAppServerProcess(options);
+    try {
+      await second.prompt('second');
+      const sent = messages(item.capture);
+      const launches = sent.filter((entry) => entry.argv);
+      expect(launches).toHaveLength(2);
+      for (const launch of launches) expect(launch.privateEnvPresent).toBe(false);
+      const starts = sent.filter(
+        (entry) => entry.method === 'thread/start' || entry.method === 'thread/resume'
+      );
+      expect(starts.map((entry) => entry.method)).toEqual(['thread/start', 'thread/resume']);
+      for (const start of starts) {
+        expect(start.params).toMatchObject({
+          permissions: 'host-workspace',
+          approvalPolicy: 'never',
+        });
+        expect(start.params).not.toHaveProperty('sandbox');
+      }
+      const config = readFileSync(join(item.options.codexHome!, 'config.toml'), 'utf8');
+      expect(config).toContain('default_permissions = "host-workspace"');
+      expect(config).toContain(`${JSON.stringify(join(item.root, 'private'))} = "deny"`);
+    } finally {
+      await second.stop();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('does not send turn/start when the durable dispatch write fails', async () => {
+    const item = fixture('held-for-steer');
+    const driver = new CodexAppServerProcess(item.options);
+    try {
+      await expect(
+        driver.prompt(
+          'inspect',
+          {
+            onInputDispatch: (input) => {
+              expect(input).toEqual({
+                backend: 'codex',
+                sessionId: 'thread-1',
+                inputId: 'durable-id',
+              });
+              throw new Error('disk full');
+            },
+          },
+          { nativeInputId: 'durable-id' }
+        )
+      ).rejects.toThrow('disk full');
+      expect(messages(item.capture).filter((entry) => entry.method === 'turn/start')).toEqual([]);
+    } finally {
+      await driver.stop();
+    }
+  });
+
+  it('TG-05 acknowledges native input before completion and steers the same active turn', async () => {
+    const item = fixture('held-for-steer');
+    const driver = new CodexAppServerProcess(item.options);
+    const accepted: unknown[] = [];
+    let completed = false;
+    const result = driver.prompt('investigate', {
+      onAccepted: (receipt: unknown) => accepted.push(receipt),
+    });
+    void result.then(
+      () => {
+        completed = true;
+      },
+      () => {}
+    );
+    try {
+      await vi.waitFor(() =>
+        expect(accepted).toEqual([{ backend: 'codex', sessionId: 'thread-1', turnId: 'turn-1' }])
+      );
+      expect(completed).toBe(false);
+      const target = { backend: 'codex', sessionId: 'thread-1', turnId: 'turn-1' } as const;
+      const beforeSend = vi.fn(() => {
+        expect(
+          messages(item.capture).filter((entry) => entry.method === 'turn/steer')
+        ).toHaveLength(0);
+      });
+      expect(
+        await driver.steer('use the corrected version', target, undefined, beforeSend)
+      ).toEqual(target);
+      expect(beforeSend).toHaveBeenCalledTimes(1);
+      expect(completed).toBe(false);
+      const sent = messages(item.capture);
+      expect(sent.filter((entry) => entry.method === 'turn/start')).toHaveLength(1);
+      expect(sent.find((entry) => entry.method === 'turn/steer')).toMatchObject({
+        params: {
+          threadId: 'thread-1',
+          expectedTurnId: 'turn-1',
+          input: [{ type: 'text', text: 'use the corrected version' }],
+        },
+      });
+      writeFileSync(join(item.root, 'release-held-turn'), '1');
+      await expect(result).resolves.toMatchObject({ response: 'hello' });
+      expect(accepted).toHaveLength(1);
+    } finally {
+      await driver.stop();
+      await result.catch(() => {});
+    }
+  });
+
+  it('passes the durable steer dispatch callback through CodexRuntimeProcess', async () => {
+    const item = fixture('held-for-steer');
+    const runtime = new CodexRuntimeProcess(item.options);
+    let receipt: { backend: 'codex'; sessionId: string; turnId: string } | undefined;
+    const result = runtime.prompt('investigate', {
+      onAccepted: (value) => {
+        if (value.backend === 'codex') receipt = value;
+      },
+    });
+    void result.catch(() => {});
+    try {
+      await vi.waitFor(() => expect(receipt).toBeDefined());
+      const beforeSend = vi.fn(() => {
+        expect(
+          messages(item.capture).filter((entry) => entry.method === 'turn/steer')
+        ).toHaveLength(0);
+      });
+      await expect(
+        runtime.steer('correction', receipt!, { sessionKey: 'default', beforeSend })
+      ).resolves.toEqual(receipt);
+      expect(beforeSend).toHaveBeenCalledTimes(1);
+      writeFileSync(join(item.root, 'release-held-turn'), '1');
+      await expect(result).resolves.toMatchObject({ response: 'hello' });
+    } finally {
+      await runtime.stop();
+      await result.catch(() => {});
+    }
+  });
+
+  it('refuses stale steering targets without creating a new turn or losing the active one', async () => {
+    const item = fixture('held-for-steer');
+    const driver = new CodexAppServerProcess(item.options);
+    let accepted = false;
+    const result = driver.prompt('investigate', {
+      onAccepted: () => {
+        accepted = true;
+      },
+    });
+    void result.catch(() => {});
+    try {
+      await vi.waitFor(() => expect(accepted).toBe(true));
+      const beforeSend = vi.fn();
+      await expect(
+        driver.steer(
+          'correction',
+          { backend: 'codex', sessionId: 'other', turnId: 'turn-1' },
+          undefined,
+          beforeSend
+        )
+      ).rejects.toBeInstanceOf(NativeSteeringTargetUnavailableError);
+      await expect(
+        driver.steer(
+          'correction',
+          { backend: 'codex', sessionId: 'thread-1', turnId: 'old' },
+          undefined,
+          beforeSend
+        )
+      ).rejects.toThrow(/active turn/);
+      await expect(
+        driver.steer(
+          'correction',
+          { backend: 'codex', sessionId: 'thread-1', turnId: 'turn-1' },
+          undefined,
+          () => {
+            throw new Error('journal unavailable');
+          }
+        )
+      ).rejects.toThrow('journal unavailable');
+      expect(beforeSend).not.toHaveBeenCalled();
+      expect(messages(item.capture).filter((entry) => entry.method === 'turn/steer')).toHaveLength(
+        0
+      );
+      writeFileSync(join(item.root, 'release-held-turn'), '1');
+      await expect(result).resolves.toMatchObject({ response: 'hello' });
+    } finally {
+      await driver.stop();
+      await result.catch(() => {});
+    }
+  });
+
+  it('does not replace a rejected or uncertain steer with another model turn', async () => {
+    const item = fixture('held-for-steer');
+    const driver = new CodexAppServerProcess(item.options);
+    let accepted = false;
+    const result = driver.prompt('investigate', {
+      onAccepted: () => {
+        accepted = true;
+      },
+    });
+    void result.catch(() => {});
+    try {
+      await vi.waitFor(() => expect(accepted).toBe(true));
+      const target = { backend: 'codex', sessionId: 'thread-1', turnId: 'turn-1' } as const;
+      writeFileSync(join(item.root, 'reject-steer'), '1');
+      await expect(driver.steer('correction', target)).rejects.toThrow('turn cannot accept');
+      rmSync(join(item.root, 'reject-steer'));
+      writeFileSync(join(item.root, 'bad-steer-ack'), '1');
+      await expect(driver.steer('another correction', target)).rejects.toThrow(/uncertain/);
+      expect(messages(item.capture).filter((entry) => entry.method === 'turn/start')).toHaveLength(
+        1
+      );
+      writeFileSync(join(item.root, 'release-held-turn'), '1');
+      await expect(result).resolves.toMatchObject({ response: 'hello' });
+    } finally {
+      await driver.stop();
+      await result.catch(() => {});
+    }
+  });
+
+  it('returns only final_answer when Codex emits commentary before the final message', async () => {
+    const item = fixture('commentary-final');
+    const runner = new CodexAppServerProcess(item.options);
+    const deltas: string[] = [];
+    try {
+      await expect(
+        runner.prompt('report', { onDelta: (text) => deltas.push(text) })
+      ).resolves.toMatchObject({ response: 'hello' });
+      expect(deltas).toEqual(['hello']);
+    } finally {
+      await runner.stop();
+    }
+  });
+
+  it('fails a completed turn with no final_answer instead of delivering commentary as the answer', async () => {
+    const item = fixture('missing-final');
+    const runner = new CodexAppServerProcess(item.options);
+    try {
+      await expect(runner.prompt('report')).rejects.toThrow(/final_answer/);
+    } finally {
+      await runner.stop();
+    }
+  });
+
+  it('uses an unphased terminal message without streaming text whose phase is unknown', async () => {
+    const item = fixture('unphased-final');
+    const runner = new CodexAppServerProcess(item.options);
+    const deltas: string[] = [];
+    try {
+      await expect(
+        runner.prompt('legacy provider', { onDelta: (text) => deltas.push(text) })
+      ).resolves.toMatchObject({ response: 'hello' });
+      expect(deltas).toEqual([]);
+    } finally {
+      await runner.stop();
+    }
+  });
+
   it('initializes, starts a durable thread, streams a matching turn, and resumes it', async () => {
     const item = fixture();
     const first = new CodexAppServerProcess(item.options);
@@ -616,6 +899,53 @@ describe('Story: Codex app-server process', () => {
     });
   });
 
+  it('advertises a Codex-safe name while executing the original dotted action', async () => {
+    const item = fixture('tool-dotted');
+    const calls: HostToolCall[] = [];
+    const runner = new CodexAppServerProcess(item.options);
+    const dottedTool: HostToolDefinition = {
+      ...dynamicTools[0],
+      name: 'deliver.drive',
+    };
+
+    await expect(
+      runner.prompt('hi', undefined, {
+        hostToolBridge: {
+          tools: [dottedTool],
+          execute: async (call) => {
+            calls.push(call);
+            return { content: 'lookup ready', isError: false };
+          },
+        },
+      })
+    ).resolves.toMatchObject({ response: 'hello' });
+    await runner.stop();
+
+    expect(
+      (
+        messages(item.capture).find((entry) => entry.method === 'thread/start')?.params as Record<
+          string,
+          HostToolDefinition[]
+        >
+      ).dynamicTools
+    ).toEqual([expect.objectContaining({ name: 'deliver_drive' })]);
+    expect(calls).toEqual([expect.objectContaining({ name: 'deliver.drive' })]);
+  });
+
+  it('rejects product action names that collapse to the same Codex tool name', async () => {
+    const item = fixture('tool-success');
+    const runner = new CodexAppServerProcess(item.options);
+    const tools: HostToolDefinition[] = ['deliver.drive', 'deliver_drive'].map((name) => ({
+      ...dynamicTools[0],
+      name,
+    }));
+
+    await expect(
+      runner.prompt('hi', undefined, { hostToolBridge: { ...hostBridge(), tools } })
+    ).rejects.toThrow('Codex dynamic tool names collide at deliver_drive');
+    await runner.stop();
+  });
+
   it.each([
     ['auxiliary-write', ['Write'], 'auxiliary-output.txt'],
     ['auxiliary-bash', ['Bash'], undefined],
@@ -659,6 +989,105 @@ describe('Story: Codex app-server process', () => {
       }
     }
   );
+
+  it('keeps a restricted-read turn separate from an unrestricted owner thread', async () => {
+    const item = fixture();
+    const runner = new CodexRuntimeProcess(item.options);
+    const publicRoot = join(item.root, 'public-only');
+    mkdirSync(publicRoot);
+    try {
+      await expect(
+        runner.prompt('public input', undefined, {
+          sessionKey: 'public:channel',
+          restrictedReadRoots: [publicRoot],
+          cwd: publicRoot,
+        })
+      ).resolves.toMatchObject({ response: 'hello' });
+      expect(
+        runner.getSessionPolicyStatus({
+          sessionKey: 'public:channel',
+          restrictedReadRoots: [publicRoot],
+          cwd: publicRoot,
+        })
+      ).toBe('compatible');
+      const narrowerRoot = join(publicRoot, 'narrower');
+      mkdirSync(narrowerRoot);
+      expect(
+        runner.getSessionPolicyStatus({
+          sessionKey: 'public:channel',
+          restrictedReadRoots: [narrowerRoot],
+          cwd: narrowerRoot,
+        })
+      ).toBe('mismatch');
+      await expect(
+        runner.prompt('owner input', undefined, { sessionKey: 'owner:runtime' })
+      ).resolves.toMatchObject({ response: 'hello' });
+      await expect(
+        runner.prompt('invalid public roots', undefined, {
+          sessionKey: 'public:other',
+          restrictedReadRoots: [],
+        })
+      ).rejects.toThrow('at least one real root');
+      await expect(
+        runner.prompt('outside public root', undefined, {
+          sessionKey: 'public:escape',
+          restrictedReadRoots: [publicRoot],
+          cwd: item.root,
+        })
+      ).rejects.toThrow('working directory must be inside a readable root');
+    } finally {
+      await runner.stop();
+    }
+    const sent = messages(item.capture);
+    const starts = sent.filter((entry) => entry.method === 'thread/start');
+    const turns = sent.filter((entry) => entry.method === 'turn/start');
+    expect(starts).toHaveLength(2);
+    expect(starts[0]?.params).toMatchObject({
+      sandbox: 'read-only',
+      cwd: realpathSync(publicRoot),
+      config: { features: { multi_agent: false, multi_agent_v2: false } },
+    });
+    expect(turns[0]?.params).toMatchObject({
+      sandboxPolicy: {
+        type: 'readOnly',
+        access: {
+          type: 'restricted',
+          includePlatformDefaults: true,
+          readableRoots: [realpathSync(publicRoot)],
+        },
+      },
+    });
+    expect(starts[1]?.params).toMatchObject({ sandbox: 'workspace-write', config: {} });
+    expect(turns[1]?.params).not.toHaveProperty('sandboxPolicy');
+  });
+
+  it('reapplies the restricted thread child policy on durable resume', async () => {
+    const item = fixture();
+    const publicRoot = join(item.root, 'public-only');
+    mkdirSync(publicRoot);
+    const first = new CodexRuntimeProcess(item.options);
+    await first.prompt('first public input', undefined, {
+      sessionKey: 'public:channel',
+      restrictedReadRoots: [publicRoot],
+      cwd: publicRoot,
+    });
+    await first.stop();
+
+    const resumed = new CodexRuntimeProcess(item.options);
+    await resumed.prompt('second public input', undefined, {
+      sessionKey: 'public:channel',
+      restrictedReadRoots: [publicRoot],
+      cwd: publicRoot,
+    });
+    await resumed.stop();
+
+    const sent = messages(item.capture);
+    expect(sent.filter((entry) => entry.method === 'thread/start')).toHaveLength(1);
+    expect(sent.find((entry) => entry.method === 'thread/resume')?.params).toMatchObject({
+      sandbox: 'read-only',
+      config: { features: { multi_agent: false, multi_agent_v2: false } },
+    });
+  });
 
   it('returns a native tool failure to Codex without turning it into empty success', async () => {
     const item = fixture('tool-failure');
@@ -947,7 +1376,7 @@ describe('Story: Codex app-server process', () => {
     const item = fixture('tool-success');
     const boardTool: HostToolBridge['tools'][number] = {
       type: 'function',
-      name: 'board_read',
+      name: 'report.read',
       description: 'Read the board',
       inputSchema: { type: 'object', properties: {}, additionalProperties: true },
     };
@@ -1063,14 +1492,14 @@ describe('Story: Codex app-server process', () => {
           content: 'Mutation outcome is unknown',
           isError: true,
           abort: true,
-          terminalCode: 'CODE_ACT_MUTATION_OUTCOME_UNKNOWN',
+          terminalCode: 'MUTATION_OUTCOME_UNKNOWN',
         })),
       })
       .catch((error: unknown) => error);
 
     expect(failure).toBeInstanceOf(HostToolTerminalError);
     expect(failure).toMatchObject({
-      terminalCode: 'CODE_ACT_MUTATION_OUTCOME_UNKNOWN',
+      terminalCode: 'MUTATION_OUTCOME_UNKNOWN',
       retryable: false,
     });
     await runner.stop();
@@ -1106,7 +1535,11 @@ describe('Story: Codex app-server process', () => {
       // This timeout also covers spawning and initializing the fake Node app-server.
       // Keep enough headroom for a loaded full-suite worker; the assertion targets
       // terminal-result preservation after settlement disruption, not startup latency.
-      const runner = new CodexAppServerProcess({ ...item.options, requestTimeout: 2_000 });
+      const runner = new CodexAppServerProcess({
+        hostRootDir: '/tmp/mama-test-host',
+        ...item.options,
+        requestTimeout: 2_000,
+      });
 
       const failure = await runner
         .prompt('hi', undefined, {
@@ -1114,14 +1547,14 @@ describe('Story: Codex app-server process', () => {
             content: 'Mutation outcome is unknown',
             isError: true,
             abort: true,
-            terminalCode: 'CODE_ACT_MUTATION_OUTCOME_UNKNOWN',
+            terminalCode: 'MUTATION_OUTCOME_UNKNOWN',
           })),
         })
         .catch((error: unknown) => error);
 
       expect(failure).toBeInstanceOf(HostToolTerminalError);
       expect(failure).toMatchObject({
-        terminalCode: 'CODE_ACT_MUTATION_OUTCOME_UNKNOWN',
+        terminalCode: 'MUTATION_OUTCOME_UNKNOWN',
         retryable: false,
       });
       await runner.stop();
@@ -1208,14 +1641,22 @@ describe('Story: Codex app-server process', () => {
     await expect(first.prompt('hi')).rejects.toThrow('malformed JSON');
     await first.stop();
     const timeout = fixture('timeout');
-    const second = new CodexAppServerProcess({ ...timeout.options, requestTimeout: 40 });
+    const second = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...timeout.options,
+      requestTimeout: 40,
+    });
     await expect(second.prompt('hi')).rejects.toThrow('timed out');
     await second.stop();
   });
 
   it('applies a per-prompt timeout override while initialize is pending', async () => {
     const item = fixture('init-timeout');
-    const runner = new CodexAppServerProcess({ ...item.options, requestTimeout: 2_000 });
+    const runner = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      requestTimeout: 2_000,
+    });
 
     await expect(runner.prompt('hi', undefined, { requestTimeout: 35 })).rejects.toThrow(
       'initialize timed out after 35ms'
@@ -1231,7 +1672,11 @@ describe('Story: Codex app-server process', () => {
       // a loaded CI runner to start the fixture before exercising its intentional timeout mode,
       // but below the 2s cleanup wait: after the turn times out, the child is reaped by the
       // reconciliation timer at max(budget, grace), so a 2s budget would race the waitFor.
-      const runner = new CodexAppServerProcess({ ...item.options, requestTimeout: 1_000 });
+      const runner = new CodexAppServerProcess({
+        hostRootDir: '/tmp/mama-test-host',
+        ...item.options,
+        requestTimeout: 1_000,
+      });
       let settlements = 0;
       await runner.prompt('hi').then(
         () => {
@@ -1288,7 +1733,11 @@ describe('Story: Codex app-server process', () => {
     const aliasHome = join(item.root, 'alias-managed-codex');
     mkdirSync(realHome);
     symlinkSync(realHome, aliasHome, 'dir');
-    const runner = new CodexAppServerProcess({ ...item.options, codexHome: aliasHome });
+    const runner = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      codexHome: aliasHome,
+    });
     await expect(runner.prompt('hi')).resolves.toMatchObject({ response: 'hello' });
     await runner.stop();
   });
@@ -1379,12 +1828,14 @@ describe('Story: Codex app-server process', () => {
   it('resumes after a rebuilt system prompt and reuses the shared homes', async () => {
     const item = fixture();
     const first = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
       ...item.options,
       policyFingerprint: 'stable-policy',
     });
     await first.prompt('hi');
     await first.stop();
     const changed = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
       ...item.options,
       systemPrompt: 'changed',
       policyFingerprint: 'stable-policy',
@@ -1407,10 +1858,15 @@ describe('Story: Codex app-server process', () => {
 
   it('rejects a stable policy fingerprint change even when dynamic prompt resume is allowed', async () => {
     const item = fixture();
-    const first = new CodexAppServerProcess({ ...item.options, policyFingerprint: 'policy-one' });
+    const first = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      policyFingerprint: 'policy-one',
+    });
     await first.prompt('hi');
     await first.stop();
     const changed = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
       ...item.options,
       systemPrompt: 'rebuilt with history',
       policyFingerprint: 'policy-two',
@@ -1438,6 +1894,7 @@ describe('Story: Codex app-server process', () => {
     async ({ initialFingerprint, currentFingerprint, currentPolicy }) => {
       const item = fixture();
       const original = new CodexAppServerProcess({
+        hostRootDir: '/tmp/mama-test-host',
         ...item.options,
         systemPrompt: 'original durable private policy',
         policyFingerprint: initialFingerprint,
@@ -1446,6 +1903,7 @@ describe('Story: Codex app-server process', () => {
       await original.stop();
 
       const replacement = new CodexAppServerProcess({
+        hostRootDir: '/tmp/mama-test-host',
         ...item.options,
         systemPrompt: currentPolicy,
         policyFingerprint: currentFingerprint,
@@ -1489,16 +1947,16 @@ describe('Story: Codex app-server process', () => {
   it.each([
     {
       direction: 'narrowing',
-      initial: 'code-act:allowed=mama_search,report_publish',
-      changed: 'code-act:allowed=mama_search',
+      initial: 'tools:allowed=mama_search,report.publish',
+      changed: 'tools:allowed=mama_search',
     },
     {
       direction: 'widening',
-      initial: 'code-act:allowed=mama_search',
-      changed: 'code-act:allowed=mama_search,report_publish',
+      initial: 'tools:allowed=mama_search',
+      changed: 'tools:allowed=mama_search,report.publish',
     },
   ])(
-    'rejects same-session Code-Act policy $direction with an unchanged outer tool signature',
+    'rejects same-session tool policy $direction with an unchanged outer tool signature',
     async ({ initial, changed }) => {
       const item = fixture();
       const first = new CodexAppServerProcess(item.options);
@@ -1571,118 +2029,6 @@ describe('Story: Codex app-server process', () => {
     });
     await runtime.stop();
   });
-
-  it.each([
-    {
-      agentId: 'dashboard-agent',
-      source: 'discord',
-      channelId: 'dashboard-channel',
-      tier: 2 as const,
-      allowedTools: ['mama_search', 'report_publish'],
-    },
-    {
-      agentId: 'wiki-agent',
-      source: 'slack',
-      channelId: 'wiki-channel',
-      tier: 2 as const,
-      allowedTools: ['mama_search', 'wiki_publish'],
-    },
-    {
-      agentId: 'conductor',
-      source: 'telegram',
-      channelId: 'multi-agent-channel',
-      tier: 1 as const,
-      allowedTools: ['mama_search', 'discord_send'],
-    },
-  ])(
-    'routes managed Codex Code-Act for $agentId through the boot-shared executor with context',
-    async ({ agentId, source, channelId, tier, allowedTools }) => {
-      const item = fixture('code-act-tool-success');
-      const personaPath = join(item.root, `${agentId}.md`);
-      writeFileSync(personaPath, `# ${agentId}\nManaged test persona.\n`, 'utf8');
-      const config: MultiAgentConfig = {
-        enabled: true,
-        agents: {
-          [agentId]: {
-            name: agentId,
-            display_name: agentId,
-            trigger_prefix: `!${agentId}`,
-            persona_file: personaPath,
-            backend: 'codex',
-            model: 'gpt-test',
-            tier,
-            useCodeAct: true,
-            gateway_tool_permissions: { allowed: allowedTools, blocked: ['mama_save'] },
-          },
-        },
-        loop_prevention: {
-          max_chain_length: 3,
-          global_cooldown_ms: 0,
-          chain_window_ms: 60_000,
-        },
-      };
-      const mamaApi = {
-        beginModelRun: async () => ({ model_run_id: `run-${agentId}`, status: 'running' }),
-        commitModelRun: async () => ({ model_run_id: `run-${agentId}`, status: 'committed' }),
-        failModelRun: async () => ({ model_run_id: `run-${agentId}`, status: 'failed' }),
-        appendToolTrace: async () => ({ success: true }),
-      } as unknown as MAMAApiInterface;
-      const executor = new GatewayToolExecutor({ mamaApi, envelopeIssuanceMode: 'off' });
-      const executeSpy = vi.spyOn(executor, 'execute');
-      const manager = new AgentProcessManager(
-        config,
-        {},
-        {
-          model: 'gpt-test',
-          codexCwd: item.root,
-          codexCommand: item.command,
-          codexSandbox: 'workspace-write',
-          codexHome: item.options.codexHome,
-          codexIsolatedHome: item.options.isolatedHome,
-          codexRegistryRoot: item.options.registryRoot,
-          requestTimeout: 2_000,
-        }
-      );
-      manager.setGatewayToolExecutor(executor);
-
-      const process = await manager.getProcess(source, channelId, agentId);
-      await expect(process.sendMessage('Run the managed task')).resolves.toMatchObject({
-        response: 'hello',
-      });
-
-      const starts = messages(item.capture).filter((entry) => entry.method === 'thread/start');
-      expect(starts).toHaveLength(1);
-      expect((starts[0].params as Record<string, unknown>).dynamicTools).toEqual([
-        expect.objectContaining({ name: 'code_act' }),
-      ]);
-      const codeActCall = executeSpy.mock.calls.find(([toolName]) => toolName === 'code_act');
-      expect(codeActCall).toBeDefined();
-      const expectedRoleAllowedTools = ['code_act', ...allowedTools].sort();
-      expect(codeActCall?.[2]).toMatchObject({
-        agentId,
-        source,
-        channelId,
-        executionSurface: 'model_tool',
-        agentContext: {
-          roleName: agentId,
-          source,
-          tier,
-          backend: 'codex',
-          role: {
-            allowedTools: expectedRoleAllowedTools,
-            blockedTools: expect.arrayContaining([
-              'mama_save',
-              'kagemusha_overview',
-              'kagemusha_entities',
-              'kagemusha_messages',
-            ]),
-          },
-          session: { channelId },
-        },
-      });
-      await manager.stopAll();
-    }
-  );
 
   it('multiplexes concurrent sessions through one initialized app-server process', async () => {
     const item = fixture();
@@ -1759,7 +2105,11 @@ describe('Story: Codex app-server process', () => {
     'reconciles $mode received after the outer deadline before retrying',
     async ({ mode, expectedLaunches }) => {
       const item = fixture(mode);
-      const runner = new CodexAppServerProcess({ ...item.options, requestTimeout: 2_000 });
+      const runner = new CodexAppServerProcess({
+        hostRootDir: '/tmp/mama-test-host',
+        ...item.options,
+        requestTimeout: 2_000,
+      });
       const first = runner.prompt('first');
       await waitForFile(join(item.root, 'held-turn-start'));
       const firstStart = messages(item.capture).find((entry) => entry.method === 'turn/start');
@@ -1784,7 +2134,11 @@ describe('Story: Codex app-server process', () => {
 
   it('ONE-MAMA-P3 Task 4 AC #4: interrupts a codex turn whose counted usage crosses the run budget', async () => {
     const item = fixture('tool-success');
-    const runner = new CodexAppServerProcess({ ...item.options, requestTimeout: 2_000 });
+    const runner = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      requestTimeout: 2_000,
+    });
     try {
       // The fixture's first total-bearing usage event counts 8 + 6 + 3 = 17 tokens for the turn.
       await expect(runner.prompt('long', undefined, { runTokenBudget: 10 })).rejects.toThrow(
@@ -1809,7 +2163,11 @@ describe('Story: Codex app-server process', () => {
 
   it('aborts an active host tool before reporting a turn timeout', async () => {
     const item = fixture('tool-success');
-    const runner = new CodexAppServerProcess({ ...item.options, requestTimeout: 2_000 });
+    const runner = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      requestTimeout: 2_000,
+    });
     let observedAbort = false;
     let resolveToolStarted: (() => void) | undefined;
     const toolStarted = new Promise<void>((resolve) => {
@@ -1850,7 +2208,11 @@ describe('Story: Codex app-server process', () => {
 
   it('promotes a terminal mutation settled after timeout over the original cancellation', async () => {
     const item = fixture('tool-success');
-    const runner = new CodexAppServerProcess({ ...item.options, requestTimeout: 2_000 });
+    const runner = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      requestTimeout: 2_000,
+    });
     let resolveToolStarted: (() => void) | undefined;
     const toolStarted = new Promise<void>((resolve) => {
       resolveToolStarted = resolve;
@@ -1869,7 +2231,7 @@ describe('Story: Codex app-server process', () => {
                       content: 'Mutation outcome is unknown',
                       isError: true,
                       abort: true,
-                      terminalCode: 'CODE_ACT_MUTATION_OUTCOME_UNKNOWN',
+                      terminalCode: 'MUTATION_OUTCOME_UNKNOWN',
                     }),
                   20
                 );
@@ -1893,7 +2255,7 @@ describe('Story: Codex app-server process', () => {
     const failure = await prompt.catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(HostToolTerminalError);
     expect(failure).toMatchObject({
-      terminalCode: 'CODE_ACT_MUTATION_OUTCOME_UNKNOWN',
+      terminalCode: 'MUTATION_OUTCOME_UNKNOWN',
       retryable: false,
     });
     await runner.stop();
@@ -1903,7 +2265,11 @@ describe('Story: Codex app-server process', () => {
   // AC: streamed progress refreshes the idle deadline beyond the original timeout.
   it('treats streamed progress as activity and refreshes the turn idle timeout', async () => {
     const item = fixture('progress-delayed');
-    const runner = new CodexAppServerProcess({ ...item.options, requestTimeout: 2_000 });
+    const runner = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      requestTimeout: 2_000,
+    });
     await runner.prompt('warm connection');
     // Keep real subprocess I/O, but advance the parent's idle clock on each received delta.
     // A 45ms wall timeout with 25ms child ticks races CI scheduling; this still proves that
@@ -1922,10 +2288,48 @@ describe('Story: Codex app-server process', () => {
           },
           { requestTimeout: 45 }
         )
-      ).resolves.toMatchObject({ response: 'ticktickticktickhello' });
+      ).resolves.toMatchObject({ response: 'hello' });
       expect(advancedMs).toBeGreaterThan(45);
     } finally {
       vi.useRealTimers();
+      await runner.stop();
+    }
+  });
+
+  it('forgets a thread whose first turn was rejected so the next turn opens a new one', async () => {
+    // Live 2026-09-25: an input-length rejection left the new thread saved without a rollout,
+    // and every later turn failed resuming it ("no rollout found").
+    const item = fixture('first-turn-rejected-once');
+    const runner = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+    });
+    try {
+      await expect(runner.prompt('too long')).rejects.toThrow(/maximum length/);
+      await expect(runner.prompt('next')).resolves.toMatchObject({ response: 'hello' });
+      const sent = messages(item.capture);
+      expect(sent.filter((entry) => entry.method === 'thread/start')).toHaveLength(2);
+      expect(sent.filter((entry) => entry.method === 'thread/resume')).toHaveLength(0);
+    } finally {
+      await runner.stop();
+    }
+  });
+
+  it('treats completed reasoning items as progress so a long thinking step is not cut', async () => {
+    // Live 2026-09-25: at effort max a reasoning-only phase of >5 min was aborted as
+    // "without progress" although Codex completed a reasoning item every ~10 s.
+    const item = fixture('progress-reasoning');
+    const runner = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      requestTimeout: 2_000,
+    });
+    await runner.prompt('warm connection');
+    try {
+      await expect(
+        runner.prompt('long reasoning', undefined, { requestTimeout: 150 })
+      ).resolves.toMatchObject({ response: 'hello' });
+    } finally {
       await runner.stop();
     }
   });
@@ -2006,6 +2410,7 @@ describe('Story: Codex app-server process', () => {
     await first.stop();
 
     const changed = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
       ...item.options,
       policyFingerprint: 'changed-policy',
     });
@@ -2024,7 +2429,11 @@ describe('Story: Codex app-server process', () => {
       mcpConfigPath,
       JSON.stringify({ mcpServers: { remote: { command: 'node', env_vars: ['TEST_SECRET'] } } })
     );
-    const process = new CodexAppServerProcess({ ...item.options, mcpConfigPath });
+    const process = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      mcpConfigPath,
+    });
     let message = '';
     try {
       await process.prompt('hi');
@@ -2053,7 +2462,11 @@ describe('Story: Codex app-server process', () => {
     const previousSecret = globalThis.process.env.TEST_SECRET;
     try {
       globalThis.process.env.TEST_SECRET = 'first-secret';
-      const runner = new CodexAppServerProcess({ ...item.options, mcpConfigPath });
+      const runner = new CodexAppServerProcess({
+        hostRootDir: '/tmp/mama-test-host',
+        ...item.options,
+        mcpConfigPath,
+      });
       await runner.prompt('first');
       globalThis.process.env.TEST_SECRET = 'second-secret';
       await runner.prompt('second');
@@ -2086,7 +2499,11 @@ describe('Story: Codex app-server process', () => {
         },
       })
     );
-    const runner = new CodexAppServerProcess({ ...item.options, mcpConfigPath });
+    const runner = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      mcpConfigPath,
+    });
     let message = '';
     try {
       await runner.prompt('hi');
@@ -2106,8 +2523,16 @@ describe('Story: Codex app-server process', () => {
     const previousHome = process.env.HOME;
     process.env.HOME = sourceHome;
     try {
-      const one = new CodexAppServerProcess({ ...item.options, sessionKey: 'one' });
-      const two = new CodexAppServerProcess({ ...item.options, sessionKey: 'two' });
+      const one = new CodexAppServerProcess({
+        hostRootDir: '/tmp/mama-test-host',
+        ...item.options,
+        sessionKey: 'one',
+      });
+      const two = new CodexAppServerProcess({
+        hostRootDir: '/tmp/mama-test-host',
+        ...item.options,
+        sessionKey: 'two',
+      });
       await Promise.all([one.prompt('a'), two.prompt('b')]);
       await Promise.all([one.stop(), two.stop()]);
       expect(readFileSync(join(item.options.codexHome!, 'auth.json'), 'utf8')).toContain('abc');
@@ -2197,7 +2622,11 @@ describe('Story: Codex app-server process', () => {
       // ..., requestTimeout)). 200ms is below cold-spawn latency on a loaded machine
       // and failed with "initialize timed out after 200ms"; 500ms is the value the
       // rest of this file uses for spawn-covering timeouts.
-      const runner = new CodexAppServerProcess({ ...item.options, requestTimeout: 2_000 });
+      const runner = new CodexAppServerProcess({
+        hostRootDir: '/tmp/mama-test-host',
+        ...item.options,
+        requestTimeout: 2_000,
+      });
       if (mode === 'exit-after-turn') {
         await runner.prompt('first');
         await new Promise((resolve) => setTimeout(resolve, 30));
@@ -2221,6 +2650,7 @@ describe('Story: Codex app-server process', () => {
   it('delivers fresh runtime bootstrap context when resuming a durable thread', async () => {
     const item = fixture();
     const first = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
       ...item.options,
       systemPrompt: 'initial runtime bootstrap',
       policyFingerprint: 'stable-policy',
@@ -2229,6 +2659,7 @@ describe('Story: Codex app-server process', () => {
     await first.stop();
 
     const resumed = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
       ...item.options,
       systemPrompt: 'fresh runtime bootstrap after restart',
       policyFingerprint: 'stable-policy',
@@ -2252,6 +2683,7 @@ describe('Story: Codex app-server process', () => {
   it('omits baseInstructions on thread/resume when no resume instructions are supplied', async () => {
     const item = fixture();
     const first = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
       ...item.options,
       systemPrompt: 'initial runtime bootstrap',
       policyFingerprint: 'stable-policy',
@@ -2260,6 +2692,7 @@ describe('Story: Codex app-server process', () => {
     await first.stop();
 
     const resumed = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
       ...item.options,
       systemPrompt: 'minimal per-call prompt',
       policyFingerprint: 'stable-policy',
@@ -2275,6 +2708,7 @@ describe('Story: Codex app-server process', () => {
   it('carries resume instructions on thread/resume instead of the turn-text bootstrap', async () => {
     const item = fixture();
     const first = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
       ...item.options,
       systemPrompt: 'initial runtime bootstrap',
       policyFingerprint: 'stable-policy',
@@ -2283,6 +2717,7 @@ describe('Story: Codex app-server process', () => {
     await first.stop();
 
     const resumed = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
       ...item.options,
       systemPrompt: 'minimal per-call prompt',
       policyFingerprint: 'stable-policy',
@@ -2318,6 +2753,7 @@ describe('Story: Codex app-server process', () => {
     try {
       const item = fixture();
       const first = new CodexAppServerProcess({
+        hostRootDir: '/tmp/mama-test-host',
         ...item.options,
         systemPrompt: 'initial runtime bootstrap',
         policyFingerprint: 'stable-policy',
@@ -2328,6 +2764,7 @@ describe('Story: Codex app-server process', () => {
       await first.stop();
 
       const resumed = new CodexAppServerProcess({
+        hostRootDir: '/tmp/mama-test-host',
         ...item.options,
         systemPrompt: 'minimal per-call prompt',
         policyFingerprint: 'stable-policy',
@@ -2359,6 +2796,7 @@ describe('Story: Codex app-server process', () => {
     try {
       const item = fixture();
       const first = new CodexAppServerProcess({
+        hostRootDir: '/tmp/mama-test-host',
         ...item.options,
         systemPrompt: 'initial runtime bootstrap',
         policyFingerprint: 'stable-policy',
@@ -2367,6 +2805,7 @@ describe('Story: Codex app-server process', () => {
       await first.stop();
 
       const resumed = new CodexAppServerProcess({
+        hostRootDir: '/tmp/mama-test-host',
         ...item.options,
         systemPrompt: 'fresh runtime bootstrap after restart',
         policyFingerprint: 'stable-policy',
@@ -2386,6 +2825,7 @@ describe('Story: Codex app-server process', () => {
   it('does not build resume instructions while the durable thread stays live', async () => {
     const item = fixture();
     const runner = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
       ...item.options,
       systemPrompt: 'initial durable policy',
       policyFingerprint: 'stable-policy',
@@ -2404,6 +2844,7 @@ describe('Story: Codex app-server process', () => {
   it('does not re-inject a per-call system prompt while the same durable thread stays live', async () => {
     const item = fixture();
     const runner = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
       ...item.options,
       systemPrompt: 'initial durable policy',
       policyFingerprint: 'stable-policy',
@@ -2489,7 +2930,11 @@ describe('Story: Codex app-server process', () => {
 
   it('writes the configured reasoning effort into the managed config', async () => {
     const item = fixture();
-    const runner = new CodexAppServerProcess({ ...item.options, effort: 'xhigh' });
+    const runner = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      effort: 'xhigh',
+    });
     await runner.prompt('first');
 
     const config = readFileSync(join(item.options.codexHome!, 'config.toml'), 'utf8');
@@ -2516,7 +2961,11 @@ describe('Story: Codex app-server process', () => {
     await first.stop();
     expect(readFileSync(configPath, 'utf8')).toContain('model_reasoning_effort = "high"');
 
-    const changed = new CodexAppServerProcess({ ...item.options, effort: 'low' });
+    const changed = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      effort: 'low',
+    });
     await changed.prompt('second');
 
     expect(readFileSync(configPath, 'utf8')).toContain('model_reasoning_effort = "low"');
@@ -2537,7 +2986,11 @@ describe('Story: Codex app-server process', () => {
 
   it('fails loud on an unsupported configured reasoning effort', async () => {
     const item = fixture();
-    const runner = new CodexAppServerProcess({ ...item.options, effort: 'ultra' });
+    const runner = new CodexAppServerProcess({
+      hostRootDir: '/tmp/mama-test-host',
+      ...item.options,
+      effort: 'ultra',
+    });
 
     await expect(runner.prompt('first')).rejects.toThrow(/reasoning effort/i);
     await runner.stop();
@@ -2549,15 +3002,15 @@ it('TG-03/04/05/06 observes exact-turn native effects once without duplicating M
   const runtime = new CodexAppServerProcess(testFixture.options);
   const events: string[] = [];
   try {
-    await runtime.prompt('test', {
+    const result = await runtime.prompt('test', {
       onToolUse: (name, input) => events.push(`start:${name}:${input.nativeToolUseId}`),
       onToolComplete: (name, id, isError) => events.push(`end:${name}:${id}:${isError}`),
     });
     expect(events).toEqual([
-      'start:commandExecution:native-1',
-      'end:commandExecution:native-1:false',
-      'start:fileChange:native-2',
-      'end:fileChange:native-2:false',
+      `start:commandExecution:${JSON.stringify([result.session_id, 'native-1'])}`,
+      `end:commandExecution:${JSON.stringify([result.session_id, 'native-1'])}:false`,
+      `start:fileChange:${JSON.stringify([result.session_id, 'native-2'])}`,
+      `end:fileChange:${JSON.stringify([result.session_id, 'native-2'])}:false`,
     ]);
   } finally {
     await runtime.stop();
@@ -2580,7 +3033,7 @@ it.each(['native-effects-failed', 'native-effects-pending'])(
           throw boundary.failure(error);
         });
       await expect(execution).rejects.toMatchObject({
-        code: 'CODE_ACT_MUTATION_OUTCOME_UNKNOWN',
+        code: 'MUTATION_OUTCOME_UNKNOWN',
         retryable: false,
       });
       expect(
@@ -2592,473 +3045,112 @@ it.each(['native-effects-failed', 'native-effects-pending'])(
   }
 );
 
-describe('Story: Codex native subagents', () => {
-  async function waitForEvent(
-    events: readonly SubagentEvent[],
-    kind: SubagentEvent['kind']
-  ): Promise<void> {
-    for (let attempt = 0; attempt < 400; attempt += 1) {
-      if (events.some((event) => event.kind === kind)) return;
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
-    throw new Error(`Timed out waiting for a ${kind} subagent event`);
-  }
-
-  /** The child starts only once the test releases it, so ordering is not a timing race. */
-  function releaseChild(root: string): void {
-    writeFileSync(join(root, 'release-child'), '1');
-  }
-
-  /** Lets the child's OWN turn/completed arrive after the grace already fired. */
-  function releaseLateChildTurn(root: string): void {
-    writeFileSync(join(root, 'release-late'), '1');
-  }
-
-  function subagentAuthority(
-    execute: HostToolBridge['execute'] = async () => ({
-      content: 'child lookup child',
-      isError: false,
-    })
-  ): {
-    factory: (info: SubagentBridgeRequest) => Promise<SubagentBridge | null>;
-    requests: SubagentBridgeRequest[];
-    released: Array<{ status: string; error?: string }>;
-  } {
-    const requests: SubagentBridgeRequest[] = [];
-    const released: Array<{ status: string; error?: string }> = [];
-    return {
-      requests,
-      released,
-      factory: async (info) => {
-        requests.push(info);
-        return {
-          bridge: hostBridge(execute),
-          release: async (outcome) => {
-            released.push(outcome);
+describe('settled Codex startup context', () => {
+  it('does not retain an empty thread when startup assembly fails before dispatch', async () => {
+    const item = fixture();
+    const first = new CodexAppServerProcess(item.options);
+    try {
+      await expect(
+        first.prompt('current', undefined, {
+          preparePrompt: async () => {
+            throw new Error('context unavailable');
           },
-        };
-      },
-    };
-  }
-
-  it('gives a child its OWN authority and releases it with the terminal status', async () => {
-    const item = fixture('subagent');
-    const events: SubagentEvent[] = [];
-    const calls: HostToolCall[] = [];
-    const authority = subagentAuthority(async (call) => {
-      calls.push(call);
-      return { content: `child lookup ${String(call.input.topic)}`, isError: false };
-    });
-    const parentCalls: HostToolCall[] = [];
-    const runner = new CodexAppServerProcess({
-      ...item.options,
-      onSubagentEvent: (event) => events.push(event),
-      createSubagentBridge: authority.factory,
-    });
-
-    await expect(
-      runner.prompt('hi', undefined, {
-        hostToolBridge: hostBridge(async (call) => {
-          parentCalls.push(call);
-          return { content: 'parent lookup', isError: false };
-        }),
-      })
-    ).resolves.toMatchObject({ response: 'hello', session_id: 'thread-1' });
-    // The parent promise must not wait for the child: the child has not started yet.
-    expect(calls).toEqual([]);
-    releaseChild(item.root);
-
-    await waitForEvent(events, 'completed');
-    await runner.stop();
-
-    // The child ran on its own bridge; the parent's snapshot bridge was never touched.
-    expect(parentCalls).toEqual([]);
-    expect(calls).toEqual([
-      expect.objectContaining({
-        callId: 'call-c1',
-        name: 'synthetic_lookup',
-        input: { topic: 'child' },
-        signal: expect.any(AbortSignal),
-      }),
-    ]);
-    expect(authority.requests).toEqual([
-      {
-        sessionKey: 'session-a',
-        parentThreadId: 'thread-1',
-        agentThreadId: 'child-1',
-        agentPath: '/root/board',
-      },
-    ]);
-    expect(authority.released).toEqual([{ status: 'completed' }]);
-    expect(messages(item.capture)).toContainEqual({
-      jsonrpc: '2.0',
-      id: 715,
-      result: {
-        success: true,
-        contentItems: [{ type: 'inputText', text: 'child lookup child' }],
-      },
-    });
-    expect(events).toEqual([
-      {
-        kind: 'started',
-        sessionKey: 'session-a',
-        parentThreadId: 'thread-1',
-        agentThreadId: 'child-1',
-        agentPath: '/root/board',
-      },
-      {
-        kind: 'completed',
-        sessionKey: 'session-a',
-        parentThreadId: 'thread-1',
-        agentThreadId: 'child-1',
-        agentPath: '/root/board',
-        status: 'completed',
-        finalText: 'child says done',
-      },
-    ]);
-  });
-
-  it("invokes the parent turn's onSubagentStart for a subAgentActivity started item", async () => {
-    // Live capture (codex-cli 0.153.4): a spawn reaches the parent thread ONLY as
-    // `subAgentActivity`, never as `collabAgentToolCall`, and this handler consumes it
-    // before the native-item path. The dedicated callback is the one observation path.
-    const item = fixture('subagent');
-    const starts: { agentThreadId: string; agentPath: string; itemId: string }[] = [];
-    const toolUses: string[] = [];
-    const authority = subagentAuthority();
-    const runner = new CodexAppServerProcess({
-      ...item.options,
-      createSubagentBridge: authority.factory,
-    });
-
-    await expect(
-      runner.prompt(
-        'hi',
-        {
-          onSubagentStart: (info) => starts.push(info),
-          onToolUse: (name) => toolUses.push(name),
+        })
+      ).rejects.toThrow('context unavailable');
+      expect(first.getSessionPolicyStatus()).toBe('missing');
+      expect(messages(item.capture).filter((entry) => entry.method === 'turn/start')).toEqual([]);
+    } finally {
+      await first.stop();
+    }
+    const second = new CodexAppServerProcess(item.options);
+    const states: boolean[] = [];
+    try {
+      await second.prompt('current', undefined, {
+        preparePrompt: async ({ isNewSession }) => {
+          states.push(isNewSession);
+          return 'startup';
         },
-        { hostToolBridge: hostBridge() }
-      )
-    ).resolves.toMatchObject({ response: 'hello' });
-    await runner.stop();
-
-    // Once per child, even though the same `started` announcement arrives twice.
-    expect(starts).toEqual([
-      { agentThreadId: 'child-1', agentPath: '/root/board', itemId: 'sub-1' },
-    ]);
-    // And never as a tool use: a spawn must not reach the owner effect ledger.
-    expect(toolUses).not.toContain('subAgentActivity');
-    expect(toolUses).not.toContain('collabAgentToolCall');
+      });
+      expect(states).toEqual([true]);
+    } finally {
+      await second.stop();
+    }
   });
 
-  it('ignores a re-announced start for a child that already finished', async () => {
-    const item = fixture('subagent-restart');
-    const events: SubagentEvent[] = [];
-    const authority = subagentAuthority();
-    const runner = new CodexAppServerProcess({
-      ...item.options,
-      onSubagentEvent: (event) => events.push(event),
-      createSubagentBridge: authority.factory,
-    });
-
-    await expect(
-      runner.prompt('hi', undefined, { hostToolBridge: hostBridge() })
-    ).resolves.toMatchObject({ response: 'hello' });
-    releaseChild(item.root);
-    await waitForEvent(events, 'completed');
-    // The second view of the same `started` announcement lands 10ms after the child's own
-    // turn/completed, so the finished child must not be resurrected as a new one.
-    await new Promise((resolve) => setTimeout(resolve, 120));
-    await runner.stop();
-
-    expect(authority.requests).toHaveLength(1);
-    expect(events.filter((event) => event.kind === 'started')).toHaveLength(1);
-    expect(events.filter((event) => event.kind === 'completed')).toHaveLength(1);
-    expect(authority.released).toEqual([{ status: 'completed' }]);
-  });
-
-  it('drops the previous thread context when a session rotates its thread', async () => {
-    const item = fixture('subagent');
-    const runner = new CodexAppServerProcess({ ...item.options });
-    const internals = runner as unknown as {
-      threadContexts: Map<string, unknown>;
-      sessions: Map<string, { threadId?: string }>;
-      registry: { remove: (sessionKey: string) => void };
-    };
-
-    await expect(
-      runner.prompt('hi', undefined, { hostToolBridge: hostBridge() })
-    ).resolves.toMatchObject({ session_id: 'thread-1' });
-    expect([...internals.threadContexts.keys()]).toEqual(['thread-1']);
-
-    // The reconciliation path re-opens a thread for a session whose in-memory state lost
-    // its threadId, without going through the reset that discards the old context.
-    internals.sessions.delete('session-a');
-    internals.registry.remove('session-a');
-    await expect(
-      runner.prompt('again', undefined, { hostToolBridge: hostBridge() })
-    ).resolves.toMatchObject({ session_id: 'thread-2' });
-
-    expect([...internals.threadContexts.keys()]).toEqual(['thread-2']);
-    await runner.stop();
-  });
-
-  it('refuses a child call when no host authority exists instead of inheriting one', async () => {
-    const item = fixture('subagent');
-    const events: SubagentEvent[] = [];
-    const parentCalls: HostToolCall[] = [];
-    const runner = new CodexAppServerProcess({
-      ...item.options,
-      onSubagentEvent: (event) => events.push(event),
-    });
-
-    await expect(
-      runner.prompt('hi', undefined, {
-        hostToolBridge: hostBridge(async (call) => {
-          parentCalls.push(call);
-          return { content: 'parent lookup', isError: false };
-        }),
-      })
-    ).resolves.toMatchObject({ response: 'hello' });
-    releaseChild(item.root);
-    await waitForEvent(events, 'completed');
-    await runner.stop();
-
-    expect(parentCalls).toEqual([]);
-    expect(messages(item.capture)).toContainEqual({
-      jsonrpc: '2.0',
-      id: 715,
-      error: {
-        code: -32602,
-        message: 'subagent authority unavailable: synthetic_lookup was refused',
-      },
-    });
-  });
-
-  it('names expired child authority instead of reporting a plain tool failure', async () => {
-    const item = fixture('subagent');
-    const events: SubagentEvent[] = [];
-    const authority = subagentAuthority(async () => ({
-      content: '[expired] Envelope policy denied this tool call',
-      isError: true,
-    }));
-    const runner = new CodexAppServerProcess({
-      ...item.options,
-      onSubagentEvent: (event) => events.push(event),
-      createSubagentBridge: authority.factory,
-    });
-
-    await expect(
-      runner.prompt('hi', undefined, { hostToolBridge: hostBridge() })
-    ).resolves.toMatchObject({ response: 'hello' });
-    releaseChild(item.root);
-    await waitForEvent(events, 'completed');
-    await runner.stop();
-
-    expect(messages(item.capture)).toContainEqual({
-      jsonrpc: '2.0',
-      id: 715,
-      result: {
-        success: false,
-        contentItems: [
-          {
-            type: 'inputText',
-            text: 'subagent authority expired: [expired] Envelope policy denied this tool call',
+  it.each(['success', 'resume-missing'])(
+    'settles start, continuation, %s resume, policy change and reset before composing',
+    async (mode) => {
+      const item = fixture(mode);
+      const states: boolean[] = [];
+      let policy = 'policy-one';
+      const pools: SessionPool[] = [];
+      const open = () => {
+        const pool = new SessionPool();
+        pools.push(pool);
+        const agent = new CodexRuntimeProcess({
+          ...item.options,
+          hostRootDir: item.root,
+          defaultSessionKey: 'test-session',
+        });
+        return {
+          pool,
+          runner: createNativeSessionRunner({
+            agent,
+            backend: 'codex',
+            model: 'gpt-test',
+            maxTurns: 10,
+            isGatewayMode: false,
+            runTokenBudget: 0,
+            sessionPool: pool,
+            turnPolicy: () => ({
+              channelKey: 'test-session',
+              systemLayers: [{ name: 'standing', content: policy, priority: 1 }],
+              reanchorLayers: async () => [{ name: 'standing', content: policy, priority: 1 }],
+              sessionPolicyFingerprint: policy,
+              standingPolicy: true,
+            }),
+            executionContext: () => null,
+            hostToolDefinitions: () => [],
+            callTool: async () => ({ success: true }),
+          }),
+        };
+      };
+      let handle = open();
+      const run = () =>
+        handle.runner.runTurn([{ type: 'text', text: 'current input' }], {
+          sessionKey: 'test-session',
+          prepareSessionContent: async ({ isNewSession }) => {
+            states.push(isNewSession);
+            return [
+              {
+                type: 'text',
+                text: isNewSession ? 'startup carry; current input' : 'current input',
+              },
+            ];
           },
-        ],
-      },
-    });
-  });
-
-  it('reports status unknown when only the parent said the child completed', async () => {
-    const item = fixture('subagent-parent-first');
-    const events: SubagentEvent[] = [];
-    const authority = subagentAuthority();
-    const runner = new CodexAppServerProcess({
-      ...item.options,
-      onSubagentEvent: (event) => events.push(event),
-      createSubagentBridge: authority.factory,
-      subagentGraceMs: 40,
-    });
-
-    await expect(
-      runner.prompt('hi', undefined, { hostToolBridge: hostBridge() })
-    ).resolves.toMatchObject({ response: 'hello' });
-    releaseChild(item.root);
-    await waitForEvent(events, 'completed');
-    await runner.stop();
-
-    expect(events[1]).toEqual({
-      kind: 'completed',
-      sessionKey: 'session-a',
-      parentThreadId: 'thread-1',
-      agentThreadId: 'child-1',
-      agentPath: '/root/board',
-      status: 'unknown',
-    });
-    expect(authority.released).toEqual([{ status: 'unknown' }]);
-    expect(events).toHaveLength(2);
-  });
-
-  it('ignores a child turn that arrives after the unconfirmed completion was reported', async () => {
-    const item = fixture('subagent-parent-first');
-    const events: SubagentEvent[] = [];
-    const authority = subagentAuthority();
-    const runner = new CodexAppServerProcess({
-      ...item.options,
-      onSubagentEvent: (event) => events.push(event),
-      createSubagentBridge: authority.factory,
-      subagentGraceMs: 40,
-    });
-
-    await expect(
-      runner.prompt('hi', undefined, { hostToolBridge: hostBridge() })
-    ).resolves.toMatchObject({ response: 'hello' });
-    releaseChild(item.root);
-    await waitForEvent(events, 'completed');
-    // The child's own turn/completed now arrives, too late: the child is already gone.
-    releaseLateChildTurn(item.root);
-    await new Promise((resolve) => setTimeout(resolve, 80));
-    await runner.stop();
-
-    expect(events).toHaveLength(2);
-    expect(events[1]).toMatchObject({ status: 'unknown' });
-    expect(events[1]).not.toHaveProperty('finalText');
-    expect(authority.released).toEqual([{ status: 'unknown' }]);
-  });
-
-  it('fails a child that never completes once its bounded life runs out', async () => {
-    const item = fixture('subagent-ttl');
-    const events: SubagentEvent[] = [];
-    const authority = subagentAuthority();
-    const runner = new CodexAppServerProcess({
-      ...item.options,
-      onSubagentEvent: (event) => events.push(event),
-      createSubagentBridge: authority.factory,
-      subagentTtlMs: 40,
-    });
-
-    await expect(
-      runner.prompt('hi', undefined, { hostToolBridge: hostBridge() })
-    ).resolves.toMatchObject({ response: 'hello' });
-    releaseChild(item.root);
-    await waitForEvent(events, 'completed');
-    await runner.stop();
-
-    expect(events[1]).toMatchObject({
-      status: 'failed',
-      error: 'subagent produced no completion',
-    });
-    expect(authority.released).toEqual([
-      { status: 'failed', error: 'subagent produced no completion' },
-    ]);
-  });
-
-  it('ignores an announcement claiming a live thread as its child', async () => {
-    const item = fixture('subagent-foreign');
-    const events: SubagentEvent[] = [];
-    const authority = subagentAuthority();
-    const runner = new CodexAppServerProcess({
-      ...item.options,
-      onSubagentEvent: (event) => events.push(event),
-      createSubagentBridge: authority.factory,
-    });
-
-    await expect(
-      runner.prompt('hi', undefined, { hostToolBridge: hostBridge() })
-    ).resolves.toMatchObject({ response: 'hello' });
-    await runner.stop();
-
-    expect(events).toEqual([]);
-    expect(authority.requests).toEqual([]);
-  });
-
-  it('keeps the disabled-tool reply for a thread nobody announced', async () => {
-    const item = fixture('subagent-unannounced');
-    const events: SubagentEvent[] = [];
-    const authority = subagentAuthority();
-    const runner = new CodexAppServerProcess({
-      ...item.options,
-      onSubagentEvent: (event) => events.push(event),
-      createSubagentBridge: authority.factory,
-    });
-
-    await expect(
-      runner.prompt('hi', undefined, { hostToolBridge: hostBridge() })
-    ).resolves.toMatchObject({ response: 'hello' });
-    releaseChild(item.root);
-    for (let attempt = 0; attempt < 400; attempt += 1) {
-      if (messages(item.capture).some((entry) => (entry as { id?: number }).id === 715)) break;
-      await new Promise((resolve) => setTimeout(resolve, 5));
+        });
+      try {
+        await run();
+        await run();
+        await handle.runner.stop();
+        handle = open();
+        await run();
+        policy = 'policy-two';
+        await run();
+        await run();
+        await handle.runner.resetSession('test-session');
+        expect(handle.pool.peekSession('test-session')).toEqual({ busy: false });
+        await run();
+        expect(states).toEqual([true, false, mode === 'resume-missing', true, false, true]);
+        const inputs = messages(item.capture)
+          .filter((entry) => entry.method === 'turn/start')
+          .map((entry) => (entry.params as { input: Array<{ text: string }> }).input[0]!.text);
+        expect(inputs).toHaveLength(6);
+        expect(inputs.map((text) => text.includes('startup carry'))).toEqual(states);
+      } finally {
+        await handle.runner.stop();
+        for (const pool of pools) pool.dispose();
+      }
     }
-    await runner.stop();
-
-    expect(messages(item.capture)).toContainEqual({
-      jsonrpc: '2.0',
-      id: 715,
-      result: {
-        success: false,
-        contentItems: [{ type: 'inputText', text: 'Native app-server tools are disabled by MAMA' }],
-      },
-    });
-    // The announced child got an authority; the unannounced thread never did - an
-    // unregistered thread cannot mint one by calling a tool.
-    expect(authority.requests.map((request) => request.agentThreadId)).toEqual(['child-1']);
-  });
-
-  it('interrupts every live child at shutdown', async () => {
-    const item = fixture('subagent-ttl');
-    const events: SubagentEvent[] = [];
-    const authority = subagentAuthority();
-    const runner = new CodexAppServerProcess({
-      ...item.options,
-      onSubagentEvent: (event) => events.push(event),
-      createSubagentBridge: authority.factory,
-    });
-
-    await expect(
-      runner.prompt('hi', undefined, { hostToolBridge: hostBridge() })
-    ).resolves.toMatchObject({ response: 'hello' });
-    releaseChild(item.root);
-    await waitForEvent(events, 'started');
-    await runner.stop();
-    await waitForEvent(events, 'completed');
-    // release() is awaited outside the emit; give the microtask chain a tick.
-    for (let attempt = 0; attempt < 40 && authority.released.length === 0; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
-
-    expect(events[1]).toMatchObject({ status: 'interrupted' });
-    expect(authority.released[0]).toMatchObject({ status: 'interrupted' });
-  });
-
-  it('re-emits subagent events from CodexRuntimeProcess', async () => {
-    const item = fixture('subagent');
-    const events: SubagentEvent[] = [];
-    const authority = subagentAuthority();
-    const runtime = new CodexRuntimeProcess({
-      ...item.options,
-      createSubagentBridge: authority.factory,
-    });
-    runtime.on('subagent', (event: SubagentEvent) => events.push(event));
-
-    await expect(
-      runtime.prompt('hi', undefined, { hostToolBridge: hostBridge() })
-    ).resolves.toMatchObject({ response: 'hello' });
-    releaseChild(item.root);
-    await waitForEvent(events, 'completed');
-    await runtime.stop();
-
-    expect(
-      events.map((event) => `${event.kind}:${event.agentThreadId}:${event.agentPath}`)
-    ).toEqual(['started:child-1:/root/board', 'completed:child-1:/root/board']);
-    expect(events[1]).toMatchObject({
-      // CodexRuntimeProcess routes by its own default session key, not the app-server's.
-      sessionKey: 'default',
-      parentThreadId: 'thread-1',
-      status: 'completed',
-      finalText: 'child says done',
-    });
-  });
+  );
 });

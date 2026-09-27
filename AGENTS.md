@@ -1,429 +1,147 @@
-# MAMA PROJECT KNOWLEDGE BASE
+# AGENTS.md
 
-## Intent first — 최상위 목적과 완료 판정
+Shared instructions for every coding agent working in this repository (Claude Code, Codex, and
+others). Claude-only notes live in `CLAUDE.md`.
 
-작업 시작/리쥼 전에 루트 [INTENT.md](INTENT.md)를 읽고 기존 계획을 그 목적과 사용자
-시나리오에 연결한다. 목적·성공 기준을 기술 작업이나 테스트 통과로 축소하지 않는다.
-각 작업 완료 후 [개발 목적 점검](docs/development/intent-workflow.md)을 수행하고
-[점검 기록](docs/development/intent-checks.md)에 결과·근거·남은 실패를 남긴다.
-하위 작업 완료와 최상위 목표 완료를 구분한다. 같은 버전의 공통 문서를 불필요하게 재독하지 않는다.
+## Purpose first
 
-**Generated:** 2026-02-08 16:13:50  
-**Commit:** 254557e  
-**Branch:** refactor/mcp-server-core-dedup
+- Read [INTENT.md](INTENT.md) before starting or resuming work. Tie every plan and change to one of
+  its owner checks (recognise, attach, answer, report, learn) or to the shared-engine goal.
+- The product is "Kagemusha's loop + a wiki + memory that carries over". What sets it apart is
+  **task history and similar-case search**. Team features wait until the owner flow works on real
+  data.
+- Work is done when real owner questions on real data get the right answer. Passing tests,
+  structure checks, line or file counts, and progress scripts are supporting evidence only. Never
+  report a finished sub-task as the purpose being met.
+- The current work list is [docs/rebuild/plan.md](docs/rebuild/plan.md). After each item, add 3–5
+  lines to [docs/rebuild/checks.md](docs/rebuild/checks.md): result, evidence, what still fails.
 
----
+## Repository map
 
-## OVERVIEW
+| Package                       | Role                                                                                                                                                      |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/mama-core`          | Shared engine: storage, records with revisions, search, embeddings, memory, raw observations, runtime, action catalog. Used by MAMA and by other projects |
+| `packages/standalone`         | Product (MAMA OS, `mama` CLI): connectors, owner loop, tasks/board/wiki/reports, viewer                                                                   |
+| `packages/mcp-server`         | Public MCP server (plain JS) for Claude Code / Desktop                                                                                                    |
+| `packages/claude-code-plugin` | Claude Code plugin (hooks, commands) for development-session memory                                                                                       |
 
-MAMA (Memory-Augmented MCP Assistant) — Contract-first memory system for Claude. Tracks WHY you decided, not just WHAT you chose. Prevents vibe coding breakage across sessions. Monorepo with 5 packages: MCP server (npm), Claude Code plugin (marketplace), MAMA OS standalone agent (npm), shared core (npm), MemoryBench (internal).
+- There are two data homes. `~/.mama/` is the daemon's (product) state. `~/.claude/mama-memory.db`
+  is MCP and development-session memory. Never mix them.
+- Kagemusha is a local reference implementation outside this repository. Read it, and port
+  **mechanisms only**. Never copy names, channels, business content or other personal data from it.
+- Check an action exists in the catalog (core `api/catalog.ts` plus the product registrations)
+  before assuming it does.
 
-**Stack:** JavaScript (MCP/plugin/legacy core), TypeScript (standalone + newer core surfaces), pnpm workspaces, Vitest, SQLite + pure-TS cosine similarity, Transformers.js (local embeddings), GitHub Actions
-
----
-
-## STRUCTURE
-
-```
-MAMA/
-├── packages/
-│   ├── mama-core/                  # Shared foundation (embeddings, db, memory API, context compile)
-│   ├── mcp-server/                 # MCP server for Claude Desktop/Code (4 tools: save/search/update/checkpoint)
-│   ├── claude-code-plugin/         # Claude Code plugin (commands + hooks + local mama-core copies)
-│   ├── standalone/                 # MAMA OS agent (Discord/Slack/Telegram, multi-agent swarm, CLI, web UI)
-│   └── memorybench/                # Memory retrieval benchmarking framework (bun, internal)
-├── docs/                           # User-facing documentation (Diátaxis framework)
-├── .mama/                          # Project identity (SOUL.md, IDENTITY.md, config.json)
-├── .sisyphus/                      # Internal planning artifacts (drafts/, plans/)
-├── .docs/                          # Development docs (PRDs, tech specs, epics, stories)
-├── .claude-plugin/                 # Local dev marketplace config
-├── scripts/                        # Build utilities (verify-install.js, sync-check.js)
-├── .husky/                         # Git hooks (pre-commit: lint-staged + gitleaks + typecheck + tests)
-└── CLAUDE.md                       # Claude Code guidance (CRITICAL: read this before editing)
-```
-
----
-
-## WHERE TO LOOK
-
-| Task                          | Location                                                                                               | Notes                                                              |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------ |
-| **Add memory feature**        | `packages/mama-core/src/mama-api.js`                                                                   | High-level API (2,615 lines — SPLIT CANDIDATE)                     |
-| **Modify context compile**    | `packages/mama-core/src/context-compile/` + `packages/standalone/src/agent/context-compile-service.ts` | Scoped evidence packets and trusted `context_packet_id` provenance |
-| **Add MCP tool**              | `packages/mcp-server/src/tools/`                                                                       | All tools use `mama-core/mama-api`                                 |
-| **Modify embeddings**         | `packages/mama-core/src/embeddings.js`                                                                 | HTTP client + local Transformers.js fallback                       |
-| **Modify database**           | `packages/mama-core/src/db-manager.js` + `src/db/migrations/`                                          | SQLite + pure-TS cosine similarity, migrations required            |
-| **Add Claude Code command**   | `packages/claude-code-plugin/commands/*.md`                                                            | Markdown-based command definitions                                 |
-| **Modify hooks**              | `packages/claude-code-plugin/scripts/*.js`                                                             | Hook scripts (must complete <1800ms)                               |
-| **Add gateway integration**   | `packages/standalone/src/gateways/*.ts`                                                                | Discord, Slack, Telegram handlers                                  |
-| **Modify multi-agent**        | `packages/standalone/src/multi-agent/swarm/`                                                           | Wave-based orchestration (5 waves, tier-based access)              |
-| **Fix reuse-first violation** | Check `packages/mcp-server/src/mama/` FIRST                                                            | CRITICAL: 70% of features already exist here                       |
-| **Run all tests**             | `pnpm test` (root)                                                                                     | Single-fork pool required (ONNX/V8 locking)                        |
-| **Build all packages**        | `pnpm build` (root)                                                                                    | TypeScript compile for mama-core and standalone                    |
-| **Lint + format**             | `pnpm lint:fix && pnpm format`                                                                         | ESLint + Prettier auto-fix                                         |
-
-### Kagemusha Telegram parity (mandatory reference)
-
-Before implementing or reviewing Telegram owner-console, Drive/image translation, Code-Act tool
-projection, Codex session continuity, or operator-report delivery, read
-`docs/development/kagemusha-telegram-parity.md` in full.
-
-- Main agents and subagents must cite the relevant `TG-0N` scenario IDs in plans, changes, tests,
-  and findings.
-- Compare the complete Kagemusha user path recorded there; do not infer parity from matching tool
-  names or isolated helper tests.
-- Preserve Kagemusha's agent freedom: expose coherent safe primitives and context, but do not
-  hard-code one scenario's tool order into host orchestration.
-- Update the artifact's evidence/status when behavior changes.
-- Do not expand parity work with unrelated findings unless they are release-blocking security or
-  data-loss issues.
-
----
-
-## CONVENTIONS
-
-### **Language Split**
-
-- **JavaScript:** mcp-server, claude-code-plugin, and legacy mama-core modules
-- **TypeScript:** standalone and newer mama-core surfaces such as `context-compile`
-- **Rationale:** Standalone has complex agent orchestration; core is gradually gaining typed
-  provenance/context surfaces while preserving JavaScript compatibility for existing modules
-
-### **Vitest Configuration (CRITICAL)**
-
-```javascript
-pool: 'forks',
-poolOptions: { forks: { singleFork: true } },
-maxWorkers: 1, minWorkers: 1, threads: false
-```
-
-**Why:** Prevents ONNX Runtime V8 locking issues with Transformers.js embeddings. **NEVER change to parallel execution.**
-
-### **ESLint Deviations from Standard**
-
-- `no-console: off` — Console logs allowed in production code
-- Unused variables: `_variable` ignored (underscore prefix)
-- Strict equality: `===` always (no `==`)
-- Curly braces: Required for all control structures (even single-line)
-- Error handling: Must throw Error objects (no literals)
-
-### **Prettier**
-
-- Semicolons: Required
-- Quotes: Single quotes
-- Tab width: 2 spaces
-- Print width: 100 characters (narrower than default 80)
-- Trailing commas: ES5 style
-
-### **Test Organization (Story-Based)**
-
-```javascript
-describe('Story M1.2: SQLite Database Initialization', () => {
-  describe('AC #1: Database file creation', () => {
-    it('should create database file on initialization', async () => {
-      // Test implementation
-    });
-  });
-});
-```
-
-- Tests map to Story IDs (M1.2, M2.1, Story 4.1)
-- Acceptance Criteria (AC) sections enable requirements → tests → code traceability
-- Use `MAMA_FORCE_TIER_3=true` to skip embeddings in tests (~500ms vs ~2-9s)
-
-### **pnpm Workspace**
-
-- **Ignored built dependencies:** `esbuild`, `node-pty`, `onnxruntime-node`, `protobufjs`, `sharp` (native modules)
-- **Unsafe permissions:** Enabled (`unsafePerm: true`) for optional platform packages such as `sharp`
-- **GitHub Packages:** `@jungjaehoon/*` packages published to GitHub Packages (not npm)
-
-### **Entry Point Naming (INCONSISTENT)**
-
-- `src/server.js` (mcp-server)
-- `src/index.js` (mama-core)
-- `dist/index.js` (standalone, compiled)
-- `.claude-plugin/plugin.json` (claude-code-plugin, no main field)
-
----
-
-## ANTI-PATTERNS (THIS PROJECT)
-
-### **FORBIDDEN (CRITICAL)**
-
-```javascript
-// ❌ FORBIDDEN: Rewrite working code
-// ALWAYS check packages/mcp-server/src/mama/ first
-// In November 2025, we stopped a rewrite and migrated working code instead (~70% existed)
-
-// ❌ FORBIDDEN: Return dummy/fallback data on errors
-return { bones: [] };           // Silent failure hides bugs
-if (error) return defaultValue; // Silent fallback
-
-// ✅ REQUIRED: Throw explicit errors
-if (!data) throw new Error("Data required");
-
-// ❌ FORBIDDEN: Change embedding model
-// Breaks existing 384-dimensional vectors in SQLite
-
-// ❌ FORBIDDEN: SQLite schema changes without migrations
-// Create migration file in packages/*/src/db/migrations/
-
-// ❌ FORBIDDEN: Network calls in core functionality
-// Local-first architecture
-
-// ❌ FORBIDDEN: Break backward compatibility
-// Existing decisions must remain valid after updates
-
-// ❌ FORBIDDEN: Hook execution >1800ms
-// UserPromptSubmit hook must complete within 1800ms (target <1200ms)
-
-// ❌ FORBIDDEN: Using `any` type
-const x: any = getData();       // No type safety
-const x: Decision = getData();  // ✅ REQUIRED
-
-// ❌ FORBIDDEN: Using `console.log`
-console.log('debug info');      // Use DebugLogger instead
-DebugLogger.log('debug info');  // ✅ REQUIRED
-
-// ❌ FORBIDDEN: TODO/FIXME in commits
-// TODO: Fix this later          // Remove before committing
-// FIXME: Handle edge case       // Remove before committing
-
-// ❌ FORBIDDEN: Mock internal code in tests
-// Test real implementation, not mocks
-```
-
-### **CODEx 실행 워크플로우 (실패 방지 규칙)**
-
-- `수정` 요청이면 먼저 대상 파일을 즉시 변경하고, 완료 메시지 이전에 변경 파일 근거를 제시한다.
-- 추측성 정리/해설은 마지막에만, 먼저 `수정 → 검증(요청 범위)` 순서로 진행한다.
-- 완료 판정은 아래 중 요청된 항목으로만 수행한다.
-  - 빌드/테스트/재시작/상태조회/로그 확인
-- 실행 요청은 요청한 명령이 실제 완료될 때까지 멈추지 않는다.
-  - 예: `build` 요청 시 종료 코드 0이 나올 때까지 결과를 완료로 선언하지 않는다.
-- 실패 시 `원인-수정-재검증` 1회 루프를 기본으로 적용한다.
-- 사용자 요구가 “수정해”인 경우 최초 응답은 최소 항목만 즉시 보고한다.
-  - 변경 파일
-  - 실행 명령
-  - 각 명령 결과 코드와 핵심 메시지
-
-### **Security Warnings**
+## Commands
 
 ```bash
-# ⚠️ CRITICAL: Never expose MAMA without authentication
-# Attackers can read/write ANY file, execute ANY command, steal keys
-
-# ⛔ FORBIDDEN: Use token auth alone for production
-# Require mTLS or IP whitelist + token
-
-# ⚠️ FORBIDDEN: Commit tokens to git
-# Use environment variables or secure vaults
-
-# ⚠️ FORBIDDEN: Share tunnel URLs publicly
-# Treat as sensitive credentials
-
-# ⚠️ FORBIDDEN: Disable authentication on tunnels
-# Always set MAMA_AUTH_TOKEN before exposing
-```
-
-### **Local-Only Runtime Artifacts**
-
-```bash
-# ❌ FORBIDDEN: Commit Superpowers runtime/planning artifacts
-# .superpowers/ and docs/superpowers/ are local-only and must stay ignored
-```
-
-### **Module Boundaries**
-
-```bash
-# ❌ NEVER edit mcp-server/ for MAMA plugin development
-# mcp-server/ is frozen as source of truth for legacy deployments
-
-# ✅ ALWAYS edit mama-plugin/ for plugin-specific features
-
-# ❌ NEVER edit mama-core without checking both mcp-server and claude-plugin
-# Both depend on mama-core (mcp-server imports it, plugin has local copies)
-```
-
----
-
-## UNIQUE STYLES
-
-### **Wave-Based Multi-Agent Architecture**
-
-```
-packages/standalone/src/multi-agent/swarm/
-├── Wave 1: Initial analysis (read-only)
-├── Wave 2: Planning (Tier 1 agent)
-├── Wave 3: Implementation (Tier 2 agents)
-├── Wave 4: Review (Tier 3 agents)
-└── Wave 5: Completion (Tier 1 agent)
-```
-
-Sequential wave progression enables tier-based access control. Tasks within each wave execute in parallel via `Promise.all` (`wave-engine.ts` line 111).
-
-### **AgentProcessPool (Parallel Execution)**
-
-```
-packages/standalone/src/multi-agent/agent-process-pool.ts (356 lines)
-- Per-agent process pools with configurable pool_size (default: 1)
-- Automatic process reuse when idle (no cold start)
-- Idle timeout: 5-10 min (configurable via idleTimeoutMs)
-- Hung process detection: 15 min (auto-kill via hungTimeoutMs)
-- Pool status: total / busy / idle per agent
-```
-
-Configure via `config.yaml`:
-
-```yaml
-multi_agent:
-  agents:
-    developer:
-      pool_size: 3 # 3 parallel Claude CLI processes
-```
-
-Key code path: `AgentProcessManager` (line 81: `defaultPoolSize: 1`) → `AgentProcessPool.getAvailableProcess()` → `PersistentClaudeProcess`
-
-### **Embeddings off-switch (`MAMA_FORCE_TIER_3`)**
-
-Search is vector search over the local embedding model. Setting `MAMA_FORCE_TIER_3=true` makes
-`assertEmbeddingsEnabled()` throw before the model loads, so embedding work is skipped entirely -
-it is a test switch, not a degraded search mode. Nothing degrades automatically at runtime; there
-is no exact-match path to fall back to.
-
-### **In-Process Embeddings**
-
-```
-@jungjaehoon/mama-core/embeddings
-- Loads the local model inside the process performing semantic search
-- Reuses the process-local model and embedding cache
-- Exposes no network listener or port discovery file
-```
-
-### **Subprocess-Based Claude CLI (ToS Compliance)**
-
-```typescript
-// Spawns Claude CLI as subprocess (not direct API calls)
-const child = spawn('claude', [...args]);
-// INTENTIONAL: Avoids OAuth token extraction (ToS gray area)
-```
-
-### **Code Duplication in Claude Plugin (Unavoidable)**
-
-```
-claude-code-plugin/src/core/ — 27 modules duplicated from mama-core
-Why: Claude Code plugins can't have npm dependencies; files must be self-contained
-Risk: Bug fixes in mama-core don't propagate to plugin (version skew)
-Mitigation: Keep copies in sync; consider bundling mama-core at build time
-```
-
-### **Reuse-First Philosophy**
-
-```
-CRITICAL: Before adding new features, check if they exist in
-`packages/mcp-server/src/mama/`. In November 2025, we stopped a rewrite
-and migrated working code instead (~70% of required functionality already existed).
-```
-
----
-
-## COMMANDS
-
-```bash
-# Install dependencies (requires pnpm)
 pnpm install
-
-# Run all tests (across all packages)
-pnpm test
-
-# Build all packages
 pnpm build
-
-# Run type checking
 pnpm typecheck
-
-# Lint + auto-fix
-pnpm lint:fix
-
-# Format code
-pnpm format
-
-# Clean build artifacts
-pnpm clean
-
-# Package-specific commands
-cd packages/mcp-server
-pnpm test                    # Run MCP server tests
-npm start                    # Start MCP server via stdio
-
-cd packages/claude-code-plugin
-pnpm test                    # Run plugin tests (hooks, commands, core)
-pnpm test:watch              # Watch mode for tests
-
-cd packages/standalone
-pnpm build                   # Compile TypeScript to dist/
-pnpm test                    # Run standalone tests with coverage
-mama start                   # Start MAMA OS agent (requires global install)
-
-# Run single test file
-pnpm vitest run tests/hooks/pretooluse-hook.test.js
-
-# Run tests matching pattern
-pnpm vitest run -t "relevance scorer"
+pnpm lint
+pnpm test
 ```
 
----
+Run a single package or file **from inside that package**. Running from the repo root with
+`--root` gives false failures.
 
-## NOTES
+```bash
+cd packages/mama-core && npx vitest run tests/unit/some-file.test.ts
+cd packages/mama-core && npx vitest run -t "pattern"
+```
 
-### **Gotchas**
+## Verification gotchas
 
-1. **ONNX Runtime V8 Locking:** Tests MUST run in single-fork mode (vitest config). Parallel tests will deadlock.
+- launchd manages the daemon (`com.mama.server`, KeepAlive), so a killed process comes back. Stop
+  it before touching `~/.mama`: `launchctl bootout gui/$(id -u)/com.mama.server`. The daemon runs
+  whatever `DAEMON_JS` in `~/.mama/start.sh` points at.
+- Live behaviour is proven by an owner turn, a clean `~/.mama/logs/daemon.log`, and a DB read-back.
+  A row existing in the DB is not proof on its own.
+- `~/.mama` is a disposable testbed: no backups, compatibility windows or dual reads. Use
+  `daemon.log` to see which branch ran, never to argue about cost or frequency.
+- `~/.claude/mama-memory.db` is **not** disposable. Scripts and benches set `MAMA_DB_PATH` before
+  `initDB()`, because the default is that database.
+- Tests that touch config or the home directory run under a temporary `$HOME`. One of them once
+  overwrote the live config.
+- A bench `claude -p` runs with `--setting-sources project`, or the plugin hooks contaminate it.
+- Check claims of absence ("nothing calls X") at the assembly point where things are wired
+  together, not by grep alone.
+- Never print ranges of `~/.mama/config.yaml`; it holds tokens.
 
-2. **Entry Point Inconsistency:** No standard naming convention across packages (server.js, index.js, dist/index.js, index.ts). Be careful when importing.
+## Rules
 
-3. **Claude Plugin Duplication:** Plugin has local copies of mama-core modules. Bug fixes need to be applied twice (mama-core + plugin).
+- **No PII:** no personal names, project names or channel IDs in source, comments, examples or
+  test fixtures.
+- **Core knows no consumer.** Other projects use `mama-core` through public exports
+  only. Engine features (records, revisions, evidence links, search) go in core; product vocabulary
+  stays in the product. A MAMA name inside core is a defect only when it makes the packed
+  second-consumer test fail.
+- **Build from evidence.** Before adding a mechanism, screen, field or action, name the code, the
+  data or the owner decision that requires it. Do not build from imagination.
+- **The agent judges, the host provides.** Meaning, relevance, identity and roles are not coded as
+  rules. The host provides collection, storage, search, execution, permissions and receipts.
+- **Relocate before you delete.** Before removing a host step, lane brief or policy line, name the
+  place where its domain knowledge and owner corrections will reach the agent, and confirm it with
+  one real owner turn.
+- **No insurance guards or fallbacks.** Do not add a guard or an alternate path just because you are
+  unsure. Surface the error and fix it. A guard needs a named reason.
+- **Do not restrict the owner agent or its subagents.** The real boundaries are: non-owner
+  principals' turns (grants and scope), `deliver.*` destination config, credentials outside MAMA's
+  scope, and administration (interactive owner request only). Everything else is observed in
+  `tool_traces`.
+- **Schema:** change it with the next-numbered migration in `packages/mama-core/db/migrations`.
+  Numbers 044–060 are held in `schema_version` by a retired chain; never reuse them.
+- **Record** architecture, API contract and config schema decisions in MAMA (MCP `save`).
+- Count what a refactor deletes as well as what it adds. A revision that only adds is suspect.
+- Concurrent workers each get their own worktree. Never switch branches in a shared checkout.
+- Pass commit messages from a file (`git commit -F`) and check `git log` before saying you committed.
 
-4. **Standalone Pins mama-server v1.5.11:** Current mcp-server is v1.7.2. Update standalone's dependency or document why v1.5.11 is required.
+## MAMA OS agent isolation — do not change
 
-5. **Backward Compatibility Checks Legacy Paths:** Database adapter checks `~/.spinelift/memories.db` for users upgrading from SpineLift. Auto-migration without user action.
+Daemon agents run only inside `~/.mama`. Leaking global settings costs thousands of duplicated
+tokens every turn. Defined in `packages/mama-core/src/runtime/drivers/persistent-cli-process.ts`
+and `claude-cli-wrapper.ts`; native tool projection in
+`packages/standalone/src/agent/claude-native-tool-policy.ts` (carried back at W1).
 
-6. **Plugin/Core Drift Risk:** `claude-code-plugin/src/core/` is a selective snapshot of `mama-core`, not a full 1:1 mirror. Verify duplicated-file assumptions before applying fixes across both trees.
+| Setting             | Value                                                                                                                                                     | Why                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cwd`               | `~/.mama/workspace`                                                                                                                                       | The home directory would inject `~/CLAUDE.md` every turn                                                                                                                                                                                                                                                                                                                                                                            |
+| `.git/HEAD`         | created in the workspace                                                                                                                                  | Git boundary stops the upward CLAUDE.md search                                                                                                                                                                                                                                                                                                                                                                                      |
+| `--plugin-dir`      | `~/.mama/.empty-plugins` (empty)                                                                                                                          | Keeps global plugin skills out                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `--setting-sources` | `project,local` (no `user`)                                                                                                                               | Keeps `~/.claude/settings.json` plugins out                                                                                                                                                                                                                                                                                                                                                                                         |
+| `--system-prompt`   | first turn only                                                                                                                                           | The session persists                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Native tools        | Claude owner: role-projected tools, sandboxed Bash, workspace-only writes and WebFetch/WebSearch; Codex owner: shell and web search; other backends: none | Owner decision 2026-09-26: both owner runtimes write only inside `~/.mama/workspace` and have web access. Claude uses the workspace project sandbox and `dontAsk` with CLI `--allowedTools` rules (project-settings permissions were not applied to non-interactive runs), inherited by subagents; Codex keeps sandbox `workspace-write` and approvals `never`. Core shell/web defaults stay off; shell network policy is unchanged |
 
-7. **Metrics Logged But Not Analyzed:** Hook metrics written to files (`mama-core/src/mama/hook-metrics.js`) but never aggregated or analyzed. Missing observability.
+Forbidden: `cwd` set to home, removing `--plugin-dir`, adding `user` to `--setting-sources`,
+adding `--no-session-persistence`, removing the `.git/HEAD` creation, widening native tools in
+source except for the owner decision of 2026-09-26: both MAMA owner-runtime backends write only in
+`~/.mama/workspace` and have web access. Codex enables shell and live web search with sandbox
+`workspace-write` and approvals `never`; core shell/web defaults stay off and shell network policy
+is unchanged. Claude replaces permission bypass with required sandboxed Bash (no unsandboxed
+retry), a workspace-only `Edit(//<workspace>/**)` rule passed with `--allowedTools` and `dontAsk`, retaining readable-file access,
+WebFetch/WebSearch, MAMA MCP tools and Agent. Subagents inherit the same boundary and run inside
+the owner turn (background tasks off). Any other widening needs an owner decision recorded here.
 
-8. **Large File Complexity:** `mama-api.js` (2,615 lines, CC=175) and `graph-api.js` (2,239 lines, CC=171) should be split into smaller modules (save/recall/suggest/update/checkpoint). See `docs/development/refactoring-roadmap.md` for plan.
+## Owner credential boundary — 2026-09-27
 
-9. **Configuration Format Inconsistency:** YAML for standalone, JSON for others. No documented convention.
+- Scope (owner decision 2026-09-27): the boundary covers MAMA's own credentials — auth.env,
+  config.yaml, runtime/, the managed Codex home and the replay key file. Other tools' credential stores
+  on the machine are not denied; the agent's native reads of them are recorded in tool_traces.
+- Standalone removes secret-shaped environment names before launching either backend; core accepts
+  a complete consumer-supplied environment. Native children inherit it; daemon connectors keep theirs.
+- Claude CLI Read denies and Bash sandbox denyRead exclude auth.env, config.yaml, runtime/ and the
+  managed Codex home. Codex uses a named workspace permission profile with those paths denied;
+  thread start/resume select that profile instead of the legacy sandbox override.
+- Viewer tunnel headers never establish identity. Remote access requires MAMA_AUTH_TOKEN or a verified
+  Access JWT configured with MAMA_CF_ACCESS_ISSUER and MAMA_CF_ACCESS_AUD. Unconfigured verification
+  fails closed. Direct loopback without tunnel headers remains available.
+- External evidence is quoted at model-facing tool results and delta stimuli; stored source data and
+  host receipts retain their original structure. These changes protect the Answer and Report checks.
 
-10. **Root-Level Database File:** `mama-memory.db` at monorepo root (not in .gitignore'd directory). Typically would be in `~/.claude/` or similar user directory. Shared across all packages.
+## References
 
-### **운영 세션 반영 이력 (2026-02-19)**
-
-- `packages/standalone/src/multi-agent/workflow-engine.ts`
-  - `workflow_plan` 파서가 CRLF, raw JSON, ` ```json` 포함 블록을 더 견고하게 처리하도록 정규식 보강
-  - `DEFAULT_STEP_TIMEOUT_MS`를 10분으로 조정
-- `packages/standalone/src/api/graph-api.ts`
-  - 결정 저장 API 호환 이슈를 `mama.save` 호출로 정리
-- `packages/standalone/tests/multi-agent/workflow-engine.test.ts`
-  - 파서 회귀 케이스(원본 JSON, CRLF, json-fenced body, 선행 JSON 혼재) 테스트 추가
-- 런타임 반영
-  - `pnpm build` 후 `mama stop`/`mama start start`로 재기동 확인
-  - `pnpm start status`에서 실행 상태 Running 확인
-
----
-
-## RELATED DOCS
-
-- [Developer Playbook](docs/development/developer-playbook.md) — Architecture & standards
-- [CLAUDE.md](CLAUDE.md) — Claude Code guidance (CRITICAL: read this before editing)
-- [Testing Guide](docs/development/testing.md) — Test suite details
-- [Code Standards](docs/development/code-standards.md) — Non-negotiable rules
-- [Security Guide](docs/guides/security.md) — CRITICAL security warnings
-
----
-
-**Node.js:** >= 22.13.0  
-**pnpm:** >= 8.0.0  
-**License:** MIT  
-**Author:** SpineLift Team
+- Release: [docs/development/release-process.md](docs/development/release-process.md). A release
+  that touches mama-core publishes core first. The plugin's `package.json` and
+  `.claude-plugin/plugin.json` versions must match; a test enforces it.
+- Learning: [corrections and learning](docs/guides/corrections-and-learning.md), with
+  development evidence recorded through the [intent workflow](docs/development/intent-workflow.md).

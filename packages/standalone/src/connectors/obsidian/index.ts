@@ -28,14 +28,19 @@ export class ObsidianConnector implements IConnector {
   }
 
   async init(): Promise<void> {
-    const vaultPath = this.getVaultPath();
-    if (!vaultPath) {
+    const configured = this.getVaultConfigs();
+    if (configured.length === 0) {
       throw new Error('Obsidian vault path not configured. Set vaultPath in channel config.');
     }
-    try {
-      statSync(vaultPath);
-    } catch {
-      throw new Error(`Obsidian vault path does not exist: ${vaultPath}`);
+    for (const { channelKey, vaultPath } of configured) {
+      try {
+        if (!statSync(vaultPath).isDirectory()) throw new Error('path is not a directory');
+        readdirSync(vaultPath);
+      } catch (error) {
+        throw new Error(`Obsidian vault for channel ${channelKey} is not readable: ${vaultPath}`, {
+          cause: error,
+        });
+      }
     }
   }
 
@@ -62,98 +67,90 @@ export class ObsidianConnector implements IConnector {
   }
 
   async authenticate(): Promise<boolean> {
-    const vaultPath = this.getVaultPath();
-    if (!vaultPath) return false;
     try {
-      statSync(vaultPath);
+      const configured = this.getVaultConfigs();
+      if (configured.length === 0) return false;
+      for (const { vaultPath } of configured) {
+        if (!statSync(vaultPath).isDirectory()) return false;
+        readdirSync(vaultPath);
+      }
       return true;
     } catch {
       return false;
     }
   }
 
-  private getVaultPath(): string | undefined {
-    for (const channelCfg of Object.values(this.config.channels)) {
-      if (channelCfg.vaultPath) {
-        return channelCfg.vaultPath;
-      }
-    }
-    return undefined;
+  private getVaultConfigs(): Array<{ channelKey: string; vaultPath: string }> {
+    return Object.entries(this.config.channels)
+      .filter(([, channel]) => channel.role !== 'ignore')
+      .map(([channelKey, channel]) => {
+        if (!channel.vaultPath) {
+          throw new Error(`Obsidian channel ${channelKey} requires vaultPath`);
+        }
+        return { channelKey, vaultPath: channel.vaultPath };
+      });
   }
 
   private collectMdFiles(dir: string): string[] {
     const results: string[] = [];
-    try {
-      const entries = readdirSync(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        // Skip hidden directories (e.g., .obsidian, .git)
-        if (entry.name.startsWith('.')) continue;
-        const fullPath = join(dir, entry.name);
-        if (entry.isDirectory()) {
-          results.push(...this.collectMdFiles(fullPath));
-        } else if (entry.isFile() && entry.name.endsWith('.md')) {
-          results.push(fullPath);
-        }
+    const entries = readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      // Skip hidden directories (e.g., .obsidian, .git)
+      if (entry.name.startsWith('.')) continue;
+      const fullPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        results.push(...this.collectMdFiles(fullPath));
+      } else if (entry.isFile() && entry.name.endsWith('.md')) {
+        results.push(fullPath);
       }
-    } catch {
-      // Skip unreadable directories
     }
     return results;
   }
 
   async poll(since: Date): Promise<NormalizedItem[]> {
-    const vaultPath = this.getVaultPath();
-    if (!vaultPath) throw new Error('ObsidianConnector: vaultPath not configured');
-
     const items: NormalizedItem[] = [];
-    let hadError = false;
-
-    try {
-      const mdFiles = this.collectMdFiles(vaultPath);
-
-      for (const filePath of mdFiles) {
-        try {
+    const configured = this.getVaultConfigs();
+    let failedVaults = 0;
+    let lastVaultError: string | undefined;
+    for (const { channelKey, vaultPath } of configured) {
+      try {
+        for (const filePath of this.collectMdFiles(vaultPath)) {
           const stat = statSync(filePath);
           if (stat.mtime <= since) continue;
 
           const relPath = relative(vaultPath, filePath);
-          const parts = relPath.split(/[/\\]/);
-          const channelName = parts.length > 1 ? (parts[0] ?? 'vault') : 'vault';
-
           const content = readFileSync(filePath, 'utf8');
-
           items.push({
             source: 'obsidian',
-            sourceId: relPath,
-            channel: channelName,
+            sourceId: `${channelKey}:${relPath}`,
+            sourceEntityId: `${channelKey}:${relPath}`,
+            channel: channelKey,
             author: '',
             content,
             timestamp: stat.mtime,
             type: 'note',
             metadata: {
-              filePath,
               relPath,
               mtime: stat.mtime.toISOString(),
             },
           });
-        } catch (err) {
-          // Skip individual file errors
-          hadError = true;
-          this.lastError = err instanceof Error ? err.message : String(err);
         }
+      } catch (error) {
+        failedVaults += 1;
+        lastVaultError = error instanceof Error ? error.message : String(error);
       }
-    } catch (err) {
-      hadError = true;
-      this.lastError = err instanceof Error ? err.message : String(err);
     }
 
+    if (failedVaults > 0) {
+      this.lastError = `Obsidian poll failed for ${failedVaults} of ${configured.length} configured vault paths; last error: ${lastVaultError}`;
+      this.lastPollTime = new Date();
+      this.lastPollCount = items.length;
+      throw new Error(this.lastError);
+    }
     items.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-
     this.lastPollTime = new Date();
     this.lastPollCount = items.length;
-    // lastError was set in catch blocks; clear only if no error occurred this pass
-    if (!hadError) this.lastError = undefined;
-
+    this.lastError = undefined;
     return items;
   }
 }

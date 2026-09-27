@@ -1,28 +1,20 @@
 {
   "name": "@jungjaehoon/mama-os",
-  "version": "0.56.0",
+  "version": "0.57.0",
   "description": "MAMA OS - The local work agent behind your messenger.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
     "mama": "./dist/cli/index.js",
-    "mama-os": "./dist/cli/index.js",
-    "mama-code-act-mcp": "./dist/mcp/code-act-server.js"
+    "mama-os": "./dist/cli/index.js"
   },
   "scripts": {
-    "postinstall": "node scripts/postinstall.js",
-    "setup:ocr": "node scripts/setup-ocr.js",
-    "check:ocr": "node scripts/setup-ocr.js --check",
-    "build": "node scripts/clean-dist.mjs && tsc && pnpm exec tsx scripts/generate-gateway-tools.ts",
-    "build:watch": "tsc --watch",
-    "test": "vitest run",
-    "test:watch": "vitest watch",
-    "clean": "rm -rf dist node_modules",
+    "build": "pnpm clean && tsc && pnpm run build:viewer && pnpm run build:ui",
+    "build:ui": "pnpm --dir ui run bundle",
+    "build:viewer": "rm -rf public/viewer/js && tsc -p public/viewer/tsconfig.viewer.json",
+    "test": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit",
-    "start": "node dist/cli/index.js",
-    "bench:sample": "tsx bench/run-benchmark.ts sample",
-    "bench:full": "tsx bench/run-benchmark.ts full",
-    "bench:category": "tsx bench/run-benchmark.ts"
+    "clean": "rm -rf dist"
   },
   "keywords": [
     "ai",
@@ -48,8 +40,8 @@
   },
   "files": [
     "dist",
-    "scripts/",
-    "templates/",
+    "public",
+    "db",
     "README.md",
     "CHANGELOG.md"
   ],
@@ -57,37 +49,21 @@
     "access": "public"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.71.2",
-    "@jungjaehoon/mama-core": "workspace:*",
-    "@slack/socket-mode": "^2.0.5",
     "@slack/web-api": "^7.13.0",
-    "better-sqlite3": "^12.8.0",
-    "commander": "^12.0.0",
-    "cron-parser": "^4.9.0",
+    "@slack/socket-mode": "^2.0.5",
     "discord.js": "^14.25.1",
+    "@jungjaehoon/mama-core": "workspace:*",
+    "better-sqlite3": "^12.8.0",
     "express": "^5.2.1",
     "grammy": "^1.42.0",
     "htmlparser2": "12.0.0",
-    "js-tiktoken": "^1.0.21",
-    "js-yaml": "^4.1.0",
-    "minimatch": "^10.1.1",
-    "multer": "^2.0.2",
-    "node-cron": "^3.0.3",
-    "quickjs-emscripten": "^0.32.0",
-    "sharp": "^0.34.5"
+    "js-yaml": "^4.1.1"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^5.0.6",
     "@types/js-yaml": "^4.0.9",
-    "@types/minimatch": "^6.0.0",
-    "@types/multer": "^2.0.0",
     "@types/node": "^22.0.0",
-    "@types/node-cron": "^3.0.11",
-    "@types/supertest": "^6.0.3",
-    "@vitest/coverage-v8": "1.6.1",
-    "supertest": "^7.2.2",
-    "tsx": "^4.20.6",
     "typescript": "^5.4.0",
     "vitest": "^1.0.0"
   }

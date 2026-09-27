@@ -1,200 +1,75 @@
-# Contributing to MAMA
-
-Thank you for your interest in contributing to MAMA (Memory-Augmented MCP Assistant)!
-
+---
+title: Contributing
+parent: Development
+nav_order: 3
 ---
 
-## Quick Links
+# Contributing
 
-- **Developer Setup:** [Developer Playbook](developer-playbook.md)
-- **Code Standards:** [Code Standards](code-standards.md)
-- **Testing Guide:** [Testing Guide](testing.md)
-- **Architecture:** [Architecture Document](../explanation/architecture.md)
+Start with [INTENT](../../INTENT.md) and [AGENTS](../../AGENTS.md). Name the owner check your
+change serves: understanding source material, keeping work history together, answering from
+saved evidence, reporting changes, or applying corrections. Engine changes also need the shared
+core check. The active work list is [the rebuild plan](../rebuild/plan.md).
 
----
+## Set up the workspace
 
-## Getting Started
-
-### 1. Set Up Development Environment
+Use Node.js 22.13.0 or newer and pnpm. The root `package.json` pins the package-manager version.
+From the repository root:
 
 ```bash
-# Clone repository
-git clone https://github.com/jungjaehoon-lifegamez/MAMA.git
-cd MAMA
-
-# Install dependencies
-npm install
-
-# Run tests
-npm test
+pnpm install
+pnpm build
+pnpm typecheck
+pnpm lint
+pnpm test
 ```
 
-### 2. Read Documentation
+The root build, typecheck and test scripts use Turbo. Build dependencies before running a
+consumer package directly; standalone tests load the built core package. For focused tests,
+change into the package directory as described in [testing](testing.md).
 
-- [Developer Playbook](developer-playbook.md) - Architecture and development setup
-- [Code Standards](code-standards.md) - Coding conventions
-- [Testing Guide](testing.md) - Test suite overview
+## Put the change in the right package
 
----
+| Change                                                                  | Package                       |
+| ----------------------------------------------------------------------- | ----------------------------- |
+| Records, revisions, evidence, memory, search, shared runtime            | `packages/mama-core`          |
+| Owner behaviour, work fields, connectors, Telegram, board, wiki, viewer | `packages/standalone`         |
+| Public development-memory MCP tools                                     | `packages/mcp-server`         |
+| Claude Code commands and hooks                                          | `packages/claude-code-plugin` |
 
-## How to Contribute
+Read the current producer, consumer and assembly point before adding a mechanism. Reuse working
+code through public exports; do not reproduce core logic in adapters. Check the registered
+action catalog before promising a tool. See [architecture](../explanation/architecture.md).
 
-### 1. Report Issues
+## Make the result reviewable
 
-- **Bug reports:** Use issue template, include reproduction steps
-- **Feature requests:** Describe use case and expected behavior
-- **Documentation:** Flag unclear or outdated docs
+1. Use a feature branch. Concurrent workers each use an isolated worktree; never switch branches
+   in a shared checkout.
+2. Reproduce the reported problem through the real input path. Keep source data, observations,
+   judgment and delivery evidence distinct.
+3. Implement the smallest change supported by that evidence. Follow [code standards](code-standards.md)
+   and update the affected guide or reference.
+4. Run focused checks, then the required package and repository checks. Establish the owner result
+   using [the intent workflow](intent-workflow.md).
+5. Add 3–5 lines to [checks](../rebuild/checks.md): result, evidence and what still fails.
+   Record architecture, API contract and configuration decisions with the development-memory MCP
+   `save` tool.
 
-### 2. Submit Pull Requests
+Use neutral fixtures. Do not add personal names, business names, channel or user identifiers,
+private addresses, credentials or operational source content to code, examples or test data.
+Keep `docs/superpowers/` out of commits. Review the working tree and staged changes before a commit.
 
-**Before submitting:**
-
-- Read [Code Standards](code-standards.md)
-- Write tests for new features
-- Update documentation
-- Run `npm test` (all tests must pass)
-
-**PR checklist:**
-
-- [ ] Tests added/updated
-- [ ] Documentation updated
-- [ ] All tests pass
-- [ ] Code follows standards
-- [ ] No `console.log` (use DebugLogger)
-
----
-
-## Code Review Process
-
-1. **Automated checks:** Tests, linting, coverage
-2. **Maintainer review:** Architecture, code quality
-3. **Feedback:** Address review comments
-4. **Merge:** After approval
-
-**Average review time:** 2-3 business days
-
----
-
-## Development Workflow
-
-### Create Feature Branch
+Stage named files and pass the commit message from a file:
 
 ```bash
-git checkout -b feature/your-feature-name
+git add <changed-files>
+git commit -F <message-file>
+git log -1 --oneline
 ```
 
-### Make Changes
+Use a concise subject such as `fix: preserve work revision evidence` or `docs: explain owner setup`.
+The PR should explain the concrete problem, resulting behaviour, validation and remaining limits.
+Do not present a passing test suite as proof that the overall product purpose is complete.
 
-```bash
-# Edit files
-vim src/core/new-feature.js
-
-# Run tests frequently
-npm test
-
-# Check lint
-npm run lint
-```
-
-### Commit Changes
-
-```bash
-git add .
-git commit -m "feat: Add new feature description"
-```
-
-**Commit message format:**
-
-- `feat:` New feature
-- `fix:` Bug fix
-- `docs:` Documentation
-- `test:` Tests
-- `refactor:` Code refactoring
-
-### Submit PR
-
-```bash
-git push origin feature/your-feature-name
-# Open PR on GitHub
-```
-
----
-
-## Testing Requirements
-
-- **Unit tests:** Required for all new functions
-- **Integration tests:** Required for commands/hooks
-- **Regression tests:** Required for bug fixes
-- **Coverage:** Maintain >80% coverage
-
-**See:** [Testing Guide](testing.md)
-
----
-
-## Documentation Requirements
-
-**Update documentation when:**
-
-- Adding new commands
-- Changing configuration options
-- Modifying architecture
-- Adding FR (Functional Requirements)
-
-**Files to update:**
-
-- User-facing docs (tutorials/, guides/)
-- Reference docs (reference/)
-- FR mapping (reference/fr-mapping.md)
-
----
-
-## Code Standards
-
-- **No `any` type:** All TypeScript must be properly typed
-- **No `console.log`:** Use DebugLogger
-- **File length:** <1000 lines
-- **Function length:** <40 lines
-- **Test coverage:** >80%
-
-**See:** [Code Standards](code-standards.md)
-
----
-
-## Communication
-
-- **Issues:** For bug reports and feature requests
-- **Discussions:** For questions and ideas
-- **Pull Requests:** For code contributions
-
----
-
-## License
-
-By contributing, you agree that your contributions will be licensed under the MIT License.
-
----
-
-## Recognition
-
-Contributors are recognized in:
-
-- README.md (Contributors section)
-- Release notes
-- GitHub contributor graph
-
----
-
-## Questions?
-
-- **Technical questions:** Open a discussion
-- **Security issues:** Email security@jungjaehoon.com (private)
-- **Other:** Open an issue
-
----
-
-## See Also
-
-- [Developer Playbook](developer-playbook.md) - Development setup
-- [Code Standards](code-standards.md) - Coding conventions
-- [Testing Guide](testing.md) - Test suite
-- [Architecture](../explanation/architecture.md) - System design
+Before publication, follow [the release process](release-process.md), including the privacy review
+and the owner's go-ahead for the rebuild push and PR.

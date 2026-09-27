@@ -1,6 +1,5 @@
 import crypto from 'node:crypto';
 
-import { getAdapter, initDB } from '../db-manager.js';
 import type { DatabaseAdapter } from '../db-manager.js';
 import type { MemoryEventRecord } from './types.js';
 
@@ -27,10 +26,9 @@ function deserializeEvent(row: Record<string, unknown>): MemoryEventRecord {
 }
 
 export async function appendMemoryEvent(
+  adapter: DatabaseAdapter,
   input: Omit<MemoryEventRecord, 'event_id'>
 ): Promise<string> {
-  await initDB();
-  const adapter = getAdapter();
   return insertMemoryEventInTransaction(adapter, input);
 }
 
@@ -66,10 +64,10 @@ export function insertMemoryEventInTransaction(
   return eventId;
 }
 
-export async function listMemoryEventsForMemory(memoryId: string): Promise<MemoryEventRecord[]> {
-  await initDB();
-  const adapter = getAdapter();
-
+export async function listMemoryEventsForMemory(
+  adapter: Pick<DatabaseAdapter, 'prepare'>,
+  memoryId: string
+): Promise<MemoryEventRecord[]> {
   const rows = adapter
     .prepare(
       `
@@ -85,10 +83,10 @@ export async function listMemoryEventsForMemory(memoryId: string): Promise<Memor
   return rows.map(deserializeEvent);
 }
 
-export async function listRecentMemoryEvents(limit = 10): Promise<MemoryEventRecord[]> {
-  await initDB();
-  const adapter = getAdapter();
-
+export async function listRecentMemoryEvents(
+  adapter: Pick<DatabaseAdapter, 'prepare'>,
+  limit = 10
+): Promise<MemoryEventRecord[]> {
   const rows = adapter
     .prepare(
       `

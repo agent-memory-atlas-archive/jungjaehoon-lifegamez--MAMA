@@ -32,10 +32,10 @@ describe('Wiki types', () => {
 
   it('WikiConfig interface is assignable', () => {
     const config: WikiConfig = {
-      vaultPath: '/Users/test/vault',
+      vaultPath: '/tmp/test-vault',
       wikiDir: 'wiki',
       enabled: true,
     };
-    expect(config.vaultPath).toBe('/Users/test/vault');
+    expect(config.vaultPath).toBe('/tmp/test-vault');
   });
 });

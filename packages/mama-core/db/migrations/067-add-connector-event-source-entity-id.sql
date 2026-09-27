@@ -1,14 +1,10 @@
--- Migration 067: give connector_event_index a first-class source_entity_id so an agent can read an
--- entity's change history (the revisions save() preserves) through the same grant-bounded core index
--- it already searches. Previously sourceEntityId lived only inside metadata_json, with no by-entity
--- query. Additive and backward-compatible: existing rows are backfilled from metadata_json.
-ALTER TABLE connector_event_index ADD COLUMN source_entity_id TEXT;
+-- Retired: this migration declared the source entity id on the connector event index.
+--
+-- The index moved to the package that has connectors. Three of the four consumers
+-- of this core have none, and were running these statements against tables they
+-- never write. The schema is declared whole in standalone/db/migrations/001.
+--
+-- The file stays, and the number stays claimed: databases in the field recorded
+-- 67 as applied, and a number that comes back meaning something else is worse
+-- than a number that means nothing.
 
-UPDATE connector_event_index
-  SET source_entity_id = json_extract(metadata_json, '$.sourceEntityId')
-  WHERE source_entity_id IS NULL
-    AND metadata_json IS NOT NULL
-    AND json_extract(metadata_json, '$.sourceEntityId') IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_connector_event_source_entity
-  ON connector_event_index(source_connector, source_entity_id);

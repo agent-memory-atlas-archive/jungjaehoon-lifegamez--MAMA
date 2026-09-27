@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { NotionConnector } from '../../src/connectors/notion/index.js';
 import type { ConnectorConfig } from '../../src/connectors/framework/types.js';
@@ -7,11 +7,10 @@ function makeConfig(overrides: Partial<ConnectorConfig> = {}): ConnectorConfig {
   return {
     enabled: true,
     pollIntervalMinutes: 10,
-    channels: {},
+    channels: { workspace: { role: 'reference' } },
     auth: {
       type: 'token',
-      tokenName: 'NOTION_TOKEN',
-      token: 'test-notion-token',
+      tokenName: 'MAMA_NOTION_TOKEN',
     },
     ...overrides,
   };
@@ -37,10 +36,10 @@ function makeBlockChildrenResponse(blocks: unknown[]) {
   };
 }
 
-function makeSearchResponse(pages: unknown[]) {
+function makeSearchResponse(pages: unknown[], hasMore = false, nextCursor: string | null = null) {
   return {
     ok: true,
-    json: vi.fn().mockResolvedValue({ results: pages, has_more: false, next_cursor: null }),
+    json: vi.fn().mockResolvedValue({ results: pages, has_more: hasMore, next_cursor: nextCursor }),
   };
 }
 
@@ -56,6 +55,11 @@ function makeParagraphBlock(text: string) {
 describe('NotionConnector', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.stubEnv('MAMA_NOTION_TOKEN', 'fixture-notion-token');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   describe('name and type', () => {
@@ -71,12 +75,12 @@ describe('NotionConnector', () => {
   });
 
   describe('getAuthRequirements', () => {
-    it('returns token auth requirement with NOTION_TOKEN', () => {
+    it('returns token auth requirement with MAMA_NOTION_TOKEN', () => {
       const connector = new NotionConnector(makeConfig());
       const reqs = connector.getAuthRequirements();
       expect(reqs).toHaveLength(1);
       expect(reqs[0]?.type).toBe('token');
-      expect(reqs[0]?.tokenName).toBe('NOTION_TOKEN');
+      expect(reqs[0]?.tokenName).toBe('MAMA_NOTION_TOKEN');
     });
   });
 
@@ -88,12 +92,11 @@ describe('NotionConnector', () => {
 
     it('throws when token is missing', async () => {
       const connector = new NotionConnector(
-        makeConfig({ auth: { type: 'token', tokenName: 'NOTION_TOKEN' } })
+        makeConfig({ auth: { type: 'token', tokenName: 'MAMA_NOTION_TOKEN' } })
       );
-      const originalEnv = process.env['NOTION_TOKEN'];
-      delete process.env['NOTION_TOKEN'];
+      vi.stubEnv('MAMA_NOTION_TOKEN', '');
       await expect(connector.init()).rejects.toThrow(/token/i);
-      if (originalEnv !== undefined) process.env['NOTION_TOKEN'] = originalEnv;
+      vi.stubEnv('MAMA_NOTION_TOKEN', 'fixture-notion-token');
     });
   });
 
@@ -131,7 +134,7 @@ describe('NotionConnector', () => {
       await connector.init();
       await connector.authenticate();
       const headers = mockFetch.mock.calls[0]?.[1]?.headers as Record<string, string>;
-      expect(headers?.['Authorization']).toBe('Bearer test-notion-token');
+      expect(headers?.['Authorization']).toBe('Bearer fixture-notion-token');
       expect(headers?.['Notion-Version']).toBe('2022-06-28');
     });
   });
@@ -145,24 +148,76 @@ describe('NotionConnector', () => {
       expect(items).toEqual([]);
     });
 
-    it('filters pages by last_edited_time > since', async () => {
+    it('includes minute-rounded edits in the overlap and excludes older pages', async () => {
       const since = new Date('2024-01-01T00:00:00.000Z');
       const mockFetch = vi
         .fn()
         .mockResolvedValueOnce(
           makeSearchResponse([
-            makePage({ id: 'old-page', last_edited_time: '2023-12-31T23:59:59.000Z' }),
+            makePage({ id: 'old-page', last_edited_time: '2023-12-31T23:58:59.000Z' }),
+            makePage({ id: 'overlap-page', last_edited_time: '2023-12-31T23:59:30.000Z' }),
             makePage({ id: 'new-page', last_edited_time: '2024-01-01T00:00:01.000Z' }),
           ])
         )
-        // Block children fetch for new-page
+        // Block children fetch for overlap-page and new-page
+        .mockResolvedValueOnce(makeBlockChildrenResponse([]))
         .mockResolvedValueOnce(makeBlockChildrenResponse([]));
       vi.stubGlobal('fetch', mockFetch);
       const connector = new NotionConnector(makeConfig());
       await connector.init();
       const items = await connector.poll(since);
-      expect(items).toHaveLength(1);
-      expect(items[0]?.sourceId).toBe('new-page');
+      expect(items.map((item) => item.sourceId)).toEqual(['overlap-page', 'new-page']);
+    });
+
+    it('reads nested block children recursively', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi
+          .fn()
+          .mockResolvedValueOnce(makeSearchResponse([makePage()]))
+          .mockResolvedValueOnce(
+            makeBlockChildrenResponse([
+              { ...makeParagraphBlock('parent'), id: 'block-parent', has_children: true },
+            ])
+          )
+          .mockResolvedValueOnce(makeBlockChildrenResponse([makeParagraphBlock('nested')]))
+      );
+      const connector = new NotionConnector(makeConfig());
+      await connector.init();
+      const [item] = await connector.poll(new Date(0));
+      expect(item?.content).toContain('parent\nnested');
+    });
+
+    it('fails loudly when nested blocks exceed the supported depth', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: RequestInfo | URL) =>
+          String(input).includes('/search')
+            ? makeSearchResponse([makePage()])
+            : makeBlockChildrenResponse([
+                { ...makeParagraphBlock('nested'), id: 'nested-block', has_children: true },
+              ])
+        )
+      );
+      const connector = new NotionConnector(makeConfig());
+      await connector.init();
+      await expect(connector.poll(new Date(0))).rejects.toThrow(/depth cap/);
+    });
+
+    it('fails loudly when nested blocks exceed the supported depth', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: RequestInfo | URL) =>
+          String(input).includes('/search')
+            ? makeSearchResponse([makePage()])
+            : makeBlockChildrenResponse([
+                { ...makeParagraphBlock('nested'), id: 'nested-block', has_children: true },
+              ])
+        )
+      );
+      const connector = new NotionConnector(makeConfig());
+      await connector.init();
+      await expect(connector.poll(new Date(0))).rejects.toThrow(/depth cap/);
     });
 
     it('sets sourceId to page.id', async () => {
@@ -229,7 +284,7 @@ describe('NotionConnector', () => {
       const secondUrl = String(mockFetch.mock.calls[1]?.[0]);
       expect(secondUrl).toContain('blocks/page-xyz/children');
       const headers = mockFetch.mock.calls[1]?.[1]?.headers as Record<string, string>;
-      expect(headers?.['Authorization']).toBe('Bearer test-notion-token');
+      expect(headers?.['Authorization']).toBe('Bearer fixture-notion-token');
     });
 
     it('uses POST for search with correct filter', async () => {
@@ -241,6 +296,53 @@ describe('NotionConnector', () => {
       expect(mockFetch.mock.calls[0]?.[1]?.method).toBe('POST');
       const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
       expect(body.filter).toEqual({ property: 'object', value: 'page' });
+    });
+
+    it('fails instead of returning a page when fetching its blocks fails', async () => {
+      const mockFetch = vi
+        .fn()
+        .mockResolvedValueOnce(makeSearchResponse([makePage()]))
+        .mockResolvedValueOnce({ ok: false, status: 503 });
+      vi.stubGlobal('fetch', mockFetch);
+      const connector = new NotionConnector(makeConfig());
+      await connector.init();
+
+      await expect(connector.poll(new Date(0))).rejects.toThrow(
+        /Notion poll failed for 1 page fetch; last error: Notion page content fetch failed for 1 of 1 search pages; last error: block children HTTP 503 for page 1/
+      );
+      await expect(connector.healthCheck()).resolves.toMatchObject({
+        healthy: false,
+        error: expect.stringContaining('HTTP 503'),
+      });
+    });
+
+    it('fails on a repeated search cursor', async () => {
+      const mockFetch = vi
+        .fn()
+        .mockResolvedValueOnce(makeSearchResponse([], true, 'cursor-1'))
+        .mockResolvedValueOnce(makeSearchResponse([], true, 'cursor-1'));
+      vi.stubGlobal('fetch', mockFetch);
+      const connector = new NotionConnector(makeConfig());
+      await connector.init();
+
+      await expect(connector.poll(new Date(0))).rejects.toThrow(
+        /Notion poll failed for 1 page fetch; last error: search pagination repeated a cursor at page 2/
+      );
+    });
+
+    it('reads each search page before completing the poll', async () => {
+      const mockFetch = vi
+        .fn()
+        .mockResolvedValueOnce(makeSearchResponse([makePage({ id: 'page-one' })], true, 'cursor-2'))
+        .mockResolvedValueOnce(makeBlockChildrenResponse([]))
+        .mockResolvedValueOnce(makeSearchResponse([makePage({ id: 'page-two' })]))
+        .mockResolvedValueOnce(makeBlockChildrenResponse([]));
+      vi.stubGlobal('fetch', mockFetch);
+      const connector = new NotionConnector(makeConfig());
+      await connector.init();
+
+      const items = await connector.poll(new Date(0));
+      expect(items.map((item) => item.sourceId)).toEqual(['page-one', 'page-two']);
     });
   });
 

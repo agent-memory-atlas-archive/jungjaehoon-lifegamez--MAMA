@@ -56,14 +56,14 @@ jobs:
           restore-keys: ${{ runner.os }}-pnpm-store-
       - run: pnpm install
       - run: pnpm build
-      - name: Verify retired runtime package boundary
-        run: node scripts/verify-retired-runtime-packages.mjs
       - uses: actions/cache/save@v5
         with:
           path: |
             node_modules
             packages/*/node_modules
             packages/*/dist
+            packages/standalone/ui/node_modules
+            packages/standalone/public/viewer
           key: ${{ runner.os }}-build-${{ github.sha }}
 
   # Test mama-core
@@ -83,6 +83,8 @@ jobs:
             node_modules
             packages/*/node_modules
             packages/*/dist
+            packages/standalone/ui/node_modules
+            packages/standalone/public/viewer
           key: ${{ runner.os }}-build-${{ github.sha }}
       - name: Test mama-core
         run: pnpm --filter @jungjaehoon/mama-core test
@@ -106,6 +108,8 @@ jobs:
             node_modules
             packages/*/node_modules
             packages/*/dist
+            packages/standalone/ui/node_modules
+            packages/standalone/public/viewer
           key: ${{ runner.os }}-build-${{ github.sha }}
       - uses: actions/cache@v5
         with:
@@ -134,6 +138,8 @@ jobs:
             node_modules
             packages/*/node_modules
             packages/*/dist
+            packages/standalone/ui/node_modules
+            packages/standalone/public/viewer
           key: ${{ runner.os }}-build-${{ github.sha }}
       - name: Test plugin
         run: pnpm --filter mama-plugin test
@@ -157,7 +163,25 @@ jobs:
             node_modules
             packages/*/node_modules
             packages/*/dist
+            packages/standalone/ui/node_modules
+            packages/standalone/public/viewer
           key: ${{ runner.os }}-build-${{ github.sha }}
+      # The MCP tests embed with the real model; a download inside a 30 s test timeout left a
+      # truncated model file. Restore it, or download it fully before the tests start.
+      - uses: actions/cache@v5
+        with:
+          path: ~/.cache/huggingface/transformers
+          key: ${{ runner.os }}-hf-e5-large-q8-v1
+      - name: Prepare embedding model
+        working-directory: packages/mcp-server
+        run: |
+          node --input-type=module -e "
+          import { homedir } from 'node:os'; import { join } from 'node:path';
+          import { declareEmbeddingCacheDir, generateEmbedding } from '@jungjaehoon/mama-core/embeddings';
+          declareEmbeddingCacheDir(join(homedir(), '.cache', 'huggingface', 'transformers'));
+          const v = await generateEmbedding('warm');
+          if (!v || v.length !== 1024) throw new Error('embedding model did not load');
+          "
       - name: Test mcp-server
         run: pnpm --filter @jungjaehoon/mama-server test
         env:

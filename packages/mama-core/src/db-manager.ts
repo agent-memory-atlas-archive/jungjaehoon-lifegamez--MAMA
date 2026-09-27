@@ -1,10 +1,9 @@
 /**
  * MAMA Database Manager (SQLite-only)
  *
- * SQLite-exclusive database interface for MAMA Plugin.
- * Uses better-sqlite3 for local storage.
+ * SQLite-exclusive database interface. Uses better-sqlite3 for local storage.
  *
- * PostgreSQL support is only available in the legacy mcp-server repository.
+ * There is no PostgreSQL path.
  *
  * Features:
  * - WAL mode for better concurrency
@@ -20,9 +19,16 @@
 
 import { info } from './debug-logger.js';
 import { openDatabase, resolveAdapterDbPath, type DatabaseHandle } from './storage/database.js';
-export { assertTestProcessIsNotUsingRealDb, isTestMode } from './storage/database.js';
+export {
+  assertTestProcessIsNotUsingRealDb,
+  clearProductionDatabasePaths,
+  declareProductionDatabasePath,
+  isTestMode,
+} from './storage/database.js';
+export { openDatabase } from './storage/database.js';
+export type { DatabaseHandle, OpenDatabaseOptions } from './storage/database.js';
 import type { PreparedStatement } from './db-adapter/statement.js';
-import { EMBEDDING_PREFIX_SCHEME } from './embeddings.js';
+import { EMBEDDING_PREFIX_SCHEME } from './embedding/embedder.js';
 
 // Re-export PreparedStatement for consumers
 export type { PreparedStatement };
@@ -31,19 +37,42 @@ export type { PreparedStatement };
 // Note: This local interface differs from base-adapter.ts abstract class.
 // The double cast at initialization bridges the type gap between the abstract
 // class (which uses Statement) and this interface (which uses PreparedStatement).
+/**
+ * What a module needs to read and write rows.
+ *
+ * Measured 2026-09-15: outside the three files that own the database
+ * (db-adapter/, db-manager.ts, storage/database.ts), consumers call `prepare`
+ * 255 times, `transaction` 26 and `transactionImmediate` 4. They call `connect`,
+ * `disconnect`, `runMigrations`, `reloadVectorCache`, `getDbPath` and `dbPath`
+ * zero times. `exec` stays because a caller's memoryDb shim issues DDL
+ * through it. Handing every store the lifetime and vector surface coupled 45
+ * modules to a contract they never use; this is that contract minus what they
+ * never touched.
+ */
 export interface DatabaseAdapter {
-  connect: () => unknown;
-  disconnect: () => void;
-  runMigrations: (dir: string) => void;
   prepare: (sql: string) => PreparedStatement;
+  exec: (sql: string) => void;
   transaction: <T>(fn: () => T) => T;
   transactionImmediate?: <T>(fn: () => T) => T;
+}
+
+/**
+ * The whole adapter: rows plus lifetime, vector storage and identification.
+ *
+ * Five files need it - the implementation, the lifetime owner, the lifetime
+ * holder, and the two knowledge modules that write and search vectors.
+ */
+export interface DatabaseInstance extends DatabaseAdapter {
+  connect: () => unknown;
+  disconnect: () => void;
+  runMigrations: (sources: string | ReadonlyArray<{ name: string; dir: string }>) => void;
   insertEmbedding: (rowid: number, embedding: Float32Array | number[]) => void;
   vectorSearch: (
     embedding: Float32Array | number[],
     limit: number,
     topicPrefix?: string,
-    excludeStatuses?: readonly string[]
+    excludeStatuses?: readonly string[],
+    kind?: string | [string, ...string[]]
   ) => Promise<VectorSearchResult[] | null> | VectorSearchResult[] | null;
   reloadVectorCache?: () => void;
   refreshDecisionStatusCache?: (rowid: number) => void;
@@ -163,7 +192,7 @@ function countRows(adapter: DatabaseAdapter, table: string): number {
  * vectors exist, cosine search would be non-discriminative, so we throw with the exact
  * re-embed command instead of silently serving degraded results. No-fallback by design.
  */
-export function assertEmbeddingSchemeCurrent(adapter: DatabaseAdapter): void {
+export function assertEmbeddingSchemeCurrent(adapter: DatabaseInstance): void {
   let scheme = 'legacy-unprefixed';
   try {
     const row = adapter
@@ -201,7 +230,12 @@ export function assertEmbeddingSchemeCurrent(adapter: DatabaseAdapter): void {
   }
 }
 
-export async function initDB(): Promise<unknown> {
+export async function initDB(
+  options: {
+    /** Migrations this consumer brings of its own, run after the core's. */
+    migrations?: ReadonlyArray<{ name: string; dir: string }>;
+  } = {}
+): Promise<unknown> {
   if (handle) {
     return handle.connection;
   }
@@ -213,7 +247,7 @@ export async function initDB(): Promise<unknown> {
   // Assigning it after the await left one microtask in which both guards read
   // null, and a concurrent caller landing there would open a second adapter and
   // run migrations again on the same file.
-  openingPromise = openDatabase()
+  openingPromise = openDatabase(options.migrations ? { migrations: options.migrations } : {})
     .then((opened) => {
       handle = opened;
       return opened;
@@ -249,7 +283,7 @@ export function getDB(): unknown {
  *
  * @returns Adapter instance
  */
-export function getAdapter(): DatabaseAdapter {
+export function getAdapter(): DatabaseInstance {
   if (!handle) {
     throw new Error('Database adapter not initialized. Call await initDB() first.');
   }
@@ -277,9 +311,9 @@ export async function closeDB(): Promise<void> {
 /**
  * The single write boundary for memory_scopes. Callers inside a transaction
  * pass their adapter through; the public wrapper resolves the global adapter
- * for the standalone call sites that predate the adapter-taking boundary.
+ * for the call sites that predate the adapter-taking boundary.
  */
-export function ensureMemoryScopeInAdapter(
+export function ensureMemoryScope(
   adapter: DatabaseAdapter,
   kind: string,
   externalId: string
@@ -365,7 +399,8 @@ export async function prepareDecisionEmbedding(
       `Invalid event_datetime: must be a positive millisecond timestamp (got: ${decision.event_datetime})`
     );
   }
-  const { generateEnhancedEmbedding, isForceTier3Enabled } = await import('./embeddings.js');
+  const { generateEnhancedEmbedding, isForceTier3Enabled } =
+    await import('./embedding/embedder.js');
   if (isForceTier3Enabled()) {
     // Tier-3 is an explicit no-vector mode, not an embedder failure.
     return null;
@@ -383,7 +418,7 @@ export async function prepareDecisionEmbedding(
 
 /** Insert one decision and its already-prepared vector inside the caller's transaction. */
 export function insertPreparedDecision(
-  adapter: DatabaseAdapter,
+  adapter: DatabaseInstance,
   decision: DecisionInput,
   embedding: Float32Array | null
 ): number {
@@ -455,13 +490,17 @@ export async function updateDecisionOutcome(
     // maintained decisions projection columns move in the same transaction.
     // Dynamic import avoids a module cycle with memory/write-adapters.
     const { appendOutcomeAmendment } = await import('./memory/write-adapters.js');
-    await appendOutcomeAmendment(decisionId, {
-      outcome: outcomeData.outcome ?? null,
-      failureReason: outcomeData.failure_reason ?? null,
-      limitation: outcomeData.limitation ?? null,
-      confidence: outcomeData.confidence ?? null,
-      durationDays: outcomeData.duration_days ?? null,
-    });
+    await appendOutcomeAmendment(
+      decisionId,
+      {
+        outcome: outcomeData.outcome ?? null,
+        failureReason: outcomeData.failure_reason ?? null,
+        limitation: outcomeData.limitation ?? null,
+        confidence: outcomeData.confidence ?? null,
+        durationDays: outcomeData.duration_days ?? null,
+      },
+      { adapter: getAdapter() }
+    );
 
     info(`[db-manager] Decision outcome updated: ${decisionId} → ${outcomeData.outcome}`);
   } catch (error) {

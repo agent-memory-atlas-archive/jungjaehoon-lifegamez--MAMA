@@ -1,8 +1,7 @@
-
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
-import { applyMigrationsThrough } from '../../src/test-utils.js';
+import { applyMigrationsThrough } from '../helpers/test-utils.js';
 function columnNames(db: Database.Database): string[] {
   return (db.prepare('PRAGMA table_info(case_truth)').all() as Array<{ name: string }>)
     .map((col) => col.name)
@@ -123,5 +122,4 @@ describe('case-first substrate — case_truth Phase 3 promotion and freshness co
 
     db.close();
   });
-
 });

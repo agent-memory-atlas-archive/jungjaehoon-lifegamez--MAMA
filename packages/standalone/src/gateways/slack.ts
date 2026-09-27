@@ -1,652 +1,378 @@
-/**
- * Slack Gateway for MAMA Standalone
- *
- * Provides Slack integration using Socket Mode for receiving and responding to messages.
- * Supports both DM and channel mentions with thread context preservation.
- */
-
+import { createHash } from 'node:crypto';
+import { closeSync, readFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import { SocketModeClient } from '@slack/socket-mode';
 import { WebClient } from '@slack/web-api';
-import { splitForSlack } from './message-splitter.js';
 import { BaseGateway } from './base-gateway.js';
-import type {
-  NormalizedMessage,
-  SlackGatewayConfig,
-  SlackChannelConfig,
-  MessageAttachment,
-  ContentBlock,
-} from './types.js';
-import { downloadFile, buildContentBlocks } from './attachment-utils.js';
-import type { TurnProcessor } from './turn-contract.js';
-import type { MultiAgentConfig } from '../cli/config/types.js';
-import { getChannelHistory } from './channel-history.js';
-import { createSafeLogger } from '../utils/log-sanitizer.js';
-import { ToolStatusTracker } from './tool-status-tracker.js';
-import type { PlatformAdapter } from './tool-status-tracker.js';
-import { getConfig } from '../cli/config/config-manager.js';
-import { overlayMemberPrincipal, resolveConnectorPrincipal } from './principal.js';
+import type { JsonValue } from '@jungjaehoon/mama-core/knowledge';
+import type { OwnerMessageInput, TurnIntake } from './turn-contract.js';
+import { OwnerMessageLedger } from './telegram-message-ledger.js';
+import { splitForSlack } from './message-splitter.js';
+import { openWorkspaceFile, workspaceFileIdentity } from '../api/file-delivery.js';
+import type { OwnerFileDeliveryResult } from '../api/file-delivery.js';
+import { saveResponseBody } from '../connectors/framework/attachment-io.js';
+import { safeFileName } from '../api/attachment-actions.js';
 
-/**
- * Slack message event structure
- */
+interface SlackFile {
+  id: string;
+  name?: string;
+  mimetype?: string;
+  size?: number;
+  url_private_download?: string;
+}
 interface SlackMessageEvent {
   type: string;
   subtype?: string;
-  channel: string;
-  user: string;
-  text: string;
-  ts: string;
-  thread_ts?: string;
+  user?: string;
   bot_id?: string;
-  channel_type?: string;
-  files?: Array<{
-    id: string;
-    name: string;
-    mimetype: string;
-    url_private_download?: string;
-    url_private?: string;
-    size: number;
-  }>;
+  channel?: string;
+  ts?: string;
+  text?: string;
+  thread_ts?: string;
+  files?: SlackFile[];
 }
-
-/**
- * Slack Gateway options
- */
 export interface SlackGatewayOptions {
-  /** Slack bot token (xoxb-...) */
-  botToken: string;
-  /** Slack app token for Socket Mode (xapp-...) */
+  token: string;
   appToken: string;
-  /** Owner Slack user ID. Unset means owner resolution fails closed. */
-  ownerUserId?: string;
-  /** Message router for processing messages */
-  turnProcessor: TurnProcessor;
-  /** Gateway configuration */
-  config?: Partial<SlackGatewayConfig>;
-  /** Multi-agent configuration (optional) */
-  multiAgentConfig?: MultiAgentConfig;
-  /** Multi-agent runtime backend options (optional) */
-  /** Optional core-backed principal lookup; consumed by the identity overlay in Task 5. */
-  principalResolver?: (
-    connector: string,
-    namespace: string,
-    externalId: string
-  ) => { principalId: string; kind: 'owner' | 'member'; status: string } | null;
+  intake: TurnIntake;
+  config: {
+    enabled: boolean;
+    ownerChannelId?: string;
+    allowedChannels: string[];
+    ownerUserIds: string[];
+  };
+  messageLedgerPath: string;
+  messageLedger?: OwnerMessageLedger;
+  downloadsDir?: string;
+  filesRoot?: string;
+  log?: (line: string) => void;
 }
 
-interface SlackLocalGatewayConfig extends SlackGatewayConfig {
-  /** Owner Slack user ID. Unset means owner resolution fails closed. */
-  ownerUserId?: string;
-}
-
-/**
- * Slack Gateway class
- *
- * Connects to Slack via Socket Mode and routes messages
- * to the MessageRouter for processing.
- */
+/** Owner-only Slack Socket Mode transport. */
 export class SlackGateway extends BaseGateway {
   readonly source = 'slack' as const;
-  readonly principalResolver: SlackGatewayOptions['principalResolver'];
+  private readonly socket: SocketModeClient;
+  private readonly api: WebClient;
+  private readonly ledger: OwnerMessageLedger;
+  private readonly log: (line: string) => void;
+  private readonly activeInputs = new Set<string>();
+  private readonly deliveryTails = new Map<string, Promise<void>>();
 
-  private socketClient: SocketModeClient;
-  private webClient: WebClient;
-  private config: SlackLocalGatewayConfig;
-  private teamId?: string;
-  private ownerWarningLogged = false;
-  private missingTeamIdWarningLogged = false;
-
-  // Multi-agent support
-  private botToken: string;
-
-  // Dedup: prevent double processing from app_mention + message events
-  private processedMessages = new Map<string, number>();
-  private static get DEDUP_TTL_MS() {
-    return getConfig().gateway_tuning?.dedup_ttl_ms ?? 30_000;
-  }
-
-  // Safe logger instance
-  private logger = createSafeLogger('SlackGateway');
-
-  protected get mentionPattern(): RegExp | null {
-    return null; // Slack uses custom cleanMessageContent with multiple patterns
-  }
-
-  constructor(options: SlackGatewayOptions) {
-    super({ turnProcessor: options.turnProcessor });
-    this.botToken = options.botToken;
-    this.principalResolver = options.principalResolver;
-    this.config = {
-      enabled: true,
-      botToken: options.botToken,
-      appToken: options.appToken,
-      channels: options.config?.channels || {},
-      ownerUserId: options.ownerUserId,
-    };
-
-    // Create Socket Mode client for real-time events
-    this.socketClient = new SocketModeClient({
-      appToken: options.appToken,
-      serverPingTimeout: 30000,
-      clientPingTimeout: 30000,
-    });
-
-    // Create Web client for API calls
-    this.webClient = new WebClient(options.botToken);
-
-    // Multi-agent handler construction was here. Gated on `multi_agent.enabled`, false on
-    // this install, with zero handler traces in the entire log history.
-
-    this.setupEventListeners();
-  }
-
-  /**
-   * Set up Socket Mode event listeners
-   */
-  private setupEventListeners(): void {
-    // Connection events
-    this.socketClient.on('connected', async () => {
-      this.logger.log('Gateway connected via Socket Mode');
+  constructor(private readonly options: SlackGatewayOptions) {
+    super({ intake: options.intake });
+    this.log = options.log ?? console.log;
+    this.socket = new SocketModeClient({ appToken: options.appToken });
+    this.api = new WebClient(options.token);
+    this.ledger =
+      options.messageLedger ?? new OwnerMessageLedger(options.messageLedgerPath, { log: this.log });
+    this.socket.on('connected', () => {
       this.connected = true;
-
-      this.emitEvent({
-        type: 'connected',
-        source: 'slack',
-        timestamp: new Date(),
-      });
+      this.emitEvent({ type: 'connected', source: this.source, timestamp: new Date() });
     });
-
-    this.socketClient.on('disconnected', () => {
+    this.socket.on('disconnected', () => {
       this.connected = false;
-      this.emitEvent({
-        type: 'disconnected',
-        source: 'slack',
-        timestamp: new Date(),
-      });
+      this.emitEvent({ type: 'disconnected', source: this.source, timestamp: new Date() });
     });
-
-    // Direct message events
-    this.socketClient.on('message', async ({ event, ack }) => {
+    this.socket.on('message', async ({ event, ack }) => {
       try {
+        await this.accept(event as SlackMessageEvent);
         await ack();
-        // file_share subtype only arrives via 'message' event (not app_mention),
-        // so detect mention from text to avoid shouldRespond rejecting it
-        const slackEvent = event as SlackMessageEvent;
-        const hasMentionInText = !!slackEvent.text?.match(/<@[UW]\w+>/);
-        await this.handleMessage(slackEvent, hasMentionInText);
       } catch (error) {
-        const errMsg = error instanceof Error ? error.message : String(error);
-        this.logger.error('Error handling Slack message:', errMsg);
         this.emitEvent({
           type: 'error',
-          source: 'slack',
+          source: this.source,
           timestamp: new Date(),
-          error: error instanceof Error ? error : new Error(errMsg),
+          error: error instanceof Error ? error : new Error(String(error)),
         });
       }
     });
-
-    // App mention events (when @bot is mentioned in a channel)
-    this.socketClient.on('app_mention', async ({ event, ack }) => {
+    this.socket.on('app_mention', async ({ event, ack }) => {
       try {
+        await this.accept(event as SlackMessageEvent);
         await ack();
-        await this.handleMessage(event as SlackMessageEvent, true);
       } catch (error) {
-        const errMsg = error instanceof Error ? error.message : String(error);
-        this.logger.error('Error handling Slack mention:', errMsg);
         this.emitEvent({
           type: 'error',
-          source: 'slack',
+          source: this.source,
           timestamp: new Date(),
-          error: error instanceof Error ? new Error(error.message) : new Error(String(error)),
+          error: error instanceof Error ? error : new Error(String(error)),
         });
       }
     });
   }
 
-  /**
-   * Handle incoming Slack message
-   */
-  private async handleMessage(event: SlackMessageEvent, isMention: boolean): Promise<void> {
-    this.logger.log(
-      `[Slack] handleMessage: subtype=${event.subtype || 'none'}, user=${event.user}, bot_id=${event.bot_id || 'none'}, files=${event.files?.length || 0}, text="${(event.text || '').substring(0, 50)}"`
-    );
-
-    // Skip non-standard message subtypes (edits, deletes, unfurls, etc.)
-    // Allow file_share so uploaded files are processed
-    if (event.subtype && event.subtype !== 'file_share') {
-      this.logger.log(`[Slack] Skipping subtype: ${event.subtype}`);
-      return;
-    }
-
-    // Ignore bot messages before resolving an end-user principal.
-    if (event.bot_id) return;
-
-    if (!this.teamId && !this.missingTeamIdWarningLogged) {
-      this.logger.warn('Slack team ID is unavailable; all senders will be diverted');
-      this.missingTeamIdWarningLogged = true;
-    }
-
-    const isDM = event.channel_type === 'im';
-    let principal = resolveConnectorPrincipal({
-      connector: 'slack',
-      namespace: this.teamId ?? 'workspace',
-      userId: event.user,
-      ownerUserId: this.teamId ? this.config.ownerUserId : undefined,
-      isDirectMessage: isDM,
-    });
-    if (this.principalResolver && this.teamId) {
-      principal = overlayMemberPrincipal(
-        principal,
-        this.principalResolver('slack', this.teamId, event.user)
-      );
-    }
-    if (principal.lane === 'divert') {
-      return;
-    }
-
-    // Dedup: Slack Socket Mode may redeliver events, and app_mention + message
-    // fire for the same @mention. Mark every processed event to prevent duplicates.
-    const dedupKey = event.ts;
-    if (this.processedMessages.has(dedupKey)) {
-      return;
-    }
-
-    // Only admitted owner messages become conversation context.
-    const channelHistory = getChannelHistory();
-    channelHistory.record(event.channel, {
-      messageId: event.ts,
-      sender: 'User',
-      userId: event.user,
-      body: event.text || '',
-      timestamp: parseFloat(event.ts) * 1000,
-      isBot: false,
-    });
-
-    // Agent-bot message handling was here: shared-context recording and mention
-    // delegation between bots. Removed with the multi-bot handler, which never ran.
-
-    // Check if we should respond to this message
-    if (!this.shouldRespond(event, isDM, isMention)) {
-      return;
-    }
-
-    this.processedMessages.set(dedupKey, Date.now());
-    // Periodic cleanup
-    if (this.processedMessages.size > 100) {
-      const now = Date.now();
-      for (const [key, time] of this.processedMessages) {
-        if (now - time > SlackGateway.DEDUP_TTL_MS) {
-          this.processedMessages.delete(key);
+  async start(): Promise<void> {
+    if (this.connected) return;
+    if (!this.options.config.allowedChannels.length || !this.options.config.ownerUserIds.length)
+      throw new Error('slack owner allowlist is not configured');
+    if (!this.options.token.trim()) throw new Error('MAMA_SLACK_TOKEN is required');
+    if (!this.options.appToken.trim()) throw new Error('MAMA_SLACK_APP_TOKEN is required');
+    await this.socket.start();
+    this.connected = true;
+    await this.recoverPendingResponses();
+  }
+  async stop(): Promise<void> {
+    if (!this.connected) return;
+    this.connected = false;
+    await this.socket.disconnect();
+    this.emitEvent({ type: 'disconnected', source: this.source, timestamp: new Date() });
+  }
+  recentDeliveredMessageRefs(): string[] {
+    return this.ledger.recentDeliveredMessageRefs();
+  }
+  async recoverPendingResponses(): Promise<void> {
+    for (const entry of this.ledger.listUndelivered()) {
+      try {
+        const channel = entry.deliveryTarget?.startsWith('slack:')
+          ? entry.deliveryTarget.slice('slack:'.length)
+          : '';
+        const source = entry.key.startsWith('slack:');
+        const outbound = entry.key.startsWith('outbound:') || entry.key.startsWith('file:');
+        if (
+          (!source && !outbound) ||
+          !channel ||
+          !this.options.config.allowedChannels.includes(channel)
+        )
+          continue;
+        if (entry.deliveryUncertain) {
+          this.log(`slack delivery requires reconciliation key=${entry.key}`);
+          continue;
         }
+        if (source && entry.state === 'processing' && !this.intake.isPending?.(entry.key)) {
+          this.ledger.markReady(entry.key, INTERRUPTED_RESPONSE);
+          await this.deliverResponse(entry.key, INTERRUPTED_RESPONSE);
+        } else if (entry.state === 'ready' && entry.response !== undefined) {
+          if (source) await this.deliverResponse(entry.key, entry.response);
+          else
+            await this.runInDestination(channel, () =>
+              this.sendChunks(channel, entry.key, entry.response!)
+            );
+        }
+      } catch (error) {
+        this.log(
+          `slack recovery failed key=${entry.key} error=${error instanceof Error ? error.message : String(error)}`
+        );
       }
     }
-
-    // Emit message received event
-    this.emitEvent({
-      type: 'message_received',
-      source: 'slack',
-      timestamp: new Date(),
-      data: {
-        channelId: event.channel,
-        userId: event.user,
-        isDM,
-        isMention,
-        hasThread: !!event.thread_ts,
-      },
+  }
+  async deliverResponse(sourceRef: string, response: string): Promise<void> {
+    const channel = sourceRefChannel(sourceRef);
+    this.requireAllowed(channel);
+    const entry = this.ledger.get(sourceRef);
+    if (!entry) throw new Error(`Slack response has no accepted message ${sourceRef}`);
+    if (entry.deliveryTarget !== `slack:${channel}`)
+      throw new Error('Slack response destination conflicts with its accepted message');
+    if (entry.state === 'delivered') return;
+    if (entry.state === 'processing') this.ledger.markReady(sourceRef, response);
+    await this.runInDestination(channel, () => this.sendChunks(channel, sourceRef, response));
+  }
+  async sendMessage(channel: string, text: string, idempotencyKey?: string): Promise<void> {
+    this.requireConnected();
+    this.requireAllowed(channel);
+    const key = `outbound:${createHash('sha256')
+      .update(`text\0${idempotencyKey ?? `${channel}:${text}`}`)
+      .digest('hex')}`;
+    const claim = this.ledger.claim(key, {
+      deliveryTarget: `slack:${channel}`,
+      payloadIdentity: createHash('sha256').update(text).digest('hex'),
+      keepDeliveredOnPayloadChange: true,
+      ...(idempotencyKey ? { idempotencyKey } : {}),
     });
-
-    // Remove mentions from message content
-    const cleanContent = this.cleanMessageContent(event.text);
-
-    // Process file attachments (images, documents, etc.)
-    const attachments = await this.downloadSlackFiles(event);
-
-    // Build content blocks from attachments
-    const contentBlocks: ContentBlock[] =
-      attachments.length > 0 ? await buildContentBlocks(attachments) : [];
-
-    // Enrich content with file info for multi-agent (which only gets text)
-    let enrichedContent = cleanContent;
-
-    // Append file reference text blocks so agents know about uploaded files
-    const fileRefTexts = contentBlocks
-      .filter((b) => b.type === 'text' && b.text?.startsWith('[File:'))
-      .map((b) => b.text!);
-    if (fileRefTexts.length > 0) {
-      enrichedContent = `${cleanContent}\n\n${fileRefTexts.join('\n')}`;
+    if (!claim.claimed) {
+      if (claim.entry.state === 'delivered') return;
+      throw new Error('Slack message delivery is already in progress or uncertain');
     }
-
-    // Pre-analyze images for text enrichment (multi-agent gets text only)
-    const shouldPreAnalyzeImages = contentBlocks.some((b) => b.type === 'image')
-      ? (await import('./image-analyzer.js')).shouldUseClaudeImagePreanalysis()
-      : false;
-    if (shouldPreAnalyzeImages) {
-      const { getImageAnalyzer } = await import('./image-analyzer.js');
-      const analysisText = await getImageAnalyzer().processContentBlocks(contentBlocks);
-      if (analysisText) {
-        enrichedContent = `${enrichedContent}\n\n${analysisText}`;
-      }
-    }
-
-    // Check if multi-agent mode should handle this message
-
-    // Normalize message for router
-    // Use enriched content (with image analysis) for text-only routing
-    const normalizedMessage: NormalizedMessage = {
-      source: 'slack',
-      channelId: event.channel,
-      userId: event.user,
-      text: enrichedContent,
-      principal,
-      contentBlocks: contentBlocks.length > 0 ? contentBlocks : undefined,
-      metadata: {
-        threadTs: event.thread_ts || event.ts,
-        messageId: event.ts,
-        attachments: attachments.length > 0 ? attachments : undefined,
-      },
-    };
-    // Clear image contentBlocks after analysis to prevent double processing in message-router
-    if (
-      shouldPreAnalyzeImages &&
-      normalizedMessage.contentBlocks?.some((b) => b.type === 'image')
-    ) {
-      normalizedMessage.contentBlocks = undefined;
-    }
-
-    // Create tool status tracker for real-time progress
-    const threadTs = event.thread_ts || event.ts;
-    const slackAdapter: PlatformAdapter = {
-      postPlaceholder: async (content: string) => {
-        const res = await this.webClient.chat.postMessage({
-          channel: event.channel,
-          text: content,
-          thread_ts: threadTs,
-        });
-        return res.ts ?? null;
-      },
-      editPlaceholder: async (handle: string, content: string) => {
-        await this.webClient.chat.update({
-          channel: event.channel,
-          ts: handle,
-          text: content,
-        });
-      },
-      deletePlaceholder: async (handle: string) => {
-        await this.webClient.chat.delete({
-          channel: event.channel,
-          ts: handle,
-        });
-      },
-    };
-    const tracker = new ToolStatusTracker(slackAdapter, {
-      throttleMs: 1500,
-      initialDelayMs: 3000,
-    });
-    const streamCallbacks = tracker.toStreamCallbacks();
-
-    // Process through message router
-    let result;
+    this.ledger.markReady(key, text);
+    await this.runInDestination(channel, () => this.sendChunks(channel, key, text));
+  }
+  async sendToOwner(text: string, key: string): Promise<void> {
+    const channel = this.options.config.ownerChannelId;
+    if (!channel) throw new Error('slack.owner_channel_id is required');
+    await this.sendMessage(channel, text, key);
+  }
+  async sendFile(
+    path: string,
+    caption: string | undefined,
+    operationId: string
+  ): Promise<OwnerFileDeliveryResult> {
+    this.requireConnected();
+    if (!operationId.trim()) throw new Error('Slack file operation id is required');
+    const channel = this.options.config.ownerChannelId;
+    if (!channel) throw new Error('slack.owner_channel_id is required');
+    this.requireAllowed(channel);
+    if (!this.options.filesRoot) throw new Error('Slack workspace files root is not configured');
+    const file = openWorkspaceFile(this.options.filesRoot, path);
+    const key = `file:${operationId}`;
     try {
-      result = await this.turnProcessor.processTurn(normalizedMessage, {
-        onStream: streamCallbacks,
+      const identity = workspaceFileIdentity(file.fd, caption);
+      const claim = this.ledger.claim(key, {
+        deliveryTarget: `slack:${channel}`,
+        payloadIdentity: identity,
+        idempotencyKey: operationId,
+      });
+      if (!claim.claimed) {
+        if (claim.entry.state === 'delivered')
+          return { sentAs: file.sentAs, size: file.size, idempotent: true };
+        throw new Error('Slack file delivery is already in progress or uncertain');
+      }
+      const result = (await this.runInDestination(channel, () =>
+        this.api.files.uploadV2({
+          channel_id: channel,
+          file: readFileSync(file.fd),
+          filename: basename(file.path),
+          ...(caption === undefined ? {} : { initial_comment: caption }),
+        })
+      )) as { files?: Array<{ id?: string }> };
+      const id = result.files?.[0]?.id;
+      this.ledger.markDelivered(key);
+      return { ...(id ? { messageId: id } : {}), sentAs: file.sentAs, size: file.size };
+    } catch (error) {
+      if (this.ledger.get(key)?.state === 'processing') this.ledger.markFailed(key);
+      throw error;
+    } finally {
+      closeSync(file.fd);
+    }
+  }
+
+  private async accept(event: SlackMessageEvent): Promise<void> {
+    if (
+      !event.channel ||
+      !event.ts ||
+      !event.user ||
+      event.bot_id ||
+      (event.subtype && event.subtype !== 'file_share')
+    )
+      return;
+    const channel = event.channel;
+    const user = event.user;
+    if (
+      !this.options.config.allowedChannels.includes(channel) ||
+      !this.options.config.ownerUserIds.includes(user)
+    ) {
+      this.log(
+        `slack message dropped reason=non_owner channel_hash=${hash('channel', channel)} sender_hash=${hash('sender', user)}`
+      );
+      return;
+    }
+    const ref = `slack:${channel}:${event.ts}`;
+    if (this.activeInputs.has(ref)) return;
+    const existing = this.ledger.get(ref);
+    if (existing) {
+      if (existing.state === 'ready') await this.deliverResponse(ref, existing.response ?? '');
+      return;
+    }
+    const files = event.files ?? [];
+    if (!event.text?.trim() && !files.length) return;
+    const identity = createHash('sha256')
+      .update(
+        `${event.text ?? ''}\0${files
+          .map((file) => file.id)
+          .sort()
+          .join(',')}`
+      )
+      .digest('hex');
+    this.ledger.claim(ref, { deliveryTarget: `slack:${channel}`, payloadIdentity: identity });
+    this.activeInputs.add(ref);
+    try {
+      const attachments = await Promise.all(
+        files.map(async (file) => {
+          let name = file.name || file.id;
+          try {
+            name = safeFileName(name);
+            if (!this.options.downloadsDir)
+              throw new Error('Attachment downloads directory is not configured');
+            if (!file.url_private_download) throw new Error('Slack file has no download URL');
+            const response = await fetch(file.url_private_download, {
+              headers: { Authorization: `Bearer ${this.options.token}` },
+              signal: AbortSignal.timeout(60_000),
+            });
+            if (!response.ok)
+              throw new Error(`Slack attachment download failed (HTTP ${response.status})`);
+            const path = join(
+              this.options.downloadsDir,
+              'slack',
+              `${safeFileName(event.ts!)}_${safeFileName(file.id)}_${name}`
+            );
+            const size = await saveResponseBody(response, path);
+            return { name, path, size, ...(file.mimetype ? { mimeType: file.mimetype } : {}) };
+          } catch (error) {
+            return { name, error: error instanceof Error ? error.message : String(error) };
+          }
+        })
+      );
+      const input: OwnerMessageInput = {
+        id: ref,
+        channelKey: channel,
+        occurredAt: Math.floor(Number(event.ts) * 1000),
+        text: event.text?.trim() || attachments.map((file) => `[file: ${file.name}]`).join('\n'),
+        ...(event.thread_ts ? { replyTo: `slack:${channel}:${event.thread_ts}` } : {}),
+        ...(attachments.length ? { payload: { attachments } as unknown as JsonValue } : {}),
+      };
+      this.intake.acceptOwnerMessage(input);
+      this.emitEvent({
+        type: 'message_received',
+        source: this.source,
+        timestamp: new Date(input.occurredAt),
+        data: { sourceMessageRef: ref },
       });
     } finally {
-      await tracker.cleanup();
+      this.activeInputs.delete(ref);
     }
-
-    if (result.outcome === 'external_divert') {
-      this.logger.log('[Slack] Turn externally diverted; no response sent');
-      return;
+  }
+  private async sendChunks(channel: string, key: string, text: string): Promise<void> {
+    const entry = this.ledger.get(key)!;
+    if (entry.deliveryUncertain) throw new Error('Slack response delivery is uncertain');
+    const chunks = splitForSlack(text);
+    for (let i = entry.nextChunkIndex ?? 0; i < chunks.length; i++) {
+      this.ledger.markDeliveryProgress(key, i, true);
+      try {
+        const sent = await this.api.chat.postMessage({ channel, text: chunks[i]! });
+        this.ledger.markDeliveryProgress(key, i + 1, false, sent.ts);
+      } catch (error) {
+        this.ledger.markDeliveryProgress(key, i, true);
+        throw error;
+      }
     }
-
-    // Send response in thread
-    await this.sendResponse(event, result.response);
-
-    // Replace eyes with checkmark after response sent (only in multi-agent mode)
-
-    // Emit message sent event
+    this.ledger.markDelivered(key);
     this.emitEvent({
       type: 'message_sent',
-      source: 'slack',
+      source: this.source,
       timestamp: new Date(),
-      data: {
-        channelId: event.channel,
-        responseLength: result.response.length,
-        duration: result.duration,
-        threadTs: event.thread_ts || event.ts,
-      },
+      data: { sourceMessageRef: key },
     });
   }
-
-  /**
-   * Check if bot should respond to this message
-   */
-  private shouldRespond(event: SlackMessageEvent, isDM: boolean, isMention: boolean): boolean {
-    // Always respond to DMs
-    if (isDM) return true;
-
-    // For channel messages, check if mention is required
-    const channelConfig = this.config.channels?.[event.channel];
-
-    if (channelConfig) {
-      // Channel-specific config
-      if (channelConfig.requireMention === false) {
-        return true; // No mention required for this channel
-      }
-      return isMention;
-    }
-
-    // Default: require mention for channel messages
-    return isMention;
-  }
-
-  protected override cleanMessageContent(content: string): string {
-    if (!content) {
-      return '';
-    }
-    return content
-      .replace(/<@[UW]\w+>/g, '')
-      .replace(/<@[UW]\w+\|[^>]+>/g, '')
-      .trim();
-  }
-
-  /**
-   * Download files attached to a Slack message.
-   * Slack requires Authorization header with bot token for url_private_download.
-   */
-  private async downloadSlackFiles(event: SlackMessageEvent): Promise<MessageAttachment[]> {
-    if (!event.files || event.files.length === 0) return [];
-
-    const attachments: MessageAttachment[] = [];
-    const authHeaders = { Authorization: `Bearer ${this.botToken}` };
-
-    for (const file of event.files) {
-      const downloadUrl = file.url_private_download || file.url_private;
-      if (!downloadUrl) {
-        this.logger.warn(`[Slack] No download URL for file: ${file.name}`);
-        continue;
-      }
-
-      try {
-        const localPath = await downloadFile(downloadUrl, file.name, authHeaders);
-        const isImage = file.mimetype?.startsWith('image/');
-        attachments.push({
-          type: isImage ? 'image' : 'file',
-          url: downloadUrl,
-          localPath,
-          filename: file.name,
-          contentType: file.mimetype || 'application/octet-stream',
-          size: file.size,
-        });
-        this.logger.log(
-          `[Slack] Downloaded ${isImage ? 'image' : 'file'}: ${file.name} -> ${localPath}`
-        );
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        this.logger.error(`[Slack] Failed to download file ${file.name}: ${errMsg}`);
-      }
-    }
-
-    return attachments;
-  }
-
-  /**
-   * Send response to Slack (handling length limits and threading)
-   */
-  private async sendResponse(originalEvent: SlackMessageEvent, response: string): Promise<void> {
-    const threadTs = originalEvent.thread_ts || originalEvent.ts;
-    const chunks = splitForSlack(response);
-
-    for (const chunk of chunks) {
-      await this.webClient.chat.postMessage({
-        channel: originalEvent.channel,
-        text: chunk,
-        thread_ts: threadTs,
-        reply_broadcast: true, // Also show in channel
-      });
-    }
-  }
-
-  // ============================================================================
-  // Gateway Interface Implementation
-  // ============================================================================
-
-  /**
-   * Start the Slack gateway
-   */
-  async start(): Promise<void> {
-    if (!this.config.ownerUserId && !this.ownerWarningLogged) {
-      this.logger.warn('Slack owner user ID is not configured; all senders will be diverted');
-      this.ownerWarningLogged = true;
-    }
-
-    if (this.connected) {
-      this.logger.log('Slack gateway already connected');
-      return;
-    }
-
-    this.teamId = undefined;
-    const authResult = await this.webClient.auth.test();
-    const currentTeamId = authResult.team_id?.trim();
-    if (this.config.ownerUserId && this.principalResolver && !currentTeamId) {
-      throw new Error('Slack workspace identity is unavailable');
-    }
-    this.teamId = currentTeamId || undefined;
-    if (this.config.ownerUserId && this.principalResolver && this.teamId) {
-      const owner = this.principalResolver('slack', this.teamId, this.config.ownerUserId);
-      if (owner?.kind !== 'owner' || owner.status !== 'active') {
-        throw new Error('Slack configured owner identity is unavailable');
-      }
-    }
-    await this.socketClient.start();
-  }
-
-  /**
-   * Stop the Slack gateway
-   */
-  async stop(): Promise<void> {
-    // Stop multi-agent processes (don't block disconnect on failure)
-
-    if (!this.connected) {
-      return;
-    }
-
-    await this.socketClient.disconnect();
-    this.connected = false;
-
-    this.emitEvent({
-      type: 'disconnected',
-      source: 'slack',
-      timestamp: new Date(),
+  private async runInDestination<T>(destination: string, work: () => Promise<T>): Promise<T> {
+    const previous = this.deliveryTails.get(destination) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
     });
-  }
-
-  // ============================================================================
-  // Configuration
-  // ============================================================================
-
-  /**
-   * Update gateway configuration
-   */
-  setConfig(config: Partial<SlackGatewayConfig>): void {
-    if (config.channels) {
-      this.config.channels = { ...this.config.channels, ...config.channels };
-    }
-    if (config.enabled !== undefined) {
-      this.config.enabled = config.enabled;
+    const tail = previous.then(() => gate);
+    this.deliveryTails.set(destination, tail);
+    await previous;
+    try {
+      return await work();
+    } finally {
+      release();
+      if (this.deliveryTails.get(destination) === tail) this.deliveryTails.delete(destination);
     }
   }
-
-  /**
-   * Get current configuration
-   */
-  getConfig(): SlackGatewayConfig {
-    return { ...this.config };
+  private requireAllowed(channel: string): void {
+    if (!this.options.config.allowedChannels.includes(channel))
+      throw new Error('Slack destination is not allowlisted');
   }
-
-  /**
-   * Add channel configuration
-   */
-  addChannelConfig(channelId: string, config: SlackChannelConfig): void {
-    this.config.channels = this.config.channels || {};
-    this.config.channels[channelId] = config;
+  private requireConnected(): void {
+    if (!this.connected) throw new Error('Slack gateway not connected');
   }
-
-  // ============================================================================
-  // Message Sending API (for discord_send tool compatibility)
-  // ============================================================================
-
-  /**
-   * Send message to a channel
-   */
-  async sendMessage(channelId: string, text: string): Promise<void> {
-    const chunks = splitForSlack(text);
-    for (const chunk of chunks) {
-      await this.webClient.chat.postMessage({
-        channel: channelId,
-        text: chunk,
-      });
-    }
-  }
-
-  /**
-   * Send file/document to a channel
-   * Supports any file type (documents, images, PDFs, etc.)
-   */
-  async sendFile(channelId: string, filePath: string, caption?: string): Promise<void> {
-    const { createReadStream } = await import('fs');
-    const { basename } = await import('path');
-
-    const filename = basename(filePath);
-
-    await this.webClient.filesUploadV2({
-      channel_id: channelId,
-      file: createReadStream(filePath),
-      filename,
-      initial_comment: caption,
-    });
-  }
-
-  /**
-   * Send image to a channel (alias for sendFile)
-   */
-  async sendImage(channelId: string, imagePath: string, caption?: string): Promise<void> {
-    return this.sendFile(channelId, imagePath, caption);
-  }
-
-  // ============================================================================
-  // Multi-Agent Support
-  // ============================================================================
-
-  /**
-   * Update multi-agent configuration
-   */
-  async setMultiAgentConfig(config: MultiAgentConfig): Promise<void> {
-    if (config.enabled) {
-      this.logger.log('[Slack] Multi-agent mode enabled/updated');
-    } else {
-      this.logger.log('[Slack] Multi-agent mode disabled');
-    }
-  }
+}
+const INTERRUPTED_RESPONSE =
+  'The previous processing attempt was interrupted. It was not rerun because its external side effects could not be proven safe to repeat. Please send a new message if you want to retry it.';
+function sourceRefChannel(value: string): string {
+  if (!value.startsWith('slack:')) throw new Error('Slack source message reference is invalid');
+  const parts = value.split(':');
+  if (parts.length !== 3) throw new Error('Slack source message reference is invalid');
+  return parts[1]!;
+}
+function hash(kind: string, value: string): string {
+  return createHash('sha256').update(`${kind}\0${value}`).digest('hex');
 }

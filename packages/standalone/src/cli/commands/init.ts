@@ -1,352 +1,411 @@
-/**
- * mama init command
- *
- * Initialize MAMA configuration
- */
-
-import { existsSync } from 'node:fs';
-import { mkdir, writeFile, readdir, copyFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
-
+import { randomBytes } from 'node:crypto';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
+import * as yaml from 'js-yaml';
+import type { ConnectorsConfig } from '../../connectors/framework/types.js';
+import { parseConfig } from '../../runtime/config.js';
+import { findExecutable, launchAgent, startScript } from '../launch-files.js';
 import {
-  createDefaultConfig,
-  configExists,
-  getConfigPath,
-  expandPath,
-  loadConfig,
-  saveConfig,
-} from '../config/config-manager.js';
-import { getClaudeCodeAuthStatus } from '../../auth/index.js';
-import { hasPersistedClineCredential } from '../../agent/cline-cli-adapter.js';
-import { emitBackendModelWarnings, rescopeConfigModels } from '../../agent/backend-model-policy.js';
+  CliInputError,
+  createTerminalPrompt,
+  nonblankLine,
+  requireTTY,
+  type PromptAdapter,
+} from '../prompt.js';
+import { shellQuote, updateSecrets, type SecretName } from '../secrets.js';
 
-/**
- * CLAUDE.md template for workspace documentation
- */
-const CLAUDE_MD_TEMPLATE = `# MAMA
-
-I am MAMA, an AI assistant with persistent memory.
-
-## Workspace (Important!)
-
-**All file operations must be performed only in the paths below:**
-
-| Purpose | Path |
-|---------|------|
-| Working directory | \`~/.mama/workspace/\` |
-| Skills storage | \`~/.mama/skills/\` |
-| Scripts | \`~/.mama/workspace/scripts/\` |
-| Data | \`~/.mama/workspace/data/\` |
-| Logs | \`~/.mama/logs/\` |
-
-**Never use:**
-- \`~/.openclaw/\` - Different project
-- \`~/project/\` - User project (do not modify without explicit request)
-
-## Memory System
-
-MAMA tracks the evolution of decisions:
-
-\`\`\`
-Decision v1 (failed) → v2 (partial success) → v3 (success)
-\`\`\`
-
-Searching past decisions provides full context.
-
-## Available Commands
-
-- \`mama start\` - Start agent
-- \`mama stop\` - Stop agent
-- \`mama status\` - Check status
-- \`mama run <command>\` - Run one-off command
-`;
-
-/**
- * Copy built-in skill templates to user's skills directory (skip existing)
- */
-async function copyDefaultSkills(skillsDir: string): Promise<void> {
-  const templatesDir = join(__dirname, '..', '..', '..', 'templates', 'skills');
-
-  try {
-    const entries = await readdir(templatesDir);
-    for (const file of entries) {
-      if (!file.endsWith('.md')) continue;
-      const dest = join(skillsDir, file);
-      if (existsSync(dest)) {
-        console.log(`  ${file} (already exists)`);
-        continue;
-      }
-      await copyFile(join(templatesDir, file), dest);
-      console.log(`  ${file} ✓`);
-    }
-  } catch {
-    console.log('  (no template skills found)');
-  }
-}
-
-/**
- * Options for init command
- */
 export interface InitOptions {
-  /** Force overwrite existing config */
-  force?: boolean;
-  /** Skip Claude Code authentication check (for testing) */
-  skipAuthCheck?: boolean;
-  /** Preferred backend selection mode */
-  backend?: 'auto' | 'claude' | 'codex' | 'cline';
+  home?: string;
+  prompt?: PromptAdapter;
+  cliPath?: string;
+  nodePath?: string;
+  findExecutable?: (name: string) => string | undefined;
 }
 
-interface BackendResolution {
-  backend: 'claude' | 'codex' | 'cline';
-  codexAuthPath?: string;
+const connectorNames = [
+  'slack',
+  'chatwork',
+  'trello',
+  'kagemusha',
+  'calendar',
+  'gmail',
+  'drive',
+  'sheets',
+  'notion',
+  'obsidian',
+  'discord',
+  'telegram',
+  'imessage',
+  'claude-code',
+] as const;
+const connectorSecrets: Record<string, SecretName[]> = {
+  slack: ['MAMA_SLACK_TOKEN'],
+  chatwork: ['MAMA_CHATWORK_TOKEN'],
+  trello: ['MAMA_TRELLO_KEY', 'MAMA_TRELLO_TOKEN'],
+  kagemusha: [],
+  calendar: [],
+  gmail: [],
+  drive: [],
+  sheets: [],
+  notion: ['MAMA_NOTION_TOKEN'],
+  obsidian: [],
+  discord: ['MAMA_DISCORD_TOKEN'],
+  telegram: ['MAMA_TELEGRAM_SOURCE_TOKEN'],
+  imessage: [],
+  'claude-code': [],
+};
+
+const gwsConnectorNames = new Set(['calendar', 'gmail', 'drive', 'sheets']);
+const noSecretConnectorNames = new Set(['kagemusha', 'obsidian', 'imessage', 'claude-code']);
+
+async function yes(prompt: PromptAdapter, label: string): Promise<boolean> {
+  const value = (await prompt.text(`${label} [y/N]`)).trim().toLowerCase();
+  if (['', 'n', 'no'].includes(value)) return false;
+  if (['y', 'yes'].includes(value)) return true;
+  throw new CliInputError('Answer yes or no.');
 }
 
-function isClineAvailable(command: string): boolean {
-  const result = spawnSync(command, ['--version'], { stdio: 'ignore', timeout: 5_000 });
-  return !result.error && result.status === 0;
+async function text(prompt: PromptAdapter, label: string): Promise<string> {
+  return nonblankLine(await prompt.text(label)).trim();
 }
 
-async function resolvePreferredBackend(
-  preferredBackend: InitOptions['backend']
-): Promise<BackendResolution | null> {
-  const requestedBackend = resolveRequestedBackend(preferredBackend);
+async function optionalText(prompt: PromptAdapter, label: string): Promise<string | undefined> {
+  const value = (await prompt.text(label)).trim();
+  return value === '' ? undefined : nonblankLine(value).trim();
+}
 
-  const codexAuthPaths = [expandPath('~/.mama/.codex/auth.json'), expandPath('~/.codex/auth.json')];
-  const codexAuthPath = codexAuthPaths.find((p) => existsSync(p));
-  const hasCodexAuth = Boolean(codexAuthPath);
-  const hasClaudeAuth = getClaudeCodeAuthStatus().loggedIn;
-  const clineCommand = process.env.MAMA_CLINE_COMMAND ?? process.env.CLINE_COMMAND ?? 'cline';
+async function collectConnectors(
+  prompt: PromptAdapter,
+  secrets: Partial<Record<SecretName, string>>
+): Promise<ConnectorsConfig> {
+  const selected = (
+    await prompt.text(
+      `Connectors to enable (${connectorNames.join(', ')}; comma-separated, blank for none)`
+    )
+  ).trim();
+  const names = selected === '' ? [] : [...new Set(selected.split(',').map((name) => name.trim()))];
+  if (names.some((name) => !(connectorNames as readonly string[]).includes(name))) {
+    throw new CliInputError(`Choose connectors from: ${connectorNames.join(', ')}`);
+  }
+  const config: ConnectorsConfig = {};
+  for (const name of names) {
+    for (const tokenName of connectorSecrets[name])
+      secrets[tokenName] = nonblankLine(await prompt.secret(tokenName));
+    if (name === 'slack')
+      secrets.MAMA_SLACK_APP_TOKEN = nonblankLine(await prompt.secret('MAMA_SLACK_APP_TOKEN'));
+    if (name === 'calendar')
+      prompt.write(
+        'Calendar currently reads the primary calendar only; its source channel id is calendar.'
+      );
 
-  const resolveCline = async (): Promise<BackendResolution | null> => {
-    if (!isClineAvailable(clineCommand)) return null;
-    return (await hasPersistedClineCredential({ command: clineCommand }))
-      ? { backend: 'cline' }
-      : null;
-  };
-
-  if (requestedBackend) {
-    if (requestedBackend === 'cline') {
-      return await resolveCline();
+    if (name === 'gmail') {
+      config.gmail = {
+        enabled: true,
+        pollIntervalMinutes: 5,
+        channels: { inbox: { role: 'hub' } },
+        auth: { type: 'cli', cli: 'gws', cliAuthCommand: 'gws auth login' },
+      };
+      continue;
     }
-    if (requestedBackend === 'codex') {
-      return hasCodexAuth ? { backend: 'codex', codexAuthPath } : null;
+    if (name === 'notion') {
+      config.notion = {
+        enabled: true,
+        pollIntervalMinutes: 5,
+        channels: { workspace: { role: 'hub', name: 'Notion workspace' } },
+        auth: { type: 'token', tokenName: 'MAMA_NOTION_TOKEN' },
+      };
+      continue;
     }
-    return hasClaudeAuth ? { backend: 'claude' } : null;
-  }
-
-  // Neutral auto resolution:
-  // Deterministic compatibility precedence: Claude, then Codex, then Cline.
-  // Cline remains a full auto candidate when it is the only authenticated backend.
-  if (hasCodexAuth && !hasClaudeAuth) {
-    return { backend: 'codex', codexAuthPath };
-  }
-  if (hasClaudeAuth) {
-    return { backend: 'claude' };
-  }
-  return await resolveCline();
-}
-
-function resolveRequestedBackend(
-  preferredBackend: InitOptions['backend']
-): 'claude' | 'codex' | 'cline' | undefined {
-  if (
-    preferredBackend === 'claude' ||
-    preferredBackend === 'codex' ||
-    preferredBackend === 'cline'
-  ) {
-    return preferredBackend;
-  }
-  return process.env.MAMA_DEFAULT_BACKEND === 'codex' ||
-    process.env.MAMA_DEFAULT_BACKEND === 'claude' ||
-    process.env.MAMA_DEFAULT_BACKEND === 'cline'
-    ? (process.env.MAMA_DEFAULT_BACKEND as 'claude' | 'codex' | 'cline')
-    : undefined;
-}
-
-/**
- * Execute init command
- */
-export async function initCommand(options: InitOptions = {}): Promise<void> {
-  console.log('\n🔧 MAMA Standalone Initialization\n');
-
-  const requestedBackend = resolveRequestedBackend(options.backend);
-  let selectedBackend: BackendResolution = {
-    backend: requestedBackend ?? 'claude',
-  };
-  if (!options.skipAuthCheck) {
-    process.stdout.write('Checking backend availability and authentication... ');
-    const resolved = await resolvePreferredBackend(options.backend);
-    if (!resolved) {
-      console.log('❌');
-      if (requestedBackend === 'codex') {
-        console.error('\n⚠️  Requested backend "codex" is not authenticated.');
-        console.error(
-          `   Expected auth: ${expandPath('~/.mama/.codex/auth.json')} or ${expandPath('~/.codex/auth.json')}`
+    if (name === 'obsidian') {
+      const vaultPath = await text(prompt, 'Obsidian vault path');
+      config.obsidian = {
+        enabled: true,
+        pollIntervalMinutes: 5,
+        channels: { vault: { role: 'hub', name: 'Vault', vaultPath } },
+        auth: { type: 'none' },
+      };
+      continue;
+    }
+    if (name === 'claude-code') {
+      const selectedProjects = (
+        await text(prompt, 'Claude Code project directory names (comma-separated)')
+      )
+        .split(',')
+        .map((project) => project.trim());
+      if (selectedProjects.some((project) => !project || /[/\\\s]/.test(project))) {
+        throw new CliInputError(
+          'Enter Claude Code project directory names without paths or spaces.'
         );
-        console.error('\n   Please run: codex login\n');
-        process.exit(1);
       }
-      if (requestedBackend === 'claude') {
-        console.error('\n⚠️  Requested backend "claude" is not authenticated.');
-        const authStatus = getClaudeCodeAuthStatus();
-        if (!authStatus.cliInstalled) {
-          console.error('   Claude Code CLI is not installed.');
-          console.error('   https://claude.ai/code\n');
-        } else {
-          console.error('   Run: claude auth login\n');
-        }
-        process.exit(1);
+      const channels: ConnectorsConfig[string]['channels'] = {};
+      for (const project of selectedProjects) {
+        const alias = await text(prompt, `Display alias for ${project}`);
+        channels[project] = { role: 'hub', name: alias };
       }
-      if (requestedBackend === 'cline') {
-        console.error('\n⚠️  Requested backend "cline" is unavailable or not authenticated.');
-        console.error('   Install Cline CLI, then run: cline auth cline\n');
-        process.exit(1);
-      }
-      console.error('\n⚠️  No authenticated backend found.');
-      console.error(
-        `   Codex auth: ${expandPath('~/.mama/.codex/auth.json')} or ${expandPath('~/.codex/auth.json')}`
-      );
-      console.error(
-        `   Claude auth (legacy fallback): ${expandPath('~/.claude/.credentials.json')}`
-      );
-      console.error('\n   Please authenticate one backend first:');
-      console.error('   - Codex: codex login');
-      console.error('   - Claude: claude auth login (or install from https://claude.ai/code)');
-      console.error('   - Cline: cline auth cline\n');
-      process.exit(1);
+      config['claude-code'] = {
+        enabled: true,
+        pollIntervalMinutes: 5,
+        channels,
+        auth: { type: 'none' },
+      };
+      continue;
     }
-    selectedBackend = resolved;
-    console.log('✓');
-  }
+    if (name === 'drive') {
+      const folderIds = (await text(prompt, 'Drive folder ids (comma-separated)'))
+        .split(',')
+        .map((id) => id.trim());
+      if (folderIds.some((id) => !id || /\s/.test(id)))
+        throw new CliInputError('Enter Drive folder ids separated by commas without spaces.');
+      config.drive = {
+        enabled: true,
+        pollIntervalMinutes: 5,
+        channels: Object.fromEntries(
+          folderIds.map((folderId) => [folderId, { role: 'hub', folderId }])
+        ),
+        auth: { type: 'cli', cli: 'gws', cliAuthCommand: 'gws auth login' },
+      };
+      continue;
+    }
+    if (name === 'sheets') {
+      const spreadsheetId = await text(prompt, 'Google Sheets spreadsheet id');
+      const sheetRange = await text(prompt, 'Google Sheets header-and-data range');
+      const dataRange = await optionalText(
+        prompt,
+        'Separate data range (blank to use the full range)'
+      );
+      config.sheets = {
+        enabled: true,
+        pollIntervalMinutes: 5,
+        channels: {
+          spreadsheet: {
+            role: 'hub',
+            spreadsheetId,
+            sheetRange,
+            ...(dataRange ? { dataRange } : {}),
+          },
+        },
+        auth: { type: 'cli', cli: 'gws', cliAuthCommand: 'gws auth login' },
+      };
+      continue;
+    }
 
-  if (selectedBackend.backend === 'codex') {
-    const authPathMsg = selectedBackend.codexAuthPath
-      ? ` (auth detected at ${selectedBackend.codexAuthPath})`
-      : '';
-    console.log(`Selected backend: codex${authPathMsg}`);
-  } else if (selectedBackend.backend === 'cline') {
-    console.log('Selected backend: cline');
-  } else {
-    console.log('Selected backend: claude');
+    const ids = (
+      await text(
+        prompt,
+        `${name} ${name === 'trello' ? 'board' : 'channel'} ids (comma-separated ids only)`
+      )
+    )
+      .split(',')
+      .map((id) => id.trim());
+    if (ids.some((id) => !id || /\s/.test(id)))
+      throw new CliInputError('Enter channel ids separated by commas, without display names.');
+    if (name === 'calendar' && (ids.length !== 1 || ids[0] !== 'calendar')) {
+      throw new CliInputError(
+        'Calendar supports only the source channel id calendar (primary calendar).'
+      );
+    }
+    config[name] = {
+      enabled: true,
+      pollIntervalMinutes: 5,
+      channels: Object.fromEntries(
+        ids.map((id) => [id, { role: 'hub', ...(name === 'trello' ? { boardId: id } : {}) }])
+      ),
+      auth: gwsConnectorNames.has(name)
+        ? { type: 'cli', cli: 'gws', cliAuthCommand: 'gws auth login' }
+        : noSecretConnectorNames.has(name)
+          ? { type: 'none' }
+          : { type: 'token', tokenName: connectorSecrets[name].at(-1)! },
+    };
   }
+  return config;
+}
 
-  // Check if config already exists
-  if (configExists() && !options.force) {
-    console.log(`\n⚠️  Configuration file already exists: ${getConfigPath()}`);
-    console.log('   Use --force option to overwrite.\n');
-    process.exit(1);
+export async function runInit(options: InitOptions = {}): Promise<void> {
+  const prompt = options.prompt ?? createTerminalPrompt();
+  requireTTY(prompt);
+  const home = options.home ?? homedir();
+  const root = join(home, '.mama');
+  const configPath = join(root, 'config.yaml');
+  if (existsSync(configPath))
+    throw new CliInputError('config.yaml already exists; init will not overwrite it.');
+  // A partial manual setup must also be reviewed by the owner before replacing files.
+  for (const name of ['connectors.json', 'start.sh']) {
+    if (existsSync(join(root, name)))
+      throw new CliInputError(`${name} already exists; init will not overwrite it.`);
   }
-
-  // Create config
-  process.stdout.write('Creating configuration file... ');
+  const backend = await text(prompt, 'Backend (claude|codex)');
+  if (backend !== 'claude' && backend !== 'codex')
+    throw new CliInputError('Backend must be claude or codex.');
+  const model = await text(prompt, 'Model');
+  const machineTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const timezoneAnswer = (await prompt.text(`Owner timezone [${machineTimeZone}]`)).trim();
+  const timezone = timezoneAnswer || machineTimeZone;
   try {
-    const configPath = await createDefaultConfig(options.force);
-    const config = await loadConfig();
-    config.agent.backend = selectedBackend.backend;
-    if (selectedBackend.backend === 'cline') {
-      config.agent.cline_provider = 'cline';
-    }
-    const roleDefinitions = config.roles?.definitions ?? {};
-    const scopedModels = rescopeConfigModels({
-      backend: selectedBackend.backend,
-      roleModels: Object.fromEntries(Object.keys(roleDefinitions).map((name) => [name, undefined])),
-    });
-    config.agent.model = scopedModels.agentModel;
-    for (const [name, role] of Object.entries(roleDefinitions)) {
-      role.model = scopedModels.roleModels[name];
-    }
-    emitBackendModelWarnings(scopedModels.warnings ?? []);
-    await saveConfig(config);
-    if (options.skipAuthCheck && requestedBackend) {
-      console.log(
-        `Auth check skipped; applied requested backend "${selectedBackend.backend}" to config.`
-      );
-    } else if (options.skipAuthCheck) {
-      console.log(
-        `Auth check skipped; applied default backend "${selectedBackend.backend}" to config.`
-      );
-    }
-    console.log('✓');
-    console.log(`\n${configPath} created successfully\n`);
-  } catch (error) {
-    console.log('❌');
-    console.error(
-      `\nFailed to create configuration file: ${error instanceof Error ? error.message : String(error)}\n`
-    );
-    process.exit(1);
+    new Intl.DateTimeFormat('en', { timeZone: timezone });
+  } catch {
+    throw new CliInputError(`Timezone "${timezone}" is not a valid IANA time zone.`);
   }
-
-  // Create directory structure
-  const directories = [
-    { path: '~/.mama/skills', label: 'Skills directory' },
-    { path: '~/.mama/workspace', label: 'Workspace' },
-    { path: '~/.mama/workspace/scripts', label: 'Scripts directory' },
-    { path: '~/.mama/workspace/data', label: 'Data directory' },
-    { path: '~/.mama/logs', label: 'Logs directory' },
-  ];
-
-  for (const dir of directories) {
-    const expandedPath = expandPath(dir.path);
-    process.stdout.write(`Creating ${dir.label}... `);
+  const secrets: Partial<Record<SecretName, string>> = {
+    MAMA_TELEGRAM_TOKEN: nonblankLine(await prompt.secret('Telegram bot token')),
+  };
+  const chatId = await text(prompt, 'Telegram owner chat id');
+  const userId = await text(prompt, 'Telegram owner user id');
+  if (!/^-?[1-9]\d*$/.test(chatId) || !/^[1-9]\d*$/.test(userId)) {
+    throw new CliInputError('Enter numeric Telegram chat and user ids.');
+  }
+  const connectors = await collectConnectors(prompt, secrets);
+  const discordEnabled = await yes(prompt, 'Enable Discord owner messages');
+  let discordConfig: Record<string, unknown> = {
+    enabled: false,
+    allowed_channels: [],
+    owner_user_ids: [],
+  };
+  if (discordEnabled) {
+    secrets.MAMA_DISCORD_TOKEN ??= nonblankLine(await prompt.secret('Discord bot token'));
+    const channel = await text(prompt, 'Discord owner channel id');
+    const user = await text(prompt, 'Discord owner user id');
+    discordConfig = {
+      enabled: true,
+      owner_channel_id: channel,
+      allowed_channels: [channel],
+      owner_user_ids: [user],
+    };
+  }
+  const slackEnabled = await yes(prompt, 'Enable Slack owner messages');
+  let slackConfig: Record<string, unknown> = {
+    enabled: false,
+    allowed_channels: [],
+    owner_user_ids: [],
+  };
+  if (slackEnabled) {
+    secrets.MAMA_SLACK_TOKEN ??= nonblankLine(await prompt.secret('Slack bot token'));
+    secrets.MAMA_SLACK_APP_TOKEN ??= nonblankLine(
+      await prompt.secret('Slack Socket Mode app token')
+    );
+    const channel = await text(prompt, 'Slack owner channel id');
+    const user = await text(prompt, 'Slack owner user id');
+    slackConfig = {
+      enabled: true,
+      owner_channel_id: channel,
+      allowed_channels: [channel],
+      owner_user_ids: [user],
+    };
+  }
+  const viewer: Record<string, string> = {};
+  if (await yes(prompt, 'Expose the viewer through a tunnel')) {
+    const issuer = await text(prompt, 'Access issuer (HTTPS URL)');
+    let url: URL;
     try {
-      if (!existsSync(expandedPath)) {
-        await mkdir(expandedPath, { recursive: true });
-        console.log('✓');
-      } else {
-        console.log('(already exists)');
-      }
-    } catch (error) {
-      console.log('❌');
-      console.error(
-        `\nFailed to create ${dir.label}: ${error instanceof Error ? error.message : String(error)}\n`
-      );
-      process.exit(1);
+      url = new URL(issuer);
+    } catch {
+      throw new CliInputError('Access issuer must be an HTTPS origin.');
     }
+    if (
+      url.protocol !== 'https:' ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      url.pathname !== '/'
+    ) {
+      throw new CliInputError('Access issuer must be an HTTPS origin.');
+    }
+    viewer.MAMA_CF_ACCESS_ISSUER = url.origin;
+    viewer.MAMA_CF_ACCESS_AUD = await text(prompt, 'Access audience');
+    const hostname = await text(prompt, 'Viewer hostname (no scheme or path)');
+    if (!/^[a-z0-9]+(?:[.-][a-z0-9]+)*$/i.test(hostname))
+      throw new CliInputError('Enter a hostname without scheme or path.');
+    viewer.MAMA_VIEWER_HOSTNAMES = hostname;
+    const emails = (
+      await prompt.text('Viewer owner emails for access monitoring (comma-separated, optional)')
+    ).trim();
+    if (emails) viewer.MAMA_VIEWER_OWNER_EMAILS = nonblankLine(emails);
   }
+  const installLaunchAgent = await yes(
+    prompt,
+    'Write ~/Library/LaunchAgents/com.mama.server.plist'
+  );
+  const plistPath = join(home, 'Library', 'LaunchAgents', 'com.mama.server.plist');
+  if (installLaunchAgent && existsSync(plistPath))
+    throw new CliInputError('com.mama.server.plist already exists; init will not overwrite it.');
 
-  // Copy default skills
-  const skillsDir = expandPath('~/.mama/skills');
-  process.stdout.write('Copying default skills...\n');
-  await copyDefaultSkills(skillsDir);
-
-  // Create CLAUDE.md
-  const claudeMdPath = expandPath('~/.mama/CLAUDE.md');
-  process.stdout.write('Creating CLAUDE.md... ');
-  try {
-    if (existsSync(claudeMdPath) && !options.force) {
-      console.log('(already exists)');
-    } else {
-      await writeFile(claudeMdPath, CLAUDE_MD_TEMPLATE, 'utf-8');
-      console.log('✓');
-    }
-  } catch (error) {
-    console.log('❌');
-    console.error(
-      `\nFailed to create CLAUDE.md: ${error instanceof Error ? error.message : String(error)}\n`
+  const config = parseConfig(
+    {
+      version: 1,
+      timezone,
+      agent: {
+        backend,
+        model,
+        effort: 'medium',
+        max_turns: 100,
+        timeout: 300_000,
+        run_token_budget: 0,
+      },
+      database: { path: join(root, 'memory.db') },
+      logging: { level: 'info', file: join(root, 'logs', 'daemon.log') },
+      telegram: {
+        enabled: true,
+        owner_chat_id: chatId,
+        allowed_chats: [chatId],
+        owner_user_ids: [userId],
+        polling: true,
+      },
+      discord: discordConfig,
+      slack: slackConfig,
+      delivery: { reports: 'telegram', notifications: 'telegram', security_alerts: 'telegram' },
+      wiki: {
+        enabled: true,
+        vaultPath: join(root, 'workspace'),
+        wikiDir: join(root, 'workspace', 'wiki'),
+      },
+    },
+    { home }
+  );
+  const locate = options.findExecutable ?? findExecutable;
+  const backendPath = locate(backend);
+  const gwsPath = locate('gws');
+  const script = startScript({
+    home,
+    viewer,
+    nodePath: options.nodePath ?? process.execPath,
+    cliPath: options.cliPath ?? join(__dirname, '..', 'index.js'),
+    executablePaths: [backendPath, gwsPath].filter((path): path is string => path !== undefined),
+  });
+  secrets.MAMA_AUTH_TOKEN = randomBytes(32).toString('hex');
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  mkdirSync(join(root, 'logs'), { recursive: true, mode: 0o700 });
+  mkdirSync(join(root, 'workspace', 'wiki'), { recursive: true, mode: 0o700 });
+  // Finish all prompts before any write, and publish config last as the setup completion marker.
+  updateSecrets(home, secrets);
+  writeFileSync(join(root, 'connectors.json'), `${JSON.stringify(connectors, null, 2)}\n`, {
+    flag: 'wx',
+    mode: 0o600,
+  });
+  writeFileSync(join(root, 'start.sh'), script, { flag: 'wx', mode: 0o700 });
+  if (installLaunchAgent) {
+    mkdirSync(dirname(plistPath), { recursive: true });
+    writeFileSync(plistPath, launchAgent(home), { flag: 'wx', mode: 0o600 });
+  }
+  writeFileSync(configPath, yaml.dump(config), { flag: 'wx', mode: 0o600 });
+  prompt.write('Setup written. Credentials are stored only in auth.env (0600).');
+  if (!backendPath)
+    prompt.write(`Install ${backend} and add its bin directory to PATH in ~/.mama/start.sh.`);
+  prompt.write(
+    `If you have not logged in, run: ${backend === 'claude' ? 'claude auth login' : `CODEX_HOME=${shellQuote(join(root, '.codex'))} codex login`}`
+  );
+  if (Object.keys(connectors).some((name) => gwsConnectorNames.has(name))) {
+    if (!gwsPath)
+      prompt.write('Install gws and add its bin directory to PATH in ~/.mama/start.sh.');
+    prompt.write('Log in with the Google scopes your selected connectors need: gws auth login.');
+  }
+  if (viewer.MAMA_VIEWER_HOSTNAMES)
+    prompt.write(
+      'Configure your tunnel to the local viewer and protect its hostname with the Access application above.'
     );
-    process.exit(1);
-  }
-
-  // Copy backend-specific AGENTS.md templates
-  process.stdout.write('Copying backend AGENTS templates...\n');
-  const agentsTemplatesDir = join(__dirname, '..', '..', '..', 'templates');
-  for (const file of ['AGENTS.claude.md', 'AGENTS.codex.md']) {
-    const dest = expandPath(`~/.mama/${file}`);
-    if (existsSync(dest) && !options.force) {
-      console.log(`  ${file} (already exists)`);
-    } else {
-      const src = join(agentsTemplatesDir, file);
-      if (existsSync(src)) {
-        await copyFile(src, dest);
-        console.log(`  ${file} ✓`);
-      }
-    }
-  }
-
-  // Show next steps
-  console.log('\nNext steps:');
-  console.log('  mama status   Show onboarding state and next actions');
-  console.log('  mama start    Start agent when status asks for it');
-  console.log('');
+  if (installLaunchAgent)
+    prompt.write(
+      `After login, start with: launchctl bootstrap gui/$(id -u) ${shellQuote(plistPath)}`
+    );
+  else prompt.write(`After login, start with: ${shellQuote(join(root, 'start.sh'))}`);
 }

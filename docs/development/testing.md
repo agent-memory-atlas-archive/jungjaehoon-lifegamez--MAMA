@@ -1,352 +1,95 @@
-# Testing Guide
-
-MAMA has a comprehensive test suite with 134 tests across unit, integration, and regression tests.
-
+---
+title: Testing
+parent: Development
+nav_order: 7
 ---
 
-## Quick Reference
+# Testing
+
+Test the changed behaviour at its real boundary, then prove the owner result. A helper test,
+completed model turn or stored row cannot substitute for the delivered answer or artifact.
+Use [the intent workflow](intent-workflow.md) to name the evidence level you actually observed.
+
+## Run the right scope
+
+From the repository root:
 
 ```bash
-# Run all tests
-npm test
-
-# Run specific test file
-npm test tests/skills/mama-context-skill.test.js
-
-# Run with coverage
-npm run test:coverage
-
-# Run performance benchmarks
-npm run test:performance
-```
-
----
-
-## Test Structure
-
-### Test Categories
-
-| Category              | Count | Purpose                                 | Location             |
-| --------------------- | ----- | --------------------------------------- | -------------------- |
-| **Unit Tests**        | 62    | Core logic (embeddings, scoring, graph) | `tests/unit/`        |
-| **Integration Tests** | 39    | Commands, hooks, workflows              | `tests/integration/` |
-| **Regression Tests**  | 33    | Bug prevention                          | `tests/regression/`  |
-| **Performance Tests** | -     | Latency benchmarks                      | `tests/performance/` |
-
-**Total:** 134 tests (100% pass rate)
-
----
-
-## Running Tests
-
-### All Tests
-
-```bash
-npm test
-
-# Expected output:
-# ✅ 134 tests passed
-# ⏱️  Duration: ~8 seconds
-```
-
-### Specific Test Suite
-
-```bash
-# Unit tests only
-npm test tests/unit/
-
-# Integration tests only
-npm test tests/integration/
-
-# Specific file
-npm test tests/unit/embeddings.test.js
-```
-
-### Watch Mode
-
-```bash
-npm test -- --watch
-
-# Tests re-run on file changes
-```
-
-### M1R Envelope Runtime Verification
-
-Use this focused suite when changing Reactive envelope issuance, gateway tool
-execution, `agent_activity` audit rows, or envelope health/status APIs:
-
-```bash
-MAMA_FORCE_TIER_3=true pnpm -C packages/standalone exec vitest run tests/contract/m1r-envelope-completion-matrix.test.ts tests/contract/envelope-callsite-matrix.test.ts tests/envelope/executor-pipeline.test.ts tests/envelope/agent-loop-internal-tool-context.test.ts tests/envelope/code-act-context.test.ts tests/cli/runtime/agent-loop-init-envelope-options.test.ts tests/cli/runtime/envelope-bootstrap.test.ts tests/envelope/reactive-config.test.ts tests/envelope/memory-scope-mismatch-logging.test.ts tests/envelope/executor-audit.test.ts tests/db/agent-activity.test.ts tests/api/health-envelope.test.ts tests/api/envelope-status-auth.test.ts tests/envelope/executor-integration.test.ts tests/contract/reactive-envelope.test.ts tests/contract/reactive-envelope-tool-path.test.ts tests/contract/envelope-drift-sentinel.test.ts
-pnpm -C packages/standalone typecheck
-pnpm -C packages/standalone test
-pnpm test
 pnpm build
+pnpm typecheck
+pnpm lint
+pnpm test
 git diff --check
 ```
 
-`MAMA_FORCE_TIER_3=true` skips embedding work during focused verification, which
-keeps local and CI runs faster and less sensitive to embedding runtime latency.
-
-`/health` must stay public and envelope-free. Envelope runtime metadata and the
-24-hour scope-mismatch count are verified through authenticated
-`/api/envelope/status`, with the count sourced from `agent_activity`, not
-best-effort metrics.
-
-### M2 Memory Provenance Foundation
-
-Use this focused suite when changing memory provenance columns, trusted
-provenance sanitization, gateway correlation ids, model run/tool trace
-lineage, scope-aware provenance reads, raw connector provenance, backfill
-helpers, or the admin provenance API:
+Run a package or file from inside that package. Do not run a root Vitest command with `--root`;
+it can use the wrong configuration and report false failures.
 
 ```bash
-MAMA_FORCE_TIER_3=true pnpm -C packages/mama-core exec vitest run tests/memory/memory-provenance.test.ts tests/memory/memory-provenance-query.test.ts tests/memory/scope-read-filter.test.ts tests/connectors/raw-provenance.test.ts tests/model-runs/model-run-store.test.ts tests/model-runs/tool-trace-store.test.ts tests/cases/migration-chain.test.ts tests/cases/migration-runner-duplicate-column.test.ts
-MAMA_FORCE_TIER_3=true pnpm -C packages/mcp-server exec vitest run tests/tools/save-decision-v2.test.js tests/tools/ingest-conversation-provenance.test.js
-MAMA_FORCE_TIER_3=true pnpm -C packages/standalone exec vitest run tests/envelope/memory-provenance-context.test.ts tests/envelope/model-run-context.test.ts tests/envelope/tool-trace.test.ts tests/envelope/executor-audit.test.ts tests/envelope/memory-scope-mismatch-logging.test.ts tests/db/agent-activity.test.ts tests/gateways/message-router.test.ts tests/agent/gateway-tool-executor.test.ts tests/agent/post-tool-handler.test.ts tests/agent/agent-loop-streaming.test.ts tests/agent/streaming-integration.test.ts tests/cli/runtime/memory-agent-init.test.ts tests/connectors/raw-store-provenance.test.ts tests/api/memory-provenance-api.test.ts
-pnpm -C packages/mama-core typecheck
-pnpm -C packages/standalone typecheck
-git diff --check
+cd packages/mama-core
+pnpm exec vitest run tests/knowledge/commitment-read.test.ts
+pnpm exec vitest run -t "revision"
 ```
 
-These tests prove that public callers cannot spoof trusted provenance, direct
-writes still create fallback save events, gateway memory writes receive a typed
-`gateway_call_id`, and provenance reads use `memory_scope_bindings` for scoped
-visibility. The Branch 3 additions also prove connector event indexes and
-per-connector `raw_items` DBs carry explicit scope/cursor metadata, legacy rows
-are backfilled without fake envelope/model evidence, legacy unscoped rows are
-hidden from scoped reads unless callers opt in, and `/api/memory/provenance`
-requires `MAMA_ADMIN_TOKEN` rather than normal API auth or Cloudflare Access
-headers alone.
+Other useful focused suites, each from its own package directory:
 
----
+| Package              | Test files                                                                                                                       |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `mama-core`          | `tests/knowledge/commitment-write.test.ts`, `tests/knowledge/instance-isolation.test.ts`, `tests/unit/recall-kind-array.test.ts` |
+| `standalone`         | `tests/api/work-actions.test.ts`, `tests/api/stored-source-actions.test.ts`, `tests/runtime/owner-runtime-lessons.test.ts`       |
+| `standalone`         | `tests/runtime/owner-security.test.ts`, `tests/runtime/native-tool-traces.test.ts`, `tests/cli/onboarding.test.ts`               |
+| `claude-code-plugin` | `tests/manifests/plugin-manifests.test.js`                                                                                       |
 
-## Test Coverage
+Tests are Vitest-based. Consult each package's config and scripts; there is no fixed test count or
+repository-wide coverage percentage promised by this guide. Root test execution builds its
+prerequisites through Turbo. Standalone's direct tests use core's built exports, so rebuild core
+after changing it.
+
+## Isolate state before initialization
+
+Set `MAMA_DB_PATH` to a temporary database before importing code that calls `initDB()`. The
+otherwise-default `~/.claude/mama-memory.db` is real development memory and is not disposable.
+Use separate databases per test, close handles and restore environment state during cleanup.
+
+Tests that touch configuration or home paths must use a temporary home. For a shell smoke test:
 
 ```bash
-npm run test:coverage
-
-# Output:
-# Overall coverage: 87%
-# - Statements: 88%
-# - Branches: 85%
-# - Functions: 90%
-# - Lines: 87%
+test_home=$(mktemp -d)
+HOME="$test_home" MAMA_DB_PATH="$test_home/memory.db" pnpm exec vitest run <test-file>
 ```
 
-**Coverage report:** `coverage/index.html`
+Use a task-specific variable; do not overwrite the shell's own `HOME` for the whole session.
+Never print configuration ranges or credential files. Do not delete SQLite WAL or SHM files to
+work around a failure; inspect the owning process and the database lifecycle first.
 
-**Target:** >80% coverage
+`MAMA_FORCE_TIER_3=true` disables real embedding generation for test runs that use lexical paths
+or stubs. The plugin test configuration sets it. Such a run cannot prove semantic retrieval.
+For search changes, also use the real model with realistic titles and known relevant records.
+Check both retrieval and ranking; a synthetic shared word can hide a missed real query.
 
----
+## Verify the whole owner path
 
-## Writing Tests
+For live behaviour, retain the owner turn, a clean bounded slice of `~/.mama/logs/daemon.log`,
+and a database read-back. Follow mailbox input, model run, action/native tool traces, durable
+changes and the Telegram receipt. Compare the actual answer, report or artifact with the source.
+For correction work, repeat a related request in a fresh session and after restart, and test an
+unrelated request for scope spillover.
 
-### Unit Test Example
-
-```javascript
-// tests/unit/similarity.test.js
-import { cosineSimilarity } from '../../src/core/similarity.js';
-
-describe('cosineSimilarity', () => {
-  test('identical vectors return 1.0', () => {
-    const v1 = [1, 0, 0];
-    const v2 = [1, 0, 0];
-    expect(cosineSimilarity(v1, v2)).toBe(1.0);
-  });
-
-  test('orthogonal vectors return 0.0', () => {
-    const v1 = [1, 0, 0];
-    const v2 = [0, 1, 0];
-    expect(cosineSimilarity(v1, v2)).toBe(0.0);
-  });
-});
-```
-
-### Integration Test Example
-
-```javascript
-// tests/integration/mama-save.test.js
-import { executeMamaSave } from '../../src/commands/mama-save.js';
-
-describe('/mama-save command', () => {
-  test('saves decision to database', async () => {
-    const result = await executeMamaSave({
-      topic: 'test_topic',
-      decision: 'Use Vitest',
-      reasoning: 'Better ESM support',
-      confidence: 0.9,
-    });
-
-    expect(result.success).toBe(true);
-    expect(result.id).toBeGreaterThan(0);
-  });
-});
-```
-
-### Regression Test Example
-
-```javascript
-// tests/regression/fuzzy-matching-bug.test.js
-describe('Regression: Fuzzy matching bug', () => {
-  test('exact match preferred over fuzzy', async () => {
-    // Bug: Fuzzy match ranked higher than exact match
-    await save({ topic: 'auth_strategy', decision: 'JWT' });
-    await save({ topic: 'authorization', decision: 'RBAC' });
-
-    const results = await recall('auth_strategy');
-    expect(results[0].topic).toBe('auth_strategy'); // Exact match first
-  });
-});
-```
-
----
-
-## Test Utilities
-
-### Mock Database
-
-```javascript
-import { createMockDb } from '../helpers/mock-db.js';
-
-const db = createMockDb();
-// Use db in tests, automatically cleaned up
-```
-
-### Mock Embeddings
-
-```javascript
-import { mockEmbeddings } from '../helpers/mock-embeddings.js';
-
-mockEmbeddings.setMockVector([0.1, 0.2, 0.3, ...]);
-```
-
-### Test Fixtures
-
-```javascript
-import { fixtures } from '../helpers/fixtures.js';
-
-const testDecision = fixtures.decision();
-const testQuery = fixtures.query();
-```
-
----
-
-## Performance Testing
-
-### Run Benchmarks
+launchd uses KeepAlive, so killing the process is not stopping the daemon. Before modifying
+product state under `~/.mama`, stop its service:
 
 ```bash
-npm run test:performance
-
-# Output:
-# Hook latency: 102ms (target: <500ms) ✅
-# Embedding: 3ms (target: <30ms) ✅
-# Vector search: 48ms (target: <100ms) ✅
-# Save: 19ms (target: <50ms) ✅
+launchctl bootout gui/$(id -u)/com.mama.server
 ```
 
-### Performance Test Example
+Check the `DAEMON_JS` target in `~/.mama/start.sh` to establish which build will run. MAMA's
+product home is the repository's disposable testbed; the development-memory database is not.
+Do not use daemon logs to infer model cost or call frequency.
 
-```javascript
-// tests/performance/search-latency.test.js
-describe('Search performance', () => {
-  test('vector search completes within 100ms', async () => {
-    const start = Date.now();
-    await vectorSearch('test query');
-    const duration = Date.now() - start;
+A benchmark using `claude -p` must pass `--setting-sources project` so global plugin hooks do not
+contaminate it. Compare candidates with the same model, reasoning effort, source snapshots and
+as-of time. Measure the whole request-to-delivery interval, including queue time and failures.
 
-    expect(duration).toBeLessThan(100);
-  });
-});
-```
-
----
-
-## Continuous Integration
-
-### GitHub Actions
-
-Tests run automatically on:
-
-- Every push
-- Every pull request
-- Daily schedule (regression)
-
-**Workflow:** `.github/workflows/test.yml`
-
-### Pre-commit Hooks
-
-```bash
-# Install pre-commit hooks
-npm run prepare
-
-# Runs automatically before commit:
-# 1. Lint
-# 2. Type check
-# 3. Tests
-```
-
----
-
-## Debugging Tests
-
-### Debug Specific Test
-
-```bash
-# Enable debug output
-MAMA_DEBUG=true npm test tests/unit/embeddings.test.js
-
-# Use Node debugger
-node --inspect-brk node_modules/.bin/jest tests/unit/embeddings.test.js
-```
-
-### Test-only Mode
-
-```javascript
-test.only('this test runs alone', () => {
-  // Only this test runs
-});
-```
-
----
-
-## Test Guidelines
-
-### DO:
-
-- ✅ Test behavior, not implementation
-- ✅ Write descriptive test names
-- ✅ Use fixtures for complex data
-- ✅ Clean up after tests (close DB, etc.)
-- ✅ Test edge cases and errors
-
-### DON'T:
-
-- ❌ Mock internal functions (test real implementation)
-- ❌ Use `console.log` for debugging (use DebugLogger)
-- ❌ Skip tests with `.skip()` in commits
-- ❌ Write flaky tests (timing-dependent)
-
----
-
-## Test Coverage Requirements
-
-**For new code:**
-
-- Unit tests: 100% coverage
-- Integration tests: Required for commands/hooks
-- Regression tests: Required for bug fixes
-
-**For existing code:**
-
-- Maintain overall coverage >80%
-- Don't reduce coverage in PRs
-
----
-
-## See Also
-
-- [Developer Playbook](developer-playbook.md) - Development setup
-- [Code Standards](code-standards.md) - Coding conventions
-- [Contributing Guide](contributing.md) - How to contribute
-- [Architecture](../explanation/architecture.md) - System design
+For shared-engine changes, C6 requires a packed core installed outside the workspace, with an
+independent database and public exports. Workspace-linked tests alone cannot establish that a
+second consumer can install and use the package.

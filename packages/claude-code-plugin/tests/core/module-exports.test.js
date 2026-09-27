@@ -8,6 +8,8 @@
 
 import { describe, it, expect } from 'vitest';
 
+// decision-tracker and time-formatter stood here; W22 deleted both from core
+// because nothing outside its barrel imported them.
 describe('Story M1.1: Core Module Exports', () => {
   describe('mama-api.js exports', () => {
     it('should export mama object with required methods', async () => {
@@ -28,15 +30,6 @@ describe('Story M1.1: Core Module Exports', () => {
 
       expect(embeddings.generateEmbedding).toBeDefined();
       expect(typeof embeddings.generateEmbedding).toBe('function');
-    });
-  });
-
-  describe('decision-tracker.js exports', () => {
-    it('should export learnDecision function', async () => {
-      const tracker = await import('@jungjaehoon/mama-core/decision-tracker');
-
-      expect(tracker.learnDecision).toBeDefined();
-      expect(typeof tracker.learnDecision).toBe('function');
     });
   });
 
@@ -85,15 +78,6 @@ describe('Story M1.1: Core Module Exports', () => {
       ]) {
         expect(typeof queries[name]).toBe('function');
       }
-    });
-  });
-
-  describe('time-formatter.js exports', () => {
-    it('should export formatTimeAgo function', async () => {
-      const timeFormatter = await import('@jungjaehoon/mama-core/time-formatter');
-
-      expect(timeFormatter.formatTimeAgo).toBeDefined();
-      expect(typeof timeFormatter.formatTimeAgo).toBe('function');
     });
   });
 

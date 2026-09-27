@@ -20,7 +20,7 @@ describe('Narrative Input Validation', () => {
   });
 
   describe('save_decision tool', () => {
-    it('should pass narrative fields to mama.save', async () => {
+    it('forwards persisted narrative fields without dead metadata', async () => {
       const params = {
         topic: 'test_topic',
         decision: 'test_decision',
@@ -40,12 +40,17 @@ describe('Narrative Input Validation', () => {
       }
 
       expect(result.success).toBe(true);
+      const input = mamaMock.save.mock.calls[0]?.[0];
+      if (input) {
+        for (const field of ['evidence', 'alternatives', 'risks', 'trust_context']) {
+          expect(input).not.toHaveProperty(field);
+        }
+      }
       expect(mamaMock.save).toHaveBeenCalledWith(
         expect.objectContaining({
           topic: 'test_topic',
-          evidence: ['file.js', 'log.txt'],
-          alternatives: ['alt1', 'alt2'],
-          risks: 'high risk',
+          decision: 'test_decision',
+          reasoning: 'test_reasoning',
         })
       );
     });
@@ -63,12 +68,16 @@ describe('Narrative Input Validation', () => {
       const result = await saveDecisionTool.handler(params);
 
       expect(result.success).toBe(true);
+      const input = mamaMock.save.mock.calls[0]?.[0];
+      if (input) {
+        for (const field of ['evidence', 'alternatives', 'risks', 'trust_context']) {
+          expect(input).not.toHaveProperty(field);
+        }
+      }
       expect(mamaMock.save).toHaveBeenCalledWith(
         expect.objectContaining({
           topic: 'test_topic',
-          evidence: undefined,
-          alternatives: undefined,
-          risks: undefined,
+          decision: 'test_decision',
         })
       );
     });
@@ -119,13 +128,16 @@ describe('Narrative Input Validation', () => {
       const result = await saveDecisionTool.handler(params);
 
       expect(result.success).toBe(true);
+      const input = mamaMock.save.mock.calls[0]?.[0];
+      if (input) {
+        for (const field of ['evidence', 'alternatives', 'risks', 'trust_context']) {
+          expect(input).not.toHaveProperty(field);
+        }
+      }
       expect(mamaMock.save).toHaveBeenCalledWith(
         expect.objectContaining({
           topic: 'contract_get_users',
           decision: 'GET /users expects none, returns User[] defined in users.ts',
-          trust_context: expect.objectContaining({
-            verification: expect.objectContaining({ result: 'not_verified' }),
-          }),
         })
       );
     });
@@ -149,6 +161,12 @@ describe('Narrative Input Validation', () => {
       const result = await saveDecisionTool.handler(params);
 
       expect(result.success).toBe(true);
+      const input = mamaMock.save.mock.calls[0]?.[0];
+      if (input) {
+        for (const field of ['evidence', 'alternatives', 'risks', 'trust_context']) {
+          expect(input).not.toHaveProperty(field);
+        }
+      }
       expect(result.decision_id).toBe('decision_existing');
       expect(result.message).toContain('Duplicate contract');
       expect(mamaMock.save).not.toHaveBeenCalled();

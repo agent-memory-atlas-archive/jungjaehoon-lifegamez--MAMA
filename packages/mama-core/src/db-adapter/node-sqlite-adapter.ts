@@ -5,16 +5,14 @@
  */
 
 import path from 'path';
-import os from 'os';
 import fs from 'fs';
-import { DatabaseAdapter, type VectorSearchResult, type RunResult } from './base-adapter.js';
+import type { VectorSearchResult, RunResult } from './base-adapter.js';
+import type { DatabaseInstance } from '../db-manager.js';
 import { NodeSQLiteStatement } from './node-sqlite-statement.js';
 import { type Statement } from './statement.js';
 import { info, warn, error as logError } from '../debug-logger.js';
-import { cosineSimilarity } from '../embeddings.js';
+import { cosineSimilarity } from '../embedding/embedder.js';
 
-const LEGACY_DB_PATH = path.join(os.homedir(), '.spinelift', 'memories.db');
-const DEFAULT_DB_PATH = path.join(os.homedir(), '.claude', 'mama-memory.db');
 const SQLITE_IDENTIFIER_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 // Migration 071 origin invariant, kept in ONE place so the DDL the rebuild
@@ -28,6 +26,52 @@ const TOOL_TRACES_ORIGIN_CHECK = `CHECK (
     )
   )`;
 const TOOL_TRACES_MODEL_FK = 'FOREIGN KEY (model_run_id) REFERENCES model_runs(model_run_id)';
+const WORKFLOW_KIND_MIGRATION_COLUMNS = [
+  'id',
+  'topic',
+  'decision',
+  'reasoning',
+  'outcome',
+  'failure_reason',
+  'limitation',
+  'user_involvement',
+  'session_id',
+  'supersedes',
+  'superseded_by',
+  'refined_from',
+  'confidence',
+  'created_at',
+  'updated_at',
+  'needs_validation',
+  'validation_attempts',
+  'last_validated_at',
+  'usage_count',
+  'trust_context',
+  'usage_success',
+  'usage_failure',
+  'time_saved',
+  'evidence',
+  'alternatives',
+  'risks',
+  'event_date',
+  'kind',
+  'status',
+  'summary',
+  'is_static',
+  'event_datetime',
+  'agent_id',
+  'model_run_id',
+  'envelope_hash',
+  'gateway_call_id',
+  'source_refs_json',
+  'provenance_json',
+  'item_id',
+  'record_kind',
+  'payload_json',
+  'applies_from',
+  'applies_until',
+  'duration_days',
+] as const;
 
 function normalizeSqlText(sql: string): string {
   return sql.replace(/\s+/g, '').toLowerCase();
@@ -244,12 +288,23 @@ class NodeSQLiteConnection {
   }
 }
 
-export class NodeSQLiteAdapter extends DatabaseAdapter {
+/** One author of migrations, and where they live. */
+export interface MigrationSource {
+  /** Namespaces the version numbers. The core's own is `core`. */
+  readonly name: string;
+  readonly dir: string;
+}
+
+/** The core is one source among others; it is only first because others build on it. */
+export const CORE_MIGRATION_SOURCE = 'core';
+
+export class NodeSQLiteAdapter implements DatabaseInstance {
   private transactionDepth = 0;
   private config: SQLiteAdapterConfig;
   private db: NodeSQLiteConnection | null = null;
   private vectorCache: Map<number, Float32Array> = new Map();
   private topicCache: Map<number, string> = new Map();
+  private kindCache: Map<number, string> = new Map();
   // Effective status (status, falling back to outcome) per decision rowid. Used as a
   // search-time optimization only - recallMemory's post-filter stays the authority
   // (this cache can lag a status UPDATE until the next reloadVectorCache).
@@ -258,7 +313,6 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
   private decisionsColumnInfoChecked = false;
 
   constructor(config: SQLiteAdapterConfig = {}) {
-    super();
     this.config = config;
   }
 
@@ -266,18 +320,27 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
     const envPath = process.env.MAMA_DB_PATH || process.env.MAMA_DATABASE_PATH;
     const configPath = this.config.dbPath;
 
-    let expandedEnvPath = envPath;
-    if (envPath) {
-      expandedEnvPath = envPath.replace(/\$\{HOME\}/g, os.homedir()).replace(/^~/, os.homedir());
-    }
-
-    const targetPath = configPath || expandedEnvPath || DEFAULT_DB_PATH;
-
-    if (!configPath && !envPath && fs.existsSync(LEGACY_DB_PATH)) {
-      info(
-        '[node-sqlite-adapter] Found legacy database at ~/.spinelift/memories.db, using it for backward compatibility'
+    const targetPath = configPath || envPath;
+    // The adapter used to expand `~` and `${HOME}` here, which made a shared library
+    // the thing that decides what home means. Whoever set the variable knows; this
+    // says so rather than guessing on their behalf.
+    if (
+      targetPath &&
+      (targetPath === '~' || targetPath.startsWith('~/') || targetPath.includes('${HOME}'))
+    ) {
+      throw new Error(
+        `Database path is not resolved (${targetPath}). ` +
+          'Expand it where the home directory is known and pass the result.'
       );
-      return LEGACY_DB_PATH;
+    }
+    if (!targetPath) {
+      // There used to be a default here: ~/.claude/mama-memory.db. A shared core that
+      // knows where one product keeps its database is not shared, and a caller who
+      // forgot to say got a database it never named -- which is worse than an error,
+      // because it works.
+      throw new Error(
+        'No database path. Pass dbPath, or set MAMA_DB_PATH before opening the database.'
+      );
     }
 
     return targetPath;
@@ -336,21 +399,26 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
     if (!this.isConnected()) {
       throw new Error('Database not connected');
     }
-    if (!this.decisionsColumnInfoChecked) {
-      this.refreshDecisionColumnInfo();
-    }
+    const decisionCols = this.refreshDecisionColumnInfo();
+    const kindSelect = decisionCols.has('kind') ? 'kind' : 'NULL AS kind';
     const cacheSelect = this.decisionsHasStatusColumns
-      ? 'SELECT topic, status, outcome FROM decisions WHERE rowid = ?'
-      : 'SELECT topic, NULL AS status, NULL AS outcome FROM decisions WHERE rowid = ?';
+      ? `SELECT topic, ${kindSelect}, status, outcome FROM decisions WHERE rowid = ?`
+      : `SELECT topic, ${kindSelect}, NULL AS status, NULL AS outcome FROM decisions WHERE rowid = ?`;
     const row = this.prepare(cacheSelect).get(rowid) as
-      | { topic: string; status: string | null; outcome: string | null }
+      | { topic: string; kind: string | null; status: string | null; outcome: string | null }
       | undefined;
     if (!row) {
       this.statusCache.delete(rowid);
       this.topicCache.delete(rowid);
+      this.kindCache.delete(rowid);
       return;
     }
     this.topicCache.set(rowid, row.topic);
+    if (row.kind) {
+      this.kindCache.set(rowid, row.kind);
+    } else {
+      this.kindCache.delete(rowid);
+    }
     const effectiveStatus = row.status || row.outcome;
     if (effectiveStatus) {
       this.statusCache.set(rowid, effectiveStatus);
@@ -383,6 +451,7 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
     if (tableCheck.length === 0) {
       this.vectorCache.clear();
       this.topicCache.clear();
+      this.kindCache.clear();
       this.statusCache.clear();
       return;
     }
@@ -409,20 +478,26 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
     // A missing column just leaves statusCache empty; the api-layer post-filter
     // remains the authority.
     this.topicCache.clear();
+    this.kindCache.clear();
     this.statusCache.clear();
     const decisionCols = this.refreshDecisionColumnInfo();
+    const kindSelect = decisionCols.has('kind') ? 'kind' : 'NULL AS kind';
     const statusSelect = decisionCols.has('status') ? 'status' : 'NULL AS status';
     const outcomeSelect = decisionCols.has('outcome') ? 'outcome' : 'NULL AS outcome';
     const topicRows = this.db
-      .prepare(`SELECT rowid, topic, ${statusSelect}, ${outcomeSelect} FROM decisions`)
+      .prepare(
+        `SELECT rowid, topic, ${kindSelect}, ${statusSelect}, ${outcomeSelect} FROM decisions`
+      )
       .all() as Array<{
       rowid: number;
       topic: string;
+      kind: string | null;
       status: string | null;
       outcome: string | null;
     }>;
     for (const row of topicRows) {
       this.topicCache.set(row.rowid, row.topic);
+      if (row.kind) this.kindCache.set(row.rowid, row.kind);
       const effectiveStatus = row.status || row.outcome;
       if (effectiveStatus) {
         this.statusCache.set(row.rowid, effectiveStatus);
@@ -434,7 +509,7 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
     info(`[node-sqlite-adapter] Vector cache loaded: ${count} embeddings in ${elapsed}ms`);
     if (count > CACHE_WARN_THRESHOLD) {
       warn(
-        `[node-sqlite-adapter] Vector cache holds ${count} embeddings — consider LRU eviction or on-demand loading for large datasets`
+        `[node-sqlite-adapter] Vector cache holds ${count} embeddings -- consider LRU eviction or on-demand loading for large datasets`
       );
     }
   }
@@ -480,6 +555,7 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
     const depth = this.transactionDepth;
     const vectorSnapshot = new Map(this.vectorCache);
     const topicSnapshot = new Map(this.topicCache);
+    const kindSnapshot = new Map(this.kindCache);
     const statusSnapshot = new Map(this.statusCache);
     const savepoint = `mama_nested_${depth}`;
     this.exec(
@@ -504,6 +580,7 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
     } catch (error) {
       this.vectorCache = vectorSnapshot;
       this.topicCache = topicSnapshot;
+      this.kindCache = kindSnapshot;
       this.statusCache = statusSnapshot;
       this.transactionDepth = depth;
       let cleanupError: unknown;
@@ -536,7 +613,8 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
     embedding: Float32Array | number[],
     limit = 5,
     topicPrefix?: string,
-    excludeStatuses?: readonly string[]
+    excludeStatuses?: readonly string[],
+    kind?: string | [string, ...string[]]
   ): VectorSearchResult[] | null {
     if (!this.isConnected()) {
       throw new Error('Database not connected');
@@ -559,6 +637,16 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
         const topic = this.topicCache.get(rowid);
         if (!topic || !topic.startsWith(topicPrefix)) continue;
       }
+
+      // Pre-filter by memory kind so unrelated records cannot consume the top-K
+      // candidate slots before the recall layer applies its requested kind.
+      if (
+        kind !== undefined &&
+        (Array.isArray(kind)
+          ? !kind.some((value) => value === this.kindCache.get(rowid))
+          : this.kindCache.get(rowid) !== kind)
+      )
+        continue;
 
       // Pre-filter by effective status so superseded history does not occupy
       // top-K slots (the api-layer post-filter remains the authority)
@@ -621,10 +709,46 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
     return result.rowid;
   }
 
-  runMigrations(migrationsDir: string): void {
+  /**
+   * Run migrations from one source, or from several in order.
+   *
+   * A migration belongs to whoever wrote it, and its identity is (source,
+   * version). One author could key on the number alone; a second cannot, because
+   * the next number is already spoken for. Without this there is nowhere for a
+   * package's own table to live except inside the core.
+   *
+   * The core's source runs first and the rest follow, so a later source can
+   * reference what the core declared. A plain directory means the core's own.
+   */
+  /**
+   * Record that one source's migration ran. Before (source, version) there was
+   * one author, so the column did not exist; a database that has not reached 085
+   * yet still has the old shape and is still the core's.
+   */
+  private stampMigration(sourceName: string, version: number): void {
+    if (this.tableColumns('schema_version').has('source')) {
+      this.prepare('INSERT OR IGNORE INTO schema_version (source, version) VALUES (?, ?)').run(
+        sourceName,
+        version
+      );
+      return;
+    }
+    this.prepare('INSERT OR IGNORE INTO schema_version (version) VALUES (?)').run(version);
+  }
+
+  runMigrations(sources: string | readonly MigrationSource[]): void {
+    const list: readonly MigrationSource[] =
+      typeof sources === 'string' ? [{ name: CORE_MIGRATION_SOURCE, dir: sources }] : sources;
+    for (const source of list) {
+      this.runMigrationSource(source.dir, source.name);
+    }
+  }
+
+  private runMigrationSource(migrationsDir: string, sourceName: string): void {
     if (!this.isConnected()) {
       throw new Error('Database not connected');
     }
+    const isCore = sourceName === CORE_MIGRATION_SOURCE;
 
     const tables = this.prepare(
       `
@@ -635,13 +759,20 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
 
     let currentVersion = 0;
     if (tables.length > 0) {
-      const version = this.prepare('SELECT MAX(version) as version FROM schema_version').get() as
-        | { version: number | null }
-        | undefined;
+      // Progress is per source. A shared MAX() would let one author's numbering
+      // declare another author's migrations already applied.
+      const hasSource = this.tableColumns('schema_version').has('source');
+      const version = (
+        hasSource
+          ? this.prepare('SELECT MAX(version) as version FROM schema_version WHERE source = ?').get(
+              sourceName
+            )
+          : this.prepare('SELECT MAX(version) as version FROM schema_version').get()
+      ) as { version: number | null } | undefined;
       currentVersion = version?.version || 0;
     }
 
-    info(`[node-sqlite-adapter] Current schema version: ${currentVersion}`);
+    info(`[node-sqlite-adapter] Current schema version (${sourceName}): ${currentVersion}`);
 
     const migrationFiles = fs
       .readdirSync(migrationsDir)
@@ -649,14 +780,15 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
       .sort();
 
     if (
+      isCore &&
       currentVersion >= 72 &&
-      this.tableExists('connector_event_index') &&
       fs.existsSync(path.join(migrationsDir, '072-observation-versions.sql')) &&
       this.needsObservationVersionsRepair072()
     ) {
       this.recoverObservationVersionsMigration072();
     }
     if (
+      isCore &&
       currentVersion >= 73 &&
       this.tableExists('registry_nodes') &&
       fs.existsSync(path.join(migrationsDir, '073-registry-corrections.sql')) &&
@@ -665,6 +797,7 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
       this.recoverRegistryCorrectionsMigration073(migrationsDir);
     }
     if (
+      isCore &&
       currentVersion >= 74 &&
       this.tableExists('twin_edges') &&
       fs.existsSync(path.join(migrationsDir, '074-work-graph-ref-kinds.sql')) &&
@@ -673,6 +806,7 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
       this.recoverWorkGraphRefsMigration074();
     }
     if (
+      isCore &&
       currentVersion >= 77 &&
       this.tableExists('decisions') &&
       fs.existsSync(path.join(migrationsDir, '077-legacy-record-kind.sql')) &&
@@ -681,6 +815,7 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
       this.recoverLegacyRecordKindMigration077();
     }
     if (
+      isCore &&
       currentVersion >= 79 &&
       this.tableExists('twin_edges') &&
       fs.existsSync(path.join(migrationsDir, '079-twin-edge-relations.sql')) &&
@@ -700,9 +835,26 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
         continue;
       }
 
+      if (isCore && version === 98) {
+        const decisionColumns = this.tableColumns('decisions');
+        if (
+          !this.tableExists('decisions_fts') ||
+          !WORKFLOW_KIND_MIGRATION_COLUMNS.every((column) => decisionColumns.has(column))
+        ) {
+          warn(
+            `[node-sqlite-adapter] Migration ${file} deferred: the full decisions projection is not present`
+          );
+          continue;
+        }
+        this.rebuildWorkflowMemoryKind098(migrationsDir);
+        this.stampMigration(sourceName, version);
+        info(`[node-sqlite-adapter] Migration ${file} reconciled successfully`);
+        continue;
+      }
+
       // Runtime MetricsStore may already own project_id/channel_id. Reconcile
       // this additive migration atomically instead of accepting a duplicate skip.
-      if (version === 68) {
+      if (isCore && version === 68) {
         if (!this.tableExists('tool_traces')) {
           // Legacy version ledgers can have skipped 033; the structural repair
           // below creates its table before reconciling 068. Do not stamp it yet.
@@ -717,7 +869,7 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
       // origin CHECK needs a table rebuild that also preserves any extra runtime
       // columns/indexes a live database carries - more than the static SQL file
       // can express. Reconcile with a dynamic rebuild instead of exec'ing the SQL.
-      if (version === 71) {
+      if (isCore && version === 71) {
         if (!this.tableExists('tool_traces')) {
           // A legacy ledger may have skipped 033; the structural repair below
           // creates the table first, then this rebuild reconciles it. Do not
@@ -729,8 +881,16 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
         continue;
       }
 
-      if (version === 72) {
-        if (!this.tableExists('connector_event_index')) {
+      if (isCore && version === 72) {
+        // `observation_versions` is the core's own table. This used to skip the
+        // migration entirely when `connector_event_index` was absent -- back when
+        // the connector index WAS the substrate -- so a consumer without the
+        // connector package silently got no observations at all, and every later
+        // migration touching them was swallowed as "no such table".
+        if (!this.tableExists('observation_versions')) {
+          this.exec(fs.readFileSync(path.join(migrationsDir, file), 'utf8'));
+          this.stampMigration(sourceName, version);
+          info(`[node-sqlite-adapter] Migration ${file} applied`);
           continue;
         }
         this.recoverObservationVersionsMigration072();
@@ -738,13 +898,13 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
         continue;
       }
 
-      if (version === 73) {
+      if (isCore && version === 73) {
         this.recoverRegistryCorrectionsMigration073(migrationsDir);
         info(`[node-sqlite-adapter] Migration ${file} reconciled successfully`);
         continue;
       }
 
-      if (version === 74) {
+      if (isCore && version === 74) {
         if (!this.tableExists('twin_edges')) {
           continue;
         }
@@ -753,7 +913,7 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
         continue;
       }
 
-      if (version === 77) {
+      if (isCore && version === 77) {
         this.recoverLegacyRecordKindMigration077();
         info(`[node-sqlite-adapter] Migration ${file} reconciled successfully`);
         continue;
@@ -762,13 +922,24 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
       // Extending the twin_edges relation CHECK needs the same dynamic rebuild
       // as 074 so custom columns, indexes, triggers, and FK children survive;
       // the static SQL file cannot express that. Reconcile instead of exec'ing.
-      if (version === 79) {
+      if (isCore && version === 79) {
         if (!this.tableExists('twin_edges')) {
           continue;
         }
         this.recoverTwinEdgeRelationsMigration079();
         info(`[node-sqlite-adapter] Migration ${file} reconciled successfully`);
         continue;
+      }
+
+      if (isCore && version === 92) {
+        // Legacy high-version stores may carry only a skeletal decisions table.
+        // An external-content FTS rebuild cannot read columns that do not exist;
+        // leave this migration unstamped until the canonical table is present.
+        const columns = this.tableColumns('decisions');
+        if (!['topic', 'decision', 'reasoning'].every((column) => columns.has(column))) {
+          warn(`[node-sqlite-adapter] Migration ${file} deferred: decisions content is incomplete`);
+          continue;
+        }
       }
 
       const migrationPath = path.join(migrationsDir, file);
@@ -780,7 +951,7 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
         this.exec('BEGIN TRANSACTION');
         this.exec(migrationSQL);
         this.exec('COMMIT');
-        this.prepare('INSERT OR IGNORE INTO schema_version (version) VALUES (?)').run(version);
+        this.stampMigration(sourceName, version);
         info(`[node-sqlite-adapter] Migration ${file} applied successfully`);
       } catch (err) {
         this.exec('ROLLBACK');
@@ -792,62 +963,11 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
           continue;
         }
 
-        if (message.includes('duplicate column') && version === 34) {
-          this.recoverConnectorEventScopeMigration034();
-          info(`[node-sqlite-adapter] Migration ${file} recovered successfully`);
-          continue;
-        }
-
-        if (message.includes('duplicate column') && version === 39) {
-          this.recoverConnectorEventOperatorSeqMigration039();
-          info(`[node-sqlite-adapter] Migration ${file} recovered successfully`);
-          continue;
-        }
-
-        if (message.includes('duplicate column') && version === 62) {
-          this.recoverConnectorEventSequencesMigration062();
-          info(`[node-sqlite-adapter] Migration ${file} recovered successfully`);
-          continue;
-        }
-
-        if (message.includes('duplicate column') && version === 67) {
-          this.recoverConnectorEventSourceEntityIdMigration067();
-          info(`[node-sqlite-adapter] Migration ${file} recovered successfully`);
-          continue;
-        }
-
-        if (message.includes('no such column') && version === 62) {
-          warn(
-            `[node-sqlite-adapter] Migration ${file} deferred until connector structure recovery (${message})`
-          );
-          continue;
-        }
-
-        if (
-          version === 63 &&
-          (message.includes('no such column') || message.includes('no such table'))
-        ) {
-          warn(
-            `[node-sqlite-adapter] Migration ${file} deferred until connector structure recovery (${message})`
-          );
-          continue;
-        }
-
-        if (
-          version === 67 &&
-          (message.includes('no such column') || message.includes('no such table'))
-        ) {
-          warn(
-            `[node-sqlite-adapter] Migration ${file} deferred until connector structure recovery (${message})`
-          );
-          continue;
-        }
-
         if (message.includes('duplicate column')) {
           warn(
             `[node-sqlite-adapter] Migration ${file} skipped (duplicate column - already applied)`
           );
-          this.prepare('INSERT OR IGNORE INTO schema_version (version) VALUES (?)').run(version);
+          this.stampMigration(sourceName, version);
           continue;
         }
 
@@ -863,7 +983,7 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
           warn(
             `[node-sqlite-adapter] Migration ${file} skipped: ALTER TABLE on non-existent table (${message})`
           );
-          this.prepare('INSERT OR IGNORE INTO schema_version (version) VALUES (?)').run(version);
+          this.stampMigration(sourceName, version);
           continue;
         }
 
@@ -872,7 +992,9 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
       }
     }
 
-    this.repairSkippedFeatureMigrations(migrationsDir);
+    if (isCore) {
+      this.repairSkippedFeatureMigrations(migrationsDir);
+    }
 
     const embeddingsTables = this.prepare(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='embeddings'`
@@ -923,7 +1045,7 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
 
     // Also repairs databases already stamped 68 by the former generic duplicate
     // skip, which rolled back the new columns before advancing schema_version.
-    // Only enter the recovery transaction when something is actually missing —
+    // Only enter the recovery transaction when something is actually missing --
     // a complete database must not take the write path on every runMigrations().
     if (
       fs.existsSync(path.join(migrationsDir, '068-tool-trace-diagnostics.sql')) &&
@@ -945,7 +1067,6 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
 
     if (
       fs.existsSync(path.join(migrationsDir, '072-observation-versions.sql')) &&
-      this.tableExists('connector_event_index') &&
       this.needsObservationVersionsRepair072()
     ) {
       this.recoverObservationVersionsMigration072();
@@ -969,80 +1090,11 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
       info('[node-sqlite-adapter] Repaired skipped work graph ref migration');
     }
 
-    if (this.tableExists('connector_event_index')) {
-      const connectorColumns = this.tableColumns('connector_event_index');
-      const hasMissingConnectorScopeColumn = [
-        'source_cursor',
-        'tenant_id',
-        'project_id',
-        'memory_scope_kind',
-        'memory_scope_id',
-      ].some((column) => !connectorColumns.has(column));
-
-      if (hasMissingConnectorScopeColumn) {
-        this.recoverConnectorEventScopeMigration034();
-        info('[node-sqlite-adapter] Repaired skipped connector event scope migration');
-      }
-
-      const connectorColumnsAfterScopeRepair = this.tableColumns('connector_event_index');
-      const hasMissingOperatorSeqFeature =
-        !connectorColumnsAfterScopeRepair.has('operator_ingest_seq') ||
-        !this.tableExists('connector_event_index_operator_seq_cursors') ||
-        !this.indexExists('idx_connector_event_index_operator_scope_seq') ||
-        !this.indexExists('idx_connector_event_index_operator_cursor_order') ||
-        !this.triggerExists('trg_connector_event_index_operator_ingest_seq_ai') ||
-        !this.triggerExists('trg_connector_event_index_operator_ingest_seq_explicit_ai') ||
-        !this.schemaVersionExists(39);
-
-      if (hasMissingOperatorSeqFeature) {
-        this.recoverConnectorEventOperatorSeqMigration039();
-        info('[node-sqlite-adapter] Repaired skipped connector event operator sequence migration');
-      }
-
-      const connectorColumnsAfterOperatorSeqRepair = this.tableColumns('connector_event_index');
-      if (connectorColumnsAfterOperatorSeqRepair.has('source_timestamp_ms')) {
-        const hasMissingObservationSeqFeature =
-          !connectorColumnsAfterOperatorSeqRepair.has('operator_observation_seq') ||
-          !this.tableExists('connector_event_index_observation_cursors') ||
-          !this.indexExists('idx_connector_event_index_observation_seq') ||
-          !this.triggerExists('trg_connector_event_index_operator_ingest_seq_au') ||
-          !this.triggerExists('trg_connector_event_index_observation_seq_ai') ||
-          !this.triggerExists('trg_connector_event_index_observation_seq_au') ||
-          !this.triggerExists('trg_connector_event_index_observation_seq_explicit_ai') ||
-          !this.schemaVersionExists(62);
-
-        if (hasMissingObservationSeqFeature) {
-          this.recoverConnectorEventSequencesMigration062();
-          info(
-            '[node-sqlite-adapter] Repaired skipped connector event observation sequence migration'
-          );
-        }
-
-        const hasMissingLegacyRefreshFeature =
-          !this.triggerExists('trg_connector_event_index_legacy_content_refresh_au') ||
-          !this.schemaVersionExists(63);
-        if (hasMissingLegacyRefreshFeature) {
-          this.recoverConnectorEventLegacyRefreshMigration063();
-          info('[node-sqlite-adapter] Repaired skipped legacy connector event refresh migration');
-        }
-      }
-
-      const hasMissingSourceEntityIdFeature =
-        !this.tableColumns('connector_event_index').has('source_entity_id') ||
-        !this.indexExists('idx_connector_event_source_entity') ||
-        !this.schemaVersionExists(67);
-      if (hasMissingSourceEntityIdFeature) {
-        this.recoverConnectorEventSourceEntityIdMigration067();
-        info('[node-sqlite-adapter] Repaired skipped connector event source_entity_id migration');
-      }
-    }
-
     if (!this.tableExists('twin_edges')) {
       this.applyRepairMigration(migrationsDir, '035-create-twin-edges.sql', 'twin edge ledger');
     }
 
     if (
-      this.tableExists('connector_event_index') &&
       fs.existsSync(path.join(migrationsDir, '072-observation-versions.sql')) &&
       this.needsObservationVersionsRepair072()
     ) {
@@ -1406,6 +1458,13 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
       ? extraConstraints('registry_aliases', [
           "CHECK (kind IN ('item', 'person', 'client'))",
           'PRIMARY KEY (kind, alias, scope_kind, scope_id)',
+          // The pre-scope shape, which is exactly what this rebuild exists to
+          // convert. Listing only the post-migration spelling made every database
+          // written before alias scoping look like it carried a constraint this
+          // code does not understand, so the rebuild preserved it and emitted a
+          // CREATE TABLE with two PRIMARY KEY clauses. The daemon could not open
+          // its own older database.
+          'PRIMARY KEY (kind, alias)',
           'FOREIGN KEY (node_id) REFERENCES registry_nodes(id)',
           'REFERENCES registry_nodes(id) ON DELETE CASCADE',
         ])
@@ -1671,6 +1730,29 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
     }
   }
 
+  private rebuildWorkflowMemoryKind098(migrationsDir: string): void {
+    const migrationPath = path.join(migrationsDir, '098-workflow-memory-kind.sql');
+    if (!fs.existsSync(migrationPath)) {
+      throw new Error('Migration 098 workflow-kind rebuild SQL is missing');
+    }
+    const previousForeignKeys = this.readForeignKeysEnabled();
+    this.exec('PRAGMA foreign_keys = OFF');
+    if (this.readForeignKeysEnabled()) {
+      throw new Error('Migration 098 could not disable foreign_keys before rebuilding decisions');
+    }
+    try {
+      this.transaction(() => {
+        this.exec(fs.readFileSync(migrationPath, 'utf8'));
+      });
+      const violations = this.prepare('PRAGMA foreign_key_check').all();
+      if (violations.length > 0) {
+        throw new Error('Migration 098 left foreign key violations');
+      }
+    } finally {
+      this.exec(`PRAGMA foreign_keys = ${previousForeignKeys ? 'ON' : 'OFF'}`);
+    }
+  }
+
   private operatorMemoryCommitIntentTableSql(): string {
     const tableDefinition = this.prepare(
       "SELECT sql FROM sqlite_master WHERE type='table' AND name = 'operator_memory_commit_intents'"
@@ -1867,7 +1949,7 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
     }
     const required = [
       'observation_id',
-      'source_connector',
+      'source',
       'source_id',
       'producer_version_id',
       'body',
@@ -1900,31 +1982,8 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
         }>
       ).map((column) => [column.name, column])
     );
-    const eventColumns = this.tableColumns('connector_event_index');
-    const eventColumnInfo = new Map(
-      (
-        this.prepare('PRAGMA table_info(connector_event_index)').all() as Array<{
-          name: string;
-          type: string;
-          notnull: number;
-        }>
-      ).map((column) => [column.name, column])
-    );
-    const eventColumnClauses = new Map(
-      splitCreateTableClauses(this.tableSql('connector_event_index'))
-        .filter((clause) => !clauseIsTableConstraint(clause))
-        .map((clause) => [clauseColumnName(clause), normalizeSqlText(clause)])
-    );
-    const currentObservationDef = normalizeSqlText(
-      'current_observation_id TEXT REFERENCES observation_versions(observation_id)'
-    );
-    const eventFks = this.prepare(
-      'SELECT "from" AS from_col, "table" AS target, "to" AS to_col FROM pragma_foreign_key_list(?)'
-    ).all('connector_event_index') as Array<{
-      from_col: string;
-      target: string;
-      to_col: string;
-    }>;
+    // Whether any index points AT an observation is that index's own business.
+    // This migration declares the evidence; it does not declare its readers.
     return (
       required.every((column) => columns.has(column)) &&
       required.every((column) => {
@@ -1932,36 +1991,19 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
         return columnInfo.get(column)?.type.toUpperCase() === expected;
       }) &&
       columnInfo.get('observation_id')?.pk === 1 &&
-      [
-        'source_connector',
-        'source_id',
-        'observed_at',
-        'content_hash',
-        'metadata_json',
-        'scope_json',
-      ].every((column) => columnInfo.get(column)?.notnull === 1) &&
-      columnClauses.get('source_connector') ===
-        normalizeSqlText(
-          'source_connector TEXT NOT NULL CHECK (length(trim(source_connector)) > 0)'
-        ) &&
+      ['source', 'source_id', 'observed_at', 'content_hash', 'metadata_json', 'scope_json'].every(
+        (column) => columnInfo.get(column)?.notnull === 1
+      ) &&
+      columnClauses.get('source') ===
+        normalizeSqlText('source TEXT NOT NULL CHECK (length(trim(source)) > 0)') &&
       columnClauses.get('source_id') ===
         normalizeSqlText('source_id TEXT NOT NULL CHECK (length(trim(source_id)) > 0)') &&
       columnClauses.get('content_hash') ===
         normalizeSqlText('content_hash TEXT NOT NULL CHECK (length(trim(content_hash)) > 0)') &&
       clauses.some((clause) => normalizeSqlText(clause) === bodyXor) &&
-      eventColumns.has('current_observation_id') &&
-      eventColumnInfo.get('current_observation_id')?.type.toUpperCase() === 'TEXT' &&
-      eventColumnInfo.get('current_observation_id')?.notnull === 0 &&
-      eventColumnClauses.get('current_observation_id') === currentObservationDef &&
-      eventFks.some(
-        (fk) =>
-          fk.from_col === 'current_observation_id' &&
-          fk.target === 'observation_versions' &&
-          fk.to_col === 'observation_id'
-      ) &&
       this.indexExists('observation_source_versions') &&
       normalizeSqlText(this.indexSql('observation_source_versions')).includes(
-        'onobservation_versions(source_connector,source_id,observed_at,observation_id)'
+        'onobservation_versions(source,source_id,observed_at,observation_id)'
       )
     );
   }
@@ -1971,9 +2013,6 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
   }
 
   private recoverObservationVersionsMigration072(): void {
-    if (!this.tableExists('connector_event_index')) {
-      throw new Error('Migration 072 recovery failed: missing connector_event_index');
-    }
     if (this.observationVersionsShape072()) {
       this.transaction(() => {
         this.prepare(
@@ -1985,10 +2024,7 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
 
     const canonical = new Map<string, string>([
       ['observation_id', 'observation_id TEXT PRIMARY KEY'],
-      [
-        'source_connector',
-        'source_connector TEXT NOT NULL CHECK (length(trim(source_connector)) > 0)',
-      ],
+      ['source', 'source TEXT NOT NULL CHECK (length(trim(source)) > 0)'],
       ['source_id', 'source_id TEXT NOT NULL CHECK (length(trim(source_id)) > 0)'],
       ['producer_version_id', 'producer_version_id TEXT'],
       ['body', 'body TEXT'],
@@ -2037,7 +2073,7 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
           name === 'observation_id'
             ? 'observation_id TEXT PRIMARY KEY'
             : [
-                  'source_connector',
+                  'source',
                   'source_id',
                   'observed_at',
                   'content_hash',
@@ -2082,79 +2118,6 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
       );
     }
 
-    const eventFks = this.prepare(
-      'SELECT "from" AS from_col, "table" AS target, "to" AS to_col FROM pragma_foreign_key_list(?)'
-    ).all('connector_event_index') as Array<{
-      from_col: string;
-      target: string;
-      to_col: string;
-    }>;
-    const hasObservationFk = eventFks.some(
-      (fk) =>
-        fk.from_col === 'current_observation_id' &&
-        fk.target === 'observation_versions' &&
-        fk.to_col === 'observation_id'
-    );
-    const hasCurrentObservationColumn =
-      this.tableColumns('connector_event_index').has('current_observation_id');
-    const currentObservationDef = normalizeSqlText(
-      'current_observation_id TEXT REFERENCES observation_versions(observation_id)'
-    );
-    const legacyCurrentObservationDef = normalizeSqlText('current_observation_id TEXT');
-    if (hasCurrentObservationColumn) {
-      const eventClauses = splitCreateTableClauses(this.tableSql('connector_event_index'));
-      const currentClause = eventClauses.find(
-        (clause) =>
-          !clauseIsTableConstraint(clause) && clauseColumnName(clause) === 'current_observation_id'
-      );
-      const normalizedCurrentClause = currentClause ? normalizeSqlText(currentClause) : '';
-      if (
-        normalizedCurrentClause !== currentObservationDef &&
-        normalizedCurrentClause !== legacyCurrentObservationDef
-      ) {
-        throw new Error(
-          'Migration 072 cannot safely preserve inline constraint on current_observation_id'
-        );
-      }
-      if (hasObservationFk && normalizedCurrentClause !== currentObservationDef) {
-        throw new Error(
-          'Migration 072 cannot safely preserve inline constraint on current_observation_id'
-        );
-      }
-    }
-    const rebuildEventIndex = hasCurrentObservationColumn && !hasObservationFk;
-    const eventColumns: string[] = [];
-    const eventConstraints: string[] = [];
-    const eventColumnNames: string[] = [];
-    let eventObjects = { indexes: [] as string[], triggers: [] as string[] };
-    if (rebuildEventIndex) {
-      const clauses = splitCreateTableClauses(this.tableSql('connector_event_index'));
-      if (clauses.length === 0) {
-        throw new Error('Migration 072 recovery failed: unreadable connector_event_index');
-      }
-      for (const clause of clauses) {
-        if (clauseIsTableConstraint(clause)) {
-          eventConstraints.push(clause);
-          continue;
-        }
-        const name = clauseColumnName(clause);
-        eventColumnNames.push(name);
-        if (name === 'current_observation_id') {
-          if (normalizeSqlText(clause) !== legacyCurrentObservationDef) {
-            throw new Error(
-              'Migration 072 cannot safely preserve inline constraint on current_observation_id'
-            );
-          }
-          eventColumns.push(
-            'current_observation_id TEXT REFERENCES observation_versions(observation_id)'
-          );
-        } else {
-          eventColumns.push(clause);
-        }
-      }
-      eventObjects = this.storedObjectsForTable('connector_event_index');
-    }
-
     const previousForeignKeys = this.readForeignKeysEnabled();
     this.exec('PRAGMA foreign_keys = OFF');
     if (this.readForeignKeysEnabled()) {
@@ -2183,35 +2146,11 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
             )}\n)`
           );
         }
-        if (!this.tableColumns('connector_event_index').has('current_observation_id')) {
-          this.exec(
-            'ALTER TABLE connector_event_index ADD COLUMN current_observation_id TEXT REFERENCES observation_versions(observation_id)'
-          );
-        } else if (rebuildEventIndex) {
-          this.exec(
-            `CREATE TABLE connector_event_index_072_new (\n  ${[
-              ...eventColumns,
-              ...eventConstraints,
-            ].join(',\n  ')}\n)`
-          );
-          const columns = eventColumnNames.map(quoteSqlIdentifier).join(', ');
-          this.exec(
-            `INSERT INTO connector_event_index_072_new (${columns}) SELECT ${columns} FROM connector_event_index`
-          );
-          this.exec('DROP TABLE connector_event_index');
-          this.exec('ALTER TABLE connector_event_index_072_new RENAME TO connector_event_index');
-          for (const sql of eventObjects.indexes) {
-            this.exec(sql);
-          }
-          for (const sql of eventObjects.triggers) {
-            this.exec(sql);
-          }
-        }
         for (const sql of objects.indexes) {
           this.exec(sql);
         }
         this.exec(
-          'CREATE INDEX observation_source_versions ON observation_versions(source_connector, source_id, observed_at, observation_id)'
+          'CREATE INDEX observation_source_versions ON observation_versions(source, source_id, observed_at, observation_id)'
         );
         for (const sql of objects.triggers) {
           this.exec(sql);
@@ -3156,7 +3095,7 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
    * and any child (e.g. an ON DELETE CASCADE table) whose rows the rebuild must
    * have preserved. A valid child whose table name needs quoting (a space, an
    * embedded quote, a reserved word) is inspected correctly too: the name is fed
-   * to the table-valued pragma as a bound argument, not interpolated — so no
+   * to the table-valued pragma as a bound argument, not interpolated -- so no
    * referencing child is silently skipped by an identifier regex.
    */
   private tablesInToolTracesFkGraph(): string[] {
@@ -3422,495 +3361,6 @@ export class NodeSQLiteAdapter extends DatabaseAdapter {
         throw new Error(`Migration 032 recovery failed: missing index ${indexName}`);
       }
     }
-  }
-
-  private recoverConnectorEventScopeMigration034(): void {
-    this.transaction(() => {
-      const expectedColumns = [
-        'source_cursor',
-        'tenant_id',
-        'project_id',
-        'memory_scope_kind',
-        'memory_scope_id',
-      ];
-      const columns = this.tableColumns('connector_event_index');
-      for (const column of expectedColumns) {
-        if (!columns.has(column)) {
-          this.exec(`ALTER TABLE connector_event_index ADD COLUMN ${column} TEXT`);
-          columns.add(column);
-        }
-      }
-
-      this.exec(`
-        CREATE INDEX IF NOT EXISTS idx_connector_event_scope
-          ON connector_event_index(tenant_id, project_id, memory_scope_kind, memory_scope_id)
-      `);
-      this.exec(`
-        CREATE INDEX IF NOT EXISTS idx_connector_event_source_cursor
-          ON connector_event_index(source_connector, source_cursor)
-      `);
-
-      this.assertMigration034Complete();
-      this.prepare('INSERT OR IGNORE INTO schema_version (version, description) VALUES (?, ?)').run(
-        34,
-        'Add connector event scope columns'
-      );
-    });
-  }
-
-  private assertMigration034Complete(): void {
-    const columns = this.tableColumns('connector_event_index');
-    for (const column of [
-      'source_cursor',
-      'tenant_id',
-      'project_id',
-      'memory_scope_kind',
-      'memory_scope_id',
-    ]) {
-      if (!columns.has(column)) {
-        throw new Error(`Migration 034 recovery failed: missing connector_event_index.${column}`);
-      }
-    }
-
-    for (const indexName of ['idx_connector_event_scope', 'idx_connector_event_source_cursor']) {
-      if (!this.indexExists(indexName)) {
-        throw new Error(`Migration 034 recovery failed: missing index ${indexName}`);
-      }
-    }
-  }
-
-  private recoverConnectorEventSourceEntityIdMigration067(): void {
-    this.transaction(() => {
-      const columns = this.tableColumns('connector_event_index');
-      if (!columns.has('source_entity_id')) {
-        this.exec('ALTER TABLE connector_event_index ADD COLUMN source_entity_id TEXT');
-      }
-      // Backfill only when metadata_json exists; a legacy/minimal table rebuilt by the repair path
-      // may not have it yet. New rows carry source_entity_id at write time regardless.
-      if (columns.has('metadata_json')) {
-        this.exec(`
-          UPDATE connector_event_index
-            SET source_entity_id = json_extract(metadata_json, '$.sourceEntityId')
-            WHERE source_entity_id IS NULL
-              AND metadata_json IS NOT NULL
-              AND json_extract(metadata_json, '$.sourceEntityId') IS NOT NULL
-        `);
-      }
-      this.exec(`
-        CREATE INDEX IF NOT EXISTS idx_connector_event_source_entity
-          ON connector_event_index(source_connector, source_entity_id)
-      `);
-
-      this.assertMigration067Complete();
-      this.prepare('INSERT OR IGNORE INTO schema_version (version, description) VALUES (?, ?)').run(
-        67,
-        'Add connector_event_index source_entity_id'
-      );
-    });
-  }
-
-  private assertMigration067Complete(): void {
-    const columns = this.tableColumns('connector_event_index');
-    if (!columns.has('source_entity_id')) {
-      throw new Error(
-        'Migration 067 recovery failed: missing connector_event_index.source_entity_id'
-      );
-    }
-    if (!this.indexExists('idx_connector_event_source_entity')) {
-      throw new Error(
-        'Migration 067 recovery failed: missing index idx_connector_event_source_entity'
-      );
-    }
-  }
-
-  private recoverConnectorEventOperatorSeqMigration039(): void {
-    this.transaction(() => {
-      const columns = this.tableColumns('connector_event_index');
-      if (!columns.has('operator_ingest_seq')) {
-        this.exec(`
-          ALTER TABLE connector_event_index
-            ADD COLUMN operator_ingest_seq INTEGER CHECK (
-              operator_ingest_seq IS NULL OR operator_ingest_seq >= 1
-            )
-        `);
-      }
-
-      this.exec(`
-        CREATE TABLE IF NOT EXISTS connector_event_index_operator_seq_cursors (
-          source_connector TEXT NOT NULL,
-          channel TEXT NOT NULL DEFAULT '',
-          next_seq INTEGER NOT NULL CHECK (next_seq >= 1),
-          PRIMARY KEY (source_connector, channel)
-        )
-      `);
-      this.exec(`
-        WITH ranked_events AS (
-          SELECT
-            event_index_id,
-            ROW_NUMBER() OVER (
-              PARTITION BY source_connector, COALESCE(channel, '')
-              ORDER BY rowid ASC
-            ) AS operator_seq
-          FROM connector_event_index
-        )
-        UPDATE connector_event_index
-        SET operator_ingest_seq = (
-          SELECT operator_seq
-          FROM ranked_events
-          WHERE ranked_events.event_index_id = connector_event_index.event_index_id
-        )
-        WHERE operator_ingest_seq IS NULL
-      `);
-      this.exec(`
-        INSERT OR IGNORE INTO connector_event_index_operator_seq_cursors (
-          source_connector,
-          channel,
-          next_seq
-        )
-        SELECT
-          source_connector,
-          COALESCE(channel, ''),
-          COALESCE(MAX(operator_ingest_seq), 0) + 1
-        FROM connector_event_index
-        GROUP BY source_connector, COALESCE(channel, '')
-      `);
-      this.exec(`
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_connector_event_index_operator_scope_seq
-          ON connector_event_index(source_connector, COALESCE(channel, ''), operator_ingest_seq)
-          WHERE operator_ingest_seq IS NOT NULL
-      `);
-      this.exec(`
-        CREATE INDEX IF NOT EXISTS idx_connector_event_index_operator_cursor_order
-          ON connector_event_index(source_connector, channel, operator_ingest_seq)
-      `);
-      this.exec(`
-        CREATE TRIGGER IF NOT EXISTS trg_connector_event_index_operator_ingest_seq_ai
-        AFTER INSERT ON connector_event_index
-        WHEN NEW.operator_ingest_seq IS NULL
-        BEGIN
-          INSERT OR IGNORE INTO connector_event_index_operator_seq_cursors (
-            source_connector,
-            channel,
-            next_seq
-          )
-          VALUES (NEW.source_connector, COALESCE(NEW.channel, ''), 1);
-
-          UPDATE connector_event_index
-          SET operator_ingest_seq = (
-            SELECT next_seq
-            FROM connector_event_index_operator_seq_cursors
-            WHERE source_connector = NEW.source_connector
-              AND channel = COALESCE(NEW.channel, '')
-          )
-          WHERE event_index_id = NEW.event_index_id;
-
-          UPDATE connector_event_index_operator_seq_cursors
-          SET next_seq = next_seq + 1
-          WHERE source_connector = NEW.source_connector
-            AND channel = COALESCE(NEW.channel, '');
-        END
-      `);
-      this.exec(`
-        CREATE TRIGGER IF NOT EXISTS trg_connector_event_index_operator_ingest_seq_explicit_ai
-        AFTER INSERT ON connector_event_index
-        WHEN NEW.operator_ingest_seq IS NOT NULL
-        BEGIN
-          INSERT OR IGNORE INTO connector_event_index_operator_seq_cursors (
-            source_connector,
-            channel,
-            next_seq
-          )
-          VALUES (NEW.source_connector, COALESCE(NEW.channel, ''), 1);
-
-          UPDATE connector_event_index_operator_seq_cursors
-          SET next_seq = CASE
-            WHEN next_seq <= NEW.operator_ingest_seq THEN NEW.operator_ingest_seq + 1
-            ELSE next_seq
-          END
-          WHERE source_connector = NEW.source_connector
-            AND channel = COALESCE(NEW.channel, '');
-        END
-      `);
-
-      this.assertMigration039Complete();
-      this.prepare('INSERT OR IGNORE INTO schema_version (version, description) VALUES (?, ?)').run(
-        39,
-        'Add connector event operator ingest sequence'
-      );
-    });
-  }
-
-  private assertMigration039Complete(): void {
-    const columns = this.tableColumns('connector_event_index');
-    if (!columns.has('operator_ingest_seq')) {
-      throw new Error(
-        'Migration 039 recovery failed: missing connector_event_index.operator_ingest_seq'
-      );
-    }
-    if (!this.tableExists('connector_event_index_operator_seq_cursors')) {
-      throw new Error(
-        'Migration 039 recovery failed: missing connector_event_index_operator_seq_cursors'
-      );
-    }
-    for (const indexName of [
-      'idx_connector_event_index_operator_scope_seq',
-      'idx_connector_event_index_operator_cursor_order',
-    ]) {
-      if (!this.indexExists(indexName)) {
-        throw new Error(`Migration 039 recovery failed: missing index ${indexName}`);
-      }
-    }
-    for (const triggerName of [
-      'trg_connector_event_index_operator_ingest_seq_ai',
-      'trg_connector_event_index_operator_ingest_seq_explicit_ai',
-    ]) {
-      if (!this.triggerExists(triggerName)) {
-        throw new Error(`Migration 039 recovery failed: missing trigger ${triggerName}`);
-      }
-    }
-  }
-
-  private recoverConnectorEventSequencesMigration062(): void {
-    this.transaction(() => {
-      const columns = this.tableColumns('connector_event_index');
-      if (!columns.has('operator_observation_seq')) {
-        this.exec(`
-          ALTER TABLE connector_event_index
-            ADD COLUMN operator_observation_seq INTEGER CHECK (
-              operator_observation_seq IS NULL OR operator_observation_seq >= 1
-            )
-        `);
-      }
-
-      this.exec(`
-        CREATE TABLE IF NOT EXISTS connector_event_index_observation_cursors (
-          source_connector TEXT PRIMARY KEY,
-          next_seq INTEGER NOT NULL CHECK (next_seq >= 1)
-        )
-      `);
-      this.exec(`
-        WITH existing_max AS (
-          SELECT source_connector, MAX(operator_observation_seq) AS max_seq
-          FROM connector_event_index
-          WHERE operator_observation_seq IS NOT NULL
-          GROUP BY source_connector
-        ), ranked_nulls AS (
-          SELECT event_index_id,
-                 source_connector,
-                 ROW_NUMBER() OVER (
-                   PARTITION BY source_connector
-                   ORDER BY source_timestamp_ms, rowid
-                 ) AS seq
-          FROM connector_event_index
-          WHERE operator_observation_seq IS NULL
-        )
-        UPDATE connector_event_index
-        SET operator_observation_seq = (
-          SELECT COALESCE(existing_max.max_seq, 0) + ranked_nulls.seq
-          FROM ranked_nulls
-          LEFT JOIN existing_max
-            ON existing_max.source_connector = ranked_nulls.source_connector
-          WHERE ranked_nulls.event_index_id = connector_event_index.event_index_id
-        )
-        WHERE operator_observation_seq IS NULL
-      `);
-      this.exec(`
-        INSERT INTO connector_event_index_observation_cursors (source_connector, next_seq)
-        SELECT source_connector, MAX(operator_observation_seq) + 1
-        FROM connector_event_index
-        GROUP BY source_connector
-        ON CONFLICT(source_connector) DO UPDATE SET next_seq = CASE
-          WHEN connector_event_index_observation_cursors.next_seq < excluded.next_seq
-          THEN excluded.next_seq
-          ELSE connector_event_index_observation_cursors.next_seq
-        END
-      `);
-      this.exec(`
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_connector_event_index_observation_seq
-          ON connector_event_index(source_connector, operator_observation_seq)
-          WHERE operator_observation_seq IS NOT NULL
-      `);
-      this.exec(`
-        CREATE TRIGGER IF NOT EXISTS trg_connector_event_index_operator_ingest_seq_au
-        AFTER UPDATE OF operator_ingest_seq ON connector_event_index
-        WHEN NEW.operator_ingest_seq IS NULL AND OLD.operator_ingest_seq IS NOT NULL
-        BEGIN
-          INSERT INTO connector_event_index_operator_seq_cursors
-            (source_connector, channel, next_seq)
-          VALUES (NEW.source_connector, COALESCE(NEW.channel, ''), 1)
-          ON CONFLICT(source_connector, channel) DO NOTHING;
-          UPDATE connector_event_index
-          SET operator_ingest_seq = (
-            SELECT next_seq FROM connector_event_index_operator_seq_cursors
-            WHERE source_connector = NEW.source_connector
-              AND channel = COALESCE(NEW.channel, '')
-          )
-          WHERE event_index_id = NEW.event_index_id;
-          UPDATE connector_event_index_operator_seq_cursors
-          SET next_seq = next_seq + 1
-          WHERE source_connector = NEW.source_connector
-            AND channel = COALESCE(NEW.channel, '');
-        END
-      `);
-      this.exec(`
-        CREATE TRIGGER IF NOT EXISTS trg_connector_event_index_observation_seq_ai
-        AFTER INSERT ON connector_event_index
-        WHEN NEW.operator_observation_seq IS NULL
-        BEGIN
-          INSERT INTO connector_event_index_observation_cursors
-            (source_connector, next_seq)
-          VALUES (NEW.source_connector, 1)
-          ON CONFLICT(source_connector) DO NOTHING;
-          UPDATE connector_event_index
-          SET operator_observation_seq = (
-            SELECT next_seq FROM connector_event_index_observation_cursors
-            WHERE source_connector = NEW.source_connector
-          )
-          WHERE event_index_id = NEW.event_index_id;
-          UPDATE connector_event_index_observation_cursors
-          SET next_seq = next_seq + 1
-          WHERE source_connector = NEW.source_connector;
-        END
-      `);
-      this.exec(`
-        CREATE TRIGGER IF NOT EXISTS trg_connector_event_index_observation_seq_au
-        AFTER UPDATE OF operator_observation_seq ON connector_event_index
-        WHEN NEW.operator_observation_seq IS NULL AND OLD.operator_observation_seq IS NOT NULL
-        BEGIN
-          INSERT INTO connector_event_index_observation_cursors
-            (source_connector, next_seq)
-          VALUES (NEW.source_connector, 1)
-          ON CONFLICT(source_connector) DO NOTHING;
-          UPDATE connector_event_index
-          SET operator_observation_seq = (
-            SELECT next_seq FROM connector_event_index_observation_cursors
-            WHERE source_connector = NEW.source_connector
-          )
-          WHERE event_index_id = NEW.event_index_id;
-          UPDATE connector_event_index_observation_cursors
-          SET next_seq = next_seq + 1
-          WHERE source_connector = NEW.source_connector;
-        END
-      `);
-      this.exec(`
-        CREATE TRIGGER IF NOT EXISTS trg_connector_event_index_observation_seq_explicit_ai
-        AFTER INSERT ON connector_event_index
-        WHEN NEW.operator_observation_seq IS NOT NULL
-        BEGIN
-          INSERT INTO connector_event_index_observation_cursors
-            (source_connector, next_seq)
-          VALUES (NEW.source_connector, 1)
-          ON CONFLICT(source_connector) DO NOTHING;
-          UPDATE connector_event_index_observation_cursors
-          SET next_seq = CASE
-            WHEN next_seq <= NEW.operator_observation_seq THEN NEW.operator_observation_seq + 1
-            ELSE next_seq
-          END
-          WHERE source_connector = NEW.source_connector;
-        END
-      `);
-
-      this.assertMigration062Complete();
-      this.prepare('INSERT OR IGNORE INTO schema_version (version, description) VALUES (?, ?)').run(
-        62,
-        'Refresh connector event delivery and observation sequences'
-      );
-    });
-  }
-
-  private assertMigration062Complete(): void {
-    const columns = this.tableColumns('connector_event_index');
-    if (!columns.has('operator_observation_seq')) {
-      throw new Error(
-        'Migration 062 recovery failed: missing connector_event_index.operator_observation_seq'
-      );
-    }
-    if (!this.tableExists('connector_event_index_observation_cursors')) {
-      throw new Error(
-        'Migration 062 recovery failed: missing connector_event_index_observation_cursors'
-      );
-    }
-    const cursorColumns = this.tableColumns('connector_event_index_observation_cursors');
-    for (const columnName of ['source_connector', 'next_seq']) {
-      if (!cursorColumns.has(columnName)) {
-        throw new Error(
-          `Migration 062 recovery failed: missing connector_event_index_observation_cursors.${columnName}`
-        );
-      }
-    }
-    if (!this.indexExists('idx_connector_event_index_observation_seq')) {
-      throw new Error(
-        'Migration 062 recovery failed: missing index idx_connector_event_index_observation_seq'
-      );
-    }
-    for (const triggerName of [
-      'trg_connector_event_index_operator_ingest_seq_au',
-      'trg_connector_event_index_observation_seq_ai',
-      'trg_connector_event_index_observation_seq_au',
-      'trg_connector_event_index_observation_seq_explicit_ai',
-    ]) {
-      if (!this.triggerExists(triggerName)) {
-        throw new Error(`Migration 062 recovery failed: missing trigger ${triggerName}`);
-      }
-    }
-  }
-
-  private recoverConnectorEventLegacyRefreshMigration063(): void {
-    this.transaction(() => {
-      this.assertMigration062Complete();
-      const connectorColumns = this.tableColumns('connector_event_index');
-      for (const columnName of [
-        'content_hash',
-        'metadata_json',
-        'source_timestamp_ms',
-        'source_type',
-        'channel',
-        'operator_ingest_seq',
-        'operator_observation_seq',
-      ]) {
-        if (!connectorColumns.has(columnName)) {
-          throw new Error(
-            `Migration 063 recovery failed: missing connector_event_index.${columnName}`
-          );
-        }
-      }
-      this.exec(`
-        CREATE TRIGGER IF NOT EXISTS trg_connector_event_index_legacy_content_refresh_au
-        AFTER UPDATE OF content_hash, metadata_json, source_timestamp_ms, source_type, channel
-        ON connector_event_index
-        WHEN (
-          OLD.content_hash IS NOT NEW.content_hash
-          OR OLD.metadata_json IS NOT NEW.metadata_json
-          OR OLD.source_timestamp_ms IS NOT NEW.source_timestamp_ms
-          OR OLD.source_type IS NOT NEW.source_type
-          OR OLD.channel IS NOT NEW.channel
-        ) AND (
-          NEW.operator_ingest_seq IS OLD.operator_ingest_seq
-          OR NEW.operator_observation_seq IS OLD.operator_observation_seq
-        )
-        BEGIN
-          UPDATE connector_event_index
-          SET operator_ingest_seq = CASE
-                WHEN NEW.operator_ingest_seq IS OLD.operator_ingest_seq THEN NULL
-                ELSE NEW.operator_ingest_seq
-              END,
-              operator_observation_seq = CASE
-                WHEN NEW.operator_observation_seq IS OLD.operator_observation_seq THEN NULL
-                ELSE NEW.operator_observation_seq
-              END
-          WHERE event_index_id = NEW.event_index_id;
-        END
-      `);
-      if (!this.triggerExists('trg_connector_event_index_legacy_content_refresh_au')) {
-        throw new Error(
-          'Migration 063 recovery failed: missing trigger trg_connector_event_index_legacy_content_refresh_au'
-        );
-      }
-      this.prepare('INSERT OR IGNORE INTO schema_version (version, description) VALUES (?, ?)').run(
-        63,
-        'Refresh sequences for legacy connector event updates'
-      );
-    });
   }
 
   private tableColumns(tableName: string): Set<string> {

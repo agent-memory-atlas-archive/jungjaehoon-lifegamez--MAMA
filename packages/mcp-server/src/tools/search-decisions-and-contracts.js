@@ -85,8 +85,9 @@ const searchDecisionsAndContractsTool = {
           const contractMatches = await vectorSearch(
             getAdapter(),
             contractEmbedding,
-            10,
-            similarityThreshold
+            contractLimit,
+            similarityThreshold,
+            'contract_'
           );
           if (Array.isArray(contractMatches)) {
             contractResults = contractMatches

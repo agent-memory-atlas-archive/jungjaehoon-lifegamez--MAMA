@@ -1,28 +1,24 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { ConnectorRegistry } from '../../../src/connectors/framework/connector-registry.js';
 import { PollingScheduler } from '../../../src/connectors/framework/polling-scheduler.js';
-import { RawStore } from '@jungjaehoon/mama-core/storage/source-archive';
-import type { IConnector, NormalizedItem } from '../../../src/connectors/framework/types.js';
+import { RawStore } from '../../../src/storage/source-archive.js';
+import type { IConnector } from '../../../src/connectors/framework/types.js';
 
-function makeItem(sourceId: string, timestamp: Date): NormalizedItem {
-  return {
-    source: 'test',
-    sourceId,
-    channel: 'general',
-    author: 'bot',
-    content: 'test content',
-    timestamp,
-    type: 'message',
-  };
-}
+const roots: string[] = [];
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
-function makeMockConnector(name: string, items: NormalizedItem[] = []): IConnector {
+function fakeConnector(
+  items: IConnector['poll'] extends (since: Date) => Promise<infer R> ? R : never
+): IConnector {
   return {
-    name,
+    name: 'slack',
     type: 'api',
     init: vi.fn().mockResolvedValue(undefined),
     dispose: vi.fn().mockResolvedValue(undefined),
@@ -34,218 +30,264 @@ function makeMockConnector(name: string, items: NormalizedItem[] = []): IConnect
 }
 
 describe('PollingScheduler', () => {
-  let tmpDir: string;
-  let rawStore: RawStore;
-
-  beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'poll-sched-test-'));
-    rawStore = new RawStore(tmpDir);
-    vi.useFakeTimers();
-  });
-
-  afterEach(() => {
-    // rawStore may have been closed by scheduler.stop(), so guard
+  it('logs poll failures while leaving the source cursor unchanged', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'poll-error-'));
+    roots.push(root);
+    const raw = new RawStore(root);
+    const scheduler = new PollingScheduler(raw, root, { rawIndexSink: () => [] });
+    const registry = new ConnectorRegistry();
+    const failed = fakeConnector([]);
+    const failure = new Error('source unavailable');
+    failed.poll = async () => {
+      throw failure;
+    };
+    registry.register('slack', failed);
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      rawStore.close();
-    } catch {
-      /* already closed */
+      await scheduler.pollAll(registry, {}, async () => {});
+      expect(logged).toHaveBeenCalledWith(expect.stringContaining('slack'), failure);
+      expect(scheduler.getLastPollTime('slack')).toBeUndefined();
+    } finally {
+      raw.close();
     }
-    rmSync(tmpDir, { recursive: true, force: true });
-    vi.useRealTimers();
   });
 
-  describe('pollAll (batch mode)', () => {
-    it('collects from all connectors and calls batch callback', async () => {
-      const onExtract = vi.fn().mockResolvedValue(undefined);
-      const scheduler = new PollingScheduler(rawStore, tmpDir);
+  it.each(['pollConnector', 'pollAll'] as const)(
+    'logs state persistence errors from %s without an unhandled rejection',
+    async (method) => {
+      const root = mkdtempSync(join(tmpdir(), 'poll-state-error-'));
+      roots.push(root);
+      const blocked = join(root, 'blocked');
+      writeFileSync(blocked, 'not a directory');
+      const raw = new RawStore(join(root, 'raw'));
+      const scheduler = new PollingScheduler(raw, blocked, { rawIndexSink: () => [] });
       const registry = new ConnectorRegistry();
+      registry.register('slack', fakeConnector([]));
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const poll =
+          method === 'pollAll'
+            ? scheduler.pollAll(registry, {}, async () => {})
+            : scheduler.pollConnector('slack', registry, {}, async () => {});
+        await expect(poll).resolves.toBeUndefined();
+        expect(logged).toHaveBeenCalledWith(expect.stringContaining('poll'), expect.any(Error));
+      } finally {
+        raw.close();
+      }
+    }
+  );
 
-      const slackItem = makeItem('slack-1', new Date('2026-04-07T10:00:00Z'));
-      slackItem.source = 'slack';
-      slackItem.channel = 'general';
-      const notionItem = makeItem('notion-1', new Date('2026-04-07T11:00:00Z'));
-      notionItem.source = 'notion';
-      notionItem.channel = 'tasks';
-
-      const slackConnector = makeMockConnector('slack', [slackItem]);
-      const notionConnector = makeMockConnector('notion', [notionItem]);
-      registry.register('slack', slackConnector);
-      registry.register('notion', notionConnector);
-
-      const channelConfigs = {
-        slack: { general: { role: 'hub' as const } },
-        notion: { tasks: { role: 'hub' as const } },
-      };
-
-      await scheduler.pollAll(registry, channelConfigs, onExtract);
-
-      expect(onExtract).toHaveBeenCalledOnce();
-      const classified = onExtract.mock.calls[0]?.[0] as {
-        truth: unknown[];
-        activity: unknown[];
-        spoke: unknown[];
-      };
-      expect(classified.activity).toHaveLength(2);
-      expect(classified.truth).toHaveLength(0);
-      expect(classified.spoke).toHaveLength(0);
+  it('runs raw save, index projection, and source-delta handoff in order', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'poll-scheduler-'));
+    roots.push(root);
+    const rawStore = new RawStore(root);
+    const order: string[] = [];
+    const scheduler = new PollingScheduler(rawStore, root, {
+      now: () => Date.parse('2024-01-02T00:00:00.000Z'),
+      rawIndexSink: async (_connector, items) => {
+        order.push('index');
+        return items.map((item) => ({
+          sourceId: item.sourceId,
+          observationRef: `obs:${item.sourceId}`,
+        }));
+      },
     });
-
-    it('skips callback when no items from any connector', async () => {
-      const onExtract = vi.fn().mockResolvedValue(undefined);
-      const scheduler = new PollingScheduler(rawStore, tmpDir);
-      const registry = new ConnectorRegistry();
-
-      const slackConnector = makeMockConnector('slack', []);
-      const notionConnector = makeMockConnector('notion', []);
-      registry.register('slack', slackConnector);
-      registry.register('notion', notionConnector);
-
-      await scheduler.pollAll(registry, {}, onExtract);
-
-      expect(onExtract).not.toHaveBeenCalled();
-    });
-
-    it('saves all items to raw store', async () => {
-      const scheduler = new PollingScheduler(rawStore, tmpDir);
-      const registry = new ConnectorRegistry();
-
-      const ts = new Date('2026-04-07T10:00:00Z');
-      const slackItem = makeItem('slack-stored', ts);
-      slackItem.source = 'slack';
-      slackItem.channel = 'general';
-      const notionItem = makeItem('notion-stored', ts);
-      notionItem.source = 'notion';
-      notionItem.channel = 'tasks';
-
-      registry.register('slack', makeMockConnector('slack', [slackItem]));
-      registry.register('notion', makeMockConnector('notion', [notionItem]));
-
-      await scheduler.pollAll(registry, {}, vi.fn());
-
-      const slackItems = rawStore.query('slack', new Date(0));
-      const notionItems = rawStore.query('notion', new Date(0));
-      expect(slackItems).toHaveLength(1);
-      expect(notionItems).toHaveLength(1);
-      expect(slackItems[0]?.sourceId).toBe('slack-stored');
-      expect(notionItems[0]?.sourceId).toBe('notion-stored');
-    });
-
-    // The scope-binding test was removed with the function it tested. It passed on a
-    // synthetic config carrying `project_entity_id`; zero of the 39 channels on the live
-    // install declare that field, so the binder returned every item unchanged for its
-    // whole life. A backfill had written `channel` scopes into the index until 2026-05-20,
-    // which is the only reason the data ever looked otherwise.
-
-    it('startBatch fires initial poll and sets interval', async () => {
-      const onBatchExtract = vi.fn().mockResolvedValue(undefined);
-      const scheduler = new PollingScheduler(rawStore, tmpDir);
-      const registry = new ConnectorRegistry();
-
-      const item = makeItem('batch-1', new Date());
-      item.source = 'slack';
-      item.channel = 'general';
-      registry.register('slack', makeMockConnector('slack', [item]));
-
-      const channelConfigs = { slack: { general: { role: 'hub' as const } } };
-
-      scheduler.startBatch(registry, channelConfigs, 1, onBatchExtract);
-
-      // Allow the initial fire-and-forget poll to resolve
-      await vi.advanceTimersByTimeAsync(0);
-
-      expect(onBatchExtract).toHaveBeenCalledOnce();
-
-      // Advance 1 minute — should trigger another batch poll
-      await vi.advanceTimersByTimeAsync(60 * 1000);
-      expect(onBatchExtract.mock.calls.length).toBeGreaterThan(1);
-
-      scheduler.stop();
-    });
-
-    it('stop() clears the batch timer', async () => {
-      const onBatchExtract = vi.fn().mockResolvedValue(undefined);
-      const scheduler = new PollingScheduler(rawStore, tmpDir);
-      const registry = new ConnectorRegistry();
-
-      const item = makeItem('batch-stop', new Date());
-      item.source = 'slack';
-      item.channel = 'general';
-      registry.register('slack', makeMockConnector('slack', [item]));
-
-      const channelConfigs = { slack: { general: { role: 'hub' as const } } };
-
-      scheduler.startBatch(registry, channelConfigs, 1, onBatchExtract);
-      await vi.advanceTimersByTimeAsync(0);
-
-      scheduler.stop();
-      const callsAtStop = onBatchExtract.mock.calls.length;
-
-      await vi.advanceTimersByTimeAsync(5 * 60 * 1000); // advance 5 minutes
-      expect(onBatchExtract.mock.calls.length).toBe(callsAtStop);
-    });
+    const registry = new ConnectorRegistry();
+    const connector = fakeConnector([
+      {
+        source: 'slack',
+        sourceId: 'source-key',
+        channel: 'display-room',
+        author: 'actor-key',
+        content: 'source-content',
+        timestamp: new Date('2024-01-01T12:00:00.000Z'),
+        type: 'message',
+      },
+    ]);
+    registry.register('slack', connector);
+    await scheduler.pollAll(
+      registry,
+      { slack: { 'channel-key': { role: 'hub', name: 'display-room' } } },
+      async (delta) => {
+        order.push('delta');
+        expect(delta).toMatchObject({
+          collector: 'slack',
+          channel: 'channel-key',
+          coalesceKey: 'source:slack:channel-key',
+        });
+        expect(delta.refs).toHaveLength(1);
+      }
+    );
+    expect(order).toEqual(['index', 'delta']);
+    expect(scheduler.getLastPollTime('slack')?.toISOString()).toBe('2024-01-02T00:00:00.000Z');
+    expect(rawStore.query('slack', new Date(0))[0]?.channel).toBe('channel-key');
+    rawStore.close();
   });
 
-  describe('state persistence', () => {
-    it('writes poll-state.json after pollAll', async () => {
-      const scheduler = new PollingScheduler(rawStore, tmpDir);
-      const registry = new ConnectorRegistry();
-
-      const item = makeItem('state-msg', new Date());
-      item.source = 'slack';
-      item.channel = 'general';
-      registry.register('slack', makeMockConnector('slack', [item]));
-
-      await scheduler.pollAll(registry, {}, vi.fn());
-
-      const stateFile = join(tmpDir, 'poll-state.json');
-      expect(existsSync(stateFile)).toBe(true);
-
-      const state = JSON.parse(readFileSync(stateFile, 'utf8')) as Record<string, string>;
-      expect(state['slack']).toBeDefined();
-      expect(new Date(state['slack']!)).toBeInstanceOf(Date);
+  it('admits one source delta when the same observation is returned on consecutive polls', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'poll-scheduler-unchanged-'));
+    roots.push(root);
+    const rawStore = new RawStore(root);
+    const scheduler = new PollingScheduler(rawStore, root, {
+      now: () => Date.parse('2024-01-02T00:00:00.000Z'),
+      rawIndexSink: (_connector, items) =>
+        items.map((item) => ({ sourceId: item.sourceId, observationRef: `obs:${item.sourceId}` })),
     });
-
-    it('restores lastPollTime from poll-state.json on construction', async () => {
-      const scheduler1 = new PollingScheduler(rawStore, tmpDir);
-      const registry = new ConnectorRegistry();
-
-      const item = makeItem('persist-msg', new Date());
-      item.source = 'slack';
-      item.channel = 'general';
-      registry.register('slack', makeMockConnector('slack', [item]));
-
-      await scheduler1.pollAll(registry, {}, vi.fn());
-      const savedTime = scheduler1.getLastPollTime('slack');
-
-      // Second scheduler reads it back (need a new rawStore since stop closes it)
-      const rawStore2 = new RawStore(tmpDir);
-      const scheduler2 = new PollingScheduler(rawStore2, tmpDir);
-      const restoredTime = scheduler2.getLastPollTime('slack');
-
-      expect(restoredTime).toBeDefined();
-      expect(restoredTime!.getTime()).toBe(savedTime!.getTime());
-      rawStore2.close();
+    const registry = new ConnectorRegistry();
+    let sourceCursor = Date.parse('2024-01-01T00:00:00.000Z');
+    const connector = fakeConnector([]);
+    connector.poll = vi.fn(async () => {
+      sourceCursor += 1_000;
+      return [
+        {
+          source: 'slack',
+          sourceId: 'source-key',
+          channel: 'channel-key',
+          author: 'actor-key',
+          content: 'unchanged source content',
+          timestamp: new Date('2024-01-01T12:00:00.000Z'),
+          type: 'message',
+          sourceCursor: new Date(sourceCursor).toISOString(),
+          metadata: { observedAt: new Date(sourceCursor).toISOString() },
+        },
+      ];
     });
+    registry.register('slack', connector);
+    const admitted = vi.fn();
+
+    await scheduler.pollConnector(
+      'slack',
+      registry,
+      { slack: { 'channel-key': { role: 'hub' } } },
+      admitted
+    );
+    await scheduler.pollConnector(
+      'slack',
+      registry,
+      { slack: { 'channel-key': { role: 'hub' } } },
+      admitted
+    );
+
+    expect(connector.poll).toHaveBeenCalledTimes(2);
+    expect(admitted).toHaveBeenCalledTimes(1);
+    expect(admitted.mock.calls[0]?.[0].refs).toHaveLength(1);
+    expect(rawStore.listPendingProjections('slack')).toEqual([]);
+    rawStore.close();
   });
 
-  describe('getLastPollTime', () => {
-    it('returns undefined before first poll', () => {
-      const scheduler = new PollingScheduler(rawStore, tmpDir);
-      expect(scheduler.getLastPollTime('unknown')).toBeUndefined();
+  it('keeps the request start as the next cursor so changes during collection are queried again', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'poll-scheduler-cursor-'));
+    roots.push(root);
+    const rawStore = new RawStore(root);
+    let clock = 10_000;
+    const scheduler = new PollingScheduler(rawStore, root, {
+      now: () => clock,
+      initialNow: clock,
+      rawIndexSink: () => [],
     });
-
-    it('returns a Date after polling', async () => {
-      const scheduler = new PollingScheduler(rawStore, tmpDir);
-      const registry = new ConnectorRegistry();
-
-      const item = makeItem('time-msg', new Date());
-      item.source = 'slack';
-      item.channel = 'general';
-      registry.register('slack', makeMockConnector('slack', [item]));
-
-      await scheduler.pollAll(registry, {}, vi.fn());
-
-      expect(scheduler.getLastPollTime('slack')).toBeInstanceOf(Date);
+    const registry = new ConnectorRegistry();
+    const connector = fakeConnector([]);
+    connector.poll = vi.fn(async () => {
+      clock = 20_000;
+      return [];
     });
+    registry.register('slack', connector);
+
+    await scheduler.pollConnector('slack', registry, {}, async () => {});
+
+    expect(scheduler.getLastPollTime('slack')).toEqual(new Date(10_000));
+    rawStore.close();
+  });
+
+  it('does not advance state when the handoff fails', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'poll-scheduler-fail-'));
+    roots.push(root);
+    const rawStore = new RawStore(root);
+    const scheduler = new PollingScheduler(rawStore, root, {
+      now: () => 10_000,
+      rawIndexSink: (_connector, items) =>
+        items.map((item) => ({ sourceId: item.sourceId, observationRef: `obs:${item.sourceId}` })),
+    });
+    const registry = new ConnectorRegistry();
+    registry.register(
+      'slack',
+      fakeConnector([
+        {
+          source: 'slack',
+          sourceId: 'source-key',
+          channel: 'channel-key',
+          author: 'actor-key',
+          content: 'source-content',
+          timestamp: new Date(1),
+          type: 'message',
+        },
+      ])
+    );
+    await scheduler.pollAll(registry, { slack: { 'channel-key': { role: 'hub' } } }, async () => {
+      throw new Error('handoff failed');
+    });
+    expect(scheduler.getLastPollTime('slack')).toBeUndefined();
+    expect(rawStore.listPendingProjections('slack')).toHaveLength(1);
+    rawStore.close();
+  });
+
+  it('hands off every pending projection when one poll returns more than one page', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'poll-scheduler-page-'));
+    roots.push(root);
+    const rawStore = new RawStore(root);
+    const scheduler = new PollingScheduler(rawStore, root, {
+      now: () => Date.parse('2024-01-02T00:00:00.000Z'),
+      rawIndexSink: (_connector, items) =>
+        items.map((item) => ({ sourceId: item.sourceId, observationRef: `obs:${item.sourceId}` })),
+    });
+    const registry = new ConnectorRegistry();
+    const items = Array.from({ length: 1001 }, (_, index) => ({
+      source: 'slack',
+      sourceId: `source-${index}`,
+      channel: 'channel-key',
+      author: 'actor-key',
+      content: `source-content-${index}`,
+      timestamp: new Date(1_000 + index),
+      type: 'message' as const,
+    }));
+    registry.register('slack', fakeConnector(items));
+    let refs = 0;
+    await scheduler.pollAll(
+      registry,
+      { slack: { 'channel-key': { role: 'hub' } } },
+      async (delta) => {
+        refs += delta.refs.length;
+      }
+    );
+    expect(refs).toBe(1001);
+    rawStore.close();
+  });
+
+  it('does not overlap a connector interval with an active poll', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'poll-scheduler-overlap-'));
+    roots.push(root);
+    const rawStore = new RawStore(root);
+    const scheduler = new PollingScheduler(rawStore, root, {
+      rawIndexSink: (_connector, items) =>
+        items.map((item) => ({ sourceId: item.sourceId, observationRef: `obs:${item.sourceId}` })),
+    });
+    const registry = new ConnectorRegistry();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const connector = fakeConnector([]);
+    (connector.poll as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      await gate;
+      return [];
+    });
+    registry.register('slack', connector);
+    const first = scheduler.pollConnector('slack', registry, { slack: {} }, vi.fn());
+    await Promise.resolve();
+    const second = scheduler.pollConnector('slack', registry, { slack: {} }, vi.fn());
+    expect(connector.poll).toHaveBeenCalledOnce();
+    release();
+    await Promise.all([first, second]);
+    rawStore.close();
   });
 });

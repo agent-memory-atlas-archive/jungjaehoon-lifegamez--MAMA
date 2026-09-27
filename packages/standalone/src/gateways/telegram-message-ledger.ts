@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
@@ -11,11 +11,11 @@ import {
 import { dirname } from 'node:path';
 import type { TelegramChunkFormat } from './telegram-format.js';
 
-export type TelegramMessageState = 'processing' | 'ready' | 'delivered';
+export type OwnerMessageState = 'processing' | 'ready' | 'delivered' | 'failed';
 
-export interface TelegramMessageLedgerEntry {
+export interface OwnerMessageLedgerEntry {
   key: string;
-  state: TelegramMessageState;
+  state: OwnerMessageState;
   updatedAt: number;
   ownerId: string;
   response?: string;
@@ -25,35 +25,26 @@ export interface TelegramMessageLedgerEntry {
   chunkFormat?: TelegramChunkFormat;
   deliveryTarget?: string;
   payloadIdentity?: string;
-  /**
-   * TG-05/TG-06: a pinned entry is exempt from TTL pruning and delivered-entry
-   * eviction while the report-context SQLite row remains nonterminal, so a
-   * confirmed-send proof cannot expire before the durable context commit.
-   */
-  pinned?: boolean;
+  /** Readable producer identity and confirmed Telegram receipts; absent on older entries. */
+  idempotencyKey?: string;
+  messageIds?: Array<number | string>;
+  /** This inbound input shares the final reply owned by another input in the same chat. */
+  sharedReplyKey?: string;
 }
 
-export interface TelegramDeliveryBinding {
+export interface OwnerDeliveryBinding {
   deliveryTarget: string;
   payloadIdentity: string;
-}
-
-interface LedgerStateV2 {
-  version: 2;
-  entries: TelegramMessageLedgerEntry[];
+  idempotencyKey?: string;
+  keepDeliveredOnPayloadChange?: boolean;
 }
 
 interface LedgerStateV3 {
   version: 3;
-  entries: TelegramMessageLedgerEntry[];
+  entries: OwnerMessageLedgerEntry[];
 }
 
-interface LedgerStateV1 {
-  version: 1;
-  entries: Array<{ key: string; completedAt: number }>;
-}
-
-export interface TelegramMessageLedgerOptions {
+export interface OwnerMessageLedgerOptions {
   ttlMs?: number;
   maxEntries?: number;
   now?: () => number;
@@ -65,10 +56,9 @@ const DEFAULT_TTL_MS = 7 * 24 * 60 * 60_000;
 const DEFAULT_MAX_ENTRIES = 10_000;
 const MAX_RESPONSE_CHARS = 1_000_000;
 const MAX_LEDGER_FILE_BYTES = 8 * 1024 * 1024;
-const LEGACY_OUTBOUND_PREFIX = 'outbound:legacy-unbound:';
 
-export class TelegramMessageLedger {
-  private readonly entries = new Map<string, TelegramMessageLedgerEntry>();
+export class OwnerMessageLedger {
+  private readonly entries = new Map<string, OwnerMessageLedgerEntry>();
   private readonly ttlMs: number;
   private readonly maxEntries: number;
   private readonly now: () => number;
@@ -77,7 +67,7 @@ export class TelegramMessageLedger {
 
   constructor(
     private readonly path: string,
-    options: TelegramMessageLedgerOptions = {}
+    options: OwnerMessageLedgerOptions = {}
   ) {
     this.ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
     this.maxEntries = options.maxEntries ?? DEFAULT_MAX_ENTRIES;
@@ -87,7 +77,7 @@ export class TelegramMessageLedger {
     this.load();
   }
 
-  get(key: string): TelegramMessageLedgerEntry | null {
+  get(key: string): OwnerMessageLedgerEntry | null {
     this.prune();
     const entry = this.entries.get(key);
     return entry ? { ...entry } : null;
@@ -97,21 +87,31 @@ export class TelegramMessageLedger {
     return this.get(key) !== null;
   }
 
-  listUndelivered(): TelegramMessageLedgerEntry[] {
+  listUndelivered(): OwnerMessageLedgerEntry[] {
     this.prune();
     return [...this.entries.values()]
       .filter((entry) => entry.state !== 'delivered')
       .map((entry) => ({ ...entry }));
   }
 
-  isOwnedByCurrentProcess(entry: TelegramMessageLedgerEntry): boolean {
+  /** Bounded inbound delivery receipts for startup conversation carry, newest first. */
+  recentDeliveredMessageRefs(): string[] {
+    this.prune();
+    return [...this.entries.values()]
+      .filter((entry) => entry.state === 'delivered' && !entry.key.startsWith('outbound:'))
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, 20)
+      .map((entry) => entry.key);
+  }
+
+  isOwnedByCurrentProcess(entry: OwnerMessageLedgerEntry): boolean {
     return entry.ownerId === this.ownerId;
   }
 
   claim(
     key: string,
-    binding?: TelegramDeliveryBinding
-  ): { claimed: boolean; entry: TelegramMessageLedgerEntry } {
+    binding?: OwnerDeliveryBinding
+  ): { claimed: boolean; entry: OwnerMessageLedgerEntry } {
     this.prune();
     const existing = this.entries.get(key);
     if (existing) {
@@ -120,19 +120,37 @@ export class TelegramMessageLedger {
         (existing.deliveryTarget !== binding.deliveryTarget ||
           existing.payloadIdentity !== binding.payloadIdentity)
       ) {
-        throw new Error(`Telegram delivery binding mismatch for ${key}`);
+        // A regenerated report reuses its delivered key with new wording; the first copy stands.
+        if (
+          binding.keepDeliveredOnPayloadChange === true &&
+          existing.state === 'delivered' &&
+          existing.deliveryTarget === binding.deliveryTarget
+        ) {
+          this.log(`telegram delivered payload identity differs key=${key}`);
+          return { claimed: false, entry: { ...existing } };
+        }
+        throw new Error(`Owner message delivery binding mismatch for ${key}`);
+      }
+      if (binding?.idempotencyKey !== undefined && existing.idempotencyKey === undefined) {
+        const entry = { ...existing, idempotencyKey: binding.idempotencyKey };
+        this.commit(() => this.entries.set(key, entry));
+        return { claimed: false, entry: { ...entry } };
       }
       return { claimed: false, entry: { ...existing } };
     }
     if (binding && !isDeliveryBinding(binding)) {
-      throw new Error(`Telegram delivery binding is invalid for ${key}`);
+      throw new Error(`Owner message delivery binding is invalid for ${key}`);
     }
-    const entry: TelegramMessageLedgerEntry = {
+    const entry: OwnerMessageLedgerEntry = {
       key,
       state: 'processing',
       updatedAt: this.now(),
       ownerId: this.ownerId,
-      ...(binding ?? {}),
+      ...(binding && {
+        deliveryTarget: binding.deliveryTarget,
+        payloadIdentity: binding.payloadIdentity,
+        idempotencyKey: binding.idempotencyKey,
+      }),
     };
     this.commit(() => {
       this.entries.set(key, entry);
@@ -143,9 +161,12 @@ export class TelegramMessageLedger {
 
   markReady(key: string, response: string, chunkFormat: TelegramChunkFormat = 'plain-v1'): void {
     if (response.length > MAX_RESPONSE_CHARS) {
-      throw new Error('Telegram durable response exceeds its size limit');
+      throw new Error('Owner message durable response exceeds its size limit');
     }
     const entry = this.requireEntry(key);
+    if (entry.sharedReplyKey) {
+      throw new Error('Owner message shared reply cannot prepare a second response');
+    }
     this.commit(() => {
       this.entries.set(key, {
         ...entry,
@@ -160,19 +181,41 @@ export class TelegramMessageLedger {
     });
   }
 
-  markDeliveryProgress(key: string, nextChunkIndex: number, deliveryUncertain: boolean): void {
+  markDeliveryProgress(
+    key: string,
+    nextChunkIndex: number,
+    deliveryUncertain: boolean,
+    messageId?: number | string
+  ): void {
     if (!Number.isSafeInteger(nextChunkIndex) || nextChunkIndex < 0) {
-      throw new Error('Telegram delivery progress must be a non-negative integer');
+      throw new Error('Owner message delivery progress must be a non-negative integer');
     }
     const entry = this.requireEntry(key);
     if (entry.state !== 'ready' || entry.response === undefined) {
-      throw new Error(`Telegram message ${key} is not ready for delivery`);
+      throw new Error(`Owner message ${key} is not ready for delivery`);
     }
     this.commit(() => {
       this.entries.set(key, {
         ...entry,
         nextChunkIndex,
         deliveryUncertain,
+        ...(messageId === undefined
+          ? {}
+          : { messageIds: [...(entry.messageIds ?? []), messageId] }),
+        updatedAt: this.now(),
+        ownerId: this.ownerId,
+      });
+    });
+  }
+
+  /** A transport failure can leave remote delivery unknown; never keep it as active work. */
+  markFailed(key: string): void {
+    const entry = this.requireEntry(key);
+    this.commit(() => {
+      this.entries.set(key, {
+        ...entry,
+        state: 'failed',
+        deliveryUncertain: true,
         updatedAt: this.now(),
         ownerId: this.ownerId,
       });
@@ -190,46 +233,58 @@ export class TelegramMessageLedger {
         ownerId: this.ownerId,
         ...(existing?.deliveryTarget ? { deliveryTarget: existing.deliveryTarget } : {}),
         ...(existing?.payloadIdentity ? { payloadIdentity: existing.payloadIdentity } : {}),
-        ...(existing?.pinned ? { pinned: true } : {}),
+        ...(existing?.idempotencyKey === undefined
+          ? {}
+          : { idempotencyKey: existing.idempotencyKey }),
+        ...(existing?.messageIds === undefined ? {} : { messageIds: existing.messageIds }),
+        ...(existing?.sharedReplyKey ? { sharedReplyKey: existing.sharedReplyKey } : {}),
       });
       this.enforceEntryLimit();
     });
   }
 
-  /** Pin an existing delivery entry against TTL pruning and eviction. */
-  pin(key: string): void {
+  /** A second accepted input points to the one inbound key that owns the visible reply. */
+  markSharedReply(key: string, replyKey: string): void {
+    const chat = (value: string): string => value.slice(0, value.lastIndexOf(':'));
+    if (
+      key === replyKey ||
+      key.startsWith('outbound:') ||
+      replyKey.startsWith('outbound:') ||
+      !chat(key) ||
+      chat(key) !== chat(replyKey)
+    ) {
+      throw new Error('Owner message shared reply must stay in the same chat');
+    }
     const entry = this.requireEntry(key);
-    if (entry.pinned) return;
+    const target = this.requireEntry(replyKey);
+    if (target.sharedReplyKey)
+      throw new Error('Owner message shared reply target is not a reply owner');
+    if (entry.state === 'delivered' && entry.sharedReplyKey === replyKey) return;
+    if (entry.state !== 'processing') {
+      throw new Error('Owner message shared reply conflicts with existing delivery');
+    }
     this.commit(() => {
-      this.entries.set(key, { ...entry, pinned: true });
+      this.entries.set(key, {
+        key,
+        state: 'delivered',
+        sharedReplyKey: replyKey,
+        updatedAt: this.now(),
+        ownerId: this.ownerId,
+      });
+      this.enforceEntryLimit();
     });
   }
 
-  /** Idempotently release a pin; a missing or unpinned entry is a no-op. */
-  unpin(key: string): void {
+  private requireEntry(key: string): OwnerMessageLedgerEntry {
     const entry = this.entries.get(key);
-    if (!entry?.pinned) return;
-    this.commit(() => {
-      const { pinned: _pinned, ...rest } = entry;
-      this.entries.set(key, rest);
-    });
-  }
-
-  /** Compatibility alias for the original completed-ID ledger API. */
-  record(key: string): void {
-    this.markDelivered(key);
-  }
-
-  private requireEntry(key: string): TelegramMessageLedgerEntry {
-    const entry = this.entries.get(key);
-    if (!entry) throw new Error(`Telegram message ${key} has not been claimed`);
+    if (!entry) throw new Error(`Owner message ${key} has not been claimed`);
     return entry;
   }
 
   private enforceEntryLimit(): void {
     while (this.entries.size > this.maxEntries) {
       if (!this.evictOldestDelivered()) {
-        throw new Error('Telegram message ledger entry limit is full of undelivered work');
+        throw new Error('Owner message ledger entry limit is full of undelivered work');
       }
     }
   }
@@ -237,8 +292,8 @@ export class TelegramMessageLedger {
   private load(): void {
     if (!existsSync(this.path)) return;
     if (statSync(this.path).size > MAX_LEDGER_FILE_BYTES) {
-      const error = new Error(`Telegram message ledger exceeds ${MAX_LEDGER_FILE_BYTES} bytes`);
-      this.log(`[Telegram] message ledger rejected without modification: ${error.message}`);
+      const error = new Error(`Owner message ledger exceeds ${MAX_LEDGER_FILE_BYTES} bytes`);
+      this.log(`[owner-message] message ledger rejected without modification: ${error.message}`);
       throw error;
     }
     let serialized: string;
@@ -246,59 +301,20 @@ export class TelegramMessageLedger {
       serialized = readFileSync(this.path, 'utf8');
     } catch (error) {
       this.log(
-        `[Telegram] message ledger read failed without modification: ${
+        `[owner-message] message ledger read failed without modification: ${
           error instanceof Error ? error.message : String(error)
         }`
       );
       throw error;
     }
-    let migratedLegacyOutbound = 0;
-    let needsSchemaUpgrade = false;
     try {
       const parsed: unknown = JSON.parse(serialized);
       if (isLedgerStateV3(parsed, this.maxEntries)) {
         for (const entry of parsed.entries) {
           this.loadEntry(entry);
         }
-      } else if (isLedgerStateV2(parsed, this.maxEntries)) {
-        needsSchemaUpgrade = true;
-        for (const entry of parsed.entries) {
-          if (isUnboundLegacyOutboundEntry(entry)) {
-            const digest = createHash('sha256').update(entry.key).digest('hex');
-            this.entries.set(`${LEGACY_OUTBOUND_PREFIX}${digest}`, {
-              key: `${LEGACY_OUTBOUND_PREFIX}${digest}`,
-              state: 'delivered',
-              updatedAt: entry.updatedAt,
-              ownerId: 'legacy-unbound',
-            });
-            migratedLegacyOutbound += 1;
-            continue;
-          }
-          this.loadEntry(entry);
-        }
-      } else if (isLedgerStateV1(parsed, this.maxEntries)) {
-        needsSchemaUpgrade = true;
-        for (const entry of parsed.entries) {
-          if (entry.key.startsWith('outbound:')) {
-            const digest = createHash('sha256').update(entry.key).digest('hex');
-            this.entries.set(`${LEGACY_OUTBOUND_PREFIX}${digest}`, {
-              key: `${LEGACY_OUTBOUND_PREFIX}${digest}`,
-              state: 'delivered',
-              updatedAt: entry.completedAt,
-              ownerId: 'legacy-unbound',
-            });
-            migratedLegacyOutbound += 1;
-            continue;
-          }
-          this.entries.set(entry.key, {
-            key: entry.key,
-            state: 'delivered',
-            updatedAt: entry.completedAt,
-            ownerId: 'legacy',
-          });
-        }
       } else {
-        throw new Error('invalid Telegram message ledger');
+        throw new Error('invalid Owner message ledger');
       }
       this.prune();
     } catch (error) {
@@ -306,36 +322,20 @@ export class TelegramMessageLedger {
       renameSync(this.path, quarantinePath);
       this.entries.clear();
       this.log(
-        `[Telegram] invalid message ledger quarantined at ${quarantinePath}: ${
+        `[owner-message] invalid message ledger quarantined at ${quarantinePath}: ${
           error instanceof Error ? error.message : String(error)
         }`
       );
-      return;
-    }
-    if (needsSchemaUpgrade) {
-      try {
-        this.save();
-      } catch (error) {
-        this.log(
-          `[Telegram] message ledger schema upgrade failed; preserved ${this.path}: ${
-            error instanceof Error ? error.message : String(error)
-          }`
-        );
-        throw error;
-      }
-      if (migratedLegacyOutbound > 0) {
-        this.log(
-          `[Telegram] migrated ${migratedLegacyOutbound} unbound outbound ` +
-            'entries to non-replayable legacy identities'
-        );
-      }
+      throw new Error('Owner message ledger is corrupt; delivery cannot continue', {
+        cause: error,
+      });
     }
   }
 
   private prune(): void {
     const cutoff = this.now() - this.ttlMs;
     for (const [key, entry] of this.entries) {
-      if (entry.state === 'delivered' && entry.updatedAt < cutoff && !entry.pinned) {
+      if (entry.state === 'delivered' && entry.updatedAt < cutoff) {
         this.entries.delete(key);
       }
     }
@@ -347,7 +347,7 @@ export class TelegramMessageLedger {
     let serialized = this.serialize();
     while (Buffer.byteLength(serialized, 'utf8') > MAX_LEDGER_FILE_BYTES) {
       if (!this.evictOldestDelivered()) {
-        throw new Error('Telegram message ledger exceeds its durable size limit');
+        throw new Error('Owner message ledger exceeds its durable size limit');
       }
       serialized = this.serialize();
     }
@@ -361,7 +361,7 @@ export class TelegramMessageLedger {
     return `${JSON.stringify(state)}\n`;
   }
 
-  private loadEntry(entry: TelegramMessageLedgerEntry): void {
+  private loadEntry(entry: OwnerMessageLedgerEntry): void {
     if (entry.state === 'delivered') {
       const { response: _response, ...delivered } = entry;
       this.entries.set(entry.key, delivered);
@@ -372,7 +372,7 @@ export class TelegramMessageLedger {
 
   private evictOldestDelivered(): boolean {
     for (const [key, entry] of this.entries) {
-      if (entry.state === 'delivered' && !entry.pinned) {
+      if (entry.state === 'delivered') {
         this.entries.delete(key);
         return true;
       }
@@ -393,36 +393,6 @@ export class TelegramMessageLedger {
   }
 }
 
-function isLedgerStateV1(value: unknown, maxEntries: number): value is LedgerStateV1 {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Record<string, unknown>;
-  if (
-    record.version !== 1 ||
-    !Array.isArray(record.entries) ||
-    record.entries.length > maxEntries
-  ) {
-    return false;
-  }
-  return record.entries.every((entry) => {
-    if (!entry || typeof entry !== 'object') return false;
-    const item = entry as Record<string, unknown>;
-    return isKey(item.key) && isTimestamp(item.completedAt);
-  });
-}
-
-function isLedgerStateV2(value: unknown, maxEntries: number): value is LedgerStateV2 {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Record<string, unknown>;
-  if (
-    record.version !== 2 ||
-    !Array.isArray(record.entries) ||
-    record.entries.length > maxEntries
-  ) {
-    return false;
-  }
-  return record.entries.every(isLedgerEntry);
-}
-
 function isLedgerStateV3(value: unknown, maxEntries: number): value is LedgerStateV3 {
   if (!value || typeof value !== 'object') return false;
   const record = value as Record<string, unknown>;
@@ -434,33 +404,26 @@ function isLedgerStateV3(value: unknown, maxEntries: number): value is LedgerSta
     return false;
   }
   return record.entries.every((entry) => {
-    if (!isLedgerEntry(entry)) return false;
-    if (entry.key.startsWith(LEGACY_OUTBOUND_PREFIX)) {
-      return (
-        entry.state === 'delivered' &&
-        entry.response === undefined &&
-        entry.nextChunkIndex === undefined &&
-        entry.deliveryUncertain === undefined &&
-        entry.deliveryTarget === undefined &&
-        entry.payloadIdentity === undefined
-      );
-    }
-    if (entry.key.startsWith('outbound:')) {
-      return isDeliveryBinding({
-        deliveryTarget: entry.deliveryTarget,
-        payloadIdentity: entry.payloadIdentity,
-      });
-    }
-    return true;
+    return (
+      isLedgerEntry(entry) &&
+      (!entry.key.startsWith('outbound:') ||
+        isDeliveryBinding({
+          deliveryTarget: entry.deliveryTarget,
+          payloadIdentity: entry.payloadIdentity,
+        }))
+    );
   });
 }
 
-function isLedgerEntry(value: unknown): value is TelegramMessageLedgerEntry {
+function isLedgerEntry(value: unknown): value is OwnerMessageLedgerEntry {
   if (!value || typeof value !== 'object') return false;
   const item = value as Record<string, unknown>;
   return (
     isKey(item.key) &&
-    (item.state === 'processing' || item.state === 'ready' || item.state === 'delivered') &&
+    (item.state === 'processing' ||
+      item.state === 'ready' ||
+      item.state === 'delivered' ||
+      item.state === 'failed') &&
     isTimestamp(item.updatedAt) &&
     typeof item.ownerId === 'string' &&
     item.ownerId.length > 0 &&
@@ -470,6 +433,22 @@ function isLedgerEntry(value: unknown): value is TelegramMessageLedgerEntry {
     (item.nextChunkIndex === undefined ||
       (Number.isSafeInteger(item.nextChunkIndex) && (item.nextChunkIndex as number) >= 0)) &&
     (item.deliveryUncertain === undefined || typeof item.deliveryUncertain === 'boolean') &&
+    (item.idempotencyKey === undefined || typeof item.idempotencyKey === 'string') &&
+    (item.messageIds === undefined ||
+      (Array.isArray(item.messageIds) &&
+        item.messageIds.every((id) =>
+          typeof id === 'string'
+            ? id.length > 0 && id.length <= 256
+            : Number.isSafeInteger(id) && id > 0
+        ))) &&
+    (item.sharedReplyKey === undefined ||
+      (typeof item.sharedReplyKey === 'string' &&
+        item.state === 'delivered' &&
+        !item.key.startsWith('outbound:') &&
+        !item.sharedReplyKey.startsWith('outbound:') &&
+        item.key !== item.sharedReplyKey &&
+        item.key.slice(0, item.key.lastIndexOf(':')) ===
+          item.sharedReplyKey.slice(0, item.sharedReplyKey.lastIndexOf(':')))) &&
     (item.chunkFormat === undefined ||
       item.chunkFormat === 'plain-v1' ||
       item.chunkFormat === 'html-v1') &&
@@ -481,19 +460,10 @@ function isLedgerEntry(value: unknown): value is TelegramMessageLedgerEntry {
   );
 }
 
-function isUnboundLegacyOutboundEntry(entry: TelegramMessageLedgerEntry): boolean {
-  return (
-    entry.key.startsWith('outbound:') &&
-    !entry.key.startsWith(LEGACY_OUTBOUND_PREFIX) &&
-    entry.deliveryTarget === undefined &&
-    entry.payloadIdentity === undefined
-  );
-}
-
 function isDeliveryBinding(value: {
   deliveryTarget: unknown;
   payloadIdentity: unknown;
-}): value is TelegramDeliveryBinding {
+}): value is OwnerDeliveryBinding {
   return (
     typeof value.deliveryTarget === 'string' &&
     value.deliveryTarget.length > 0 &&
@@ -510,3 +480,10 @@ function isKey(value: unknown): value is string {
 function isTimestamp(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
+
+// Existing receipts stay byte-for-byte compatible; Telegram callers keep their established names.
+export { OwnerMessageLedger as TelegramMessageLedger };
+export type TelegramMessageLedgerEntry = OwnerMessageLedgerEntry;
+export type TelegramMessageLedgerOptions = OwnerMessageLedgerOptions;
+export type TelegramDeliveryBinding = OwnerDeliveryBinding;
+export type TelegramMessageState = OwnerMessageState;

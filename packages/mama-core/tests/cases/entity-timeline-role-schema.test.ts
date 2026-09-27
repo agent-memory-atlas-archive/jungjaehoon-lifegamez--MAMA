@@ -1,8 +1,7 @@
-
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
-import { applyMigrationsThrough } from '../../src/test-utils.js';
+import { applyMigrationsThrough } from '../helpers/test-utils.js';
 describe('Phase 2 Task 1 — entity_timeline_events.role', () => {
   it('adds a nullable role column after applying 044', () => {
     const db = new Database(':memory:');

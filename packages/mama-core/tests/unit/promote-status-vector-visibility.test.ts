@@ -6,7 +6,7 @@ import { join } from 'node:path';
 // Mock the model so no 560MB pipeline is ever loaded. All embeddings resolve to the
 // same fixed vector, so any query matches every stored row with cosine 1.0.
 const FIXED = () => new Float32Array(1024).fill(0.01);
-vi.mock('../../src/embeddings.js', () => ({
+vi.mock('../../src/embedding/embedder.js', () => ({
   generateEmbedding: vi.fn(async () => FIXED()),
   generateEnhancedEmbedding: vi.fn(async () => FIXED()),
   generateBatchEmbeddings: vi.fn(async (texts: string[]) => texts.map(() => FIXED())),
@@ -37,8 +37,8 @@ describe('Story R1: promoted memories stay vector-searchable', () => {
   });
 
   describe('AC #4: staging->active promotion re-enters the pre-filtered search', () => {
-    it('finds a stale-staged memory after promoteMemoryStatus(active) without a cache reload', async () => {
-      const saved = await saveMemory({
+    it('finds a stale-staged memory after promoteMemoryStatus(getAdapter(), active) without a cache reload', async () => {
+      const saved = await saveMemory(getAdapter(), {
         topic: 'staged-note',
         kind: 'decision',
         summary: 'Staged observation awaiting review',
@@ -53,7 +53,7 @@ describe('Story R1: promoted memories stay vector-searchable', () => {
       const before = await vectorSearch(getAdapter(), FIXED(), 5, 0.1, undefined, EXCLUDED);
       expect(before.map((d) => d.id)).not.toContain(memoryId);
 
-      await promoteMemoryStatus({ memoryId, status: 'active' });
+      await promoteMemoryStatus(getAdapter(), { memoryId, status: 'active' });
 
       // Promotion must sync the adapter status cache - no reloadVectorCache here.
       const after = await vectorSearch(getAdapter(), FIXED(), 5, 0.1, undefined, EXCLUDED);

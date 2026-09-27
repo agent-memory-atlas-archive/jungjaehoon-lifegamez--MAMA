@@ -1,98 +1,58 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { MAMAServer, validateEnvironment, REQUIRED_ENV_VARS } from '../../src/server.js';
+import { MAMAServer, validateEnvironment } from '../../src/server.js';
 
 const SERVER_SOURCE = readFileSync(join(process.cwd(), 'src/server.js'), 'utf8');
 const PACKAGE_VERSION = JSON.parse(
   readFileSync(join(process.cwd(), 'package.json'), 'utf8')
 ).version;
 
-describe('Story 1.2: Environment Variable Validation', () => {
-  const ORIGINAL_ENV = process.env;
+describe('development-memory environment', () => {
+  const originalEnv = { ...process.env };
 
-  beforeEach(() => {
-    vi.resetModules();
-    process.env = { ...ORIGINAL_ENV };
-
-    // Mock console.error and process.exit
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    vi.spyOn(process, 'exit').mockImplementation(() => {});
-  });
-
+  const restoreEnv = () => {
+    for (const key of Object.keys(process.env)) {
+      if (!(key in originalEnv)) {
+        delete process.env[key];
+      }
+    }
+    Object.assign(process.env, originalEnv);
+  };
+  beforeEach(restoreEnv);
   afterEach(() => {
-    process.env = ORIGINAL_ENV;
+    restoreEnv();
     vi.restoreAllMocks();
   });
 
-  it('should pass validation when all required variables are present', () => {
-    expect(REQUIRED_ENV_VARS).toEqual(['MAMA_DB_PATH']);
-    REQUIRED_ENV_VARS.forEach((key) => {
-      process.env[key] = 'valid_value';
-    });
-
-    validateEnvironment();
-
-    expect(process.exit).not.toHaveBeenCalled();
-    // console.error might be called for other things if not careful, but here we expect clean run
-    // Actually, checking specific error calls is safer
-    expect(console.error).not.toHaveBeenCalledWith(expect.stringContaining('MISSING_ENV_VARS'));
+  it.each(['development', 'production'])('uses the plugin default in %s', async (mode) => {
+    process.env.NODE_ENV = mode;
+    delete process.env.MAMA_DB_PATH;
+    const expected = join(process.env.HOME, '.claude', 'mama-memory.db');
+    expect(validateEnvironment()).toBe(expected);
+    expect(process.env.MAMA_DB_PATH).toBe(expected);
+    const { usePluginDatabase } = await import('../../../claude-code-plugin/scripts/db-path.js');
+    delete process.env.MAMA_DB_PATH;
+    expect(usePluginDatabase()).toBe(expected);
   });
 
-  it('should use defaults and warn in development mode when variables are missing', () => {
-    process.env.NODE_ENV = 'development';
-    delete process.env.MAMA_SERVER_TOKEN;
-    delete process.env.MAMA_SERVER_PORT;
-    // Ensure required vars are missing
-    REQUIRED_ENV_VARS.forEach((key) => {
-      delete process.env[key];
-    });
-
-    validateEnvironment();
-
-    expect(process.exit).not.toHaveBeenCalled();
-    expect(console.error).toHaveBeenCalledWith(
-      expect.stringContaining('Warning: Using default values'),
-      expect.any(String)
-    );
-
-    // Check if defaults were applied
-    REQUIRED_ENV_VARS.forEach((key) => {
-      expect(process.env[key]).toBeDefined();
-    });
-    expect(process.env.MAMA_SERVER_TOKEN).toBeUndefined();
-    expect(process.env.MAMA_SERVER_PORT).toBeUndefined();
+  it('preserves an explicit MAMA_DB_PATH in both consumers', async () => {
+    const expected = join(process.env.HOME, 'explicit.db');
+    process.env.MAMA_DB_PATH = expected;
+    expect(validateEnvironment()).toBe(expected);
+    const { usePluginDatabase } = await import('../../../claude-code-plugin/scripts/db-path.js');
+    expect(usePluginDatabase()).toBe(expected);
   });
 
-  it('should exit with error in production mode when variables are missing', () => {
-    process.env.NODE_ENV = 'production';
-    // Ensure required vars are missing
-    REQUIRED_ENV_VARS.forEach((key) => {
-      delete process.env[key];
-    });
-
-    validateEnvironment();
-
-    expect(process.exit).toHaveBeenCalledWith(1);
-
-    // Check for JSON error output
-    // Since console.error is mocked, we check the calls
-    const errorCalls = console.error.mock.calls.map((args) => args[0]);
-    const jsonError = errorCalls.find((arg) => arg.includes('MISSING_ENV_VARS'));
-    expect(jsonError).toBeDefined();
-
-    const parsedError = JSON.parse(jsonError);
-    expect(parsedError.error.code).toBe('MISSING_ENV_VARS');
-    expect(parsedError.error.details.missing.length).toBe(REQUIRED_ENV_VARS.length);
-  });
-
-  it('should fail if a variable is empty string', () => {
-    process.env.NODE_ENV = 'production';
-    process.env.MAMA_DB_PATH = '';
-
-    validateEnvironment();
-
-    expect(process.exit).toHaveBeenCalledWith(1);
+  it('honours the older MAMA_DATABASE_PATH name the core still reads, in server and hooks alike', async () => {
+    delete process.env.MAMA_DB_PATH;
+    const expected = join(process.env.HOME, 'older-name.db');
+    process.env.MAMA_DATABASE_PATH = expected;
+    expect(validateEnvironment()).toBe(expected);
+    expect(process.env.MAMA_DB_PATH).toBeUndefined();
+    const { usePluginDatabase } = await import('../../../claude-code-plugin/scripts/db-path.js');
+    expect(usePluginDatabase()).toBe(expected);
+    delete process.env.MAMA_DATABASE_PATH;
   });
 });
 

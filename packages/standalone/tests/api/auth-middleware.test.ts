@@ -1,225 +1,51 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { IncomingMessage } from 'node:http';
-import {
-  getClientAddress,
-  getSecurityLogContext,
-  isAuthenticated,
-  logUnauthorizedAttempt,
-} from '../../src/api/auth-middleware.js';
-import { flushSecurityMonitor } from '../../src/security/security-monitor.js';
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import { isAuthenticated } from '../../src/api/auth-middleware.js';
 
-function createRequest({
-  remoteAddress,
-  headers = {},
-  url = '/api/test',
-}: {
-  remoteAddress: string;
-  headers?: Record<string, string>;
-  url?: string;
-}): IncomingMessage {
-  return {
-    socket: { remoteAddress },
-    headers,
-    url,
-  } as IncomingMessage;
+function request(remoteAddress: string, headers: Record<string, string>): IncomingMessage {
+  return { socket: { remoteAddress }, headers } as unknown as IncomingMessage;
 }
 
-describe('auth-middleware', () => {
-  const originalToken = process.env.MAMA_AUTH_TOKEN;
-  const originalServerToken = process.env.MAMA_SERVER_TOKEN;
-  const originalTrustCloudflareAccess = process.env.MAMA_TRUST_CLOUDFLARE_ACCESS;
+beforeEach(() => {
+  vi.stubEnv('MAMA_SERVER_TOKEN', '');
+  vi.stubEnv('MAMA_CF_ACCESS_ISSUER', '');
+  vi.stubEnv('MAMA_CF_ACCESS_AUD', '');
+});
 
-  beforeEach(() => {
-    process.env.MAMA_AUTH_TOKEN = 'top-secret-token';
-    delete process.env.MAMA_SERVER_TOKEN;
-    delete process.env.MAMA_TRUST_CLOUDFLARE_ACCESS;
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+describe('viewer authentication', () => {
+  it('allows direct localhost and rejects remote access when no token is configured', async () => {
+    vi.stubEnv('MAMA_AUTH_TOKEN', '');
+
+    expect(await isAuthenticated(request('127.0.0.1', {}))).toBe(true);
+    expect(await isAuthenticated(request('::1', {}))).toBe(true);
+    expect(await isAuthenticated(request('192.0.2.10', {}))).toBe(false);
   });
 
-  afterEach(() => {
-    if (originalToken === undefined) {
-      delete process.env.MAMA_AUTH_TOKEN;
-    } else {
-      process.env.MAMA_AUTH_TOKEN = originalToken;
-    }
+  it('keeps direct localhost open but requires a matching bearer token remotely', async () => {
+    vi.stubEnv('MAMA_AUTH_TOKEN', 'viewer-token');
 
-    if (originalServerToken === undefined) {
-      delete process.env.MAMA_SERVER_TOKEN;
-    } else {
-      process.env.MAMA_SERVER_TOKEN = originalServerToken;
-    }
-
-    if (originalTrustCloudflareAccess === undefined) {
-      delete process.env.MAMA_TRUST_CLOUDFLARE_ACCESS;
-    } else {
-      process.env.MAMA_TRUST_CLOUDFLARE_ACCESS = originalTrustCloudflareAccess;
-    }
+    expect(await isAuthenticated(request('127.0.0.1', {}))).toBe(true);
+    expect(await isAuthenticated(request('192.0.2.10', {}))).toBe(false);
+    expect(
+      await isAuthenticated(request('192.0.2.10', { authorization: 'Bearer viewer-token' }))
+    ).toBe(true);
+    expect(
+      await isAuthenticated(request('192.0.2.10', { authorization: 'Bearer wrong-token' }))
+    ).toBe(false);
   });
 
-  it('accepts bearer token authentication for remote requests', () => {
-    const req = createRequest({
-      remoteAddress: '203.0.113.10',
-      headers: { authorization: 'Bearer top-secret-token' },
+  it('does not treat a tunneled localhost request as local and rejects forged access identity', async () => {
+    vi.stubEnv('MAMA_AUTH_TOKEN', 'viewer-token');
+
+    const tunnel = request('127.0.0.1', {
+      'cf-ray': 'ray-id',
+      'cf-access-authenticated-user-email': 'redacted@invalid',
     });
-
-    expect(isAuthenticated(req)).toBe(true);
-  });
-
-  it('rejects query token by default', () => {
-    const req = createRequest({
-      remoteAddress: '203.0.113.10',
-      url: '/ws?token=top-secret-token',
-    });
-
-    expect(isAuthenticated(req)).toBe(false);
-  });
-
-  it('rejects query tokens', () => {
-    const req = createRequest({
-      remoteAddress: '203.0.113.10',
-      url: '/ws?token=top-secret-token',
-    });
-
-    expect(isAuthenticated(req)).toBe(false);
-  });
-
-  it('records a rejected query token as a generic unauthorized request', async () => {
-    const req = createRequest({
-      remoteAddress: '203.0.113.10',
-      url: '/api/test?token=top-secret-token',
-    });
-
-    expect(isAuthenticated(req)).toBe(false);
-    logUnauthorizedAttempt(req);
-    await flushSecurityMonitor();
-
-    const events = readFileSync(
-      join(process.env.MAMA_SECURITY_LOG_DIR!, 'security-events.jsonl'),
-      'utf8'
-    )
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line) as { type: string; path: string; details: object });
-    const event = events.at(-1);
-    expect(event).toMatchObject({
-      type: 'unauthorized_request',
-      path: '/api/test',
-      details: { hasAuthorizationHeader: false },
-    });
-    expect(event?.details).not.toHaveProperty('hasQueryToken');
-    expect(event?.details).not.toHaveProperty('allowQueryToken');
-  });
-
-  it('keeps tunneled localhost requests behind token auth', () => {
-    const req = createRequest({
-      remoteAddress: '127.0.0.1',
-      headers: { 'cf-ray': 'test-ray' },
-      url: '/ws?token=top-secret-token',
-    });
-
-    expect(isAuthenticated(req)).toBe(false);
-    expect(isAuthenticated(req)).toBe(false);
-  });
-
-  it('rejects tunneled localhost requests when no admin token is configured', () => {
-    delete process.env.MAMA_AUTH_TOKEN;
-    delete process.env.MAMA_SERVER_TOKEN;
-
-    const req = createRequest({
-      remoteAddress: '127.0.0.1',
-      headers: { 'cf-connecting-ip': '198.51.100.7' },
-    });
-
-    expect(isAuthenticated(req)).toBe(false);
-  });
-
-  it('auto-trusts Cloudflare Access requests from localhost tunnel', () => {
-    delete process.env.MAMA_AUTH_TOKEN;
-    delete process.env.MAMA_SERVER_TOKEN;
-    delete process.env.MAMA_TRUST_CLOUDFLARE_ACCESS;
-
-    const req = createRequest({
-      remoteAddress: '127.0.0.1',
-      headers: {
-        'cf-connecting-ip': '198.51.100.7',
-        'cf-ray': 'ray-123',
-        'cf-access-jwt-assertion': 'jwt-token',
-      },
-    });
-
-    expect(isAuthenticated(req)).toBe(true);
-  });
-
-  it('does not trust Cloudflare Access identity headers from untrusted peers', () => {
-    delete process.env.MAMA_AUTH_TOKEN;
-    delete process.env.MAMA_SERVER_TOKEN;
-
-    const req = createRequest({
-      remoteAddress: '198.51.100.20',
-      headers: {
-        'cf-access-jwt-assertion': 'jwt-token',
-        'cf-access-authenticated-user-email': 'user@example.com',
-      },
-    });
-
-    expect(isAuthenticated(req)).toBe(false);
-  });
-
-  it('keeps direct localhost access when no admin token is configured', () => {
-    delete process.env.MAMA_AUTH_TOKEN;
-    delete process.env.MAMA_SERVER_TOKEN;
-
-    const req = createRequest({
-      remoteAddress: '127.0.0.1',
-    });
-
-    expect(isAuthenticated(req)).toBe(true);
-  });
-
-  it('prefers cf-connecting-ip for attacker address logging', () => {
-    const req = createRequest({
-      remoteAddress: '127.0.0.1',
-      headers: {
-        'cf-connecting-ip': '198.51.100.7',
-        'x-forwarded-for': '203.0.113.9, 127.0.0.1',
-        'cf-ray': 'ray-123',
-      },
-      url: '/api/config?token=test',
-    });
-
-    expect(getClientAddress(req)).toBe('198.51.100.7');
-    expect(getSecurityLogContext(req)).toMatchObject({
-      clientAddress: '198.51.100.7',
-      remoteAddress: '127.0.0.1',
-      forwardedFor: '203.0.113.9, 127.0.0.1',
-      cfConnectingIp: '198.51.100.7',
-      cfRay: 'ray-123',
-      path: '/api/config',
-      viaTunnel: true,
-    });
-  });
-
-  it('falls back to x-forwarded-for when cf-connecting-ip is absent', () => {
-    const req = createRequest({
-      remoteAddress: '127.0.0.1',
-      headers: {
-        'x-forwarded-for': '203.0.113.9, 127.0.0.1',
-      },
-    });
-
-    expect(getClientAddress(req)).toBe('203.0.113.9');
-  });
-
-  it('ignores spoofed forwarding headers from untrusted peers', () => {
-    const req = createRequest({
-      remoteAddress: '198.51.100.20',
-      headers: {
-        'cf-connecting-ip': '203.0.113.9',
-        'x-forwarded-for': '203.0.113.9, 127.0.0.1',
-      },
-    });
-
-    expect(getClientAddress(req)).toBe('198.51.100.20');
+    expect(await isAuthenticated(tunnel)).toBe(false);
+    expect(await isAuthenticated(request('127.0.0.1', { 'cf-ray': 'ray-id' }))).toBe(false);
   });
 });

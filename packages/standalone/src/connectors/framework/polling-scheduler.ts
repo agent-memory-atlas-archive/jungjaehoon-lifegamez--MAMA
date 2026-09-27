@@ -1,242 +1,352 @@
-/**
- * PollingScheduler — drives periodic collection from all registered connectors.
- * Persists lastPollTime to basePath/poll-state.json for crash recovery.
- */
-
-import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import type { ConnectorRegistry } from './connector-registry.js';
-import type { ChannelConfig, NormalizedItem } from './types.js';
-import type { RawIndexSink, RawStore } from '@jungjaehoon/mama-core/storage/source-archive';
-import { classifyItemsByRole } from '../../memory/history-extractor.js';
-import type { ClassifiedItems } from '../../memory/history-extractor.js';
+import type { ChannelConfig, IConnector, NormalizedItem } from './types.js';
+import type { PendingProjection, RawIndexSink, RawStore } from '../../storage/source-archive.js';
+import type { WindowQueue } from '../../replay/window-queue.js';
 
-type BatchExtractCallback = (classified: ClassifiedItems) => void | Promise<void>;
+export interface SourceObservationRef {
+  connector: string;
+  observationRef: string;
+  sourceId: string;
+  sourceEntityId: string;
+  channel?: string;
+  sourceAt: string;
+  observedAt: string;
+  contentHash: string | null;
+  author?: string;
+  /** Configured channel name, when the connector configuration has one. */
+  channelName?: string;
+  /** Source text for replay orientation (a Trello action as one line); source.read remains canonical. */
+  contentPreview?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface SourceDelta {
+  kind: 'source_delta';
+  collector: string;
+  channel: string;
+  coalesceKey: string;
+  refs: readonly SourceObservationRef[];
+  preview: readonly string[];
+  /** Source occurrence time; replay deltas must never use host capture time. */
+  occurredAt?: number;
+  replay?: {
+    runId: string;
+    windowId: string;
+    windowStartMs: number;
+    windowEndMs: number;
+    ledgerDigest?: readonly {
+      commitmentId: string;
+      revision: number;
+      title: string | null;
+      stage: string | null;
+      status: string | null;
+      assignee: string | null;
+      lastEventTime: string | null;
+    }[];
+    queue?: WindowQueue;
+    endInstructions?: string;
+  };
+}
+
+export type RawBatchCommittedCallback = (delta: SourceDelta) => void | Promise<void>;
+
+export interface PollingSchedulerOptions {
+  initialLookbackMs?: number;
+  rawIndexSink?: RawIndexSink;
+  now?: () => number;
+  initialNow?: number;
+  recordPollOutcome?: (connectorName: string, outcome: { at: number; error?: string }) => void;
+}
 
 interface PollState {
-  [connectorName: string]: string; // ISO timestamp (current flat schema)
+  [connectorName: string]: string;
 }
 
-/**
- * Cursors this far past "now" are considered poisoned and rejected on restore.
- * Live incident (2026-07-09): a legacy runtime persisted cursor = max item timestamp,
- * which for the calendar connector (future-dated events) poisoned the cursor to 2056 -
- * every subsequent poll asked "since 2056" and returned 0 forever.
- */
-const MAX_FUTURE_CURSOR_SKEW_MS = 5 * 60 * 1000;
-
-/**
- * Parse one poll-state entry. Accepts the current flat ISO string and the legacy nested
- * `{ lastPollTime, channels }` object (written by an older runtime). Returns null for
- * anything unparseable, invalid, or future-poisoned - callers must warn loudly and start
- * that connector from the default lookback instead of silently storing an Invalid Date
- * (which used to detonate later as `RangeError: Invalid time value` in persistState).
- */
-function parsePollStateEntry(value: unknown): Date | null {
-  let iso: string | null = null;
-  if (typeof value === 'string') {
-    iso = value;
-  } else if (typeof value === 'object' && value !== null) {
-    const legacy = (value as { lastPollTime?: unknown }).lastPollTime;
-    if (typeof legacy === 'string') {
-      iso = legacy;
-    }
-  }
-  if (iso === null) {
-    return null;
-  }
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) {
-    return null;
-  }
-  if (date.getTime() > Date.now() + MAX_FUTURE_CURSOR_SKEW_MS) {
-    return null;
-  }
-  return date;
-}
-
-/**
- * The canonical key for a channel: the key the connector config declares it under.
- *
- * Connectors emit `item.channel` in whatever shape their upstream hands them, and measured
- * across the live index that is usually a DISPLAY NAME - Trello board names against a
- * config keyed by 24-character board ids, Slack channel names against a config keyed by
- * channel ids, and so on for six of seven connectors. `findChannelConfig` already absorbs
- * that by falling back to a name match, which is why nothing ever appeared broken: the
- * binding succeeded, and then the un-canonicalised name was written to the event index,
- * where every downstream reader compared it against the config KEY and matched nothing.
- * Zero of 30,671 rows were readable in production.
- *
- * So the accommodation moves to one place and produces one answer. Names are for people;
- * identity is the upstream's stable id, and this is where a name becomes one.
- *
- * Returns null when the channel is not configured at all - the honest answer, and the one
- * that keeps an unconfigured channel out of the index rather than inventing a key for it.
- */
+/** Convert a provider display name to the identity declared by connectors.json. */
 export function canonicalChannelKey(
   item: Pick<NormalizedItem, 'source' | 'channel'>,
   channelConfigs: Record<string, Record<string, ChannelConfig>>
 ): string | null {
   const sourceConfigs = channelConfigs[item.source];
-  if (!sourceConfigs) {
-    return null;
+  if (!sourceConfigs) return null;
+  const direct = sourceConfigs[item.channel];
+  if (direct) return direct.role === 'ignore' ? null : item.channel;
+  if (item.source === 'kagemusha' && item.channel.startsWith('kagemusha:')) {
+    const configuredKey = item.channel.slice('kagemusha:'.length);
+    const originSeparator = configuredKey.indexOf(':');
+    const sourceKey =
+      originSeparator < 0 ? configuredKey : configuredKey.slice(originSeparator + 1);
+    const configured = sourceConfigs[configuredKey] ?? sourceConfigs[sourceKey];
+    if (configured) return configured.role === 'ignore' ? null : item.channel;
   }
-  if (sourceConfigs[item.channel]) {
-    return item.channel;
-  }
-  const matched = Object.entries(sourceConfigs).find(([, cfg]) => cfg.name === item.channel);
-  return matched ? matched[0] : null;
+  const matched = Object.entries(sourceConfigs).find(([, config]) => config.name === item.channel);
+  if (!matched || matched[1].role === 'ignore') return null;
+  return matched[0];
 }
 
-/**
- * `bindConfiguredScope` was here, and it never bound anything.
- *
- * It required `project_entity_id` on a channel config and produced a `project` scope. Zero
- * of the 39 configured channels on the live install declare that field, so it returned
- * every item unchanged for its whole life. What made this invisible was a one-off backfill
- * that had written `channel` scopes into the index: April is 100% scoped, the backfill
- * stopped on 2026-05-20, and from 05-21 onward every single event is unscoped. The live
- * write path had never bound a scope at all - the data only looked otherwise.
- *
- * Raw visibility is decided by the (connector, channel) grant now, which reads the key the
- * row already carries instead of a parallel namespace that had to be populated.
- */
+function boundedPreview(items: readonly NormalizedItem[]): string[] {
+  const lines: string[] = [];
+  for (const item of items) {
+    for (const line of item.content.split(/\r?\n/).slice(0, 2)) {
+      if (line.trim() === '') continue;
+      lines.push(line.slice(0, 280));
+      if (lines.length >= 8) return lines;
+    }
+  }
+  return lines;
+}
+
+function sourceObservationRef(
+  connector: string,
+  item: NormalizedItem,
+  observationRef: string
+): SourceObservationRef {
+  if (typeof item.observedAt !== 'number' || !Number.isFinite(item.observedAt)) {
+    throw new Error('A committed source item must have a finite observation time');
+  }
+  return {
+    connector,
+    observationRef,
+    sourceId: item.sourceId,
+    sourceEntityId: item.sourceEntityId ?? item.sourceId,
+    sourceAt: item.timestamp.toISOString(),
+    observedAt: new Date(item.observedAt).toISOString(),
+    contentHash: item.contentHash ?? null,
+    ...(item.metadata === undefined ? {} : { metadata: item.metadata }),
+  };
+}
 
 export class PollingScheduler {
   private readonly rawStore: RawStore;
   private readonly rawIndexSink?: RawIndexSink;
-  private lastPollTimes = new Map<string, Date>();
-  private timers = new Map<string, ReturnType<typeof setInterval>>();
   private readonly stateFile: string;
-  private isBatchRunning = false;
-  /** Initial lookback for connectors with no saved state (default: 24h). Set to 0 for all history. */
-  initialLookbackMs: number;
+  private readonly now: () => number;
+  private readonly initialNow: number;
+  private readonly recordPollOutcome?: PollingSchedulerOptions['recordPollOutcome'];
+  private readonly timers = new Map<string, ReturnType<typeof setInterval>>();
+  private readonly lastPollTimes = new Map<string, Date>();
+  private readonly inFlight = new Set<string>();
+  private readonly initialLookbackMs: number;
+  private polling = false;
 
-  constructor(
-    rawStore: RawStore,
-    basePath: string,
-    options?: { initialLookbackMs?: number; rawIndexSink?: RawIndexSink }
-  ) {
+  constructor(rawStore: RawStore, basePath: string, options: PollingSchedulerOptions = {}) {
     this.rawStore = rawStore;
-    this.rawIndexSink = options?.rawIndexSink;
+    this.rawIndexSink = options.rawIndexSink;
     this.stateFile = join(basePath, 'poll-state.json');
-    this.initialLookbackMs = options?.initialLookbackMs ?? 24 * 60 * 60 * 1000;
+    this.now = options.now ?? Date.now;
+    this.initialNow = options.initialNow ?? this.now();
+    this.recordPollOutcome = options.recordPollOutcome;
+    this.initialLookbackMs = options.initialLookbackMs ?? 86_400_000;
     this.restoreState();
   }
 
   private restoreState(): void {
     if (!existsSync(this.stateFile)) return;
+    let raw: string;
     try {
-      const raw = readFileSync(this.stateFile, 'utf8');
-      const state = JSON.parse(raw) as Record<string, unknown>;
-      for (const [name, value] of Object.entries(state)) {
-        const date = parsePollStateEntry(value);
-        if (date === null) {
-          console.error(
-            `[connector] poll-state entry for "${name}" is corrupt or future-poisoned ` +
-              `(${JSON.stringify(value).slice(0, 120)}) - ignoring it; "${name}" will poll ` +
-              `from the default lookback window`
-          );
-          continue;
-        }
+      raw = readFileSync(this.stateFile, 'utf8');
+    } catch {
+      return;
+    }
+    let state: Record<string, unknown>;
+    try {
+      state = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    for (const [name, value] of Object.entries(state)) {
+      const candidate =
+        typeof value === 'string'
+          ? value
+          : value &&
+              typeof value === 'object' &&
+              typeof (value as { lastPollTime?: unknown }).lastPollTime === 'string'
+            ? (value as { lastPollTime: string }).lastPollTime
+            : null;
+      if (candidate === null) continue;
+      const date = new Date(candidate);
+      if (Number.isFinite(date.getTime()) && date.getTime() <= this.now() + 300_000) {
         this.lastPollTimes.set(name, date);
       }
-    } catch {
-      // Corrupt state file — start fresh
     }
   }
 
-  persistState(): void {
+  private persistState(): void {
     const state: PollState = {};
-    for (const [name, date] of this.lastPollTimes.entries()) {
-      if (Number.isNaN(date.getTime())) {
-        // Fail loud with the connector name instead of a cryptic RangeError mid-write.
-        throw new Error(`[connector] refusing to persist invalid poll cursor for "${name}"`);
-      }
-      state[name] = date.toISOString();
-    }
+    for (const [name, date] of this.lastPollTimes) state[name] = date.toISOString();
+    mkdirSync(dirname(this.stateFile), { recursive: true });
     writeFileSync(this.stateFile, JSON.stringify(state, null, 2), 'utf8');
+  }
+
+  getLastPollTime(name: string): Date | undefined {
+    return this.lastPollTimes.get(name);
+  }
+
+  resetPollState(name: string, since?: Date): void {
+    if (since !== undefined && !Number.isFinite(since.getTime())) {
+      throw new Error(`Invalid poll state for connector ${name}`);
+    }
+    if (since === undefined) this.lastPollTimes.delete(name);
+    else this.lastPollTimes.set(name, since);
+    this.persistState();
+  }
+
+  private async pollOne(
+    name: string,
+    connector: IConnector,
+    channelConfigs: Record<string, Record<string, ChannelConfig>>,
+    onRawBatchCommitted: RawBatchCommittedCallback
+  ): Promise<void> {
+    const since =
+      this.lastPollTimes.get(name) ?? new Date(this.initialNow - this.initialLookbackMs);
+    try {
+      connector.beginPollHandoff?.();
+      const pollStartedAt = this.now();
+      const polled = await connector.poll(since, { hasCursor: this.lastPollTimes.has(name) });
+      const observedAt = this.now();
+      const canonicalItems = polled.flatMap((item) => {
+        const channel = canonicalChannelKey(item, channelConfigs);
+        if (channel === null) return [];
+        const label = channelConfigs[item.source]?.[channel]?.name;
+        return [
+          {
+            ...item,
+            channel,
+            observedAt,
+            ...(label ? { metadata: { ...(item.metadata ?? {}), channelName: label } } : {}),
+          },
+        ];
+      });
+      // A connector's first snapshot of a new feed is indexed like any item but is not live work;
+      // historical import pages use the raw store's collect-only path and stay for their import.
+      const snapshotIds = new Set(
+        canonicalItems.filter((item) => item.collectOnly === true).map((item) => item.sourceId)
+      );
+      if (canonicalItems.length > 0) this.rawStore.save(name, canonicalItems);
+
+      const pending: PendingProjection[] = [];
+      let afterSequence = 0;
+      let page: PendingProjection[] = [];
+      do {
+        page = this.rawStore.listPendingProjections(name, 1000, afterSequence);
+        pending.push(...page.filter((item) => !item.collectOnly));
+        if (page.length === 1000) {
+          afterSequence = page[page.length - 1]!.pendingProjectionId;
+        }
+      } while (page.length === 1000);
+      if (pending.length > 0 && this.rawIndexSink === undefined) {
+        throw new Error(`Raw index projection is not configured for connector ${name}`);
+      }
+      const observationRefs = new Map<string, string>();
+      for (const item of pending) {
+        const projections = await this.rawIndexSink!(name, [item]);
+        if (projections.length !== 1) {
+          throw new Error(
+            `Raw index projection must return one observation ref for ${name}:${item.sourceId}`
+          );
+        }
+        const projection = projections[0]!;
+        if (
+          projection.sourceId !== item.sourceId ||
+          typeof projection.observationRef !== 'string' ||
+          projection.observationRef.trim() === ''
+        ) {
+          throw new Error(
+            `Raw index projection returned the wrong observation ref for ${name}:${item.sourceId}`
+          );
+        }
+        observationRefs.set(item.sourceId, projection.observationRef);
+      }
+
+      const byChannel = new Map<string, NormalizedItem[]>();
+      for (const item of pending.filter((row) => !snapshotIds.has(row.sourceId))) {
+        const group = byChannel.get(item.channel) ?? [];
+        group.push(item);
+        byChannel.set(item.channel, group);
+      }
+      for (const [channel, items] of byChannel) {
+        await onRawBatchCommitted({
+          kind: 'source_delta',
+          collector: name,
+          channel,
+          coalesceKey: `source:${name}:${channel}`,
+          refs: items.map((item) => {
+            const ref = observationRefs.get(item.sourceId);
+            if (ref === undefined) {
+              throw new Error(`Missing projected observation ref for ${name}:${item.sourceId}`);
+            }
+            return sourceObservationRef(name, item, ref);
+          }),
+          preview: boundedPreview(items),
+        });
+      }
+      if (pending.length > 0) {
+        this.rawStore.acknowledgeProjections(
+          name,
+          pending.map((item) => ({
+            revisionSourceId: item.sourceId,
+            pendingProjectionId: item.pendingProjectionId,
+          }))
+        );
+      }
+      await connector.commitPoll?.();
+      this.lastPollTimes.set(name, new Date(pollStartedAt));
+      this.recordPollOutcome?.(name, { at: this.now() });
+    } catch (error) {
+      console.error(`[PollingScheduler] poll failed for connector ${name}`, error);
+      connector.abortPollHandoff?.();
+      this.recordPollOutcome?.(name, {
+        at: this.now(),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  async pollConnector(
+    name: string,
+    registry: ConnectorRegistry,
+    channelConfigs: Record<string, Record<string, ChannelConfig>>,
+    onRawBatchCommitted: RawBatchCommittedCallback
+  ): Promise<void> {
+    if (this.inFlight.has(name)) return;
+    this.inFlight.add(name);
+    try {
+      const connector = registry.get(name);
+      if (!connector) throw new Error(`Connector is not registered: ${name}`);
+      await this.pollOne(name, connector, channelConfigs, onRawBatchCommitted);
+      this.persistState();
+    } catch (error) {
+      console.error(`[PollingScheduler] poll failed for connector ${name}`, error);
+    } finally {
+      this.inFlight.delete(name);
+    }
   }
 
   async pollAll(
     registry: ConnectorRegistry,
     channelConfigs: Record<string, Record<string, ChannelConfig>>,
-    onBatchExtract: BatchExtractCallback
+    onRawBatchCommitted: RawBatchCommittedCallback
   ): Promise<void> {
-    if (this.isBatchRunning) {
-      console.log('[connector] pollAll: skipping — previous batch still running');
-      return;
-    }
-    this.isBatchRunning = true;
+    if (this.polling) return;
+    this.polling = true;
     try {
-      console.log(`[connector] pollAll: ${registry.getActive().size} connectors`);
-      const allItems: NormalizedItem[] = [];
-
       for (const [name, connector] of registry.getActive()) {
-        const since =
-          this.lastPollTimes.get(name) ??
-          new Date(this.initialLookbackMs > 0 ? Date.now() - this.initialLookbackMs : 0);
+        if (this.inFlight.has(name)) continue;
+        this.inFlight.add(name);
         try {
-          connector.beginPollHandoff?.();
-          const items = await connector.poll(since);
-          let savedItems: NormalizedItem[] = [];
-          console.log(
-            `[connector:${name}] polled ${items.length} items (since: ${since.toISOString()})`
-          );
-          if (items.length > 0) {
-            const scopedItems = items.map((item) => {
-              // Canonicalise BEFORE anything durable is written. Storing the display name
-              // is what made the index unreadable; a name that reached storage was never
-              // going to be reconciled afterwards, because nothing downstream could tell
-              // it apart from an id.
-              const canonical = canonicalChannelKey(item, channelConfigs);
-              return canonical === null ? item : { ...item, channel: canonical };
-            });
-            const observedAt = Date.now();
-            savedItems = this.rawStore.save(
-              name,
-              scopedItems.map((item) => ({ ...item, observedAt }))
-            );
-          }
-          if (this.rawIndexSink) {
-            let pendingProjections = this.rawStore.listPendingProjections(name, 100);
-            while (pendingProjections.length > 0) {
-              for (const pending of pendingProjections) {
-                await this.rawIndexSink(name, [pending]);
-              }
-              this.rawStore.acknowledgeProjections(
-                name,
-                pendingProjections.map((pending) => ({
-                  revisionSourceId: pending.sourceId,
-                  pendingProjectionId: pending.pendingProjectionId,
-                }))
-              );
-              pendingProjections = this.rawStore.listPendingProjections(name, 100);
-            }
-          }
-          await connector.commitPoll?.();
-          allItems.push(...savedItems);
-          // Only advance the cursor after a successful poll+save+index.
-          this.lastPollTimes.set(name, new Date());
-        } catch (err) {
-          connector.abortPollHandoff?.();
-          console.error(`[connector:${name}] poll error:`, err);
+          await this.pollOne(name, connector, channelConfigs, onRawBatchCommitted);
+        } finally {
+          this.inFlight.delete(name);
         }
       }
-
-      console.log(`[connector] pollAll total: ${allItems.length} items`);
-      if (allItems.length > 0) {
-        const classified = classifyItemsByRole(allItems, channelConfigs, 'hub');
-        console.log(
-          `[connector] classified: truth=${classified.truth.length} activity=${classified.activity.length} spoke=${classified.spoke.length}`
-        );
-        await onBatchExtract(classified);
-      }
-
       this.persistState();
+    } catch (error) {
+      console.error('[PollingScheduler] batch poll failed', error);
     } finally {
-      this.isBatchRunning = false;
+      this.polling = false;
     }
   }
 
@@ -244,50 +354,20 @@ export class PollingScheduler {
     registry: ConnectorRegistry,
     channelConfigs: Record<string, Record<string, ChannelConfig>>,
     intervalMinutes: number,
-    onBatchExtract: BatchExtractCallback
+    onRawBatchCommitted: RawBatchCommittedCallback
   ): void {
-    // Initial poll (fire-and-forget)
-    this.pollAll(registry, channelConfigs, onBatchExtract).catch((err) =>
-      console.error('[connector] initial batch poll error:', err)
-    );
-    // Periodic
+    void this.pollAll(registry, channelConfigs, onRawBatchCommitted);
     this.timers.set(
       '__batch__',
       setInterval(
-        () =>
-          this.pollAll(registry, channelConfigs, onBatchExtract).catch((err) =>
-            console.error('[connector] batch poll error:', err)
-          ),
+        () => void this.pollAll(registry, channelConfigs, onRawBatchCommitted),
         intervalMinutes * 60_000
       )
     );
   }
 
-  getLastPollTime(name: string): Date | undefined {
-    return this.lastPollTimes.get(name);
-  }
-
-  /** Reset poll cursor for a connector to re-ingest from a given date. */
-  resetPollState(name: string, since?: Date): void {
-    if (since) {
-      if (Number.isNaN(since.getTime())) {
-        throw new Error(`[connector] resetPollState("${name}"): invalid Date`);
-      }
-      this.lastPollTimes.set(name, since);
-    } else {
-      this.lastPollTimes.delete(name);
-    }
-    this.persistState();
-    console.log(
-      `[connector] Poll state reset for ${name}: ${since ? since.toISOString() : 'epoch'}`
-    );
-  }
-
   stop(): void {
-    for (const timer of this.timers.values()) {
-      clearInterval(timer);
-    }
+    for (const timer of this.timers.values()) clearInterval(timer);
     this.timers.clear();
-    this.rawStore?.close();
   }
 }

@@ -6,7 +6,7 @@ import { createWikiPublishAdapter } from '../../src/wiki-artifacts/wiki-publish-
 
 describe('Story PR4.2: Wiki Publish Adapter', () => {
   describe('AC #1: publish compatibility and validation', () => {
-    it('keeps legacy wiki_publish compatible while preserving supplied source IDs', () => {
+    it('keeps legacy manage.wiki.publish compatible while preserving supplied source IDs', () => {
       const publisher = vi.fn();
       const adapter = createWikiPublishAdapter({
         publisher,
@@ -190,7 +190,7 @@ describe('Story PR4.2: Wiki Publish Adapter', () => {
       expect(publisher).not.toHaveBeenCalled();
     });
 
-    it('rejects oversized wiki_publish requests before invoking the publisher', () => {
+    it('rejects oversized manage.wiki.publish requests before invoking the publisher', () => {
       const publisher = vi.fn();
       const adapter = createWikiPublishAdapter({ publisher });
 

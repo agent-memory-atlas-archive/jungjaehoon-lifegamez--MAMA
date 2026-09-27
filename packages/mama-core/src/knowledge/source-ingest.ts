@@ -1,12 +1,8 @@
 import crypto from 'node:crypto';
 
-import { getAdapter, initDB } from '../db-manager.js';
 import type { DatabaseAdapter } from '../db-manager.js';
 import { canonicalizeJSON } from '../canonicalize.js';
-import {
-  appendObservationVersion,
-  observationVersionId,
-} from '../connectors/observation-versions.js';
+import { appendObservationVersion, observationVersionId } from '../knowledge/observations.js';
 import { insertMemoryEventInTransaction } from '../memory/event-store.js';
 import type { JsonValue } from '../memory/judgment-types.js';
 import type { MemoryEventRecord, MemoryScopeRef } from '../memory/types.js';
@@ -168,7 +164,7 @@ async function ingestSourceOnAdapter(
   const contentHash =
     command.contentHash ?? crypto.createHash('sha256').update(command.body).digest('hex');
   const observationInput = {
-    sourceConnector: command.source.connector,
+    source: command.source.connector,
     sourceId: command.source.id,
     producerVersionId: command.producerVersionId ?? null,
     body: command.body,
@@ -266,11 +262,15 @@ async function ingestSourceOnAdapter(
 export async function ingestSource(
   command: SourceIngestCommand,
   access: JudgmentAccess,
-  options?: { adapter?: DatabaseAdapter }
+  options: { adapter: DatabaseAdapter }
 ): Promise<SourceIngestReceipt> {
-  if (options?.adapter) {
-    return ingestSourceOnAdapter(options.adapter, command, access);
+  // The ingest boundary no longer reaches the process-global store: the
+  // caller names the database this observation commits to.
+  if (!options?.adapter) {
+    throw new JudgmentError(
+      'INVALID_COMMAND',
+      'ingestSource requires an explicit adapter; the process-global store is not a write path'
+    );
   }
-  await initDB();
-  return ingestSourceOnAdapter(getAdapter(), command, access);
+  return ingestSourceOnAdapter(options.adapter, command, access);
 }

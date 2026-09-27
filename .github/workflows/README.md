@@ -60,19 +60,19 @@ git push origin os-v0.1.1
 
 ### `pages.yml` - Deploy GitHub Pages
 
-**Purpose:** Automatically deploy documentation website to GitHub Pages.
+**Purpose:** Build the Markdown documentation in `docs/` with Jekyll and deploy it to GitHub Pages.
 
 **Trigger:**
 
 - Push to `main` branch
-- Changes to `docs/website/**`, `docs/**/*.md`, or `.github/workflows/pages.yml`
+- Changes to `docs/**/*.md`, `docs/_config.yml`, or `.github/workflows/pages.yml`
 - Manual `workflow_dispatch`
 
 **What it does:**
 
 1. Checks out the repository
 2. Configures GitHub Pages environment
-3. Uploads `docs/website/` as artifact
+3. Builds `docs/` with the Just the Docs remote theme and uploads `_site/`
 4. Deploys to GitHub Pages
 
 **Deployment URL:** `https://jungjaehoon-lifegamez.github.io/MAMA/`
@@ -143,7 +143,7 @@ git push origin os-v0.1.1
 
 **Pages not updating:**
 
-- Check `docs/website/` exists
+- Check the Jekyll build step and the `docs/_config.yml` exclusions
 - Verify Pages is enabled in repo settings
 - Clear browser cache
 

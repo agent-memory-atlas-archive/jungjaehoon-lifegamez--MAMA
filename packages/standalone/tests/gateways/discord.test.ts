@@ -1,339 +1,352 @@
-/**
- * Unit tests for Discord Gateway
- *
- * Note: These tests mock discord.js to test gateway logic without
- * requiring an actual Discord connection.
- */
+import { EventEmitter } from 'node:events';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import { Events } from 'discord.js';
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { DiscordGateway } from '../../src/gateways/discord.js';
-import { MessageRouter } from '../../src/gateways/message-router.js';
-import type { TurnProcessor } from '../../src/gateways/turn-contract.js';
-
-// Mock discord.js
-const discordClientMock = vi.hoisted(() => ({
-  user: { id: '123456789', tag: 'TestBot#1234', username: 'TestBot' },
-  login: vi.fn().mockResolvedValue('token'),
-  destroy: vi.fn().mockResolvedValue(undefined),
-  once: vi.fn(),
-  on: vi.fn(),
-}));
-
-vi.mock('discord.js', () => {
+const mocks = vi.hoisted(() => ({ clients: [] as unknown[] }));
+vi.mock('discord.js', async (load) => {
+  const actual = await load<typeof import('discord.js')>();
   return {
-    Client: vi.fn(() => discordClientMock),
-    GatewayIntentBits: {
-      Guilds: 1,
-      GuildMessages: 2,
-      DirectMessages: 4,
-      MessageContent: 8,
-      GuildMembers: 16,
-      GuildMessageReactions: 32,
+    ...actual,
+    Client: class MockClient extends EventEmitter {
+      channels = { fetch: vi.fn() };
+      login = vi.fn(async () => undefined);
+      destroy = vi.fn();
+      constructor() {
+        super();
+        mocks.clients.push(this);
+      }
     },
-    Partials: {
-      Channel: 1,
-    },
-    Events: {
-      ClientReady: 'ready',
-      MessageCreate: 'messageCreate',
-      ShardDisconnect: 'shardDisconnect',
-      Error: 'error',
-    },
-    ChannelType: {
-      DM: 1,
-      GuildText: 0,
-    },
-    AttachmentBuilder: vi.fn(),
   };
 });
+import { DiscordGateway } from '../../src/gateways/discord.js';
+import { OwnerMessageLedger } from '../../src/gateways/telegram-message-ledger.js';
 
-// Implements the turn contract, and the router methods this surface reads for display.
-// A double with only the old router method would have forced the base to adapt at
-// runtime - the escape hatch the seam exists to remove.
-const turnResult = {
-  outcome: 'completed' as const,
-  response: 'Test response',
-  duration: 100,
-  sessionId: 'session-123',
-  injectedDecisions: [],
-  provenance: { status: 'available' as const, modelRunId: 'run_test' },
-  sourceTurnId: 'turn_test',
-  sourceMessageRef: 'discord:test:turn_test',
+type MockClient = EventEmitter & {
+  channels: { fetch: ReturnType<typeof vi.fn> };
+  login: ReturnType<typeof vi.fn>;
+  destroy: ReturnType<typeof vi.fn>;
 };
-const mockMessageRouter = {
-  processTurn: vi.fn().mockResolvedValue(turnResult),
-  process: vi.fn().mockResolvedValue(turnResult),
-  listSessions: vi.fn().mockReturnValue([]),
-  updateChannelName: vi.fn().mockReturnValue(false),
-} as unknown as MessageRouter;
+interface TestAttachment {
+  id: string;
+  name: string;
+  url: string;
+  contentType: string;
+}
 
-describe('DiscordGateway', () => {
-  let gateway: DiscordGateway;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    gateway = new DiscordGateway({
-      token: 'test-token',
-      turnProcessor: mockMessageRouter,
-      sessionDirectory: mockMessageRouter,
-    });
-  });
-
-  describe('constructor', () => {
-    it('should create gateway with token and router', () => {
-      expect(gateway).toBeInstanceOf(DiscordGateway);
-      expect(gateway.source).toBe('discord');
-    });
-
-    it('should initialize with default config', () => {
-      const config = gateway.getConfig();
-      expect(config.enabled).toBe(true);
-      expect(config.token).toBe('test-token');
-      expect(config.guilds).toEqual({});
-    });
-
-    it('should accept initial guild config', () => {
-      const gatewayWithConfig = new DiscordGateway({
-        token: 'test-token',
-        turnProcessor: mockMessageRouter,
-        sessionDirectory: mockMessageRouter,
-        config: {
-          guilds: {
-            '123': { requireMention: false },
-          },
-        },
-      });
-
-      const config = gatewayWithConfig.getConfig();
-      expect(config.guilds?.['123']?.requireMention).toBe(false);
-    });
-
-    it('should retain the configured owner user ID', () => {
-      const gatewayWithOwner = new DiscordGateway({
-        token: 'test-token',
-        turnProcessor: mockMessageRouter,
-        sessionDirectory: mockMessageRouter,
-        ownerUserId: 'owner-user-1',
-      });
-
-      expect(gatewayWithOwner.getConfig()).toMatchObject({ ownerUserId: 'owner-user-1' });
-    });
-  });
-
-  describe('start()', () => {
-    it('should connect to Discord', async () => {
-      await gateway.start();
-      // Client.login should have been called
-      // The mock returns resolved promise
-    });
-
-    it('should not reconnect if already connected', async () => {
-      // Simulate connected state by calling start twice
-      await gateway.start();
-      await gateway.start();
-      // Should handle gracefully
-    });
-  });
-
-  describe('stop()', () => {
-    it('should disconnect from Discord', async () => {
-      await gateway.start();
-      await gateway.stop();
-      expect(gateway.isConnected()).toBe(false);
-    });
-
-    it('should handle stop when not connected', async () => {
-      await gateway.stop();
-      // Should not throw
-    });
-  });
-
-  describe('isConnected()', () => {
-    it('should return false initially', () => {
-      expect(gateway.isConnected()).toBe(false);
-    });
-  });
-
-  describe('onEvent()', () => {
-    it('should register event handlers', () => {
-      const handler = vi.fn();
-      gateway.onEvent(handler);
-      // Handler should be registered
-    });
-  });
-
-  describe('setConfig()', () => {
-    it('should update guild config', () => {
-      gateway.setConfig({
-        guilds: {
-          '456': { requireMention: true },
-        },
-      });
-
-      const config = gateway.getConfig();
-      expect(config.guilds?.['456']?.requireMention).toBe(true);
-    });
-
-    it('should merge with existing config', () => {
-      gateway.setConfig({
-        guilds: {
-          '123': { requireMention: false },
-        },
-      });
-
-      gateway.setConfig({
-        guilds: {
-          '456': { requireMention: true },
-        },
-      });
-
-      const config = gateway.getConfig();
-      expect(config.guilds?.['123']?.requireMention).toBe(false);
-      expect(config.guilds?.['456']?.requireMention).toBe(true);
-    });
-
-    it('should update enabled status', () => {
-      gateway.setConfig({ enabled: false });
-      expect(gateway.getConfig().enabled).toBe(false);
-    });
-  });
-
-  describe('addGuildConfig()', () => {
-    it('should add guild configuration', () => {
-      gateway.addGuildConfig('789', {
-        requireMention: false,
-        channels: {
-          '111': { requireMention: true },
-        },
-      });
-
-      const config = gateway.getConfig();
-      expect(config.guilds?.['789']?.requireMention).toBe(false);
-      expect(config.guilds?.['789']?.channels?.['111']?.requireMention).toBe(true);
-    });
-  });
-
-  describe('addChannelConfig()', () => {
-    it('should add channel configuration', () => {
-      gateway.addChannelConfig('999', '888', {
-        requireMention: false,
-      });
-
-      const config = gateway.getConfig();
-      expect(config.guilds?.['999']?.channels?.['888']?.requireMention).toBe(false);
-    });
-
-    it('should create guild config if not exists', () => {
-      gateway.addChannelConfig('new-guild', 'new-channel', {
-        requireMention: true,
-      });
-
-      const config = gateway.getConfig();
-      expect(config.guilds?.['new-guild']?.channels?.['new-channel']).toBeDefined();
-    });
-  });
-
-  describe('Event Emission', () => {
-    it('should emit events to registered handlers', () => {
-      const handler1 = vi.fn();
-      const handler2 = vi.fn();
-
-      gateway.onEvent(handler1);
-      gateway.onEvent(handler2);
-
-      // Internal event emission would be tested through integration tests
-      // Here we verify handlers are registered
-      expect(handler1).not.toHaveBeenCalled();
-      expect(handler2).not.toHaveBeenCalled();
-    });
-  });
-
-  it('sends nothing for an externally diverted turn', async () => {
-    const turnProcessor: TurnProcessor = {
-      processTurn: vi.fn().mockResolvedValue({
-        outcome: 'external_divert',
-        delivery: 'silent',
-        sessionId: 'external-divert',
-        duration: 0,
-      }),
-    };
-    const divertedGateway = new DiscordGateway({
-      token: 'test-token',
-      turnProcessor,
-      sessionDirectory: mockMessageRouter,
-    });
-    const send = vi.fn().mockResolvedValue({ id: 'placeholder-synthetic' });
-    const sentEvents: string[] = [];
-    divertedGateway.onEvent((event) => sentEvents.push(event.type));
-    const internals = divertedGateway as unknown as {
-      dispatchToAgent(
-        message: object,
-        cleanContent: string,
-        normalizedMessage: object,
-        attachmentInfo: { effectiveAttachments: [] }
-      ): Promise<void>;
-    };
-
-    await internals.dispatchToAgent(
-      {
-        channel: {
-          id: 'channel-synthetic',
-          send,
-          messages: { fetch: vi.fn() },
-        },
-      },
-      'synthetic request',
-      {
-        source: 'discord',
-        channelId: 'channel-synthetic',
-        userId: 'user-synthetic',
-        text: 'synthetic request',
-      },
-      { effectiveAttachments: [] }
-    );
-
-    expect(send).not.toHaveBeenCalled();
-    expect(sentEvents).not.toContain('message_sent');
-  });
+let root: string;
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), 'discord-owner-'));
+  mocks.clients.length = 0;
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+  rmSync(root, { recursive: true, force: true });
 });
 
-describe('DiscordGateway Configuration', () => {
-  it('should support wildcard guild config', () => {
-    const gateway = new DiscordGateway({
-      token: 'test-token',
-      turnProcessor: mockMessageRouter,
-      sessionDirectory: mockMessageRouter,
-      config: {
-        guilds: {
-          '*': { requireMention: true },
-          '123': { requireMention: false },
-        },
-      },
-    });
+function ownerMessage(
+  id: string,
+  user: string,
+  channel = 'channel_test',
+  attachments: TestAttachment[] = []
+) {
+  return {
+    id,
+    channelId: channel,
+    createdTimestamp: 1_700_000_000_000,
+    content: 'owner input',
+    author: { id: user, bot: false },
+    attachments: { size: attachments.length, values: () => attachments },
+  };
+}
 
-    const config = gateway.getConfig();
-    expect(config.guilds?.['*']?.requireMention).toBe(true);
-    expect(config.guilds?.['123']?.requireMention).toBe(false);
+describe('Discord owner gateway', () => {
+  it('drops non-owners with hashed ids and accepts a duplicate owner event once', async () => {
+    const accepted: unknown[] = [];
+    const logs: string[] = [];
+    const gateway = new DiscordGateway({
+      token: 'fixture-token',
+      intake: {
+        acceptOwnerMessage: (input) => {
+          accepted.push(input);
+          return { state: 'accepted' } as never;
+        },
+        isPending: () => true,
+      },
+      config: {
+        enabled: true,
+        ownerChannelId: 'channel_test',
+        allowedChannels: ['channel_test'],
+        ownerUserIds: ['user_owner'],
+      },
+      messageLedgerPath: join(root, 'owner-ledger.json'),
+      downloadsDir: join(root, 'downloads'),
+      log: (line) => logs.push(line),
+    });
+    await gateway.start();
+    const client = mocks.clients[0] as MockClient;
+    client.emit(Events.MessageCreate, ownerMessage('id_rejected', 'user_stranger'));
+    client.emit(Events.MessageCreate, ownerMessage('id_accepted', 'user_owner'));
+    client.emit(Events.MessageCreate, ownerMessage('id_accepted', 'user_owner'));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(accepted).toHaveLength(1);
+    expect(accepted[0]).toMatchObject({
+      id: 'discord:channel_test:id_accepted',
+      channelKey: 'channel_test',
+    });
+    expect(logs.join('\n')).toContain('channel_hash=');
+    expect(logs.join('\n')).not.toContain('channel_test');
+    expect(logs.join('\n')).not.toContain('user_stranger');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('download unavailable');
+      })
+    );
+    const failedFile = ownerMessage('id_file', 'user_owner', 'channel_test', [
+      {
+        id: 'file_test',
+        name: 'result.pdf',
+        url: 'https://files.example.test/result.pdf',
+        contentType: 'application/pdf',
+      },
+    ]);
+    client.emit(Events.MessageCreate, failedFile);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(accepted[1]).toMatchObject({
+      payload: { attachments: [{ name: 'result.pdf', error: 'download unavailable' }] },
+    });
+    await gateway.stop();
   });
 
-  it('should support per-channel configuration', () => {
+  it('uploads a file once for an operation id and returns the durable receipt on repeat', async () => {
+    const filesRoot = join(root, 'workspace', 'files');
+    mkdirSync(filesRoot, { recursive: true });
+    const filePath = join(filesRoot, 'result.pdf');
+    writeFileSync(filePath, 'result');
     const gateway = new DiscordGateway({
-      token: 'test-token',
-      turnProcessor: mockMessageRouter,
-      sessionDirectory: mockMessageRouter,
+      token: 'fixture-token',
+      intake: { acceptOwnerMessage: () => ({ state: 'accepted' }) as never },
       config: {
-        guilds: {
-          '123': {
-            requireMention: true,
-            channels: {
-              'bot-channel': { requireMention: false },
-            },
-          },
+        enabled: true,
+        ownerChannelId: 'channel_test',
+        allowedChannels: ['channel_test'],
+        ownerUserIds: ['user_owner'],
+      },
+      messageLedgerPath: join(root, 'ledger.json'),
+      filesRoot,
+    });
+    await gateway.start();
+    const send = vi.fn(async () => ({ id: 'message_test' }));
+    (mocks.clients[0] as MockClient).channels.fetch.mockResolvedValue({
+      isSendable: () => true,
+      isTextBased: () => true,
+      send,
+    });
+    expect(await gateway.sendFile(filePath, undefined, 'operation_test')).toMatchObject({
+      messageId: 'message_test',
+      size: 6,
+    });
+    expect(await gateway.sendFile(filePath, undefined, 'operation_test')).toMatchObject({
+      idempotent: true,
+      size: 6,
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+    await gateway.stop();
+  });
+
+  it('resumes a known-unsent reply after restart and keeps its receipt', async () => {
+    const ledgerPath = join(root, 'ledger.json');
+    const ledger = new OwnerMessageLedger(ledgerPath);
+    ledger.claim('discord:channel_test:message_test', {
+      deliveryTarget: 'discord:channel_test',
+      payloadIdentity: 'a'.repeat(64),
+    });
+    ledger.markReady('discord:channel_test:message_test', 'recovered response');
+    const gateway = new DiscordGateway({
+      token: 'fixture-token',
+      intake: { acceptOwnerMessage: () => ({ state: 'accepted' }) as never },
+      config: {
+        enabled: true,
+        ownerChannelId: 'channel_test',
+        allowedChannels: ['channel_test'],
+        ownerUserIds: ['user_owner'],
+      },
+      messageLedgerPath: ledgerPath,
+    });
+    const send = vi.fn(async () => ({ id: 'message_reply' }));
+    (mocks.clients[0] as MockClient).channels.fetch.mockResolvedValue({
+      isSendable: () => true,
+      isTextBased: () => true,
+      send,
+    });
+    await gateway.start();
+    await gateway.recoverPendingResponses();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(
+      new OwnerMessageLedger(ledgerPath).get('discord:channel_test:message_test')
+    ).toMatchObject({
+      state: 'delivered',
+      messageIds: ['message_reply'],
+    });
+    await gateway.stop();
+  });
+
+  it('recovers an interrupted owner turn and logs client errors', async () => {
+    const ledgerPath = join(root, 'ledger.json');
+    const ledger = new OwnerMessageLedger(ledgerPath);
+    ledger.claim('discord:channel_test:interrupted', {
+      deliveryTarget: 'discord:channel_test',
+      payloadIdentity: 'a'.repeat(64),
+    });
+    ledger.claim('slack:channel_test:foreign', {
+      deliveryTarget: 'slack:channel_test',
+      payloadIdentity: 'b'.repeat(64),
+    });
+    ledger.markReady('slack:channel_test:foreign', 'foreign');
+    const logs: string[] = [];
+    const gateway = new DiscordGateway({
+      token: 'fixture-token',
+      intake: {
+        acceptOwnerMessage: () => ({ state: 'accepted' }) as never,
+        isPending: () => false,
+      },
+      config: {
+        enabled: true,
+        ownerChannelId: 'channel_test',
+        allowedChannels: ['channel_test'],
+        ownerUserIds: ['user_owner'],
+      },
+      messageLedgerPath: ledgerPath,
+      log: (line) => logs.push(line),
+    });
+    const client = mocks.clients[0] as MockClient;
+    client.channels.fetch.mockResolvedValue({
+      isSendable: () => true,
+      send: vi.fn(async () => ({ id: 'message_sent' })),
+    });
+    await gateway.start();
+    client.emit('error', new Error('provider event error'));
+    expect(logs.join('\n')).toContain('discord client error=provider event error');
+    expect(client.channels.fetch).toHaveBeenCalledOnce();
+    expect(new OwnerMessageLedger(ledgerPath).get('discord:channel_test:interrupted')?.state).toBe(
+      'delivered'
+    );
+    expect(new OwnerMessageLedger(ledgerPath).get('slack:channel_test:foreign')?.state).toBe(
+      'ready'
+    );
+    await gateway.stop();
+  });
+
+  it('marks a chunk uncertain while the provider request is in flight', async () => {
+    const ledgerPath = join(root, 'ledger.json');
+    const gateway = new DiscordGateway({
+      token: 'fixture-token',
+      intake: { acceptOwnerMessage: () => ({ state: 'accepted' }) as never },
+      config: {
+        enabled: true,
+        ownerChannelId: 'channel_test',
+        allowedChannels: ['channel_test'],
+        ownerUserIds: ['user_owner'],
+      },
+      messageLedgerPath: ledgerPath,
+    });
+    await gateway.start();
+    let release!: (value: { id: string }) => void;
+    const send = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        })
+    );
+    (mocks.clients[0] as MockClient).channels.fetch.mockResolvedValue({
+      isSendable: () => true,
+      send,
+    });
+    const pending = gateway.sendMessage('channel_test', 'outbound text', 'stable-key');
+    await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
+    expect(new OwnerMessageLedger(ledgerPath).listUndelivered()[0]?.deliveryUncertain).toBe(true);
+    release({ id: 'message_sent' });
+    await pending;
+    await expect(
+      gateway.sendMessage('channel_test', 'regenerated text', 'stable-key')
+    ).resolves.toBeUndefined();
+    expect(send).toHaveBeenCalledOnce();
+    await gateway.stop();
+  });
+
+  it('keeps same-named attachments from overwriting each other', async () => {
+    const accepted: Array<{ payload?: { attachments?: Array<{ path?: string }> } }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('file'))
+    );
+    const gateway = new DiscordGateway({
+      token: 'fixture-token',
+      intake: {
+        acceptOwnerMessage: (input) => {
+          accepted.push(input as never);
+          return { state: 'accepted' } as never;
         },
       },
+      config: {
+        enabled: true,
+        ownerChannelId: 'channel_test',
+        allowedChannels: ['channel_test'],
+        ownerUserIds: ['user_owner'],
+      },
+      messageLedgerPath: join(root, 'ledger.json'),
+      downloadsDir: join(root, 'downloads'),
     });
+    await gateway.start();
+    (mocks.clients[0] as MockClient).emit(
+      Events.MessageCreate,
+      ownerMessage('message-files', 'user_owner', 'channel_test', [
+        {
+          id: 'file-a',
+          name: 'same.pdf',
+          url: 'https://example.test/a',
+          contentType: 'application/pdf',
+        },
+        {
+          id: 'file-b',
+          name: 'same.pdf',
+          url: 'https://example.test/b',
+          contentType: 'application/pdf',
+        },
+      ])
+    );
+    await vi.waitFor(() => expect(accepted).toHaveLength(1));
+    const paths = accepted[0]!.payload!.attachments!.map((item) => item.path);
+    expect(new Set(paths).size).toBe(2);
+    await gateway.stop();
+  });
 
-    const config = gateway.getConfig();
-    expect(config.guilds?.['123']?.channels?.['bot-channel']?.requireMention).toBe(false);
+  it('does not send an interrupted notice for a live duplicate owner event', async () => {
+    const accepted = vi.fn(() => ({ state: 'accepted' }) as never);
+    const gateway = new DiscordGateway({
+      token: 'fixture-token',
+      intake: { acceptOwnerMessage: accepted, isPending: () => false },
+      config: {
+        enabled: true,
+        ownerChannelId: 'channel_test',
+        allowedChannels: ['channel_test'],
+        ownerUserIds: ['user_owner'],
+      },
+      messageLedgerPath: join(root, 'ledger.json'),
+    });
+    const client = mocks.clients[0] as MockClient;
+    const send = vi.fn(async () => ({ id: 'reply' }));
+    client.channels.fetch.mockResolvedValue({ isSendable: () => true, send });
+    await gateway.start();
+    client.emit(Events.MessageCreate, ownerMessage('duplicate', 'user_owner'));
+    await vi.waitFor(() => expect(accepted).toHaveBeenCalledOnce());
+    client.emit(Events.MessageCreate, ownerMessage('duplicate', 'user_owner'));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(accepted).toHaveBeenCalledOnce();
+    expect(send).not.toHaveBeenCalled();
+    await gateway.stop();
   });
 });

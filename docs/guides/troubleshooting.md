@@ -1,423 +1,124 @@
-# Troubleshooting Guide
-
-**Audience:** All users experiencing issues
-**Common Problems:** Plugin not loading, Node runtime mismatch, optional dependency issues, disk space, hooks not firing, database corruption, model download failures
-
+---
+title: Troubleshoot the owner loop
+parent: Guides
+nav_order: 10
 ---
 
-## Quick Diagnostics
+# Troubleshoot the owner loop
 
-```bash
-# Run full diagnostic check
-cd ~/.claude/plugins/mama
-npm test
-node scripts/check-compatibility.js
-node scripts/validate-manifests.js
-```
-
----
-
-## 1. Plugin Not Loading
-
-**Symptoms:**
-
-- `/mama-*` commands don't appear in command palette
-- No MAMA context injections
-- Claude Code shows "Plugin load failed" error
-
-### Check 1: Node.js Version
+Start with a short, private diagnostic sample:
 
 ```bash
 node --version
-
-# Required: >= 22.13.0
-# Recommended: >= 22.13.0
+mama status
+curl -fsS http://127.0.0.1:3847/health
+mama secret list
+tail -n 60 ~/.mama/logs/daemon.log
 ```
 
-**If Node too old:**
+Node.js must be 22.13 or newer. `mama status` only checks the recorded process;
+`/health` only checks the HTTP listener. Confirm a real owner reply and inspect the
+related records before deciding that the loop works. Do not print `auth.env` or
+share whole configuration files and logs. For development-memory setup, see the
+[Claude Code plugin guide](../start/claude-code-plugin.md).
+
+## Fix a configuration error
+
+Edit only the setting named in the error. `config.yaml` uses `version: 1` and the
+current `agent`, `database`, `logging`, `telegram`, `jev`, `wiki`, and `reports`
+sections. Unsupported keys are logged as `ignored`; parsing an old setting
+does not make that feature run. See [Configuration](../reference/configuration.md).
+
+If startup says `run mama secret set MAMA_TELEGRAM_TOKEN and remove telegram.token`,
+enter the token through that terminal command, remove the obsolete YAML key, and
+restart through `start.sh`. The bare `mama daemon` command does not load
+`auth.env` itself. `mama init` refuses existing setup files; it is not a reset tool.
+
+## Restart or stop a launchd service
+
+A launchd service with `KeepAlive` returns after `mama stop` or a killed process.
+For a restart that reloads configuration and secrets:
 
 ```bash
-# Install Node 22 LTS via nvm
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash
-nvm install 22
-nvm use 22
-nvm alias default 22
+launchctl bootout gui/$(id -u)/com.mama.server
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.mama.server.plist
 ```
 
-### Check 2: Plugin Structure
-
-```bash
-# Verify plugin.json exists
-ls -la ~/.claude/plugins/mama/.claude-plugin/plugin.json
-
-# Expected: File exists and is readable
-```
-
-**If missing:**
-
-```bash
-# Re-copy plugin directory
-cp -r /path/to/mama-plugin ~/.claude/plugins/mama
-
-# Verify all manifests
-node ~/.claude/plugins/mama/scripts/validate-manifests.js
-```
-
-### Check 3: Dependencies Installed
-
-```bash
-cd ~/.claude/plugins/mama
-npm install
-
-# Check for errors in output
-# Common issue: old Node runtime or missing optional image runtime (see section below)
-```
-
-### Check 4: Claude Code Logs
-
-```bash
-# Check Claude Code logs for plugin errors
-# Logs location varies by platform:
-# macOS: ~/Library/Logs/Claude/
-# Linux: ~/.config/Claude/logs/
-# Windows: %APPDATA%\Claude\logs\
-```
-
----
-
-## 2. Node.js Runtime and Optional Dependency Issues
-
-**Symptoms:**
-
-```text
-Error: Cannot find module 'node:sqlite'
-ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite
-Could not load the "sharp" module using the current runtime
-```
-
-**Why this happens:**
-MAMA now uses Node's built-in `node:sqlite`, so SQLite itself does not need compilation anymore. These failures mean either:
-
-1. Your Node.js version is too old for `node:sqlite`
-2. Optional image dependencies such as `sharp` were omitted or installed for the wrong platform
-
-### Fix 1: Upgrade Node.js to 22.13+
-
-```bash
-node --version
-# Must be >= 22.13.0
-```
-
-If not, upgrade Node and reinstall dependencies:
-
-```bash
-cd ~/.claude/plugins/mama
-rm -rf node_modules package-lock.json
-npm install
-```
-
-### Fix 2: Restore optional image runtime packages
-
-If OCR, image upload, or checkpoint narrative expansion reports `sharp` runtime errors:
-
-```bash
-cd ~/.claude/plugins/mama
-npm install --include=optional sharp
-```
-
-### Fix 3: Avoid `--omit=optional`
-
-Do not install MAMA packages with `npm install --omit=optional` unless you intentionally want to disable optional image features. That flag skips platform packages used by `sharp`.
-
----
-
-## 3. Disk Space Issues
-
-**Symptoms:**
-
-- Model download fails
-- Database writes fail
-- `ENOSPC: no space left on device`
-
-### Check Disk Space
-
-```bash
-# Check available space
-df -h ~
-
-# Required minimum:
-# - Model cache: 120MB
-# - Database: 50MB initial (grows with usage)
-# - Node modules: 150MB
-# Total: ~500MB minimum
-```
-
-### Free Up Space
-
-```bash
-# 1. Clear old model caches
-rm -rf ~/.cache/huggingface/transformers/.cache
-
-# 2. Clear npm cache
-npm cache clean --force
-
-# 3. Clear old Claude Code logs (if safe)
-# rm -rf ~/Library/Logs/Claude/old-logs/
-
-# 4. Check database size
-du -sh ~/.claude/mama-memory.db
-
-# If > 100MB, consider exporting old decisions and resetting
-```
-
-### Database Size Management
-
-```bash
-# Check decision count
-echo "SELECT COUNT(*) FROM decisions;" | sqlite3 ~/.claude/mama-memory.db
-
-# If > 1000 decisions, consider:
-# 1. Export old decisions
-# 2. Delete obsolete topics
-# 3. Or accept larger DB (decisions compress well)
-```
-
-**Expected Database Growth:**
-
-- 100 decisions: ~5MB
-- 1,000 decisions: ~20MB
-- 10,000 decisions: ~100MB
-
----
-
-## 4. Hooks Not Firing
-
-**Symptoms:**
-
-- No automatic context injection
-- UserPromptSubmit hook doesn't show MAMA banner
-
-### Check 1: Hooks Enabled
-
-```bash
-echo $MAMA_DISABLE_HOOKS
-
-# Expected: empty or "false"
-# If "true", hooks are disabled
-```
-
-**Re-enable hooks:**
-
-```bash
-unset MAMA_DISABLE_HOOKS
-
-# Or in ~/.mama/config.json:
-{
-  "disable_hooks": false
-}
-```
-
-### Check 2: Hook Script Permissions
-
-```bash
-ls -la ~/.claude/plugins/mama/scripts/*.js
-
-# All .js files should have execute permissions (x)
-# Example: -rwxr-xr-x
-```
-
-**Fix permissions:**
-
-```bash
-chmod +x ~/.claude/plugins/mama/scripts/*.js
-```
-
-### Check 3: Test Hook Manually
-
-```bash
-cd ~/.claude/plugins/mama
-
-# Test UserPromptSubmit hook
-export USER_PROMPT="test prompt"
-export MAMA_DB_PATH=~/.claude/mama-memory.db
-node scripts/userpromptsubmit-hook.js
-
-# Expected: Should output MAMA banner or tier message
-```
-
----
-
-## 5. Database Corruption
-
-**Symptoms:**
-
-- `SQLITE_CORRUPT` errors
-- `/mama-*` commands fail
-- Database queries return empty results
-
-### Check Database Integrity
-
-```bash
-sqlite3 ~/.claude/mama-memory.db "PRAGMA integrity_check;"
-
-# Expected: "ok"
-# If errors shown: Database is corrupted
-```
-
-### Fix Corrupted Database
-
-```bash
-# 1. Backup existing database (just in case)
-cp ~/.claude/mama-memory.db ~/.claude/mama-memory.db.backup
-
-# 2. Try to recover
-sqlite3 ~/.claude/mama-memory.db ".recover" | sqlite3 ~/.claude/mama-memory-recovered.db
-
-# 3. If recovery fails, reset database (WARNING: loses all data)
-rm ~/.claude/mama-memory.db
-
-# 4. Restart Claude Code to recreate fresh database
-```
-
----
-
-## 6. Embedding Model Download Fails
-
-**Symptoms:**
-
-- Stuck at "Downloading model..."
-- Network timeout errors
-
-### Check 1: Internet Connection
-
-```bash
-# Test connection to Hugging Face CDN
-curl -I https://huggingface.co
-
-# Expected: HTTP 200 OK
-```
-
-### Check 2: Manual Model Download
-
-```bash
-cd ~/.claude/plugins/mama
-
-# Force model download with debug output
-node -e "
-const { generateEmbedding } = require('@jungjaehoon/mama-core/embeddings');
-(async () => {
-  console.log('Downloading model...');
-  await generateEmbedding('warmup');
-  console.log('✅ Model downloaded successfully');
-  console.log('Cache location:', process.env.HOME + '/.cache/huggingface/');
-})();
-"
-
-# This should take ~987ms on first run
-# Subsequent runs should be instant (cached)
-```
-
-### Check 3: Verify Model Cache
-
-```bash
-ls -lah ~/.cache/huggingface/transformers/
-
-# Expected: Directory with ~120MB of model files
-# Files: model.onnx, tokenizer.json, etc.
-```
-
-**Clear corrupt cache:**
-
-```bash
-rm -rf ~/.cache/huggingface/transformers/
-# Then retry download
-```
-
-### Check 4: Firewall/Proxy Issues
-
-If behind corporate firewall:
-
-```bash
-# Set proxy for npm
-npm config set proxy http://proxy.company.com:8080
-npm config set https-proxy http://proxy.company.com:8080
-
-# Then retry install
-cd ~/.claude/plugins/mama
-npm install
-```
-
----
-
-## Advanced Troubleshooting
-
-### Enable Debug Logging
-
-```bash
-# Set debug environment variable
-export DEBUG=mama:*
-
-# Run command with debug output
-node scripts/userpromptsubmit-hook.js
-
-# Look for error messages in output
-```
-
-### Check System Resources
-
-```bash
-# CPU usage
-top -l 1 | grep "CPU usage"
-
-# Memory available
-free -h  # Linux
-vm_stat  # macOS
-
-# If resources constrained, MAMA may be slow
-```
-
-### Test Individual Components
-
-```bash
-cd ~/.claude/plugins/mama
-
-# Test database connection
-node -e "
-const db = require('./src/core/db-manager.js');
-db.initDB().then(() => console.log('✅ DB OK'));
-"
-
-# Test embedding generation
-node -e "
-const emb = require('./src/core/embeddings.js');
-emb.generateEmbedding('test').then(v => console.log('✅ Embeddings OK', v.length));
-"
-```
-
----
-
-## Getting Help
-
-**Still having issues?**
-
-1. **Check GitHub Issues**: [MAMA/issues](https://github.com/jungjaehoon-lifegamez/MAMA/issues)
-2. **Enable debug logs** and share output
-3. **Run diagnostics**:
-   ```bash
-   cd ~/.claude/plugins/mama
-   npm test  # Run test suite
-   node scripts/check-compatibility.js  # Check system compatibility
-   ```
-4. **Provide system info**:
-   - OS version
-   - Node.js version
-   - Claude Code version
-   - Error messages from logs
-
----
-
-**Related:**
-
-- [Installation Guide](installation.md)
-- [Configuration Guide](configuration.md)
-- [Performance Tuning](performance-tuning.md)
+To leave it stopped, run only `bootout`, then confirm `mama status` is `stopped`.
+For an unsupervised daemon, `mama stop` sends SIGTERM. Do not start a foreground
+copy alongside launchd. If port 3847 is occupied, inspect its owner with
+`lsof -nP -iTCP:3847 -sTCP:LISTEN` before stopping anything.
+
+Check the executable paths in `~/.mama/start.sh` after moving a checkout or Node
+installation. The generated script records the Node and CLI paths used at setup;
+it does not automatically follow a different installation.
+
+## The Telegram bot is silent
+
+Confirm that `telegram.enabled` and `telegram.polling` are true, the owner chat is
+allowlisted, and the sender is in `owner_user_ids`. Inspect recent logs for
+`telegram polling stopped`, `telegram message dropped`, or a boot-stage failure.
+A disabled poller cannot receive owner turns. A second poller using the same bot
+can also prevent normal operation.
+
+If the backend fails to authenticate, sign in on the daemon host with
+`claude auth login`, or `CODEX_HOME="$HOME/.mama/.codex" codex login` for Codex,
+then restart. Use the configured `agent.codex_home` if different; the owner runtime
+does not copy a normal Codex login into that home. For the bot token, use
+`mama secret set MAMA_TELEGRAM_TOKEN`; do not pass its value as a command argument.
+See [Telegram](telegram.md) and [Backends](backends.md).
+
+## A connector or report is stale
+
+Read the viewer's Connectors page or `GET /api/connectors/status`. Check the last
+poll, error and configured channel scope. Token-backed sources need the matching
+`auth.tokenName` and secret; Trello needs both its key and token. Calendar requires
+`gws` on the daemon PATH and actual primary-calendar read access. See
+[Connectors](connectors.md).
+
+For reports, check the schedule hours in your configured timezone, Telegram delivery, and whether an earlier
+report is still pending. Compare task revisions with the board slot update time.
+A source delta ending in `[ack]` produces no owner notification. See
+[Reports and board](reports-and-board.md).
+
+## Trace one missing answer or write
+
+Follow the same stimulus through the mailbox, `model_runs`, `tool_traces`, the
+Telegram message ledger or board slot writer, and the matching `daemon.log`
+entries. Native parent and child tool traces carry their owning model run.
+`stimulus accepted`, `stimulus delivered`, `stimulus failed`, and
+`delta report route=` distinguish stages. A stored task proves a write, not a sent
+reply; inspect the delivery receipt and the owner-visible result separately.
+
+If delivery is uncertain, check its original operation before sending again. Keep
+IDs in private diagnostics and provide a redacted error plus the reproduction
+steps when reporting a defect.
+
+## The viewer will not open
+
+HTTP 421 means the Host is not allowed; check `MAMA_VIEWER_HOSTNAMES`. HTTP 401 on
+remote data routes means there is no valid bearer credential or verified Access
+assertion. A successful health route does not establish data access. See
+[Viewer](viewer.md).
+
+`Viewer assets are not installed` means the daemon could not find its viewer
+files. Verify that the installation contains the built `public/viewer` assets;
+source builds generate the viewer JavaScript. This is an installation failure,
+not a Telegram credential problem.
+
+## A database is locked or storage is full
+
+Check available disk space and stop every process using the affected database
+before maintenance. Never delete SQLite `-wal` or `-shm` files: committed writes
+may still live in the WAL. SQLite handles checkpointing when connections close.
+Keep the OS database under `~/.mama/` separate from the development-memory database
+under `~/.claude/`; do not reset development memory as an OS troubleshooting step.
+
+## Case merge chain cycle
+
+The retained core case resolver can raise `case.merge_chain_cycle` when
+`case_truth.canonical_case_id` links revisit a case or exceed the resolver's
+maximum depth (64 by default). Use the error's chain and detected depth to inspect
+those links. Repair the incorrect canonical link with evidence before retrying;
+do not delete the database or unrelated history. This is a core diagnostic, not a
+separate Case object in the current owner work ledger.

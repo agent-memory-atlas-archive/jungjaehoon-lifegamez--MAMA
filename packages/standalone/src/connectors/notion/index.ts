@@ -32,6 +32,8 @@ interface NotionSearchResponse {
 }
 
 interface NotionBlock {
+  id: string;
+  has_children?: boolean;
   type: string;
   [key: string]: unknown;
 }
@@ -41,6 +43,10 @@ interface NotionBlockChildrenResponse {
   has_more: boolean;
   next_cursor: string | null;
 }
+
+const MAX_SEARCH_PAGES = 100;
+const MAX_BLOCK_PAGES = 100;
+const MAX_BLOCK_DEPTH = 8;
 
 export class NotionConnector implements IConnector {
   readonly name = 'notion';
@@ -59,10 +65,13 @@ export class NotionConnector implements IConnector {
   }
 
   async init(): Promise<void> {
-    const token =
-      this.config.auth.token ?? process.env[this.config.auth.tokenName ?? 'NOTION_TOKEN'];
+    const tokenName = this.config.auth.tokenName;
+    if (tokenName !== 'MAMA_NOTION_TOKEN') {
+      throw new Error('Notion auth.tokenName must be MAMA_NOTION_TOKEN');
+    }
+    const token = process.env[tokenName];
     if (!token) {
-      throw new Error('Notion token not found. Set NOTION_TOKEN environment variable.');
+      throw new Error('Notion token not found. Run mama secret set MAMA_NOTION_TOKEN.');
     }
     this.token = token;
   }
@@ -84,7 +93,7 @@ export class NotionConnector implements IConnector {
     return [
       {
         type: 'token',
-        tokenName: 'NOTION_TOKEN',
+        tokenName: 'MAMA_NOTION_TOKEN',
         description:
           'Notion Internal Integration Token. Create an integration at https://www.notion.so/my-integrations and share your pages with it.',
       },
@@ -129,51 +138,68 @@ export class NotionConnector implements IConnector {
     return richText.map((t) => t.plain_text).join('');
   }
 
-  private async fetchBlockChildren(pageId: string): Promise<string> {
+  private async fetchBlockChildren(pageId: string, depth = 0): Promise<string> {
+    if (depth > MAX_BLOCK_DEPTH)
+      throw new Error(`block children depth cap (${MAX_BLOCK_DEPTH}) reached`);
     const texts: string[] = [];
     let startCursor: string | undefined;
-    let hasMore = true;
-
-    while (hasMore) {
-      const url = `${this.baseUrl}/blocks/${pageId}/children?page_size=100${startCursor ? `&start_cursor=${startCursor}` : ''}`;
+    const visitedCursors = new Set<string>();
+    for (let page = 0; page < MAX_BLOCK_PAGES; page += 1) {
+      const url = new URL(`${this.baseUrl}/blocks/${pageId}/children`);
+      url.searchParams.set('page_size', '100');
+      if (startCursor) url.searchParams.set('start_cursor', startCursor);
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 30_000);
       try {
-        const res = await fetch(url, {
+        const res = await fetch(url.toString(), {
           headers: this.authHeaders(),
           signal: controller.signal,
         });
-        if (!res.ok) break;
+        if (!res.ok) throw new Error(`block children HTTP ${res.status} for page ${page + 1}`);
         const data = (await res.json()) as NotionBlockChildrenResponse;
 
         for (const block of data.results ?? []) {
           const text = this.extractBlockText(block);
           if (text) texts.push(text);
+          if (block.has_children) {
+            if (depth === MAX_BLOCK_DEPTH)
+              throw new Error(`block children depth cap (${MAX_BLOCK_DEPTH}) reached`);
+            texts.push(await this.fetchBlockChildren(block.id, depth + 1));
+          }
         }
 
-        hasMore = data.has_more ?? false;
-        startCursor = data.next_cursor ?? undefined;
-      } catch {
-        break;
+        if (!data.has_more) return texts.join('\n');
+        const nextCursor = data.next_cursor;
+        if (!nextCursor) throw new Error(`block children page ${page + 1} omitted next_cursor`);
+        if (visitedCursors.has(nextCursor)) {
+          throw new Error(`block children pagination repeated a cursor at page ${page + 1}`);
+        }
+        visitedCursors.add(nextCursor);
+        startCursor = nextCursor;
+      } catch (error) {
+        throw error instanceof Error ? error : new Error(String(error));
       } finally {
         clearTimeout(timeout);
       }
     }
-
-    return texts.join('\n');
+    throw new Error(`block children page cap (${MAX_BLOCK_PAGES}) reached`);
   }
 
   async poll(since: Date): Promise<NormalizedItem[]> {
     if (!this.token) throw new Error('NotionConnector not initialized');
-
+    const configuredChannels = Object.entries(this.config.channels).filter(
+      ([, channel]) => channel.role !== 'ignore'
+    );
+    if (configuredChannels.length !== 1) {
+      throw new Error('Notion requires exactly one configured workspace channel');
+    }
+    const [channel] = configuredChannels[0]!;
     const items: NormalizedItem[] = [];
-    let hadError = false;
-
     try {
       let startCursor: string | undefined;
-      let hasMore = true;
-
-      while (hasMore) {
+      const visitedCursors = new Set<string>();
+      let pagesRead = 0;
+      for (let pageNumber = 0; pageNumber < MAX_SEARCH_PAGES; pageNumber += 1) {
         const searchBody: Record<string, unknown> = {
           filter: { property: 'object', value: 'page' },
           sort: { direction: 'descending', timestamp: 'last_edited_time' },
@@ -196,27 +222,31 @@ export class NotionConnector implements IConnector {
         }
 
         if (!res.ok) {
-          hadError = true;
-          this.lastError = `Notion search HTTP ${res.status}`;
-          this.lastPollTime = new Date();
-          this.lastPollCount = 0;
-          return items;
+          throw new Error(`search HTTP ${res.status} on page ${pageNumber + 1}`);
         }
 
         const data = (await res.json()) as NotionSearchResponse;
+        pagesRead += 1;
 
         for (const page of data.results) {
           const lastEdited = new Date(page.last_edited_time);
-          if (lastEdited <= since) continue;
+          if (lastEdited.getTime() <= since.getTime() - 60_000) continue;
 
           const title = this.extractTitle(page);
-          const blockText = await this.fetchBlockChildren(page.id);
+          let blockText: string;
+          try {
+            blockText = await this.fetchBlockChildren(page.id);
+          } catch (error) {
+            throw new Error(
+              `Notion page content fetch failed for 1 of ${pagesRead} search pages; last error: ${error instanceof Error ? error.message : String(error)}`
+            );
+          }
           const content = blockText ? `${title}\n\n${blockText}` : title;
 
           items.push({
             source: 'notion',
             sourceId: page.id,
-            channel: 'notion',
+            channel,
             author: '',
             content,
             timestamp: lastEdited,
@@ -229,21 +259,28 @@ export class NotionConnector implements IConnector {
           });
         }
 
-        hasMore = data.has_more ?? false;
-        startCursor = data.next_cursor ?? undefined;
+        if (!data.has_more) {
+          items.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+          this.lastError = undefined;
+          this.lastPollTime = new Date();
+          this.lastPollCount = items.length;
+          return items;
+        }
+        const nextCursor = data.next_cursor;
+        if (!nextCursor) throw new Error(`search page ${pageNumber + 1} omitted next_cursor`);
+        if (visitedCursors.has(nextCursor)) {
+          throw new Error(`search pagination repeated a cursor at page ${pageNumber + 1}`);
+        }
+        visitedCursors.add(nextCursor);
+        startCursor = nextCursor;
       }
+      throw new Error(`search page cap (${MAX_SEARCH_PAGES}) reached`);
     } catch (err) {
-      hadError = true;
-      this.lastError = err instanceof Error ? err.message : String(err);
+      const message = err instanceof Error ? err.message : String(err);
+      this.lastError = `Notion poll failed for 1 page fetch; last error: ${message}`;
+      this.lastPollTime = new Date();
+      this.lastPollCount = items.length;
+      throw new Error(this.lastError, { cause: err });
     }
-
-    items.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-
-    this.lastPollTime = new Date();
-    this.lastPollCount = items.length;
-    // lastError was set in catch blocks; clear only if no error occurred this pass
-    if (!hadError) this.lastError = undefined;
-
-    return items;
   }
 }

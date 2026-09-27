@@ -6,19 +6,16 @@ import Database from 'better-sqlite3';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { NodeSQLiteAdapter } from '../../src/db-adapter/node-sqlite-adapter.js';
-import type {
-  DatabaseAdapter as DBManagerAdapter,
-  PreparedStatement,
-} from '../../src/db-manager.js';
+import type { DatabaseAdapter, PreparedStatement } from '../../src/db-manager.js';
 import {
   createPrincipalRepository,
   PrincipalScopeGrantError,
   type PrincipalScopeGrantRef,
 } from '../../src/identity/principal-repository.js';
-import { applyMigrationsThrough } from '../../src/test-utils.js';
+import { applyMigrationsThrough } from '../helpers/test-utils.js';
 
 describe('Phase 2b Task 1 / AC #1-3: principal scope grants over migration 065', () => {
-  let adapter: DBManagerAdapter;
+  let adapter: DatabaseAdapter;
   let dbPath: string;
   let tempDir: string;
 
@@ -30,7 +27,7 @@ describe('Phase 2b Task 1 / AC #1-3: principal scope grants over migration 065',
     applyMigrationsThrough(migrationDb, 65);
     migrationDb.close();
 
-    adapter = new NodeSQLiteAdapter({ dbPath }) as unknown as DBManagerAdapter;
+    adapter = new NodeSQLiteAdapter({ dbPath }) as unknown as DatabaseAdapter;
     adapter.connect();
   });
 
@@ -67,10 +64,10 @@ describe('Phase 2b Task 1 / AC #1-3: principal scope grants over migration 065',
   }
 
   function beforeMatchingWrite(
-    realAdapter: DBManagerAdapter,
+    realAdapter: DatabaseAdapter,
     sqlFragment: string,
     beforeWrite: () => void
-  ): Pick<DBManagerAdapter, 'prepare' | 'transaction'> {
+  ): Pick<DatabaseAdapter, 'prepare' | 'transaction'> {
     let invoked = false;
     return {
       prepare(sql: string): PreparedStatement {
@@ -182,7 +179,7 @@ describe('Phase 2b Task 1 / AC #1-3: principal scope grants over migration 065',
       scope: { kind: 'source' as const, connector: 'telegram', channelId: 'shared-race' },
       now: 24,
     };
-    const secondAdapter = new NodeSQLiteAdapter({ dbPath }) as unknown as DBManagerAdapter;
+    const secondAdapter = new NodeSQLiteAdapter({ dbPath }) as unknown as DatabaseAdapter;
     secondAdapter.connect();
     try {
       const secondRepository = createPrincipalRepository(secondAdapter);
@@ -219,7 +216,7 @@ describe('Phase 2b Task 1 / AC #1-3: principal scope grants over migration 065',
       now: 26,
     };
     repository.grantScope(input);
-    const secondAdapter = new NodeSQLiteAdapter({ dbPath }) as unknown as DBManagerAdapter;
+    const secondAdapter = new NodeSQLiteAdapter({ dbPath }) as unknown as DatabaseAdapter;
     secondAdapter.connect();
     try {
       const secondRepository = createPrincipalRepository(secondAdapter);

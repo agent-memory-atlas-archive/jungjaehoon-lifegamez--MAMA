@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-09-27
+
+### Fixed
+
+- The server uses mama-core in-process on MAMA_DB_PATH (or MAMA_DATABASE_PATH) else
+  ~/.claude/mama-memory.db; no daemon is needed.
+
 ## [2.2.0] - 2026-09-13
 
 ### Added

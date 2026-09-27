@@ -5,13 +5,8 @@ import { randomUUID } from 'node:crypto';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { closeDB, getAdapter } from '../../src/db-manager.js';
-import {
-  promoteMemoryStatus,
-  saveMemory,
-  saveMemoryWithTrustedProvenance,
-} from '../../src/memory/api.js';
-import { createTrustedProvenanceCapability } from '../../src/memory/provenance.js';
+import { closeDB, getAdapter, initDB } from '../../src/db-manager.js';
+import { promoteMemoryStatus, saveMemory } from '../../src/memory/api.js';
 
 const TEST_DB = path.join(os.tmpdir(), `test-memory-promotion-semantic-${randomUUID()}.db`);
 const PROJECT_SCOPE = { kind: 'project' as const, id: 'repo:promotion-semantic' };
@@ -36,6 +31,7 @@ describe('Story M2.1: staged memory promotion semantic evolution', () => {
     cleanupDb();
     process.env.MAMA_DB_PATH = TEST_DB;
     process.env.MAMA_FORCE_TIER_3 = 'true';
+    await initDB();
   });
 
   afterEach(async () => {
@@ -50,7 +46,7 @@ describe('Story M2.1: staged memory promotion semantic evolution', () => {
   });
 
   it('applies evolution candidates when promoting a staged memory to active', async () => {
-    const oldMemory = await saveMemory({
+    const oldMemory = await saveMemory(getAdapter(), {
       topic: 'sqlite_memory_store',
       kind: 'decision',
       summary: 'Use SQLite for the memory store',
@@ -59,30 +55,18 @@ describe('Story M2.1: staged memory promotion semantic evolution', () => {
       scopes: [PROJECT_SCOPE],
       source: { package: 'mama-core', source_type: 'test', project_id: PROJECT_SCOPE.id },
     });
-    const stagedMemory = await saveMemoryWithTrustedProvenance(
-      {
-        topic: 'sqlite_memory_store',
-        kind: 'decision',
-        summary: 'Use SQLite for the memory store with reviewed provenance',
-        details: 'Manual operator review approved the replacement memory.',
-        confidence: 0.9,
-        status: 'stale',
-        scopes: [PROJECT_SCOPE],
-        source: { package: 'mama-core', source_type: 'test', project_id: PROJECT_SCOPE.id },
-      },
-      {
-        capability: createTrustedProvenanceCapability(),
-        provenance: {
-          actor: 'user',
-          agent_id: 'operator:manual-admin',
-          tool_name: 'mama_save',
-          gateway_call_id: 'manual-promotion-semantic:memory:0',
-          source_refs: ['raw:slack:manual-promotion-semantic'],
-        },
-      }
-    );
+    const stagedMemory = await saveMemory(getAdapter(), {
+      topic: 'sqlite_memory_store',
+      kind: 'decision',
+      summary: 'Use SQLite for the memory store with reviewed provenance',
+      details: 'Manual operator review approved the replacement memory.',
+      confidence: 0.9,
+      status: 'stale',
+      scopes: [PROJECT_SCOPE],
+      source: { package: 'mama-core', source_type: 'test', project_id: PROJECT_SCOPE.id },
+    });
 
-    await promoteMemoryStatus({ memoryId: stagedMemory.id, status: 'active' });
+    await promoteMemoryStatus(getAdapter(), { memoryId: stagedMemory.id, status: 'active' });
 
     expect(
       getAdapter()

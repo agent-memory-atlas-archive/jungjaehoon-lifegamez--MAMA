@@ -1,393 +1,78 @@
-# Architecture Overview
-
-**MAMA's local memory, one-front work-agent runtime, and thin client adapters**
-
+---
+title: Architecture
+parent: Explanation
+nav_order: 2
 ---
 
-## System Overview
+# Architecture
 
-The diagram states the v1 product boundary. The current release line is owner-first: durable
-principals exist, but human-member scope grants and the complete effective-scope path remain the
-next implementation slice after the active runtime-overhead remediation canary.
+MAMA has two products built on one engine. MAMA OS carries the owner's work across messages,
+source changes and reports. The Claude Code plugin and public MCP server carry development
+memory across coding sessions. They do not share a running daemon or a default database.
+
+## Choose the boundary you are changing
+
+| Package                       | Responsibility                                                                                                         |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `packages/mama-core`          | SQLite storage, records and revisions, evidence links, memory, search, embeddings, runtime drivers and action dispatch |
+| `packages/standalone`         | MAMA OS: Telegram, connectors, owner guidance, work views, reports, wiki, viewer and the `mama` CLI                    |
+| `packages/mcp-server`         | Development-memory tools over stdio; calls core in process                                                             |
+| `packages/claude-code-plugin` | Claude Code commands and hooks; uses core and the public MCP server                                                    |
+
+The workspace links packages through `workspace:*` dependencies. Another product uses the
+[public core exports](../../packages/mama-core/package.json) with its own database, principals,
+sources and vocabulary. Core supplies records, revisions and evidence; the consumer supplies what
+those records mean. See [INTENT](../../INTENT.md) for the shared-engine acceptance check.
+
+## Follow one owner session
 
 ```text
-Human principals
-  Telegram · Slack · Discord                  Claude Code · Desktop · other MCP clients
-             │                                               │
-             ▼                                               ▼
-     authenticated gateways                         thin plugin/MCP adapters
-             │                                               │
-             └──────────────────┬────────────────────────────┘
-                                ▼
-                    MAMA local authority boundary
-                  ┌─────────────────────────────────┐
-                  │ principal + effective scope      │
-                  │ Case context + local memory      │
-                  │ one user-facing AgentLoop        │
-                  │ Code-Act + bounded domain tools  │
-                  │ workorders + effects + receipts  │
-                  └──────────────┬──────────────────┘
-                                 │
-             ┌───────────────────┼────────────────────┐
-             ▼                   ▼                    ▼
-      local SQLite state   bounded workspace    provider runtime
-      memory and Cases     and artifact refs    Claude/Codex/Cline
-             │                   │                    │
-             └───────────────────┴────────────────────┘
-                                 ▼
-                   verified result + authorized delivery
+Telegram owner messages     connector deltas     scheduled reports     native events
+           \_____________________|_____________________|__________________/
+                                 |
+                         durable runtime mailbox
+                                 |
+                       one persistent owner session
+                         Claude CLI or Codex
+                                 |
+                         registered MAMA actions
+                                 |
+                 work and memory / originals / wiki / board
+                                 |
+                       Telegram result and receipt
 ```
 
-MAMA has one user-facing identity. Internal workers may provide parallel read-only analysis,
-background work, or independent review, but they do not create a second product front or widen the
-requester's authority.
-
----
-
-## Core Principles
-
-### 1. One front, scoped authority
-
-- Humans delegate outcomes to one MAMA rather than selecting named AI personas.
-- Sender identity is resolved before model execution.
-- Effective scope is bounded by host authority, principal grants, active Case/artifact scope, and
-  the tool envelope.
-- One artifact lineage has one mutation authority at a time.
-- Internal workers return evidence to the MAMA operation that owns the final result.
-
-### 2. Local-First Architecture
-
-- Durable memory and operational state remain in local SQLite databases.
-- Embeddings can run locally.
-- Connector traffic goes only to configured services, and selected prompt/context goes to the
-  configured model provider.
-- MAMA has no hosted storage account or mandatory MAMA cloud.
-
-Selected prompts and compiled context are transmitted to the configured provider when a remote
-model is used. “Local-first” describes durable storage and local memory operations, not an offline
-claim for every model run.
-
-### 4. Case and decision evolution
-
-- Supersedes graph for decision chains
-- Case-first grouping for decisions, events, observations, and artifact sources
-- Not just conclusions, but the journey
-- Learn from failures, not just successes
-
-### 5. Durable effects before success prose
-
-- Work that may outlive a turn is persisted before side effects.
-- Mutations and external sends require structured receipts.
-- Restart recovery consults durable state instead of repeating a successful occurrence.
-- Model prose cannot upgrade an unverified operation to success.
-
-## Product data flow
-
-```text
-messenger request + inbound files
-        │
-        ▼
-principal resolution and lane admission
-        │
-        ▼
-Case/context compile with effective scope
-        │
-        ▼
-inspect / compare / mutate / audit / deliver
-        │
-        ├── deterministic and domain tools
-        ├── optional internal read-only/review workers
-        └── durable workorders for long-running/background work
-        │
-        ▼
-artifact/effect verification and receipt
-        │
-        ▼
-authorized messenger destination + remembered Case state
-```
-
-Current releases provide the owner-first form of this flow. The v1 human-team scope and Work Case
-contract are defined in
-[MAMA One-Front Team Work Agent](../development/2026-08-26-one-front-team-work-agent-design.md).
-
----
-
-## Components
-
-### MCP Server
-
-- **Transport:** stdio (local process)
-- **Tools:** 5 advertised (save, search, update, search_decisions_and_contracts, case_timeline_range); `load_checkpoint` kept as an unadvertised compatibility alias
-- **Performance:** <100ms p99 latency
-
-### Database (SQLite + pure-TS cosine similarity)
-
-- **Decisions table:** topic, decision, reasoning, confidence, outcome, kind, status, summary
-- **Embeddings:** 1024-dimensional vectors (multilingual-e5-large, q8) with in-memory cache
-- **Graph:** supersedes/builds_on/debates/synthesizes edges
-- **Memory scopes:** project/channel/user/global isolation via memory_scopes + memory_scope_bindings
-- **Truth projection:** memory_truth table for recall filtering (preserves history, surfaces current truth)
-- **Audit trail:** memory_events + audit_findings for memory agent auditing
-- **Channel state:** channel_summaries + channel_summary_state for per-channel context
-
-### Embeddings
-
-- **Model:** Xenova/multilingual-e5-large (~560MB, quantized q8, 1024-dim)
-- **Runtime:** Transformers.js (ONNX)
-
-### In-process embeddings
-
-- **Model:** Loaded by the core process that performs semantic search
-- **API:** `@jungjaehoon/mama-core/embeddings`
-- **Network surface:** None
-- **Failure behavior:** Explicit provider failure; no exact-match degradation path exists
-
-### Cron Scheduler & Worker
-
-`CronWorker` is no longer a separate model identity. It owns timing, serialization and
-events only: `initCronScheduler` hands it a `runnerFactory`, and each job runs through
-`runner.prompt(..., { sessionKey: OWNER_RUNTIME_SESSION_KEY, resumeSession: true })` —
-the same standing owner runtime as chat and owner events
-(`packages/standalone/src/scheduler/cron-worker.ts`,
-`packages/standalone/src/cli/runtime/scheduler-init.ts`).
-
-- **CronWorker:** timing + serial execution queue over the owner runtime session; no
-  dedicated CLI process, no Haiku worker, no per-worker tool restriction list
-- **Result delivery:** `EventEmitter` (`cron:completed` / `cron:failed`) →
-  `CronResultRouter` → gateway `sendMessage()`
-  (`packages/standalone/src/cli/runtime/gateway-wiring.ts`)
-- **Channel routing:** Job config `channel` field (`discord:id`, `slack:id`, `telegram:id`)
-- **Permissions:** whatever the owner runtime's current envelope and per-turn policy allow
-
-```
-CronScheduler ──► CronWorker (queue) ──► owner:runtime ──► EventEmitter
-                                                                │
-                                                       CronResultRouter
-                                                         │      │      │
-                                                      Discord  Slack  Telegram
-```
-
-### Operator Runtime (MAMA OS)
-
-The daemon runs an operator identity alongside chat (v0.22-v0.23):
-
-- **One owner runtime:** chat, owner events and scheduled work orders all enter the same
-  durable `owner:runtime` session, serialized by the AgentLoop session queue (direct owner
-  messages take priority over queued background stimuli). Long scheduled work stays off the
-  owner's way by being delegated to a native subagent, not by running on a separate lane.
-- **Trigger loop** (default on; `MAMA_TRIGGER_LOOP=0` opts out): agent-evolved triggers on the live
-  connector stream + scheduled full situation reports (configurable local
-  hours) delivered to the owner channel. Pending report windows are persisted before connector
-  cursors advance, so daemon restarts do not silently discard an owner update.
-- **Owner console:** the `owner_console` role resolves ONLY via trust-conditional
-  escalation (telegram + locked `allowed_chats` + 1:1 private DM). It reads
-  operational artifacts (board, audit findings). The host `report_request` and `delegate`
-  relays are retired: scheduled work is host-published, and MAMA hands it to the model
-  runtime's own native subagents when extra workers are useful.
-- **Stage-2 workorder pipeline** (the only system run path since v0.28.0):
-  scheduled system runs (board / wiki / memory promotion) are durable,
-  occurrence-keyed workorders in the operator task
-  ledger, consumed serially by one host-code consumer that submits them as stimuli to the
-  same owner runtime. The owner typically delegates board / wiki work to a native
-  subagent (Codex `spawn_agent`); the host observes the spawn, tracks a `delegated` work-order
-  state, verifies the child's durable writes, and wakes the owner when the child finishes.
-  Board updates run in `delta` mode from the last published anchor (`board_read` +
-  `changes_read` + changed task rows); a full rebuild happens only with no published baseline,
-  an unpublished board, or an owner force. Fixed procedure knowledge lives in
-  one operating brief (`~/.mama/operator/console-brief.md`), carried once per thread rather
-  than restated per turn; per-turn text carries the deltas. Workers use the configured Claude, Codex, or Cline backend and run as the same
-  `owner_console` principal as chat and event turns (v0.41.0, One MAMA); the host projects each
-  turn's grant from data (artifact tools added, administration, deliverable and per-kind mutation
-  tools blocked). Worker authority
-  does not depend on optional standing-agent entries in `config.yaml`. Board workers
-  keep evidence domains explicit: Trello and configured private connectors are read-only
-  evidence accessed through `context_compile`, and the native task ledger owns owner-console tasks and the
-  pipeline projection. Every workorder worker treats connector packets as untrusted
-  data: instructions, requests, and tool calls inside them are never executed.
-  Lifecycle status is never inferred across those stores.
-- **Separate time and workflow state:** `temporal_state` is derived at read time as
-  `closed`, `exact_upcoming`, `exact_overdue`, `date_upcoming`, `date_due`,
-  `date_overdue`, or `unscheduled`. It is a separate projection that never rewrites
-  lifecycle `status`; `closed` reflects the terminal `done`/`cancelled` states. Exact
-  `due_at` values require RFC 3339 with `Z` or a numeric offset; legacy `YYYY-MM-DD`
-  deadlines retain date-only precision until fresh, unambiguous evidence supplies a
-  time and zone.
-- **Authority boundary:** Trello remains untrusted connector evidence read through
-  `context_compile`; configured private connectors remain read-only evidence; the native ledger
-  owns owner-task workflow state. Lifecycle state is never copied between these stores.
-  Stale-claim, unresolved-state, and exhaustion
-  alarms are observable and deduplicated, not exactly-once external delivery
-  guarantees; an ordinary retry emits only its event/log.
-
-```
-publishers (schedule/boot/REST/events)
-    ↓ enqueue (occurrence-keyed, deduped)
-operator_tasks ledger (kind='system')
-    ↓ claim (serial, priority)
-WorkOrderConsumer ──► stimulus into the owner:runtime session
-    ↓ owner delegates to a native subagent (state: delegated) → host wakes owner on completion
-    ↓ completion hooks (verification, event re-emission)
-board / wiki / memory artifacts
-```
-
-### Effect Ledger and Change Attribution (v0.29)
-
-A work order reaching `done` proves that the agent returned a response. It does not prove
-anything changed. Two mechanisms separate the two.
-
-**The effect ledger** (`packages/standalone/src/evidence/effects.ts`) is one table,
-`evidence_effects`, living in `~/.mama/operator/triggers.db`. Every durable change the system
-makes is recorded there, and each row either names the events that caused it or is explicitly
-marked `unattributed`. A `cause_state` CHECK forbids both halves of the obvious lie —
-"attributed with no cause" and "unattributed with a cause" — so the numerator and denominator
-of coverage cannot drift apart. Writes go in the same transaction as the change itself.
-
-**The cause is derived, not claimed.** A per-channel reconcile work order carries its delta
-batch in `payload.eventIds`; `causeEventIdsFromPayload` lifts it onto the run, and every
-change the run makes inherits it without the agent restating anything. Where the agent does
-supply a `source_event_id`, the host batch wins — the agent-authored field is a fallback for
-runs that were handed no batch, because it is forgeable. `board:full` carries no batch and
-its changes are honestly unattributed rather than given an invented cause.
-
-**The read side** is `changes-projection.ts`, exposed as the `changes_read` gateway tool:
-what this system durably changed since a given point, with coverage counts and an explicit
-`returned`/`total` so one page cannot be described as the whole. The scheduled full report
-leads with it.
-
-**Work-kind verification** (`operator/workorder-hooks.ts`) closes the same gap for the work orders
-themselves. Each work kind declares the tools that prove it acted, and separately the tools that
-prove it wrote; a run's claim is reconciled against `execution_status='completed'` traces of
-those tools since a run-bound snapshot. Observe, never block — an overstating run has still
-done whatever it did, and failing it would retry work that may have partly landed. One stated
-limit: the wiki kind's obligated `obsidian` tool covers reads as well as writes and the trace
-records only the tool name, so that verdict is "vault exercised", not "wrote".
-
-### Provenance and the Channel Grant (v0.29)
-
-**`mama_provenance`** (`memory/provenance-resolver.ts`, `provenance-live.ts`) answers what a
-memory rests on. Its governing rule is that a citation must not out-read reading: the same
-grant that bounds the raw reader bounds the citation path, held equal by a differential test.
-
-**The channel grant** (`packages/mama-core/src/context-compile/channel-grant.ts`) is the one
-rule deciding which `(connector, channel)` pairs a run may read. It is compiled to two forms —
-a boolean `isChannelGranted` and a SQL `channelGrantClause` — from a single definition,
-because three divergent copies of this rule previously existed and the test guarding them
-never exercised the production branch. A connector absent from the grant is denied; a
-connector present with an empty channel list is also denied, never read as a wildcard. The
-grant derives from `~/.mama/connectors.json` through `evidence/read.ts`.
-
-**Reads are not gated; sends are (v0.30.1).** The per-principal connector read filter
-(`scopeDaemonRawConnectors`) is deleted: enforcement exists only for irreversible actions,
-and `allowed_destinations: []` on every daemon envelope is the real boundary. Every read
-lands in tool traces - observability over restriction.
-
-**Memory reads follow the channel grant (v0.31.2).** Memories are stored under
-`channel:<connector>:<channelId>` - the same key the grant declares - while envelopes carry
-identity scopes. One rule closes the gap at the ENFORCEMENT layer: a run allowed to read a
-channel's raw events may recall the memories extracted from it (`mirrorReadScopes`,
-`evidence/read.ts`), computed against the live grant at check time. The mirror is never
-issued into the envelope - envelope channel scopes double as the raw-narrowing input and as
-`mama_save`'s permanent write binding, so issuing it would re-open per-channel isolation
-and widen writes. Writes never widen: a context packet's mirror-widened scopes are
-intersected with the envelope's own before they can back a save
-(`writeEligiblePacketScopes`). A connector the envelope already narrows with its own
-channel scope (a chat's own channel) is excluded from the mirror -
-per-channel isolation wins.
-
-### Evidence transposition (v0.31.0, S2)
-
-- **Causes are wired, not relabeled**: the MAMA owner-event path hands its inbox batch
-  (`causeEventIds`) to every run; on duplicate delivery the HOST batch outranks the
-  agent-supplied `source_event_id`. Every effect carries a cause KIND
-  (`event | owner_message | clock | card_transition`) with a DB trigger rejecting a kind
-  that disagrees with its ids.
-- **Failures carry the thrower's code**: `tool_traces.failure_code` records the structured
-  code emitted at the failure choke - carried, never invented (the generic wrapper stays
-  NULL). mama-core migration note: 043-060 is a dead zone (a retired chain owns those
-  schema_version rows); new core migrations number 061+.
-- **A silent leg pages the owner**: every scheduled leg declares its cadence and beats from
-  its interval handler; an independent watchdog pages past 2x cadence, defers through
-  quiet hours (23-08), and reports recovery once. The interval is the leg - a consumer
-  mid-run is alive, not silent.
-
-### MAMA owner-event agent
-
-Connector deltas belong to MAMA, not to a separate planning persona. The trigger loop persists
-each batch and its matched trigger procedures to `owner_event_inbox` before advancing the source
-cursor. `OwnerEventLoop` consumes that journal through the same daemon `AgentLoop` and the same durable
-`owner:runtime` session that serves chat and scheduled work; there is no separate session or lane
-per channel. The operating brief is carried once per thread (and again only when its hash changes),
-while each batch turn's text carries only the new delta.
-
-The agent chooses the safe primitive sequence. The host fixes connector visibility and the owner
-Telegram destination through the envelope, then ACKs the event only after a completed durable
-effect, an accepted workorder, or an exact `contract_no_update` receipt. Prose is never completion
-evidence. Automatic owner-event execution is disabled when envelope authority is unavailable.
-Non-idempotent mutations run through event-keyed durable workorders. External effects use
-one host-issued identity per external effect kind and a durable pre-transmission ledger; fresh
-model output cannot mint an alternate retry identity. Ambiguous Drive
-creates enter reconcile-only state rather than issuing another create. Scheduled and manual Board
-full repair remain recovery mechanisms; connector deltas no longer fan out to a second Board agent.
-The owner loop reads existing batch-bound effect, workorder, and exact no-update receipts before a
-model retry, closing the crash window between durable completion and inbox ACK.
-
-**Channel identity** underpins both. Connectors emit whatever their upstream hands them,
-which for six of seven is a display NAME while the config is keyed by ID — so every
-downstream reader compared against the config key and matched nothing. Keys are now
-canonicalised at write time, before anything durable is stored.
-
-### Hooks (Claude Code plugin)
-
-- **SessionStart:** checkpoint + recent-decision bootstrap into the session
-- **PreToolUse (Read):** related-decision injection when reading matching files
-- **PostToolUse (Write/Edit):** contract extraction + save guidance
-- **PreCompact:** checkpoint safety net before context compaction
-- (UserPromptSubmit is not wired in the current plugin manifest)
-
----
-
-## Data Flow
-
-```
-File Read (plugin session)
-    ↓
-PreToolUse Hook
-    ↓
-Semantic Search
-    ↓
-Hybrid Scoring (similarity × recency)
-    ↓
-Top 3 Decisions (if > 60% similarity)
-    ↓
-Gentle Context Hints
-```
-
----
-
-## Performance Characteristics
-
-**With in-process embeddings:**
-
-- The first semantic request may load the local model.
-- Later requests reuse the process-local model and embedding cache.
-
----
-
-## ✨ Key Strengths
-
-- **Contract-first flow:** PreToolUse enforces search before edits; no contract → no guessing.
-- **Grounded reasoning:** Reasoning Summary is computed from actual matches; unknowns are explicit.
-- **Cross-session memory:** MCP-stored contracts prevent schema drift across sessions and repos.
-- **Noise control:** Per-session long/short output reduces repeated guidance.
-- **Safety by default:** Sanitized contract injection mitigates prompt-injection risk.
-
-- First query: ~987ms (model load)
-- Subsequent: ~89ms (cached)
-
----
-
-**Related:**
-
-- [Decision Graph Concept](decision-graph.md)
-- [Performance Details](performance.md)
-- [Data Privacy](data-privacy.md)
+[Owner runtime assembly](../../packages/standalone/src/runtime/owner-runtime.ts) opens the
+product database, builds the action catalog and starts the native session and mailbox.
+[Stimulus delivery](../../packages/standalone/src/runtime/stimulus-delivery.ts) sends the input
+kinds through the same session. The backend owns model execution; MAMA supplies source access,
+action contracts, storage and traces. The agent decides how evidence changes the work.
+
+Claude receives MAMA actions through the product's MCP adapter; Codex receives dynamic tools.
+Both owner backends have web access and workspace file tools. Writes stay in the workspace;
+credential files and secret-shaped daemon environment variables are excluded. Native tool and
+MAMA action calls are traced. See [backends](../guides/backends.md) and
+[security](../guides/security.md) for the boundary.
+
+## Keep the two data homes separate
+
+| State                                                      | Location or authority                                                                     |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| MAMA OS configuration and credentials                      | `~/.mama/config.yaml`, `connectors.json`, and the separate `auth.env`                     |
+| Work, memory, source index, mailbox and model/tool records | Product SQLite database at `database.path`; `mama init` sets `~/.mama/memory.db`          |
+| Preserved connector payloads                               | Per-connector raw storage under `~/.mama/connectors/`                                     |
+| Runtime and delivery state                                 | `~/.mama/runtime/`; the board is persisted in `~/.mama/report-slots.json`                 |
+| Owner files and generated artifacts                        | `~/.mama/workspace/`                                                                      |
+| Wiki                                                       | Configured `wiki.vaultPath` and `wiki.wikiDir`                                            |
+| Development memory                                         | `MAMA_DB_PATH`, then the older `MAMA_DATABASE_PATH`, otherwise `~/.claude/mama-memory.db` |
+
+The [public MCP server](../../packages/mcp-server/src/server.js) initializes development memory
+itself. It does not require MAMA OS. Plugin hooks use that development-memory store, not the
+owner's product database.
+
+Durable storage and embeddings are local. Configured connectors use their upstream services,
+and the selected backend receives the prompts and evidence supplied for a model turn. Local
+storage is not a promise that the complete agent runs offline.
+
+Continue with [the owner loop](owner-loop.md), [the work ledger](work-ledger.md), or
+[memory and search](memory-and-search.md).

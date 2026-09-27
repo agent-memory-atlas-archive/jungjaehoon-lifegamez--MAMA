@@ -5,17 +5,16 @@ import { randomUUID } from 'node:crypto';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { closeDB, getAdapter } from '../../src/db-manager.js';
+import { closeDB, getAdapter, initDB } from '../../src/db-manager.js';
 import {
   ingestConversation,
-  ingestConversationWithTrustedProvenance,
   ingestMemory,
   promoteMemoryStatus,
+  saveJudgmentRecord,
   saveMemory,
-  saveMemoryWithTrustedProvenance,
 } from '../../src/memory/api.js';
 import { getMemoryProvenance } from '../../src/memory/provenance-query.js';
-import { createTrustedProvenanceCapability } from '../../src/memory/provenance.js';
+import { normalizeMemoryWriteProvenance } from '../../src/memory/provenance.js';
 import { listMemoryEventsForMemory } from '../../src/memory/event-store.js';
 import { queryRelevantTruth } from '../../src/memory/truth-store.js';
 import mama from '../../src/mama-api.js';
@@ -43,6 +42,7 @@ describe('Story M2.1: Memory Write Provenance Foundation', () => {
     cleanupDb();
     process.env.MAMA_DB_PATH = TEST_DB;
     process.env.MAMA_FORCE_TIER_3 = 'true';
+    await initDB();
   });
 
   afterEach(async () => {
@@ -56,11 +56,10 @@ describe('Story M2.1: Memory Write Provenance Foundation', () => {
     cleanupDb();
   });
 
-  describe('AC: trusted writes persist compact provenance and save events', () => {
-    it('records a save memory event and nullable provenance columns for a trusted save', async () => {
-      const capability = createTrustedProvenanceCapability();
-
-      const result = await saveMemoryWithTrustedProvenance(
+  describe('AC: action writes persist compact provenance and save events', () => {
+    it('records a save memory event and nullable provenance columns for an action save', async () => {
+      const result = await saveJudgmentRecord(
+        getAdapter(),
         {
           topic: 'm2_provenance_contract',
           kind: 'decision',
@@ -70,22 +69,20 @@ describe('Story M2.1: Memory Write Provenance Foundation', () => {
           scopes: [PROJECT_SCOPE],
           source: { package: 'mama-core', source_type: 'test', project_id: PROJECT_SCOPE.id },
         },
+        { principalId: 'agent-main', agentId: 'agent-main', scopes: [PROJECT_SCOPE] },
+        'test-cmd-provenance',
         {
-          capability,
-          provenance: {
-            actor: 'main_agent',
-            agent_id: 'agent-main',
-            envelope_hash: 'env_test_hash',
-            tool_name: 'mama_save',
-            gateway_call_id: 'gw_test_1',
-            source_turn_id: 'turn_test_1',
-            source_message_ref: 'discord:channel:turn_test_1',
-            source_refs: ['conversation:test'],
-          },
+          actor: 'main_agent',
+          envelopeHash: 'env_test_hash',
+          toolName: 'mama_save',
+          gatewayCallId: 'gw_test_1',
+          sourceTurnId: 'turn_test_1',
+          sourceMessageRef: 'discord:channel:turn_test_1',
+          sourceRefs: ['conversation:test'],
         }
       );
 
-      const provenance = await getMemoryProvenance(result.id);
+      const provenance = await getMemoryProvenance(getAdapter(), result.id);
       expect(provenance?.memory_id).toBe(result.id);
       expect(provenance?.agent_id).toBe('agent-main');
       expect(provenance?.envelope_hash).toBe('env_test_hash');
@@ -96,73 +93,35 @@ describe('Story M2.1: Memory Write Provenance Foundation', () => {
       expect(provenance?.latest_event?.source_turn_id).toBe('turn_test_1');
     });
 
-    it('rejects plain-object capability spoofing for trusted writes', async () => {
-      await expect(
-        saveMemoryWithTrustedProvenance(
-          {
-            topic: 'plain_object_capability_spoof',
-            kind: 'decision',
-            summary: 'Plain JSON must not unlock trusted provenance',
-            details: 'The trusted path requires a non-serializable capability',
-            scopes: [PROJECT_SCOPE],
-            source: { package: 'mama-core', source_type: 'test', project_id: PROJECT_SCOPE.id },
-          },
-          {
-            capability: {} as never,
-            provenance: {
-              actor: 'main_agent',
-              envelope_hash: 'env_spoof',
-            },
-          }
-        )
-      ).rejects.toThrow(/trusted provenance capability/i);
-    });
+    it('sanitizes non-allowlisted fields from write provenance', async () => {
+      const normalized = normalizeMemoryWriteProvenance({
+        actor: 'main_agent',
+        envelope_hash: 'env_sanitized',
+        tool_name: 'mama_save',
+        prompt: 'raw prompt must not persist',
+        messages: [{ role: 'user', content: 'secret' }],
+        tool_args: { topic: 'secret' },
+        result: { ok: true },
+        unsupported_field: 'must not persist',
+        source_refs: ['message:test'],
+      } as never);
 
-    it('sanitizes non-allowlisted fields from trusted provenance', async () => {
-      const capability = createTrustedProvenanceCapability();
-
-      const result = await saveMemoryWithTrustedProvenance(
-        {
-          topic: 'provenance_payload_boundary',
-          kind: 'decision',
-          summary: 'Provenance stays compact',
-          details: 'Prompt and tool payloads do not belong in memory provenance',
-          scopes: [PROJECT_SCOPE],
-          source: { package: 'mama-core', source_type: 'test', project_id: PROJECT_SCOPE.id },
-        },
-        {
-          capability,
-          provenance: {
-            actor: 'main_agent',
-            envelope_hash: 'env_sanitized',
-            tool_name: 'mama_save',
-            prompt: 'raw prompt must not persist',
-            messages: [{ role: 'user', content: 'secret' }],
-            tool_args: { topic: 'secret' },
-            result: { ok: true },
-            unsupported_field: 'must not persist',
-            source_refs: ['message:test'],
-          } as never,
-        }
-      );
-
-      const provenance = await getMemoryProvenance(result.id);
-      expect(provenance?.provenance).toMatchObject({
+      expect(normalized.provenance).toMatchObject({
         actor: 'main_agent',
         envelope_hash: 'env_sanitized',
         tool_name: 'mama_save',
       });
-      expect(provenance?.provenance).not.toHaveProperty('prompt');
-      expect(provenance?.provenance).not.toHaveProperty('messages');
-      expect(provenance?.provenance).not.toHaveProperty('tool_args');
-      expect(provenance?.provenance).not.toHaveProperty('result');
-      expect(provenance?.provenance).not.toHaveProperty('unsupported_field');
+      expect(normalized.provenance).not.toHaveProperty('prompt');
+      expect(normalized.provenance).not.toHaveProperty('messages');
+      expect(normalized.provenance).not.toHaveProperty('tool_args');
+      expect(normalized.provenance).not.toHaveProperty('result');
+      expect(normalized.provenance).not.toHaveProperty('unsupported_field');
+      expect(normalized.source_refs).toEqual(['message:test']);
     });
 
-    it('preserves trusted context_packet_id in compact provenance only', async () => {
-      const capability = createTrustedProvenanceCapability();
-
-      const result = await saveMemoryWithTrustedProvenance(
+    it('preserves context_packet_id in compact provenance only', async () => {
+      const result = await saveJudgmentRecord(
+        getAdapter(),
         {
           topic: 'context_packet_provenance_contract',
           kind: 'decision',
@@ -171,21 +130,20 @@ describe('Story M2.1: Memory Write Provenance Foundation', () => {
           scopes: [PROJECT_SCOPE],
           source: { package: 'mama-core', source_type: 'test', project_id: PROJECT_SCOPE.id },
         },
+        { principalId: 'agent-main', agentId: 'agent-main', scopes: [PROJECT_SCOPE] },
+        'test-cmd-context-packet',
         {
-          capability,
-          provenance: {
-            actor: 'main_agent',
-            envelope_hash: 'env_context_packet',
-            model_run_id: 'mr_parent_context_packet',
-            tool_name: 'mama_save',
-            gateway_call_id: 'gw_context_packet',
-            context_packet_id: 'ctxp_trusted_packet',
-            source_refs: ['memory:mem-1'],
-          },
+          actor: 'main_agent',
+          envelopeHash: 'env_context_packet',
+          modelRunId: 'mr_parent_context_packet',
+          toolName: 'mama_save',
+          gatewayCallId: 'gw_context_packet',
+          contextPacketId: 'ctxp_trusted_packet',
+          sourceRefs: ['memory:mem-1'],
         }
       );
 
-      const provenance = await getMemoryProvenance(result.id);
+      const provenance = await getMemoryProvenance(getAdapter(), result.id);
       expect(provenance?.provenance).toMatchObject({
         context_packet_id: 'ctxp_trusted_packet',
       });
@@ -201,7 +159,7 @@ describe('Story M2.1: Memory Write Provenance Foundation', () => {
     });
 
     it('applies evolution semantics when a staged memory is promoted to active', async () => {
-      const oldMemory = await saveMemory({
+      const oldMemory = await saveMemory(getAdapter(), {
         topic: 'manual_promotion_evolution_contract',
         kind: 'decision',
         summary: 'Use SQLite for the memory store',
@@ -210,7 +168,7 @@ describe('Story M2.1: Memory Write Provenance Foundation', () => {
         scopes: [PROJECT_SCOPE],
         source: { package: 'mama-core', source_type: 'test', project_id: PROJECT_SCOPE.id },
       });
-      const stagedMemory = await saveMemory({
+      const stagedMemory = await saveMemory(getAdapter(), {
         topic: 'manual_promotion_evolution_contract',
         kind: 'decision',
         summary: 'Use SQLite for the memory store with reviewed operator provenance',
@@ -221,7 +179,7 @@ describe('Story M2.1: Memory Write Provenance Foundation', () => {
         source: { package: 'mama-core', source_type: 'test', project_id: PROJECT_SCOPE.id },
       });
 
-      await promoteMemoryStatus({ memoryId: stagedMemory.id, status: 'active' });
+      await promoteMemoryStatus(getAdapter(), { memoryId: stagedMemory.id, status: 'active' });
 
       expect(
         getAdapter()
@@ -238,7 +196,7 @@ describe('Story M2.1: Memory Write Provenance Foundation', () => {
           .prepare(`SELECT relationship FROM decision_edges WHERE from_id = ? AND to_id = ?`)
           .get(stagedMemory.id, oldMemory.id)
       ).toEqual({ relationship: 'supersedes' });
-      await promoteMemoryStatus({ memoryId: stagedMemory.id, status: 'active' });
+      await promoteMemoryStatus(getAdapter(), { memoryId: stagedMemory.id, status: 'active' });
 
       expect(
         getAdapter()
@@ -253,36 +211,23 @@ describe('Story M2.1: Memory Write Provenance Foundation', () => {
     });
 
     it('keeps staged decisions out of current truth until promotion', async () => {
-      const capability = createTrustedProvenanceCapability();
-      const stagedMemory = await saveMemoryWithTrustedProvenance(
-        {
-          topic: 'manual_staged_truth_projection_contract',
-          kind: 'decision',
-          summary: 'Stage reviewed manual memory before cursor commit',
-          details: 'The staged memory must not appear in truth snapshots before promotion.',
-          confidence: 0.9,
-          status: 'stale',
-          scopes: [PROJECT_SCOPE],
-          source: { package: 'mama-core', source_type: 'test', project_id: PROJECT_SCOPE.id },
-        },
-        {
-          capability,
-          provenance: {
-            actor: 'user',
-            agent_id: 'operator:manual-admin',
-            tool_name: 'mama_save',
-            gateway_call_id: 'manual-staged-truth:memory:0',
-            source_refs: ['raw:slack:manual-staged-truth'],
-          },
-        }
-      );
+      const stagedMemory = await saveMemory(getAdapter(), {
+        topic: 'manual_staged_truth_projection_contract',
+        kind: 'decision',
+        summary: 'Stage reviewed manual memory before cursor commit',
+        details: 'The staged memory must not appear in truth snapshots before promotion.',
+        confidence: 0.9,
+        status: 'stale',
+        scopes: [PROJECT_SCOPE],
+        source: { package: 'mama-core', source_type: 'test', project_id: PROJECT_SCOPE.id },
+      });
 
       expect(
         getAdapter().prepare('SELECT status FROM decisions WHERE id = ?').get(stagedMemory.id)
       ).toEqual({ status: 'stale' });
       expect(
         (
-          await queryRelevantTruth({
+          await queryRelevantTruth(getAdapter(), {
             query: 'manual staged truth projection',
             scopes: [PROJECT_SCOPE],
             includeHistory: true,
@@ -291,7 +236,7 @@ describe('Story M2.1: Memory Write Provenance Foundation', () => {
       ).toBe(true);
       expect(
         (
-          await queryRelevantTruth({
+          await queryRelevantTruth(getAdapter(), {
             query: 'manual staged truth projection',
             scopes: [PROJECT_SCOPE],
             includeHistory: false,
@@ -299,11 +244,11 @@ describe('Story M2.1: Memory Write Provenance Foundation', () => {
         ).some((row) => row.memory_id === stagedMemory.id)
       ).toBe(false);
 
-      await promoteMemoryStatus({ memoryId: stagedMemory.id, status: 'active' });
+      await promoteMemoryStatus(getAdapter(), { memoryId: stagedMemory.id, status: 'active' });
 
       expect(
         (
-          await queryRelevantTruth({
+          await queryRelevantTruth(getAdapter(), {
             query: 'manual staged truth projection',
             scopes: [PROJECT_SCOPE],
             includeHistory: false,
@@ -315,7 +260,7 @@ describe('Story M2.1: Memory Write Provenance Foundation', () => {
 
   describe('AC: direct public writes get honest fallback provenance', () => {
     it('inserts a save event with actor:direct_client and no fabricated ids', async () => {
-      const result = await saveMemory({
+      const result = await saveMemory(getAdapter(), {
         topic: 'direct_save_fallback',
         kind: 'decision',
         summary: 'Direct saves still get a save event',
@@ -324,7 +269,7 @@ describe('Story M2.1: Memory Write Provenance Foundation', () => {
         source: { package: 'mama-core', source_type: 'test', project_id: PROJECT_SCOPE.id },
       });
 
-      const provenance = await getMemoryProvenance(result.id);
+      const provenance = await getMemoryProvenance(getAdapter(), result.id);
       expect(provenance?.latest_event?.event_type).toBe('save');
       expect(provenance?.latest_event?.actor).toBe('actor:direct_client');
       expect(provenance?.envelope_hash).toBeNull();
@@ -346,7 +291,7 @@ describe('Story M2.1: Memory Write Provenance Foundation', () => {
         },
       } as never);
 
-      const provenance = await getMemoryProvenance(result.id);
+      const provenance = await getMemoryProvenance(getAdapter(), result.id);
       expect(provenance?.envelope_hash).toBeNull();
       expect(provenance?.gateway_call_id).toBeNull();
       expect(provenance?.provenance).not.toHaveProperty('context_packet_id');
@@ -375,7 +320,7 @@ describe('Story M2.1: Memory Write Provenance Foundation', () => {
     });
 
     it('keeps public ingestMemory caller-supplied provenance out of stored provenance', async () => {
-      const result = await ingestMemory({
+      const result = await ingestMemory(getAdapter(), {
         content: 'Public ingest should not trust caller provenance',
         scopes: [PROJECT_SCOPE],
         source: { package: 'mama-core', source_type: 'test', project_id: PROJECT_SCOPE.id },
@@ -384,8 +329,8 @@ describe('Story M2.1: Memory Write Provenance Foundation', () => {
 
       // Raw ingest stores an observation, not a judgment: no decisions row
       // exists for the observation id, so decision provenance stays null.
-      expect(await getMemoryProvenance(result.id)).toBeNull();
-      const events = await listMemoryEventsForMemory(result.id);
+      expect(await getMemoryProvenance(getAdapter(), result.id)).toBeNull();
+      const events = await listMemoryEventsForMemory(getAdapter(), result.id);
       expect(events[0]?.actor).toBe('actor:direct_client');
       const observation = getAdapter()
         .prepare('SELECT metadata_json FROM observation_versions WHERE observation_id = ?')
@@ -397,38 +342,24 @@ describe('Story M2.1: Memory Write Provenance Foundation', () => {
   });
 
   describe('AC: ingest conversation stores raw observations only', () => {
-    it('stores one observation with trusted provenance and rejects extraction', async () => {
-      const capability = createTrustedProvenanceCapability();
-      const result = await ingestConversationWithTrustedProvenance(
-        {
-          messages: [{ role: 'user', content: 'We decided to keep provenance compact.' }],
-          scopes: [PROJECT_SCOPE],
-          source: { package: 'mama-core', source_type: 'test', project_id: PROJECT_SCOPE.id },
-        },
-        {
-          capability,
-          provenance: {
-            actor: 'main_agent',
-            envelope_hash: 'env_ingest',
-            gateway_call_id: 'gw_ingest_1',
-            tool_name: 'ingest_conversation',
-            source_refs: ['message:conversation'],
-          },
-        }
-      );
+    it('stores one observation and rejects extraction', async () => {
+      const result = await ingestConversation(getAdapter(), {
+        messages: [{ role: 'user', content: 'We decided to keep provenance compact.' }],
+        scopes: [PROJECT_SCOPE],
+        source: { package: 'mama-core', source_type: 'test', project_id: PROJECT_SCOPE.id },
+      });
 
       expect(result.extractedMemories).toEqual([]);
       // The raw observation is evidence, not a judgment: no decisions row, so
       // decision-level provenance queries return nothing for it.
-      expect(await getMemoryProvenance(result.rawId)).toBeNull();
+      expect(await getMemoryProvenance(getAdapter(), result.rawId)).toBeNull();
       expect(
         getAdapter()
           .prepare('SELECT COUNT(*) AS n FROM observation_versions WHERE observation_id = ?')
           .get(result.rawId)
       ).toEqual({ n: 1 });
-      const events = await listMemoryEventsForMemory(result.rawId);
-      expect(events[0]?.actor).toBe('main_agent');
-      expect(events[0]?.evidence_refs).toEqual(['message:conversation']);
+      const events = await listMemoryEventsForMemory(getAdapter(), result.rawId);
+      expect(events[0]?.actor).toBe('actor:direct_client');
 
       // The removed extract option is rejected before any write.
       const before = {
@@ -444,18 +375,12 @@ describe('Story M2.1: Memory Write Provenance Foundation', () => {
         ).n,
       };
       await expect(
-        ingestConversationWithTrustedProvenance(
-          {
-            messages: [{ role: 'user', content: 'Extract attempt must not write.' }],
-            scopes: [PROJECT_SCOPE],
-            source: { package: 'mama-core', source_type: 'test', project_id: PROJECT_SCOPE.id },
-            extract: { enabled: true, apiKey: 'test-key' },
-          },
-          {
-            capability,
-            provenance: { actor: 'main_agent', gateway_call_id: 'gw_ingest_2' },
-          }
-        )
+        ingestConversation(getAdapter(), {
+          messages: [{ role: 'user', content: 'Extract attempt must not write.' }],
+          scopes: [PROJECT_SCOPE],
+          source: { package: 'mama-core', source_type: 'test', project_id: PROJECT_SCOPE.id },
+          extract: { enabled: true, apiKey: 'test-key' },
+        } as never)
       ).rejects.toThrow(/extract/);
       expect(
         (
@@ -470,15 +395,15 @@ describe('Story M2.1: Memory Write Provenance Foundation', () => {
     });
 
     it('keeps public ingestConversation caller-supplied provenance out of stored provenance', async () => {
-      const result = await ingestConversation({
+      const result = await ingestConversation(getAdapter(), {
         messages: [{ role: 'user', content: 'Public ingest conversation spoof attempt.' }],
         scopes: [PROJECT_SCOPE],
         source: { package: 'mama-core', source_type: 'test', project_id: PROJECT_SCOPE.id },
         provenance: { envelope_hash: 'attacker_env', gateway_call_id: 'attacker_gw' },
       } as never);
 
-      expect(await getMemoryProvenance(result.rawId)).toBeNull();
-      const events = await listMemoryEventsForMemory(result.rawId);
+      expect(await getMemoryProvenance(getAdapter(), result.rawId)).toBeNull();
+      const events = await listMemoryEventsForMemory(getAdapter(), result.rawId);
       expect(events[0]?.actor).toBe('actor:direct_client');
       const observation = getAdapter()
         .prepare('SELECT metadata_json FROM observation_versions WHERE observation_id = ?')
@@ -491,7 +416,7 @@ describe('Story M2.1: Memory Write Provenance Foundation', () => {
 
   describe('AC: event readers expose memory-specific save events', () => {
     it('lists memory events by memory id newest first', async () => {
-      const result = await saveMemory({
+      const result = await saveMemory(getAdapter(), {
         topic: 'memory_event_reader_contract',
         kind: 'decision',
         summary: 'Events can be read by memory id',
@@ -500,7 +425,7 @@ describe('Story M2.1: Memory Write Provenance Foundation', () => {
         source: { package: 'mama-core', source_type: 'test', project_id: PROJECT_SCOPE.id },
       });
 
-      const events = await listMemoryEventsForMemory(result.id);
+      const events = await listMemoryEventsForMemory(getAdapter(), result.id);
       expect(events[0]).toMatchObject({
         event_type: 'save',
         memory_id: result.id,

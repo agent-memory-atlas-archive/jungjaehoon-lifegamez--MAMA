@@ -1,4 +1,4 @@
-import { getAdapter, initDB } from '../db-manager.js';
+import type { DatabaseAdapter } from '../db-manager.js';
 import type { MemoryScopeRef, MemoryTruthRow } from './types.js';
 
 interface DecisionTruthQueryRow {
@@ -47,13 +47,14 @@ function matchesQuery(row: MemoryTruthRow, query: string): boolean {
     : tokens.some((token) => haystack.includes(token));
 }
 
-export async function queryRelevantTruth(params: {
-  query: string;
-  scopes: MemoryScopeRef[];
-  includeHistory?: boolean;
-}): Promise<MemoryTruthRow[]> {
-  await initDB();
-  const adapter = getAdapter();
+export async function queryRelevantTruth(
+  adapter: DatabaseAdapter,
+  params: {
+    query: string;
+    scopes: MemoryScopeRef[];
+    includeHistory?: boolean;
+  }
+): Promise<MemoryTruthRow[]> {
   const scopeMatch = params.scopes
     .map(() => '(scope_filter.kind = ? AND scope_filter.external_id = ?)')
     .join(' OR ');

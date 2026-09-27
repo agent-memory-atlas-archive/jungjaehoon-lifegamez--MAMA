@@ -1,120 +1,62 @@
 #!/usr/bin/env node
 
-/**
- * MAMA Standalone CLI
- *
- * Entry point for the mama command
- */
+import { ConfigError } from '../runtime/config.js';
+import { CliInputError } from './prompt.js';
 
-import { Command } from 'commander';
-
-import { initCommand } from './commands/init.js';
-import { setupCommand } from './commands/setup.js';
-import { startCommand, runAgentLoop } from './commands/start.js';
-import { stopCommand } from './commands/stop.js';
-import { statusCommand } from './commands/status.js';
-import { runCommand } from './commands/run.js';
-import { createConnectorCommand } from './commands/connector.js';
-import { createGatewayCommand } from './commands/gateway.js';
-import { createReportCommand } from './commands/report.js';
-import { initConfig } from './config/config-manager.js';
-import { resolvePackageVersion } from '../package-version.js';
-import { renderContractIntro } from '../onboarding/agent-contract.js';
-
-const VERSION = resolvePackageVersion();
-
-const program = new Command();
-
-program
-  .name('mama')
-  .description('MAMA Standalone - Always-on AI Assistant')
-  .version(VERSION, '-v, --version', 'Print version information');
-
-program.addHelpText('after', `\n${renderContractIntro()}\n`);
-
-program
-  .command('init')
-  .description('Initialize MAMA configuration')
-  .option('-f, --force', 'Overwrite existing configuration')
-  .option('--skip-auth-check', 'Skip authentication check (for testing)')
-  .option(
-    '--backend <backend>',
-    'Preferred backend: auto | claude | codex | cline (default: auto)',
-    'auto'
-  )
-  .action(async (options) => {
-    const backend =
-      options.backend === 'claude' || options.backend === 'codex' || options.backend === 'cline'
-        ? options.backend
-        : 'auto';
-    await initCommand({
-      force: options.force,
-      skipAuthCheck: options.skipAuthCheck,
-      backend,
-    });
-  });
-
-program
-  .command('setup')
-  .description('Print onboarding contract and current state')
-  .action(async () => {
-    await setupCommand();
-  });
-
-program
-  .command('start')
-  .description('Start MAMA agent')
-  .option('-f, --foreground', 'Run in foreground')
-  .action(async (options) => {
-    await startCommand({ foreground: options.foreground });
-  });
-
-program
-  .command('stop')
-  .description('Stop MAMA agent')
-  .action(async () => {
-    await stopCommand();
-  });
-
-program
-  .command('status')
-  .description('Check MAMA agent status')
-  .option('--json', 'Machine-readable status with onboarding contract')
-  .action(async (options: { json?: boolean }) => {
-    await statusCommand(options);
-  });
-
-program
-  .command('run')
-  .description('Run a single prompt (for testing)')
-  .argument('<prompt>', 'Prompt to execute')
-  .option('-v, --verbose', 'Verbose output')
-  .action(async (prompt, options) => {
-    await runCommand({ prompt, verbose: options.verbose });
-  });
-
-program.addCommand(createConnectorCommand());
-program.addCommand(createGatewayCommand());
-program.addCommand(createReportCommand());
-
-// Hidden daemon command (used internally for background process)
-program
-  .command('daemon', { hidden: true })
-  .description('Run as daemon (internal use)')
-  .action(async () => {
-    try {
-      const config = await initConfig();
-      await runAgentLoop(config);
-    } catch (error) {
-      console.error('Daemon error:', error);
-      process.exit(1);
-    }
-  });
-
-// Parse arguments
-program.parse();
-
-// If no arguments, show help
-if (!process.argv.slice(2).length) {
-  program.outputHelp();
+async function main(): Promise<void> {
+  const command = process.argv[2];
+  if (command === 'init') {
+    if (process.argv.length !== 3) throw new CliInputError('Usage: mama init');
+    const { runInit } = await import('./commands/init.js');
+    await runInit();
+    return;
+  }
+  if (command === 'secret') {
+    const { runSecret } = await import('./commands/secret.js');
+    await runSecret(process.argv.slice(3));
+    return;
+  }
+  if (command === 'daemon') {
+    const { runDaemon } = await import('./commands/daemon.js');
+    await runDaemon();
+    return;
+  }
+  if (command === 'replay') {
+    const { runReplay } = await import('./commands/replay.js');
+    await runReplay();
+    return;
+  }
+  if (command === 'status') {
+    const { daemonStatus } = await import('./commands/daemon.js');
+    console.log(daemonStatus());
+    return;
+  }
+  if (command === 'stop') {
+    const { requestDaemonStop } = await import('./commands/daemon.js');
+    requestDaemonStop();
+    return;
+  }
+  console.log(
+    'Usage: mama init | secret set <NAME> | secret list | daemon | replay | status | stop'
+  );
 }
+
+void main().catch((error: unknown) => {
+  if (error instanceof CliInputError || error instanceof ConfigError) {
+    console.error(error.message);
+  } else {
+    // Unexpected error metadata can contain credentials; print only bounded diagnostic identifiers.
+    const name =
+      error instanceof Error && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(error.name)
+        ? error.name
+        : 'Error';
+    const rawCode =
+      error !== null && typeof error === 'object' && 'code' in error ? error.code : undefined;
+    const code =
+      typeof rawCode === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(rawCode)
+        ? rawCode
+        : 'UNEXPECTED';
+    console.error(`mama command failed (${name}, ${code})`);
+  }
+  process.exitCode = 1;
+});

@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vites
 import { createSaveDecisionTool, saveDecisionTool } from '../../src/tools/save-decision.js';
 import { MAMAServer } from '../../src/server.js';
 import Database from 'better-sqlite3';
-import { cleanupTestDB, initTestDB } from '@jungjaehoon/mama-core/test-utils';
+import { cleanupTestDB, initTestDB } from '../helpers/test-db.js';
+import { getAdapter } from '@jungjaehoon/mama-core/db-manager';
 import { createNode } from '@jungjaehoon/mama-core/registry/store';
 
 describe('save_decision v2: scopes + event_date', () => {
@@ -86,8 +87,8 @@ describe('save and save_decision real record identity', () => {
 
   beforeAll(async () => {
     dbPath = await initTestDB('mcp-save-record-identity');
-    item = createNode({ kind: 'item', name: 'synthetic item' });
-    person = createNode({ kind: 'person', name: 'synthetic person' });
+    item = createNode(getAdapter(), { kind: 'item', name: 'synthetic item' });
+    person = createNode(getAdapter(), { kind: 'person', name: 'synthetic person' });
   });
 
   afterAll(async () => {

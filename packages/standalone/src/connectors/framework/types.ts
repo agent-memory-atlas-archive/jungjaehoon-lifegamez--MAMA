@@ -1,57 +1,36 @@
-/** Core types for the Connector Framework. */
+import type { NormalizedItem } from '../../storage/source-archive.js';
 
-import type { NormalizedItem } from '@jungjaehoon/mama-core/storage/source-archive';
-
-export type { NormalizedItem } from '@jungjaehoon/mama-core/storage/source-archive';
+export type { NormalizedItem } from '../../storage/source-archive.js';
 
 export interface ChannelConfig {
   role: 'truth' | 'hub' | 'deliverable' | 'spoke' | 'reference' | 'ignore';
-  /** Authoritative project scope binding for connector evidence; null means unbound. */
-  project_entity_id?: string | null;
   name?: string;
-  keywords?: string[];
-  /** Truth: spreadsheet ID for Sheets connector */
-  spreadsheetId?: string;
-  /** Truth: header range (e.g., "Sheet!A1:Z1") */
-  sheetRange?: string;
-  /** Truth: data range separate from header (e.g., "Sheet!A100:Z200") */
-  dataRange?: string;
-  /** Truth: Trello board ID */
   boardId?: string;
-  /** Deliverable: Drive folder ID */
   folderId?: string;
-  /** Deliverable: Shared Drive (Team Drive) ID */
   driveId?: string;
-  /** Spoke: Obsidian vault path */
+  spreadsheetId?: string;
+  sheetRange?: string;
+  dataRange?: string;
   vaultPath?: string;
-  /** Spoke: file watch patterns */
-  watchPatterns?: string[];
+  calendarId?: string;
+  feedName?: string;
+}
+
+export interface ConnectorPollCursor {
+  hasCursor: boolean;
 }
 
 export interface AuthConfig {
-  type: 'cli' | 'token' | 'none';
+  type: 'token' | 'cli' | 'none';
+  tokenName?: string;
   cli?: string;
   cliAuthCommand?: string;
-  tokenName?: string;
-  token?: string;
 }
 
-export interface AuthRequirement {
-  type: 'cli' | 'token' | 'none';
-  cli?: string;
-  cliAuthCommand?: string;
-  tokenName?: string;
+export interface AuthRequirement extends AuthConfig {
   description: string;
 }
 
-/**
- * Connector auth resolution (the ONLY implemented path):
- *   config.auth.token ?? process.env[config.auth.tokenName ?? '<CONNECTOR>_TOKEN']
- * Fields like `envFile` or `apiKeyName` found in older configs are NOT read by
- * any connector -- put credentials in the daemon environment (e.g. sourced
- * from ~/.mama/auth.env by start.sh) and point tokenName at them. Trello wants
- * one variable in "apiKey:token" format.
- */
 export interface ConnectorConfig {
   enabled: boolean;
   pollIntervalMinutes: number;
@@ -74,12 +53,9 @@ export interface IConnector {
   healthCheck(): Promise<ConnectorHealth>;
   getAuthRequirements(): AuthRequirement[];
   authenticate(): Promise<boolean>;
-  /** Enter scheduler-managed durability so poll state is staged until the handoff succeeds. */
   beginPollHandoff?(): void;
-  poll(since: Date): Promise<NormalizedItem[]>;
-  /** Commit provider-side poll state after durable raw capture and core projection. */
+  poll(since: Date, cursor?: ConnectorPollCursor): Promise<NormalizedItem[]>;
   commitPoll?(): void | Promise<void>;
-  /** Discard staged provider state after a failed durable handoff. */
   abortPollHandoff?(): void;
 }
 

@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import { saveMemory, recallMemory, buildProfile, ingestMemory } from '../../src/memory/api.js';
-import { getAdapter } from '../../src/db-manager.js';
+import { getAdapter, initDB } from '../../src/db-manager.js';
 
 const TEST_DB = '/tmp/test-memory-v2-api.db';
 
 describe('memory v2 api', () => {
   const originalForceTier3 = process.env.MAMA_FORCE_TIER_3;
-  beforeAll(() => {
+  beforeAll(async () => {
     [TEST_DB, `${TEST_DB}-journal`, `${TEST_DB}-wal`, `${TEST_DB}-shm`].forEach((file) => {
       try {
         fs.unlinkSync(file);
@@ -24,6 +24,7 @@ describe('memory v2 api', () => {
     // while still passing locally against a warm model cache. A test that needs the lexical
     // path has to say so.
     process.env.MAMA_FORCE_TIER_3 = 'true';
+    await initDB();
   });
 
   afterAll(async () => {
@@ -43,7 +44,7 @@ describe('memory v2 api', () => {
   });
 
   it('should save and recall a scoped memory', async () => {
-    const saved = await saveMemory({
+    const saved = await saveMemory(getAdapter(), {
       topic: 'test_scope_contract',
       kind: 'decision',
       summary: 'Use pnpm in this repo',
@@ -53,7 +54,7 @@ describe('memory v2 api', () => {
       source: { package: 'mama-core', source_type: 'test', project_id: 'repo:test' },
     });
 
-    const recall = await recallMemory('pnpm', {
+    const recall = await recallMemory(getAdapter(), 'pnpm', {
       scopes: [{ kind: 'project', id: 'repo:test' }],
       includeProfile: true,
     });
@@ -64,7 +65,7 @@ describe('memory v2 api', () => {
   });
 
   it('should build a profile snapshot', async () => {
-    const profile = await buildProfile([{ kind: 'project', id: 'repo:test' }]);
+    const profile = await buildProfile(getAdapter(), [{ kind: 'project', id: 'repo:test' }]);
 
     expect(profile).toHaveProperty('static');
     expect(profile).toHaveProperty('dynamic');
@@ -72,7 +73,7 @@ describe('memory v2 api', () => {
   });
 
   it('should preserve event datetime and order recall by event datetime before created_at', async () => {
-    await saveMemory({
+    await saveMemory(getAdapter(), {
       topic: 'test_time_contract_older',
       kind: 'decision',
       summary: 'Older event happened first',
@@ -84,7 +85,7 @@ describe('memory v2 api', () => {
       eventDateTime: Date.parse('2026-04-14T01:00:00.000Z'),
     } as never);
 
-    await saveMemory({
+    await saveMemory(getAdapter(), {
       topic: 'test_time_contract_newer',
       kind: 'decision',
       summary: 'Newer event happened later',
@@ -96,7 +97,15 @@ describe('memory v2 api', () => {
       eventDateTime: Date.parse('2026-04-15T03:30:00.000Z'),
     } as never);
 
-    const recall = await recallMemory('event happened', {
+    // Make commit order disagree with event order; the latter is the contract.
+    getAdapter()
+      .prepare('UPDATE decisions SET created_at = ? WHERE topic = ?')
+      .run(Date.now() + 1_000, 'test_time_contract_older');
+    getAdapter()
+      .prepare('UPDATE decisions SET created_at = ? WHERE topic = ?')
+      .run(Date.now(), 'test_time_contract_newer');
+
+    const recall = await recallMemory(getAdapter(), 'event happened', {
       scopes: [{ kind: 'project', id: 'repo:test' }],
     });
 
@@ -112,7 +121,7 @@ describe('memory v2 api', () => {
   });
 
   it('should forward eventDateTime through ingestMemory', async () => {
-    const saved = await ingestMemory({
+    const saved = await ingestMemory(getAdapter(), {
       content: 'Ingested memory with event datetime',
       scopes: [{ kind: 'project', id: 'repo:test' }],
       source: { package: 'mama-core', source_type: 'test', project_id: 'repo:test' },
@@ -134,7 +143,7 @@ describe('memory v2 api', () => {
   });
 
   it('should return status-gated recall by default', async () => {
-    await saveMemory({
+    await saveMemory(getAdapter(), {
       topic: 'prompt_injection',
       kind: 'decision',
       summary: 'Do not use this',
@@ -145,7 +154,7 @@ describe('memory v2 api', () => {
       source: { package: 'mama-core', source_type: 'test', project_id: 'repo:test' },
     });
 
-    const bundle = await recallMemory('prompt_injection', {
+    const bundle = await recallMemory(getAdapter(), 'prompt_injection', {
       scopes: [{ kind: 'project', id: 'repo:test' }],
     });
 

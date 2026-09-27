@@ -2,24 +2,16 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    globals: true,
-    environment: 'node',
-    include: ['tests/**/*.test.ts'],
-    setupFiles: ['tests/setup.ts'],
-    // Use forks pool with single fork to avoid parallel execution issues
-    // with tests that modify HOME environment variable
+    passWithNoTests: true,
+    setupFiles: ['tests/setup/model-cache.ts'],
+    // Load the workspace core through Node like production does. Inlined, the setup's
+    // import and the core's own require() are two module instances with two states.
+    server: { deps: { external: [/packages\/mama-core\/dist\//] } },
+    // better-sqlite3 is a native module; replay tests open source and raw SQLite
+    // handles in one run, so keep the worker process single and deterministic.
     pool: 'forks',
     poolOptions: {
-      forks: {
-        singleFork: true,
-      },
-    },
-    threads: false,
-    coverage: {
-      provider: 'v8',
-      reporter: ['text', 'json', 'html'],
-      include: ['src/**/*.ts'],
-      exclude: ['src/**/*.d.ts', 'src/**/index.ts'],
+      forks: { singleFork: true },
     },
   },
 });

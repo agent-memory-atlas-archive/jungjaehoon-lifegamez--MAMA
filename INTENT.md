@@ -1,120 +1,117 @@
-# MAMA의 목적
+# What MAMA is for
 
-버전: 6 · 2026-09-08
+Version 7 · 2026-09-25 (replaces v6 of 2026-09-08)
 
-MAMA는 한 명의 오너와 인증된 인간 팀원이 기존 메신저와 업무 도구에서 함께 사용하는
-지속적인 에이전트다. 연결된 출처의 데이터와 업무 맥락을 축적하고, 필요한 자료에 쉽고
-점진적으로 접근하여 현시점의 상황을 이해하고 보고한다. 사람의 질문과 작업 요청을 받아
-허용된 일을 수행하고, 결과와 교정을 기억하여 다음 업무와 보고로 이어간다.
+MAMA is a persistent agent that keeps watching and remembering the owner's work. Nobody has to
+explain things from the beginning again: it knows the current situation, reports it, and does the
+work it is given.
 
-## 하나로 이어지는 제품 흐름
+## What we are building
 
-데이터·원문·변경이력 축적 → 필요한 자료에 점진적으로 접근 → 현시점 상황 이해
-→ 정기보고 → 오너·팀원의 질문과 작업 요청 → 조회·판단·가능한 작업 수행
-→ 결과·파일 버전·교정 반영 → 다음 대화·작업·보고.
+It starts from what Kagemusha already does and adds two things.
 
-이 흐름은 같은 MAMA와 업무 맥락으로 이어진다. 사람은 목적과 자료를 전달하고,
-MAMA는 필요한 도구와 수행 방법을 선택하며 결과에 책임진다. 내부 모델이나 작업자를
-사람이 직접 골라 조율할 필요가 없어야 한다.
+- **What Kagemusha does:** watches changes in connected conversations and work tools and
+  recognises the work in them. It creates and updates tasks, refreshes the board and the scheduled
+  reports, and forwards feedback and files.
+- **Addition 1 — a wiki and memory that carry over:** how the work unfolded, and the owner's
+  corrections, survive new sessions, restarts and model changes.
+- **Addition 2 — task history (the differentiator):** for every task it keeps how it progressed,
+  what changed, what the feedback was, and who did what. It can also find **similar past cases**
+  and reuse how their feedback went and how they ended.
 
-## 데이터와 접근
+## The engine is shared
 
-연결·수집 범위의 전체 데이터와 원문, 변경 이력을 축적한다. 최근 발췌문이나 요약만
-남겨 과거 맥락을 잃지 않는다. 수집 범위·누락·실패도 구분하여 기록한다.
+mama-core is not MAMA's private internals. A separate project must be able to
+connect to it and build its own records: its own storage, its own principals, its own sources, with history,
+evidence links and search. It does this without MAMA's product code or MAMA's data. Records,
+revisions, evidence and search belong to the engine. Each product's work vocabulary (task
+fields, roles, boards, reports) belongs to that product.
 
-전체 데이터를 쌓는 것이 매번 전체 데이터를 프롬프트에 넣는다는 뜻은 아니다. MAMA는
-출처·기간·업무의 개요에서 시작하여 검색·필터·관련 항목·원문과 변경 이력으로 필요한 만큼
-내려간다. 어떤 자료가 있고 어디까지 조회했는지, 무엇이 오래됐거나 누락됐는지 알 수 있어야 한다.
+## Order — the owner's work comes first
 
-## 현시점의 이해와 보고
+A team only works on top of one owner whose work carries over without breaks. Team sharing,
+member permissions and non-owner input wait until the checks below pass on real data.
 
-과거 자료를 현재 사실로 오인하지 않도록 발생 시각·관측 시각·적용 기간·변경과 취소를
-구분한다. 최신 관측과 업무 이력, 남아 있는 의무, 다가오는 일정을 함께 판단한다.
+## When the owner's work counts as carried
 
-오너가 매번 요청하지 않아도 설정된 시점에 보고한다. 이전 보고 이후의 의미 있는 변화,
-현재 진행 상황, 미해결 문제와 필요한 결정을 읽기 쉽게 설명하고 근거에 접근할 수 있게 한다.
-수집 누락을 변화 없음이나 완료로 해석하지 않는다. 보고와 알림의 내용·대상은 업무 관련성과
-수신자의 권한에 맞추고, 실제로 처리한 결과를 구분하여 보여준다.
+1. **Recognise** — read the originals and decide which piece of work and which stage they belong
+   to. Keep observations and notes apart from work that was actually handed over.
+2. **Attach** — attach new information to existing work. Each piece of work keeps, in one place:
+   its purpose, its materials and file versions, decisions, who does what (making, coordinating,
+   reviewing) with the evidence for it, its status, corrections, and what is left.
+3. **Answer** — for "who is working on this?", "how did X go?", "what was the feedback?", read the
+   stored record first and answer with evidence. A new session or a restart gives the same answer.
+4. **Report** — the scheduled reports and the board show the same state as the tasks.
+5. **Learn** — an owner correction changes the next related action, does not spill into unrelated
+   situations, and survives a restart.
 
-## 업무의 지속성 — Case
+## A task is the container for a case
 
-Case는 한 업무의 목적, 자료, 결정, 담당, 진행 상태, 교정과 남은 일을 연결한 맥락이다.
-사람은 같은 업무를 이어서 질문하거나 새 자료를 보내고, 권한이 있는 다른 팀원도 그 업무를
-이어갈 수 있어야 한다. MAMA는 업무의 경계가 모호하면 필요한 부분을 확인하고,
-단순 관찰·메모와 실제로 맡겨진 실행 업무를 구분한다.
+- Everything about one piece of work lives in the task and its revision history. There is no
+  separate Case object.
+- History is written **when the change happens**, on that revision: what changed, the feedback,
+  the source evidence, who did it. "We can re-read the originals later" is not a reason to skip it.
+- Roles are context for the work, not a judgment of people. Record the evidence cross-checked in
+  conversation. If it is not confirmed, mark it unconfirmed. An assignee field in a tool such as
+  Trello is one piece of evidence, not the answer.
+- The board is the agent's live view of the work, written after reading the tasks and the
+  conversations, so it shows the same state as the tasks. The wiki is the human-readable record of
+  each case.
+  Memory holds corrections and lessons.
+- Tasks, their history and the wiki must all be semantically searchable. That is how similar cases
+  are found.
 
-모델이나 커넥터가 바뀌고 실행이 재시작돼도 목적과 중요한 교정, 미완료 요청, 근거와 결과를
-이어간다. 사람에게 같은 업무를 처음부터 다시 설명하게 하지 않는다.
+## Data and the present moment
 
-## 실제 작업과 파일
+- Keep every original and every change from the connected sources. Record collection coverage,
+  gaps and failures as separate things.
+- Do not read everything every time. Go from an overview down through search to the originals, as
+  far as needed.
+- Keep occurrence time, observation time and period of validity apart. Old material is not a
+  current fact. A collection gap is not "no change" and not "done".
 
-사람은 기존 메신저에서 실제 파일과 원하는 결과를 전달할 수 있다. MAMA는 필요한 자료를
-조회하고 파일을 읽고 비교하며, 가능한 수정·검토·내보내기·전달을 수행한다.
+## Real work and files
 
-원본을 보존하고 변경 결과는 구분되는 새 버전으로 남긴다. 어떤 요청과 기준 버전에서 누가
-무엇을 바꿨는지 추적할 수 있어야 한다. 승인이 필요한 작업은 정확한 대상과 버전에 대해
-승인받고, 전달할 권한이 있는 대상에게 해당 결과를 보낸다. 결과가 불확실하면 성공으로
-표시하거나 같은 외부 행동을 무작정 반복하지 않는다.
+- Keep originals. Save results as distinct new versions. Record on the task which request and
+  which base version led to the change, who made it, and who it was sent to.
+- Large files (PSD, ZIP, video) go to Drive, and the link is sent.
+- If a delivery result is uncertain, do not mark it as sent and do not send it again. Check the
+  original receipt.
 
-실행 결과와 사람의 교정은 Case와 업무 상태에 반영하여 다음 답변과 보고에 이어진다.
-실제 결정이나 권한이 필요할 때 묻고, 이미 맡긴 일을 불필요하게 다시 승인받지 않는다.
-사실·판단·제안·실제 실행 결과를 구분하고, 할 수 없는 일은 정확히 알린다.
+## Learning
 
-## 인간 팀과 공유
+- Owner corrections and repeated experience collect in one place and reach the agent in the next
+  related situation.
+- A correction keeps the scope of the existing rule and replaces, merges or retires only the part
+  that was wrong. Do not widen a task-specific instruction to every conversation, and do not pile
+  up contradicting sentences.
+- Learning is done when the next related situation turns out differently, not when something is
+  saved.
 
-오너는 한 명이며, 팀원은 검증된 메신저 신원으로 같은 MAMA에 접근한다. 개인 기억과
-공유 업무 자료를 구분하고, 각 사람은 자신에게 허용된 자료와 행동만 사용할 수 있다.
-오너라는 이유만으로 팀원의 개인 기억을 자동으로 열람하지 않는다.
+## What the agent decides and what the host provides
 
-공유·공유 해제·권한 변경이 실제 조회와 실행에 반영돼야 한다. 업무 요청자, 실행자,
-승인자와 결과 수신자를 구분하여 기록한다. 여러 사람이 같은 업무나 파일을 수정할 때는
-기준 버전의 충돌을 드러내고 다른 사람의 변경을 조용히 덮어쓰지 않는다.
+- The agent decides what material means and how relevant and important it is, where one piece of
+  work ends and another begins, roles, and what to report and do.
+- The host provides collection, storage, search, execution, permissions, messaging and recovery,
+  and keeps the records and receipts the agent writes.
+- When a fixed host procedure (a set order, a call quota) is removed, the domain knowledge and
+  owner corrections it carried move to a place that still reaches the agent. They are never just
+  deleted.
 
-## v1의 도착점
+## When the purpose is met
 
-v1은 인증된 복수의 팀원이 실제 업무에서 반복 사용하는 MAMA다. 적어도 하나의 실제 업무와
-파일 영역에서 요청 → 자료 조회 → 작업·새 버전 → 필요한 승인 → 결과 전달 → 후속 작업이
-이어지고, 개인 기억의 분리와 권한 회수가 작동해야 한다.
+- Judge it with real data and real owner questions. Passing tests, structure checks and receipts
+  are supporting evidence.
+- Reference questions: "How did X progress, and what was the feedback?", "Was there a past case
+  like this feedback?", "Who is working on what right now?"
+- Finishing a sub-task is not finishing this purpose.
 
-새 설치는 안내를 따라 하나의 실제 출처를 연결하고 첫 보고까지 도달할 수 있어야 한다.
-업그레이드와 복구 뒤에도 기존 업무를 이어갈 수 있어야 한다. 오너 혼자의 보고 개선은
-이 여정의 중요한 성과이며, 팀의 반복 사용과 실제 파일 업무가 v1의 다음 검증 대상이다.
+## After that — the v1 destination
 
-## 지시와 경험이 다음 행동으로 이어지는 학습
+Once the owner's work carries over, widen it so that several authenticated team members use the
+same MAMA in real work, repeatedly. Keep personal memory apart from shared material. Record
+requester, executor, approver and recipient separately. A permission change must show up in what
+can actually be read and done.
 
-MAMA는 오너의 지시와 교정, 반복되는 상황과 수행 결과를 재사용 가능한 업무 규칙과 절차로 축적한다.
-관련 요청·보고 시점·업무 상황이 다시 오면 해당 절차를 스킬처럼 발견하고 적용하여 실제 행동으로 이어간다.
-오너가 같은 지시를 반복하거나 내부 에이전트를 직접 선택할 필요가 없어야 한다.
-
-교정은 기존 규칙의 적용 범위와 의미를 보존하면서 잘못된 부분을 대체·통합·폐기하는 과정이다.
-상충 문장을 누적하거나 특정 업무의 지시를 모든 대화로 확대하지 않는다. 원지시·경험 근거와 변경 이력을 남긴다.
-
-세션·프로세스·모델·담당 에이전트가 바뀌어도 해당 업무와 권한을 가진 에이전트가 최신 절차를 발견하고 사용할 수 있어야 한다.
-개인/팀의 공유 범위와 권한 회수는 유지하며, 학습한 절차가 새로운 권한을 부여하지 않는다.
-호스트는 저장·발견·도구·권한·복구를 제공하고, 의미 판단·절차 개선·상황에 맞는 수행은 에이전트가 담당한다.
-
-학습의 완료는 저장이나 수락 응답으로 판정하지 않는다. 다음 관련 상황에서 실제 수행 결과가 교정을 충족하고,
-비관련 상황에는 잘못 적용되지 않으며, 담당 교체 후에도 이어지는지 확인한다.
-
-v1의 기존 실제 팀·Case·파일 반복 업무에서 두 가지 근거를 각각 남긴다. 하나는 오너의 교정이 다음 관련
-대화·정기보고·업무 수행으로 이어지는 것, 다른 하나는 오너의 별도 학습 지시 없이 반복 수행 결과를 통해
-절차를 개선하고 새로운 관련 사례의 산출물을 개선하는 것이다. 한 번의 불확실한 실패로 일반 규칙을 성급히 바꾸지 않는다.
-
-재시작·새 담당 에이전트·지원되는 다른 모델에서도 이전 대화에 기대지 않는 새 입력으로 실제 결과와 비적용 결과를 확인한다.
-스킬 선택 기록은 보조 근거이며, 적어도 하나의 비보고 업무에서 기대 파일·업무 상태·전달 결과가 충족되어야 한다.
-보고서 문체는 검증 사례이며 목적 전체가 아니다.
-
-이 학습 흐름의 구현·평가 기준은 [원마마 학습 앵커](docs/development/one-mama-learning-anchor.md)를 따른다.
-
-## 판단의 자유와 운영 품질
-
-호스트는 수집·저장·검색·실행·권한·통신 기반을 제공하고, MAMA는 자료의 의미와 관련성,
-중요도, 보고 내용과 행동을 판단한다. 정해진 대사를 반복하는 대신 현재 상황과 사람의
-목적에 맞게 판단할 수 있어야 한다. 검증 절차 자체가 이 제품 흐름을 대체하지 않는다.
-
-태스크 정리와 보고 품질에서 확인된 사용자 가치를 유지하며, 실제로 관측된 대기·불필요한
-조회·토큰 낭비·수집 및 복구 실패를 개선한다. 일부 실패가 있어도 가능한 다른 업무는
-진행하고, 개선된 범위와 아직 해결되지 않은 범위를 구분한다.
-
-개발 절차와 완료 근거는 [개발 목적 점검](docs/development/intent-workflow.md),
-v1 팀·파일 업무의 상세 계약은 [팀 Work Agent 설계](docs/development/2026-08-26-one-front-team-work-agent-design.md)에 둔다.
+Development checks: [intent workflow](docs/development/intent-workflow.md),
+[corrections and learning](docs/guides/corrections-and-learning.md).

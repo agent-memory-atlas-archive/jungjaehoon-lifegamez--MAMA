@@ -11,8 +11,8 @@
 import crypto from 'node:crypto';
 
 import { canonicalizeJSON } from '../canonicalize.js';
-import { buildMemoryScopeId, initDB, getAdapter, prepareDecisionEmbedding } from '../db-manager.js';
-import type { DatabaseAdapter, DecisionInput } from '../db-manager.js';
+import { buildMemoryScopeId, prepareDecisionEmbedding } from '../db-manager.js';
+import type { DatabaseAdapter, DatabaseInstance, DecisionInput } from '../db-manager.js';
 import { appendJudgment } from '../knowledge/judgments.js';
 import type { JudgmentAccess } from '../knowledge/judgments.js';
 import type {
@@ -30,30 +30,35 @@ const UNSIGNED_PRINCIPAL = 'unsigned-local';
 /** Access for a caller with no signed identity: it is admitted to exactly the
  * scopes it declared, nothing more. */
 export function unsignedWriteAccess(scopes: readonly MemoryScopeRef[]): JudgmentAccess {
-  return { principalId: UNSIGNED_PRINCIPAL, agentId: UNSIGNED_PRINCIPAL, scopes: [...scopes] };
+  return {
+    principalId: UNSIGNED_PRINCIPAL,
+    agentId: UNSIGNED_PRINCIPAL,
+    scopes: [...scopes],
+    // Not a principal and not a caller of actions: this access exists for the
+    // direct-write path below dispatch. Empty is what it can truthfully claim,
+    // and if it ever did reach dispatch every action would be denied.
+    actions: [],
+  };
 }
 
 /**
- * Access derived from normalized write provenance.
- *
- * Unsigned callers self-declare their scopes, so admission covers the requested
- * scopes and the record's `agent_id` stays empty (honest unsigned write).
- * Trusted envelopes (`authoritativeScopes`) admit only the intersection with
- * the requested scopes — an envelope must never widen the write beyond what the
- * caller asked to bind.
+ * Access derived from normalized write provenance — the legacy direct-write
+ * path, where the caller is the process itself and declares its own scopes.
+ * Unified-action writes do NOT come through here: dispatch passes the real
+ * `JudgmentAccess` (the call authority) straight to `appendJudgment`.
  */
 export function writeAccessForProvenance(
   provenance: NormalizedMemoryProvenance,
-  requestedScopes: readonly MemoryScopeRef[],
-  authoritativeScopes?: readonly MemoryScopeRef[]
+  requestedScopes: readonly MemoryScopeRef[]
 ): JudgmentAccess {
   const identity = provenance.agent_id ?? provenance.actor;
-  const admitted = authoritativeScopes
-    ? authoritativeScopes.filter((scope) =>
-        requestedScopes.some((req) => req.kind === scope.kind && req.id === scope.id)
-      )
-    : [...requestedScopes];
-  return { principalId: identity, agentId: provenance.agent_id ?? identity, scopes: admitted };
+  return {
+    principalId: identity,
+    agentId: provenance.agent_id ?? identity,
+    scopes: [...requestedScopes],
+    // Same as above: provenance names who wrote, not what they may call.
+    actions: [],
+  };
 }
 
 /** Scope refs currently bound to a memory row — the partition a write into
@@ -235,10 +240,9 @@ export interface OutcomeAmendmentInput {
 export async function appendOutcomeAmendment(
   decisionId: string,
   input: OutcomeAmendmentInput,
-  options?: { adapter?: DatabaseAdapter }
+  options: { adapter: DatabaseInstance }
 ): Promise<{ recordId: string; commandId: string }> {
-  await initDB();
-  const adapter = options?.adapter ?? getAdapter();
+  const adapter = options.adapter;
   const target = adapter.prepare('SELECT id, topic FROM decisions WHERE id = ?').get(decisionId) as
     | { id: string; topic: string }
     | undefined;

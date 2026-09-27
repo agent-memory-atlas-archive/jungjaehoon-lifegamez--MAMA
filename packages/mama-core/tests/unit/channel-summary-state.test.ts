@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 
+import { closeDB, getAdapter, initDB } from '../../src/db-manager.js';
 import {
   getChannelSummaryState,
   recordChannelAudit,
@@ -10,7 +11,7 @@ import { getChannelSummary, upsertChannelSummary } from '../../src/memory/channe
 const TEST_DB = '/tmp/test-channel-summary-state.db';
 
 describe('channel summary state reducer', () => {
-  beforeAll(() => {
+  beforeAll(async () => {
     [TEST_DB, `${TEST_DB}-journal`, `${TEST_DB}-wal`, `${TEST_DB}-shm`].forEach((file) => {
       try {
         fs.unlinkSync(file);
@@ -20,10 +21,10 @@ describe('channel summary state reducer', () => {
     });
 
     process.env.MAMA_DB_PATH = TEST_DB;
+    await initDB();
   });
 
   afterAll(async () => {
-    const { closeDB } = await import('../../src/db-manager.js');
     await closeDB();
     delete process.env.MAMA_DB_PATH;
 
@@ -37,7 +38,7 @@ describe('channel summary state reducer', () => {
   });
 
   it('should accumulate active decisions and milestones instead of overwriting the whole summary', async () => {
-    await recordChannelAudit({
+    await recordChannelAudit(getAdapter(), {
       channelKey: 'telegram:tg_test_001',
       turnId: 'turn_1',
       topic: 'database_choice',
@@ -56,7 +57,7 @@ describe('channel summary state reducer', () => {
       ],
     });
 
-    await recordChannelAudit({
+    await recordChannelAudit(getAdapter(), {
       channelKey: 'telegram:tg_test_001',
       turnId: 'turn_2',
       topic: 'benchmark_direction',
@@ -75,8 +76,8 @@ describe('channel summary state reducer', () => {
       ],
     });
 
-    const state = await getChannelSummaryState('telegram:tg_test_001');
-    const summary = await getChannelSummary('telegram:tg_test_001');
+    const state = await getChannelSummaryState(getAdapter(), 'telegram:tg_test_001');
+    const summary = await getChannelSummary(getAdapter(), 'telegram:tg_test_001');
 
     expect(state?.active_topic).toBe('memory_benchmark_research');
     expect(state?.active_decisions).toHaveLength(2);
@@ -90,7 +91,7 @@ describe('channel summary state reducer', () => {
   });
 
   it('should keep failed and skipped audit outcomes in state without replacing active decisions', async () => {
-    await recordChannelAudit({
+    await recordChannelAudit(getAdapter(), {
       channelKey: 'telegram:tg_test_001',
       turnId: 'turn_3',
       topic: 'memory_audit',
@@ -103,7 +104,7 @@ describe('channel summary state reducer', () => {
       },
     });
 
-    await recordChannelAudit({
+    await recordChannelAudit(getAdapter(), {
       channelKey: 'telegram:tg_test_001',
       turnId: 'turn_4',
       topic: 'memory_audit',
@@ -116,8 +117,8 @@ describe('channel summary state reducer', () => {
       },
     });
 
-    const state = await getChannelSummaryState('telegram:tg_test_001');
-    const summary = await getChannelSummary('telegram:tg_test_001');
+    const state = await getChannelSummaryState(getAdapter(), 'telegram:tg_test_001');
+    const summary = await getChannelSummary(getAdapter(), 'telegram:tg_test_001');
 
     expect(state?.active_decisions.map((entry) => entry.topic)).toContain('데이터베이스 선택');
     expect(state?.recent_audit_outcomes[0]?.status).toBe('failed');
@@ -128,14 +129,14 @@ describe('channel summary state reducer', () => {
   });
 
   it('should preserve legacy channel summary context when state does not exist yet', async () => {
-    await upsertChannelSummary({
+    await upsertChannelSummary(getAdapter(), {
       channelKey: 'telegram:legacy',
       summaryMarkdown:
         '## Channel Summary\n- Legacy context: we were comparing benchmark directions.',
       deltaHash: 'legacy-seed',
     });
 
-    await recordChannelAudit({
+    await recordChannelAudit(getAdapter(), {
       channelKey: 'telegram:legacy',
       turnId: 'turn_legacy_1',
       topic: 'benchmark_direction',
@@ -154,7 +155,7 @@ describe('channel summary state reducer', () => {
       ],
     });
 
-    const summary = await getChannelSummary('telegram:legacy');
+    const summary = await getChannelSummary(getAdapter(), 'telegram:legacy');
     expect(summary?.summary_markdown).toContain('Legacy context');
     expect(summary?.summary_markdown).toContain('memory_benchmark_research');
   });

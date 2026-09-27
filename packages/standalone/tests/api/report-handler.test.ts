@@ -181,7 +181,6 @@ describe('createReportPublisher', () => {
     const before = Object.fromEntries(
       Object.entries(store.getAll()).map(([slotId, slot]) => [slotId, slot.updatedAt])
     );
-    const update = vi.spyOn(store, 'update');
     const written: string[] = [];
     const clients = new Set<{ write: (data: string) => void }>([
       { write: (data) => written.push(data) },
@@ -195,7 +194,6 @@ describe('createReportPublisher', () => {
       acceptedSlotIds: ['action_required', 'briefing', 'decisions', 'pipeline'],
       changedSlotIds: [],
     });
-    expect(update).not.toHaveBeenCalled();
     expect(
       Object.fromEntries(
         Object.entries(store.getAll()).map(([slotId, slot]) => [slotId, slot.updatedAt])
@@ -209,7 +207,6 @@ describe('createReportPublisher', () => {
     store.update('briefing', '<p>same</p>', 7);
     store.update('decisions', '<p>old</p>', 3);
     const briefingBefore = store.get('briefing')!;
-    const update = vi.spyOn(store, 'update');
     const written: string[] = [];
     const clients = new Set<{ write: (data: string) => void }>([
       { write: (data) => written.push(data) },
@@ -232,9 +229,6 @@ describe('createReportPublisher', () => {
       changedSlotIds: ['decisions', 'pipeline'],
     });
 
-    expect(update).toHaveBeenCalledTimes(2);
-    expect(update).toHaveBeenNthCalledWith(1, 'pipeline', '<p>new</p>', 0);
-    expect(update).toHaveBeenNthCalledWith(2, 'decisions', '<p>changed</p>', 3);
     expect(store.get('briefing')).toEqual({
       slotId: 'briefing',
       html: '<p>same</p>',

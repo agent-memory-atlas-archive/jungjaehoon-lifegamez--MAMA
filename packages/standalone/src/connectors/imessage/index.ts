@@ -41,11 +41,17 @@ export class IMessageConnector implements IConnector {
   private lastPollCount = 0;
   private lastError: string | undefined = undefined;
 
-  constructor(_config: ConnectorConfig, dbPath?: string) {
+  constructor(
+    private config: ConnectorConfig,
+    dbPath?: string
+  ) {
     this.dbPath = dbPath ?? join(homedir(), 'Library', 'Messages', 'chat.db');
   }
 
   async init(): Promise<void> {
+    if (this.getChatIds().length === 0) {
+      throw new Error('iMessage requires explicitly configured chat identifiers');
+    }
     try {
       this.db = new Database(this.dbPath);
     } catch (err) {
@@ -76,7 +82,7 @@ export class IMessageConnector implements IConnector {
       {
         type: 'none',
         description:
-          'No authentication required. Requires Full Disk Access for Terminal in System Settings > Privacy & Security.',
+          'No authentication required. The daemon process needs Full Disk Access in System Settings > Privacy & Security.',
       },
     ];
   }
@@ -85,22 +91,28 @@ export class IMessageConnector implements IConnector {
     return this.db !== null;
   }
 
+  private getChatIds(): string[] {
+    return Object.entries(this.config.channels)
+      .filter(([, channel]) => channel.role !== 'ignore')
+      .map(([chatId]) => chatId);
+  }
+
   async poll(since: Date): Promise<NormalizedItem[]> {
     if (!this.db) throw new Error('iMessageConnector not initialized');
-
+    const chatIds = this.getChatIds();
+    if (chatIds.length === 0)
+      throw new Error('iMessage requires explicitly configured chat identifiers');
     const items: NormalizedItem[] = [];
-    let hadError = false;
-
     try {
       // iMessage date is nanoseconds since 2001-01-01 (Core Data epoch).
       // Values exceed Number.MAX_SAFE_INTEGER, so we convert in SQL instead.
       // Unix seconds = date / 1_000_000_000 + 978_307_200
-      const sinceUnixSec = Math.floor(since.getTime() / 1000);
+      const sinceUnixMs = since.getTime();
 
       const rows = this.db
         .prepare(
           `SELECT m.ROWID,
-                  (m.date / 1000000000 + 978307200) as date,
+                  (m.date / 1000000 + 978307200000) as date,
                   m.text, m.is_from_me,
                   h.id as sender,
                   c.chat_identifier as chat_id,
@@ -109,22 +121,23 @@ export class IMessageConnector implements IConnector {
            LEFT JOIN handle h ON m.handle_id = h.ROWID
            LEFT JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
            LEFT JOIN chat c ON c.ROWID = cmj.chat_id
-           WHERE (m.date / 1000000000 + 978307200) > ?
+           WHERE (m.date / 1000000 + 978307200000) >= ?
              AND m.text IS NOT NULL AND m.text != ''
+             AND c.chat_identifier IN (${chatIds.map(() => '?').join(', ')})
            ORDER BY m.date ASC`
         )
-        .all(sinceUnixSec) as MessageRow[];
+        .all(sinceUnixMs, ...chatIds) as MessageRow[];
 
       for (const row of rows) {
-        // date is already Unix seconds (converted in SQL)
-        const unixMs = row.date * 1000;
+        // date is Unix milliseconds (converted in SQL), preserving the poll cursor precision.
+        const unixMs = row.date;
         const author = row.is_from_me ? 'me' : (row.sender ?? 'unknown');
-        const channel = row.display_name || row.chat_id || row.sender || 'unknown';
+        if (row.chat_id === null || !chatIds.includes(row.chat_id)) continue;
 
         items.push({
           source: 'imessage',
           sourceId: `imessage:${row.ROWID}`,
-          channel,
+          channel: row.chat_id,
           author,
           content: row.text,
           timestamp: new Date(unixMs),
@@ -137,14 +150,16 @@ export class IMessageConnector implements IConnector {
         });
       }
     } catch (err) {
-      hadError = true;
-      this.lastError = err instanceof Error ? err.message : String(err);
+      const chatLabel = chatIds.length === 1 ? 'chat' : 'chats';
+      this.lastError = `iMessage poll failed for 1 query covering ${chatIds.length} configured ${chatLabel}; last error: ${err instanceof Error ? err.message : String(err)}`;
+      this.lastPollTime = new Date();
+      this.lastPollCount = items.length;
+      throw new Error(this.lastError, { cause: err });
     }
 
     this.lastPollTime = new Date();
     this.lastPollCount = items.length;
-    // lastError was set in catch blocks; clear only if no error occurred this pass
-    if (!hadError) this.lastError = undefined;
+    this.lastError = undefined;
 
     return items;
   }

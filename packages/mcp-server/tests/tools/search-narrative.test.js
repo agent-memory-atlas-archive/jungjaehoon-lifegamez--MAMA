@@ -11,7 +11,7 @@ import {
   cleanupTestDB,
   isEmbeddingsAvailable,
   createMockToolContext,
-} from '@jungjaehoon/mama-core/test-utils';
+} from '../helpers/test-db.js';
 import { saveDecisionTool } from '../../src/tools/save-decision.js';
 import { searchNarrativeTool } from '../../src/tools/search-narrative.js';
 

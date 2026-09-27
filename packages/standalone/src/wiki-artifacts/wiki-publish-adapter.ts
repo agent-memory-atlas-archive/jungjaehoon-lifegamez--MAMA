@@ -1,3 +1,4 @@
+import { WIKI_HUMAN_MARKER } from '../wiki/wiki-read.js';
 import { serializeSourceRef, type SourceRef } from '@jungjaehoon/mama-core/provenance/source-ref';
 
 import type { WikiPageType } from '../wiki/types.js';
@@ -28,18 +29,18 @@ export interface WikiPublishAdapterOptions {
 }
 
 function normalizeType(value: string | undefined): WikiPageType {
-  return normalizeWikiPageType(value, 'wiki_publish page');
+  return normalizeWikiPageType(value, 'manage.wiki.publish page');
 }
 
 function normalizeConfidence(value: string | undefined): WikiArtifactConfidence {
-  return normalizeWikiConfidence(value, 'wiki_publish page');
+  return normalizeWikiConfidence(value, 'manage.wiki.publish page');
 }
 
 function normalizeSourceIds(sourceIds: string[] | undefined, fallback: string[]): string[] {
   if (!sourceIds || sourceIds.length === 0) {
     return fallback;
   }
-  return sourceIds.map((id) => requiredWikiString(id, 'sourceIds[]', 'wiki_publish page'));
+  return sourceIds.map((id) => requiredWikiString(id, 'sourceIds[]', 'manage.wiki.publish page'));
 }
 
 function normalizeWikiSourceRef(ref: SourceRef): SourceRef {
@@ -56,15 +57,18 @@ function normalizeWikiSourceRef(ref: SourceRef): SourceRef {
 function normalizePage(page: WikiPublishPageInput, compiledAt: string): SourceLinkedWikiPage {
   const sourceRefs =
     page.sourceRefs?.map((ref) => serializeSourceRef(normalizeWikiSourceRef(ref))) ?? [];
-  const content = requiredWikiString(page.content, 'content', 'wiki_publish page');
+  const content = requiredWikiString(page.content, 'content', 'manage.wiki.publish page');
+  if (content.includes(WIKI_HUMAN_MARKER)) {
+    throw new Error('Generated wiki content must not mint the reserved human marker');
+  }
   if (content.length > MAX_WIKI_PAGE_CONTENT_CHARS) {
     throw new Error(
-      `wiki_publish page content must not exceed ${MAX_WIKI_PAGE_CONTENT_CHARS} characters`
+      `manage.wiki.publish page content must not exceed ${MAX_WIKI_PAGE_CONTENT_CHARS} characters`
     );
   }
   return {
-    path: normalizeWikiPagePath(page.path, 'wiki_publish page path'),
-    title: requiredWikiString(page.title, 'title', 'wiki_publish page'),
+    path: normalizeWikiPagePath(page.path, 'manage.wiki.publish page path'),
+    title: requiredWikiString(page.title, 'title', 'manage.wiki.publish page'),
     type: normalizeType(page.type),
     content,
     sourceIds: normalizeSourceIds(page.sourceIds, sourceRefs),
@@ -96,10 +100,10 @@ export function createWikiPublishAdapter(options: WikiPublishAdapterOptions): Wi
     publish(input: { pages: WikiPublishPageInput[] }): WikiPublishResult {
       const compiledAt = now().toISOString();
       if (!Array.isArray(input.pages)) {
-        throw new Error('wiki_publish pages must be an array');
+        throw new Error('manage.wiki.publish pages must be an array');
       }
       if (input.pages.length > MAX_WIKI_PUBLISH_PAGES) {
-        throw new Error(`wiki_publish accepts at most ${MAX_WIKI_PUBLISH_PAGES} pages`);
+        throw new Error(`manage.wiki.publish accepts at most ${MAX_WIKI_PUBLISH_PAGES} pages`);
       }
 
       const pages = normalizeAndDedupePages(input.pages, compiledAt);

@@ -1,15 +1,6 @@
-/**
- * KagemushaConnector — reads messages from the Kagemusha local SQLite database.
- * Queries channel_messages table for user messages newer than the given timestamp.
- * Uses the standalone's node:sqlite wrapper (Database from ../../sqlite.js).
- */
-
-import { homedir } from 'os';
-import { join } from 'path';
-
+import { canonicalChannelKey } from '../framework/polling-scheduler.js';
 import Database from '../../sqlite.js';
 import type { SQLiteDatabase } from '../../sqlite.js';
-
 import type {
   AuthRequirement,
   ConnectorConfig,
@@ -25,68 +16,60 @@ interface ChannelMessage {
   user_id: string;
   role: string;
   content: string;
-  created_at: string;
+  created_at: number | string;
 }
 
 interface KagemushaTask {
-  id: number;
+  id: number | string;
   title: string;
   status: string;
   priority: string;
   deadline: number | null;
   source_room: string | null;
   auto_created: number;
-  confirmed: number;
-  created_at: number;
-  updated_at: number;
+  updated_at: number | string;
+}
+
+const MESSAGE_PAGE_SIZE = 1_000;
+
+function timestamp(value: number | string): number {
+  const parsed = typeof value === 'number' ? value : Date.parse(value);
+  if (!Number.isFinite(parsed)) throw new Error('Kagemusha source timestamp is invalid');
+  return parsed;
 }
 
 export class KagemushaConnector implements IConnector {
   readonly name = 'kagemusha';
   readonly type = 'local' as const;
 
+  private readonly config: ConnectorConfig;
+  private readonly dbPath: string;
   private db: SQLiteDatabase | null = null;
-  private dbPath: string;
-  /**
-   * Platforms this connector may read, derived from the configured channel keys
-   * (`kakao:<room>` → `kakao`, `kagemusha-tasks:<room>` → `kagemusha-tasks`). The
-   * Kagemusha DB mirrors every platform it bridges (kakao, line, slack, chatwork,
-   * telegram, …) plus its own task cards; the owner's declaration (2026-07-30) is
-   * that MAMA reads the kakao/LINE conversations from it, not the rest. An empty
-   * channel map keeps the legacy contract: everything is read.
-   */
-  private readonly declaredSources: Set<string> | null;
   private lastPollTime: Date | null = null;
   private lastPollCount = 0;
-  private lastError: string | undefined = undefined;
+  private lastError: string | undefined;
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  constructor(config: ConnectorConfig, dbPath?: string) {
-    this.dbPath = dbPath ?? join(homedir(), '.kagemusha', 'kagemusha.db');
-    const keys = Object.keys(config.channels ?? {});
-    this.declaredSources =
-      keys.length === 0 ? null : new Set(keys.map((key) => key.split(':')[0] ?? key));
-  }
-
-  private reads(source: string): boolean {
-    return this.declaredSources === null || this.declaredSources.has(source);
+  constructor(config: ConnectorConfig, dbPath: string) {
+    if (typeof dbPath !== 'string' || dbPath.trim() === '') {
+      throw new Error('Kagemusha source database path is required');
+    }
+    this.config = config;
+    this.dbPath = dbPath;
   }
 
   async init(): Promise<void> {
     try {
-      this.db = new Database(this.dbPath);
-    } catch (err) {
+      this.db = new Database(this.dbPath, { readonly: true, fileMustExist: true });
+    } catch (error) {
       throw new Error(
-        `KagemushaConnector: failed to open database at ${this.dbPath}: ${err instanceof Error ? err.message : String(err)}`
+        `Kagemusha source database could not be opened: ${error instanceof Error ? error.message : String(error)}`
       );
     }
   }
 
   async dispose(): Promise<void> {
-    if (this.db) {
-      this.db.close();
-      this.db = null;
-    }
+    this.db?.close();
+    this.db = null;
   }
 
   async healthCheck(): Promise<ConnectorHealth> {
@@ -99,201 +82,138 @@ export class KagemushaConnector implements IConnector {
   }
 
   getAuthRequirements(): AuthRequirement[] {
-    return [
-      {
-        type: 'none',
-        description:
-          'No authentication required. Kagemusha database must exist at ~/.kagemusha/kagemusha.db.',
-      },
-    ];
+    return [{ type: 'none', description: 'The local source database requires no token.' }];
   }
 
   async authenticate(): Promise<boolean> {
     return this.db !== null;
   }
 
+  private channelKey(origin: string, channel: string): string {
+    const prefix = `${origin}:`;
+    const suffix = channel.startsWith(prefix) ? channel.slice(prefix.length) : channel;
+    return `kagemusha:${origin}:${suffix}`;
+  }
+
+  private accepts(origin: string, channelId: string): boolean {
+    const canonical = this.channelKey(origin, channelId);
+    return (
+      canonicalChannelKey(
+        { source: this.name, channel: canonical },
+        { [this.name]: this.config.channels }
+      ) !== null
+    );
+  }
+
+  private messageItem(row: ChannelMessage): NormalizedItem | null {
+    const channel = this.channelKey(row.channel, row.channel_id);
+    if (!this.accepts(row.channel, row.channel_id)) return null;
+    return {
+      source: 'kagemusha',
+      sourceId: `kagemusha:${row.channel}:${row.channel_id}:${row.id}`,
+      sourceEntityId: `kagemusha:${row.channel}:${row.channel_id}:${row.id}`,
+      channel,
+      author: row.user_id,
+      content: row.content,
+      timestamp: new Date(timestamp(row.created_at)),
+      type: 'message',
+      metadata: {
+        originalPlatform: row.channel,
+        originalChannel: row.channel_id,
+        kagemushaMessageId: String(row.id),
+        role: row.role,
+      },
+    };
+  }
+
+  private taskItem(row: KagemushaTask): NormalizedItem | null {
+    const sourceRoom = row.source_room ?? 'system';
+    const channel = this.channelKey('kagemusha-tasks', sourceRoom);
+    if (!this.accepts('kagemusha-tasks', sourceRoom)) return null;
+    const deadline =
+      row.deadline === null ? 'none' : new Date(row.deadline).toISOString().slice(0, 10);
+    return {
+      source: 'kagemusha',
+      sourceId: `kagemusha:task:${row.id}`,
+      sourceEntityId: `kagemusha:task:${row.id}`,
+      channel,
+      author: 'kagemusha',
+      content: `[Task] ${row.title} | status:${row.status} | priority:${row.priority} | deadline:${deadline}`,
+      timestamp: new Date(timestamp(row.updated_at)),
+      type: 'kanban_card',
+      metadata: {
+        originalPlatform: 'kagemusha-tasks',
+        originalChannel: sourceRoom,
+        taskId: String(row.id),
+        status: row.status,
+        priority: row.priority,
+        deadline: row.deadline,
+        autoCreated: row.auto_created === 1,
+      },
+    };
+  }
+
   async poll(since: Date): Promise<NormalizedItem[]> {
     if (!this.db) throw new Error('KagemushaConnector not initialized');
-
     const items: NormalizedItem[] = [];
     let hadError = false;
-
-    // 1. Channel messages (existing)
     try {
-      const sinceMs = since.getTime();
-      const rows = this.db
-        .prepare(
-          `SELECT * FROM channel_messages WHERE created_at > ? AND role = 'user' ORDER BY created_at ASC LIMIT 5000`
-        )
-        .all(sinceMs) as ChannelMessage[];
-
-      for (const row of rows) {
-        if (!this.reads(row.channel)) continue;
-        items.push({
-          source: row.channel,
-          sourceId: `${row.channel_id}:${row.id}`,
-          channel: row.channel_id,
-          author: row.user_id,
-          content: row.content,
-          timestamp: new Date(Number(row.created_at)),
-          type: 'message',
-          metadata: {
-            channel: row.channel,
-            channelId: row.channel_id,
-            rawConnector: 'kagemusha',
-            userId: row.user_id,
-            role: row.role,
-          },
-        });
+      let afterCreatedAt = since.getTime();
+      let afterId: number | string = 0;
+      let keepPaging = true;
+      while (keepPaging) {
+        const rows = this.db
+          .prepare(
+            `SELECT *
+               FROM channel_messages
+              WHERE role = 'user'
+                AND (created_at > ? OR (created_at = ? AND id > ?))
+              ORDER BY created_at ASC, id ASC
+              LIMIT ?`
+          )
+          .all(afterCreatedAt, afterCreatedAt, afterId, MESSAGE_PAGE_SIZE) as ChannelMessage[];
+        for (const row of rows) {
+          const item = this.messageItem(row);
+          if (item) items.push(item);
+        }
+        if (rows.length < MESSAGE_PAGE_SIZE) {
+          keepPaging = false;
+          continue;
+        }
+        const last = rows[rows.length - 1];
+        if (!last) throw new Error('Kagemusha keyset page ended without a last row');
+        const lastCreatedAt = timestamp(last.created_at);
+        if (
+          lastCreatedAt < afterCreatedAt ||
+          (lastCreatedAt === afterCreatedAt && last.id <= afterId)
+        ) {
+          throw new Error('Kagemusha keyset pagination made no progress');
+        }
+        afterCreatedAt = lastCreatedAt;
+        afterId = last.id;
       }
-    } catch (err) {
+    } catch (error) {
       hadError = true;
-      this.lastError = err instanceof Error ? err.message : String(err);
+      this.lastError = error instanceof Error ? error.message : String(error);
     }
 
-    // 2. Tasks — only when a `kagemusha-tasks:*` channel is declared
     try {
-      const sinceMs = since.getTime();
-      const tasks = this.reads('kagemusha-tasks')
-        ? (this.db
-            .prepare(`SELECT * FROM tasks WHERE updated_at > ? ORDER BY updated_at ASC LIMIT 500`)
-            .all(sinceMs) as KagemushaTask[])
-        : [];
-
-      for (const task of tasks) {
-        const deadline = task.deadline
-          ? new Date(task.deadline).toISOString().split('T')[0]
-          : 'none';
-        const content = `[Task] ${task.title} | status:${task.status} | priority:${task.priority} | deadline:${deadline}`;
-        items.push({
-          source: 'kagemusha-tasks',
-          sourceId: `task:${task.id}`,
-          channel: task.source_room || 'system',
-          author: 'kagemusha',
-          content,
-          timestamp: new Date(task.updated_at),
-          type: 'kanban_card',
-          metadata: {
-            taskId: task.id,
-            status: task.status,
-            priority: task.priority,
-            deadline: task.deadline,
-            sourceRoom: task.source_room,
-            rawConnector: 'kagemusha',
-            autoCreated: task.auto_created === 1,
-          },
-        });
+      const rows = this.db
+        .prepare('SELECT * FROM tasks WHERE updated_at > ? ORDER BY updated_at ASC LIMIT 500')
+        .all(since.getTime()) as KagemushaTask[];
+      for (const row of rows) {
+        const item = this.taskItem(row);
+        if (item) items.push(item);
       }
     } catch {
-      // tasks table may not exist in older Kagemusha versions — non-fatal
+      // Older source databases may not contain task rows.
     }
+
+    if (hadError) throw new Error('Kagemusha poll failed for the source message table');
 
     this.lastPollTime = new Date();
     this.lastPollCount = items.length;
-    if (!hadError) this.lastError = undefined;
-
+    this.lastError = undefined;
     return items;
-  }
-
-  /**
-   * Bulk poll: read ALL messages from a given start date, no limit.
-   * Used for historical ingest, not regular polling.
-   * Yields batches to avoid memory pressure on large datasets.
-   */
-  async *pollBulk(since: Date, batchSize = 5000): AsyncGenerator<NormalizedItem[], void, void> {
-    if (!this.db) throw new Error('KagemushaConnector not initialized');
-
-    let offset = 0;
-    const sinceMs = since.getTime();
-
-    while (true) {
-      const rows = this.db
-        .prepare(
-          `SELECT * FROM channel_messages WHERE created_at > ? ORDER BY created_at ASC LIMIT ? OFFSET ?`
-        )
-        .all(sinceMs, batchSize, offset) as ChannelMessage[];
-
-      if (rows.length === 0) break;
-
-      const items: NormalizedItem[] = rows
-        .filter((row) => this.reads(row.channel))
-        .map((row) => ({
-          source: row.channel,
-          sourceId: `${row.channel_id}:${row.id}`,
-          channel: row.channel_id,
-          author: row.user_id,
-          content: row.content,
-          timestamp: new Date(Number(row.created_at)),
-          type: 'message' as const,
-          metadata: {
-            channel: row.channel,
-            channelId: row.channel_id,
-            rawConnector: 'kagemusha',
-            userId: row.user_id,
-            role: row.role,
-          },
-        }));
-
-      yield items;
-      offset += batchSize;
-
-      if (rows.length < batchSize) break;
-    }
-
-    // Also yield all tasks — only when a `kagemusha-tasks:*` channel is declared
-    try {
-      const tasks = this.reads('kagemusha-tasks')
-        ? (this.db.prepare(`SELECT * FROM tasks ORDER BY updated_at ASC`).all() as KagemushaTask[])
-        : [];
-
-      if (tasks.length > 0) {
-        yield tasks.map((task) => {
-          const deadline = task.deadline
-            ? new Date(task.deadline).toISOString().split('T')[0]
-            : 'none';
-          return {
-            source: 'kagemusha-tasks',
-            sourceId: `task:${task.id}`,
-            channel: task.source_room || 'system',
-            author: 'kagemusha',
-            content: `[Task] ${task.title} | status:${task.status} | priority:${task.priority} | deadline:${deadline}`,
-            timestamp: new Date(task.updated_at),
-            type: 'kanban_card' as const,
-            metadata: {
-              taskId: task.id,
-              status: task.status,
-              priority: task.priority,
-              deadline: task.deadline,
-              sourceRoom: task.source_room,
-              rawConnector: 'kagemusha',
-              autoCreated: task.auto_created === 1,
-            },
-          };
-        });
-      }
-    } catch {
-      // tasks table may not exist
-    }
-  }
-
-  /** Get total counts for progress reporting */
-  async getCounts(): Promise<{ messages: number; tasks: number; rooms: number }> {
-    if (!this.db) return { messages: 0, tasks: 0, rooms: 0 };
-    const messages = (
-      this.db.prepare('SELECT COUNT(*) as cnt FROM channel_messages').get() as { cnt: number }
-    ).cnt;
-    let tasks = 0;
-    try {
-      tasks = (this.db.prepare('SELECT COUNT(*) as cnt FROM tasks').get() as { cnt: number }).cnt;
-    } catch {
-      /* table may not exist */
-    }
-    let rooms = 0;
-    try {
-      rooms = (this.db.prepare('SELECT COUNT(*) as cnt FROM rooms').get() as { cnt: number }).cnt;
-    } catch {
-      /* table may not exist */
-    }
-    return { messages, tasks, rooms };
   }
 }

@@ -5,7 +5,7 @@ const vectorSearchMock = vi.fn();
 
 let decisionRows: Array<Record<string, unknown>> = [];
 
-vi.mock('../../src/embeddings.js', () => ({
+vi.mock('../../src/embedding/embedder.js', () => ({
   generateEmbedding: generateEmbeddingMock,
   generateEnhancedEmbedding: generateEmbeddingMock,
   isForceTier3Enabled: () => false,
@@ -29,13 +29,15 @@ vi.mock('../../src/db-manager.js', () => ({
     },
   })),
   insertDecisionWithEmbedding: vi.fn(),
-  ensureMemoryScopeInAdapter: vi.fn(() => 1),
+  ensureMemoryScope: vi.fn(() => 1),
 }));
 
 vi.mock('../../src/knowledge/search.js', () => ({
   vectorSearch: vectorSearchMock,
   fts5Search: vi.fn(async () => []),
 }));
+
+const { getAdapter } = await import('../../src/db-manager.js');
 
 describe('memory v2 recall ranking', () => {
   beforeEach(() => {
@@ -87,6 +89,7 @@ describe('memory v2 recall ranking', () => {
     const { recallMemory } = await import('../../src/memory/api.js');
 
     const bundle = await recallMemory(
+      getAdapter(),
       'How long did I wait for the decision on my asylum application?'
     );
 
@@ -99,7 +102,7 @@ describe('memory v2 recall ranking', () => {
   it('records vector-only diagnostics for memory_v2 hits', async () => {
     const { recallMemory } = await import('../../src/memory/api.js');
 
-    const bundle = await recallMemory('context compile', {
+    const bundle = await recallMemory(getAdapter(), 'context compile', {
       limit: 5,
       diagnostics: true,
     });
@@ -116,7 +119,7 @@ describe('memory v2 recall ranking', () => {
   it('excludes vector-only hits from strict primary memories', async () => {
     const { recallMemory } = await import('../../src/memory/api.js');
 
-    const bundle = await recallMemory('cc', {
+    const bundle = await recallMemory(getAdapter(), 'cc', {
       limit: 5,
       strictness: 'strict',
       diagnostics: true,
@@ -128,7 +131,8 @@ describe('memory v2 recall ranking', () => {
       20,
       0.6,
       undefined,
-      expect.arrayContaining(['superseded', 'quarantined', 'contradicted', 'stale'])
+      expect.arrayContaining(['superseded', 'quarantined', 'contradicted', 'stale']),
+      undefined
     );
     expect(bundle.memories).toEqual([]);
     expect((bundle as { fused_hits?: unknown[] }).fused_hits).toEqual([]);

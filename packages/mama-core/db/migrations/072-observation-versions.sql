@@ -2,7 +2,7 @@
 -- retention of the mutable index never deletes the historical observation.
 CREATE TABLE IF NOT EXISTS observation_versions (
   observation_id TEXT PRIMARY KEY,
-  source_connector TEXT NOT NULL CHECK (length(trim(source_connector)) > 0),
+  source TEXT NOT NULL CHECK (length(trim(source)) > 0),
   source_id TEXT NOT NULL CHECK (length(trim(source_id)) > 0),
   producer_version_id TEXT,
   body TEXT,
@@ -18,10 +18,12 @@ CREATE TABLE IF NOT EXISTS observation_versions (
 );
 
 CREATE INDEX IF NOT EXISTS observation_source_versions
-  ON observation_versions(source_connector, source_id, observed_at, observation_id);
+  ON observation_versions(source, source_id, observed_at, observation_id);
 
-ALTER TABLE connector_event_index ADD COLUMN current_observation_id TEXT
-  REFERENCES observation_versions(observation_id);
+-- `connector_event_index.current_observation_id` was added here. The index belongs
+-- to the package that has connectors and declares that column itself; the core no
+-- longer knows the table exists. The direction it records is unchanged, and it was
+-- always the right one: the index points at the observation.
 
 INSERT OR IGNORE INTO schema_version (version, description)
 VALUES (72, 'Immutable connector and owner observation versions');

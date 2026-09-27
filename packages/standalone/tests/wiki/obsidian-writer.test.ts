@@ -4,6 +4,7 @@ import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { ObsidianWriter } from '../../src/wiki/obsidian-writer.js';
+import { readWikiPageVersion } from '../../src/wiki/wiki-read.js';
 import type { WikiPage } from '../../src/wiki/types.js';
 
 let tempDir: string;
@@ -26,7 +27,7 @@ describe('ObsidianWriter', () => {
       expect(existsSync(join(wikiDir, sub))).toBe(true);
     }
     // The agent owns the vault root (Home.md); index.md/log.md appear on demand
-    // only when the wiki_publish fallback writes them.
+    // only when the manage.wiki.publish fallback writes them.
     expect(existsSync(join(wikiDir, 'index.md'))).toBe(false);
     expect(existsSync(join(wikiDir, 'log.md'))).toBe(false);
   });
@@ -260,7 +261,7 @@ describe('ObsidianWriter', () => {
     writer.ensureDirectories();
     const page = (path: string, content: string): WikiPage => ({
       path,
-      title: '검수 프로세스 규칙',
+      title: '검수 프로세스 규칙', // Korean: a non-ASCII title must not move the CAS-validated path
       type: 'lesson',
       content,
       sourceIds: [],
@@ -278,6 +279,47 @@ describe('ObsidianWriter', () => {
       'original'
     );
     expect(readFileSync(join(wikiDir, 'lessons/process/new-path.md'), 'utf8')).toContain('new');
+  });
+
+  it('adds a versioned page to the index without dropping or duplicating existing links', () => {
+    const writer = new ObsidianWriter(tempDir, 'wiki');
+    writer.ensureDirectories();
+    const originalIndex =
+      '# Wiki Index\n\nAuto-compiled by MAMA.\n\n## Pages\n\n### Entity\n\n' +
+      '- [[work/existing|Existing]] — entity, confidence: high\n';
+    writeFileSync(join(wikiDir, 'index.md'), originalIndex, 'utf8');
+    const page: WikiPage = {
+      path: 'work/current.md',
+      title: 'Current work',
+      type: 'synthesis',
+      content: 'A dated account with exact evidence.',
+      sourceIds: ['raw:chatwork:obs_test'],
+      sourceRefs: ['raw:chatwork:obs_test'],
+      compiledAt: '2026-09-24T00:00:00Z',
+      confidence: 'medium',
+    };
+    expect(writer.writePagesAtomically([{ ...page, expectedContentVersion: null }])).toEqual([
+      page.path,
+    ]);
+    const indexPath = join(wikiDir, 'index.md');
+    const firstIndex = readFileSync(indexPath, 'utf8');
+    expect(firstIndex).toContain('[[work/existing|Existing]]');
+    expect(firstIndex).toContain('[[work/current|Current work]]');
+
+    const version = readWikiPageVersion(wikiDir, page.path);
+    writer.writePagesAtomically([
+      { ...page, content: 'Updated dated account.', expectedContentVersion: version },
+    ]);
+    const updatedIndex = readFileSync(indexPath, 'utf8');
+    expect(updatedIndex.match(/\[\[work\/current\|Current work\]\]/g)).toHaveLength(1);
+    expect(updatedIndex).toContain('[[work/existing|Existing]]');
+    expect(() =>
+      writer.writePagesAtomically([
+        { ...page, content: 'Stale update.', expectedContentVersion: version },
+      ])
+    ).toThrow(/changed before activation/);
+    expect(readFileSync(indexPath, 'utf8')).toBe(updatedIndex);
+    expect(readFileSync(join(wikiDir, page.path), 'utf8')).toContain('Updated dated account.');
   });
 
   it('preserves one human section when read content is published back', () => {
@@ -345,5 +387,27 @@ describe('ObsidianWriter', () => {
     const index = readFileSync(join(wikiDir, 'index.md'), 'utf8');
     expect(index).toContain('[[projects/ProjectAlpha|ProjectAlpha]]');
     expect(index).toContain('entity');
+  });
+
+  it('merges a partial non-versioned publish without erasing another index entry', () => {
+    const writer = new ObsidianWriter(tempDir, 'wiki');
+    writer.ensureDirectories();
+    const indexPath = join(wikiDir, 'index.md');
+    writeFileSync(indexPath, '# Wiki Index\n\n## Pages\n\n- [[work/existing|Existing]]\n');
+    const page: WikiPage = {
+      path: 'work/current.md',
+      title: 'Current',
+      type: 'synthesis',
+      content: 'One current state.',
+      sourceIds: [],
+      compiledAt: '2026-09-24T00:00:00Z',
+      confidence: 'medium',
+    };
+    writer.updateIndexIncrementally([page]);
+    writer.updateIndexIncrementally([{ ...page, title: 'Current revised' }]);
+    const index = readFileSync(indexPath, 'utf8');
+    expect(index).toContain('[[work/existing|Existing]]');
+    expect(index).toContain('[[work/current|Current revised]]');
+    expect(index.match(/\[\[work\/current\|/g)).toHaveLength(1);
   });
 });

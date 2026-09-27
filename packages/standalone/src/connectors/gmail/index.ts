@@ -1,10 +1,8 @@
 /**
  * GmailConnector — polls Gmail via the gws CLI tool.
- * Uses child_process.execSync to call gws CLI commands.
+ * Uses argv-based asynchronous gws CLI calls.
  * Skips "Using keyring backend:" prefix lines before parsing JSON.
  */
-
-import { execSync } from 'child_process';
 
 import type {
   AuthRequirement,
@@ -13,7 +11,7 @@ import type {
   IConnector,
   NormalizedItem,
 } from '../framework/types.js';
-import { execGws } from '../framework/gws-utils.js';
+import { execGwsAsync, execGwsTextAsync } from '../framework/gws-utils.js';
 
 interface GmailMessage {
   id: string;
@@ -27,7 +25,10 @@ interface GmailMessage {
 
 interface GmailMessageList {
   messages?: Array<{ id: string; threadId: string }>;
+  nextPageToken?: string;
 }
+
+const MAX_MESSAGE_LIST_PAGES = 20;
 
 export class GmailConnector implements IConnector {
   readonly name = 'gmail';
@@ -36,16 +37,16 @@ export class GmailConnector implements IConnector {
   private lastPollTime: Date | null = null;
   private lastPollCount = 0;
   private lastError: string | undefined = undefined;
+  private config: ConnectorConfig;
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  constructor(_config: ConnectorConfig) {
-    // config reserved for future channel-scoped filtering
+  constructor(config: ConnectorConfig) {
+    this.config = config;
   }
 
   async init(): Promise<void> {
     // Verify gws CLI is available
     try {
-      execSync('gws --version', { stdio: 'pipe' });
+      await execGwsTextAsync(['--version']);
     } catch {
       throw new Error('gws CLI not found. Install it and run: gws auth login');
     }
@@ -77,7 +78,7 @@ export class GmailConnector implements IConnector {
 
   async authenticate(): Promise<boolean> {
     try {
-      execSync('gws auth status', { stdio: 'pipe' });
+      await execGwsTextAsync(['auth', 'status']);
       return true;
     } catch {
       return false;
@@ -91,21 +92,61 @@ export class GmailConnector implements IConnector {
 
   async poll(since: Date): Promise<NormalizedItem[]> {
     const items: NormalizedItem[] = [];
-    let hadError = false;
+    const configuredChannels = Object.entries(this.config.channels).filter(
+      ([, channel]) => channel.role !== 'ignore'
+    );
+    if (configuredChannels.length !== 1) {
+      throw new Error('Gmail requires exactly one configured inbox channel');
+    }
+    const [channel] = configuredChannels[0]!;
 
     try {
       const afterEpoch = Math.floor(since.getTime() / 1000);
-      const listParams = JSON.stringify({
-        userId: 'me',
-        q: `after:${afterEpoch}`,
-        maxResults: 25,
-      });
-      const listResult = execGws(
-        `gmail users messages list --params '${listParams}'`
-      ) as GmailMessageList;
+      const messageRefs: Array<{ id: string; threadId: string }> = [];
+      const visitedPageTokens = new Set<string>();
+      let pageToken: string | undefined;
+      let reachedFinalPage = false;
+      for (let page = 0; page < MAX_MESSAGE_LIST_PAGES; page += 1) {
+        const params = {
+          userId: 'me',
+          q: `after:${afterEpoch}`,
+          maxResults: 25,
+          ...(pageToken === undefined ? {} : { pageToken }),
+        };
+        let listResult: GmailMessageList;
+        try {
+          listResult = (await execGwsAsync([
+            'gmail',
+            'users',
+            'messages',
+            'list',
+            '--params',
+            JSON.stringify(params),
+          ])) as GmailMessageList;
+        } catch (error) {
+          throw new Error(
+            `Gmail poll failed for 1 of ${page + 1} message-list pages; last error: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+        messageRefs.push(...(listResult.messages ?? []));
+        if (!listResult.nextPageToken) {
+          reachedFinalPage = true;
+          break;
+        }
+        if (visitedPageTokens.has(listResult.nextPageToken)) {
+          throw new Error(`Gmail poll failed for 1 page; last error: repeated page token`);
+        }
+        visitedPageTokens.add(listResult.nextPageToken);
+        pageToken = listResult.nextPageToken;
+      }
+      if (!reachedFinalPage) {
+        throw new Error(
+          `Gmail poll failed for 1 page; last error: page cap (${MAX_MESSAGE_LIST_PAGES}) reached`
+        );
+      }
 
-      const messageRefs = listResult.messages ?? [];
-
+      let failedMessages = 0;
+      let lastMessageError: string | undefined;
       for (const ref of messageRefs) {
         try {
           const getParams = JSON.stringify({
@@ -114,7 +155,14 @@ export class GmailConnector implements IConnector {
             format: 'metadata',
             metadataHeaders: ['Subject', 'From', 'Date'],
           });
-          const msg = execGws(`gmail users messages get --params '${getParams}'`) as GmailMessage;
+          const msg = (await execGwsAsync([
+            'gmail',
+            'users',
+            'messages',
+            'get',
+            '--params',
+            getParams,
+          ])) as GmailMessage;
 
           const subject = this.getHeader(msg, 'Subject');
           const from = this.getHeader(msg, 'From');
@@ -129,7 +177,7 @@ export class GmailConnector implements IConnector {
           items.push({
             source: 'gmail',
             sourceId: msg.id,
-            channel: 'inbox',
+            channel,
             author: from,
             content: `Subject: ${subject}\n\n${snippet}`,
             timestamp,
@@ -141,21 +189,24 @@ export class GmailConnector implements IConnector {
             },
           });
         } catch (err) {
-          // Skip individual message fetch errors
-          hadError = true;
-          this.lastError = err instanceof Error ? err.message : String(err);
+          failedMessages += 1;
+          lastMessageError = err instanceof Error ? err.message : String(err);
         }
       }
+      if (failedMessages > 0) {
+        throw new Error(
+          `Gmail poll failed for ${failedMessages} of ${messageRefs.length} message fetches; last error: ${lastMessageError}`
+        );
+      }
+      this.lastError = undefined;
+      this.lastPollTime = new Date();
+      this.lastPollCount = items.length;
+      return items;
     } catch (err) {
-      hadError = true;
       this.lastError = err instanceof Error ? err.message : String(err);
+      this.lastPollTime = new Date();
+      this.lastPollCount = items.length;
+      throw err instanceof Error ? err : new Error(String(err));
     }
-
-    this.lastPollTime = new Date();
-    this.lastPollCount = items.length;
-    // lastError was set in catch blocks; clear only if no error occurred this pass
-    if (!hadError) this.lastError = undefined;
-
-    return items;
   }
 }

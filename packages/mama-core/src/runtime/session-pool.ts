@@ -1,0 +1,419 @@
+/**
+ * Session Pool - Claude CLI Session Reuse Manager
+ *
+ * Manages Claude CLI session IDs per channel to enable conversation continuity.
+ * Instead of creating new sessions for each message, reuses existing sessions
+ * so Claude CLI maintains its own conversation history.
+ *
+ * Benefits:
+ * - 6x token reduction (no manual history injection needed)
+ * - Natural conversation flow (Claude remembers context)
+ * - Automatic summarization by Claude when context fills up
+ */
+
+import { randomUUID } from 'crypto';
+import * as debugLogger from '../debug-logger.js';
+
+const { DebugLogger } = debugLogger as {
+  DebugLogger: new (context?: string) => {
+    debug: (...args: unknown[]) => void;
+    info: (...args: unknown[]) => void;
+    warn: (...args: unknown[]) => void;
+    error: (...args: unknown[]) => void;
+  };
+};
+const logger = new DebugLogger('SessionPool');
+
+/**
+ * Session entry with metadata
+ */
+interface SessionEntry {
+  /** Claude CLI session ID */
+  sessionId: string;
+  /** Last activity timestamp */
+  lastActive: number;
+  /** Message count in this session */
+  messageCount: number;
+  /** Creation timestamp */
+  createdAt: number;
+  /** Whether session is currently in use (locked) */
+  inUse: boolean;
+  /** Legacy context occupancy field; durable runtimes own compaction, so this stays zero */
+  totalInputTokens: number;
+}
+
+/**
+ * Session Pool configuration
+ */
+export interface SessionPoolConfig {
+  /** Session timeout in milliseconds (default: 30 minutes) */
+  sessionTimeoutMs?: number;
+  /** Maximum sessions to keep in pool (default: 100) */
+  maxSessions?: number;
+  /** Cleanup interval in milliseconds (default: 5 minutes) */
+  cleanupIntervalMs?: number;
+}
+
+// Defaults a caller that states nothing gets. The product reads its own
+// config and passes the numbers; a pool does not open a config file.
+const DEFAULT_SESSION_TIMEOUT_MS = 1_800_000;
+const DEFAULT_MAX_SESSIONS = 100;
+const DEFAULT_CLEANUP_INTERVAL_MS = 300_000;
+
+/**
+ * Session Pool for Claude CLI session management
+ *
+ * Key design:
+ * - Channel key format: "{source}:{channelId}" (e.g., "discord:123456")
+ * - Sessions expire after timeout (default 30 min)
+ * - Automatic cleanup of stale sessions
+ */
+export class SessionPool {
+  private sessions: Map<string, SessionEntry> = new Map();
+  private config: Required<SessionPoolConfig>;
+  private cleanupTimer: NodeJS.Timeout | null = null;
+
+  constructor(config: SessionPoolConfig = {}) {
+    this.config = {
+      sessionTimeoutMs: config.sessionTimeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS,
+      maxSessions: config.maxSessions ?? DEFAULT_MAX_SESSIONS,
+      cleanupIntervalMs: config.cleanupIntervalMs ?? DEFAULT_CLEANUP_INTERVAL_MS,
+    };
+
+    // Start periodic cleanup
+    this.startCleanupTimer();
+  }
+
+  /**
+   * Get or create session ID for a channel
+   *
+   * With --no-session-persistence flag, Claude CLI doesn't lock session IDs.
+   * This allows session reuse for conversation continuity.
+   *
+   * Durable backends own model-aware context compaction. This pool rotates only
+   * for explicit resets and session-lifecycle expiry.
+   * If session is in use, returns busy=true immediately (no waiting).
+   *
+   * @param channelKey - Channel identifier (format: "{source}:{channelId}")
+   * @returns Object with sessionId, isNew flag, and busy status
+   */
+  getSession(channelKey: string): {
+    sessionId: string;
+    isNew: boolean;
+    busy: boolean;
+  } {
+    const existing = this.sessions.get(channelKey);
+    const now = Date.now();
+
+    // Check if existing session is still valid
+    if (existing) {
+      const isExpired = now - existing.lastActive > this.config.sessionTimeoutMs;
+
+      if (isExpired) {
+        this.sessions.delete(channelKey);
+        logger.info(`Session expired for ${channelKey}, creating new one`);
+      } else if (existing.inUse) {
+        // Session is currently in use - return busy immediately
+        // Still update lastActive and messageCount for queued messages
+        existing.lastActive = now;
+        existing.messageCount++;
+        logger.debug(`Session busy for ${channelKey}, will be queued`);
+        return { sessionId: existing.sessionId, isNew: false, busy: true };
+      } else {
+        // Reuse existing session
+        existing.lastActive = now;
+        existing.messageCount++;
+        existing.inUse = true; // Lock the session
+        logger.debug(
+          `Reusing session for ${channelKey}: ${existing.sessionId} (msg #${existing.messageCount})`
+        );
+        return { sessionId: existing.sessionId, isNew: false, busy: false };
+      }
+    }
+
+    // Create new session
+    const sessionId = this.createSession(channelKey);
+    return { sessionId, isNew: true, busy: false };
+  }
+
+  /**
+   * Read-only check for session busy status
+   * Does NOT modify session state (no lock, no messageCount increment)
+   *
+   * @param channelKey - Channel identifier
+   * @returns Object with sessionId (if exists) and busy status
+   */
+  peekSession(channelKey: string): { sessionId?: string; busy: boolean } {
+    const existing = this.sessions.get(channelKey);
+    if (!existing) {
+      return { busy: false };
+    }
+    return { sessionId: existing.sessionId, busy: existing.inUse };
+  }
+
+  /**
+   * Preserve the legacy token-status interface without interpreting billing
+   * usage as context occupancy. Claude Code and the Codex app-server
+   * each compact from their own model-aware request state.
+   *
+   * @param channelKey - Channel identifier
+   * @param _inputTokens - Usage telemetry from this run; recorded separately by AgentLoop
+   * @param _backend - Runtime that owns the durable session
+   * @returns Zero occupancy because the host has no authoritative context-size signal
+   */
+  updateTokens(
+    channelKey: string,
+    _inputTokens: number,
+    _backend?: 'claude' | 'codex'
+  ): { totalTokens: number; nearThreshold: boolean } {
+    const existing = this.sessions.get(channelKey);
+    if (!existing) {
+      return { totalTokens: 0, nearThreshold: false };
+    }
+
+    existing.totalInputTokens = 0;
+    return { totalTokens: 0, nearThreshold: false };
+  }
+
+  /**
+   * Get current token usage for a session
+   */
+  getTokenUsage(channelKey: string): number {
+    const existing = this.sessions.get(channelKey);
+    return existing?.totalInputTokens ?? 0;
+  }
+
+  /**
+   * Legacy method for backward compatibility
+   * @deprecated Use getSession() instead
+   */
+  getSessionId(channelKey: string): string {
+    return this.getSession(channelKey).sessionId;
+  }
+
+  /**
+   * Release a session after use
+   * This allows the session to be reused by future requests
+   */
+  releaseSession(channelKey: string, expectedSessionId?: string): void {
+    const existing = this.sessions.get(channelKey);
+    if (existing && (!expectedSessionId || existing.sessionId === expectedSessionId)) {
+      existing.inUse = false;
+      console.log(`[SessionPool] Released session for ${channelKey}: ${existing.sessionId}`);
+    }
+  }
+
+  /**
+   * Override session ID for a channel (e.g., when backend returns its own thread ID)
+   */
+  setSessionId(channelKey: string, sessionId: string): void {
+    const existing = this.sessions.get(channelKey);
+    const now = Date.now();
+
+    if (existing) {
+      existing.sessionId = sessionId;
+      existing.lastActive = now;
+      existing.inUse = true;
+      console.log(`[SessionPool] Updated session for ${channelKey}: ${sessionId}`);
+      return;
+    }
+
+    const entry: SessionEntry = {
+      sessionId,
+      lastActive: now,
+      messageCount: 1,
+      createdAt: now,
+      inUse: true,
+      totalInputTokens: 0,
+    };
+    this.sessions.set(channelKey, entry);
+    console.log(`[SessionPool] Created session for ${channelKey}: ${sessionId}`);
+  }
+
+  /**
+   * Create a new session for a channel
+   */
+  private createSession(channelKey: string): string {
+    const now = Date.now();
+    const sessionId = randomUUID();
+
+    // Enforce max sessions limit
+    if (this.sessions.size >= this.config.maxSessions) {
+      this.evictOldestSession();
+    }
+
+    const entry: SessionEntry = {
+      sessionId,
+      lastActive: now,
+      messageCount: 1,
+      createdAt: now,
+      inUse: true, // Lock on creation
+      totalInputTokens: 0,
+    };
+
+    this.sessions.set(channelKey, entry);
+    console.log(`[SessionPool] Created new session for ${channelKey}: ${sessionId}`);
+
+    return sessionId;
+  }
+
+  /**
+   * Force create a new session (for /clear command)
+   */
+  resetSession(channelKey: string): string {
+    this.sessions.delete(channelKey);
+    return this.createSession(channelKey);
+  }
+
+  /**
+   * Remove a session without creating a replacement.
+   *
+   * Use this after a failed reset attempt: the next request must observe a
+   * genuinely new session and rebuild its complete policy prompt.
+   */
+  invalidateSession(channelKey: string, expectedSessionId?: string): void {
+    const existing = this.sessions.get(channelKey);
+    if (existing && expectedSessionId && existing.sessionId !== expectedSessionId) {
+      return;
+    }
+    if (existing && this.sessions.delete(channelKey)) {
+      console.log(`[SessionPool] Invalidated session for ${channelKey}`);
+    }
+  }
+
+  /**
+   * Check if a session exists and is active
+   */
+  hasActiveSession(channelKey: string): boolean {
+    const existing = this.sessions.get(channelKey);
+    if (!existing) {
+      return false;
+    }
+
+    const isExpired = Date.now() - existing.lastActive > this.config.sessionTimeoutMs;
+    return !isExpired;
+  }
+
+  /**
+   * Get session info for a channel
+   */
+  getSessionInfo(channelKey: string): SessionEntry | null {
+    return this.sessions.get(channelKey) || null;
+  }
+
+  /**
+   * Get all active sessions (for debugging/monitoring)
+   */
+  listSessions(): Map<string, SessionEntry> {
+    return new Map(this.sessions);
+  }
+
+  /**
+   * Get active session count
+   */
+  getActiveSessionCount(): number {
+    return this.sessions.size;
+  }
+
+  /**
+   * Evict the oldest (least recently used) session
+   */
+  private evictOldestSession(): void {
+    let oldestKey: string | null = null;
+    let oldestTime = Infinity;
+
+    for (const [key, entry] of this.sessions) {
+      if (entry.lastActive < oldestTime) {
+        oldestTime = entry.lastActive;
+        oldestKey = key;
+      }
+    }
+
+    if (oldestKey) {
+      this.sessions.delete(oldestKey);
+      console.log(`[SessionPool] Evicted oldest session: ${oldestKey}`);
+    }
+  }
+
+  /**
+   * Clean up expired sessions and force-release stuck inUse sessions
+   */
+  cleanup(): number {
+    const now = Date.now();
+    let cleaned = 0;
+    const STUCK_THRESHOLD_MS = 15 * 60 * 1000; // 15 minutes
+
+    for (const [key, entry] of this.sessions) {
+      if (now - entry.lastActive > this.config.sessionTimeoutMs) {
+        this.sessions.delete(key);
+        cleaned++;
+      } else if (entry.inUse && now - entry.lastActive > STUCK_THRESHOLD_MS) {
+        entry.inUse = false;
+        console.log(
+          `[SessionPool] Force-released stuck session for ${key} (inUse for ${Math.round((now - entry.lastActive) / 1000)}s)`
+        );
+        cleaned++;
+      }
+    }
+
+    if (cleaned > 0) {
+      console.log(`[SessionPool] Cleaned up ${cleaned} expired/stuck sessions`);
+    }
+
+    return cleaned;
+  }
+
+  /**
+   * Start periodic cleanup timer
+   */
+  private startCleanupTimer(): void {
+    if (this.cleanupTimer) return;
+
+    this.cleanupTimer = setInterval(() => {
+      this.cleanup();
+    }, this.config.cleanupIntervalMs);
+
+    // Don't prevent process exit
+    this.cleanupTimer.unref();
+  }
+
+  /**
+   * Stop cleanup timer and clear all sessions
+   */
+  dispose(): void {
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = null;
+    }
+    this.sessions.clear();
+  }
+}
+
+/**
+ * Global session pool instance
+ */
+let globalSessionPool: SessionPool | null = null;
+
+/**
+ * Get global session pool instance
+ */
+export function getSessionPool(): SessionPool {
+  if (!globalSessionPool) {
+    globalSessionPool = new SessionPool();
+  }
+  return globalSessionPool;
+}
+
+/**
+ * Set global session pool instance (for testing)
+ */
+export function setSessionPool(pool: SessionPool): void {
+  globalSessionPool = pool;
+}
+
+/**
+ * Build channel key from source and channel ID
+ */
+export function buildChannelKey(source: string, channelId: string): string {
+  return `${source}:${channelId}`;
+}

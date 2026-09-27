@@ -1,6 +1,5 @@
 import crypto from 'node:crypto';
 
-import { getAdapter, initDB } from '../db-manager.js';
 import type { DatabaseAdapter } from '../db-manager.js';
 import type { AuditFindingRecord } from './types.js';
 
@@ -60,10 +59,9 @@ export function createAuditFinding(
   return findingId;
 }
 
-export async function listOpenAuditFindings(): Promise<AuditFindingRecord[]> {
-  await initDB();
-  const adapter = getAdapter();
-
+export async function listOpenAuditFindings(
+  adapter: DatabaseAdapter
+): Promise<AuditFindingRecord[]> {
   const rows = adapter
     .prepare(
       `

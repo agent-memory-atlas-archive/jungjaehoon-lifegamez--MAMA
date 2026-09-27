@@ -1,1052 +1,348 @@
-/**
- * Discord Gateway for MAMA Standalone
- *
- * Provides Discord bot integration for receiving and responding to messages.
- * Supports both DM and channel mentions with configurable filtering.
- */
-
-import {
-  Client,
-  GatewayIntentBits,
-  Partials,
-  Message,
-  Events,
-  AttachmentBuilder,
-} from 'discord.js';
-import { existsSync } from 'node:fs';
-import { splitForDiscord } from './message-splitter.js';
-import { getMemoryLogger } from '../memory/memory-logger.js';
-import { getChannelHistory, type HistoryEntry } from './channel-history.js';
+import { createHash } from 'node:crypto';
+import { closeSync, readFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
+import { AttachmentBuilder, Client, Events, GatewayIntentBits, Partials } from 'discord.js';
 import { BaseGateway } from './base-gateway.js';
-import type {
-  NormalizedMessage,
-  DiscordGatewayConfig,
-  DiscordGuildConfig,
-  DiscordChannelConfig,
-  MessageAttachment,
-  ContentBlock,
-} from './types.js';
-import { downloadFile, buildContentBlocks } from './attachment-utils.js';
-import type { ProcessingResult } from './turn-contract.js';
-import type { SessionDirectory, TurnProcessor } from './turn-contract.js';
-import type { MultiAgentConfig } from '../cli/config/types.js';
-import { ToolStatusTracker } from './tool-status-tracker.js';
-import type { PlatformAdapter } from './tool-status-tracker.js';
-import * as debugLogger from '@jungjaehoon/mama-core/debug-logger';
-import { overlayMemberPrincipal, resolveConnectorPrincipal } from './principal.js';
+import type { JsonValue } from '@jungjaehoon/mama-core/knowledge';
+import type { OwnerMessageInput, TurnIntake } from './turn-contract.js';
+import { OwnerMessageLedger } from './telegram-message-ledger.js';
+import { splitForDiscord } from './message-splitter.js';
+import { openWorkspaceFile, workspaceFileIdentity } from '../api/file-delivery.js';
+import type { OwnerFileDeliveryResult } from '../api/file-delivery.js';
+import { saveResponseBody } from '../connectors/framework/attachment-io.js';
+import { safeFileName } from '../api/attachment-actions.js';
 
-const { DebugLogger } = debugLogger as {
-  DebugLogger: new (context?: string) => {
-    debug: (...args: unknown[]) => void;
-    info: (...args: unknown[]) => void;
-    warn: (...args: unknown[]) => void;
-    error: (...args: unknown[]) => void;
-  };
-};
-const discordLogger = new DebugLogger('discord');
-
-/**
- * Discord Gateway options
- */
 export interface DiscordGatewayOptions {
-  /** Discord bot token */
   token: string;
-  /** Owner Discord user ID. Unset means owner resolution fails closed. */
-  ownerUserId?: string;
-  /** Message router for processing messages */
-  turnProcessor: TurnProcessor;
-  /** Reading sessions to NAME channels is a display concern, asked for by name. */
-  sessionDirectory: SessionDirectory;
-  /** Default channel ID for fallback message/file sends */
-  defaultChannelId?: string;
-  /** Gateway configuration */
-  config?: Partial<DiscordGatewayConfig>;
-  /** Multi-agent configuration (optional) */
-  multiAgentConfig?: MultiAgentConfig;
-  /** Multi-agent runtime backend options (optional) */
-  /** Optional core-backed principal lookup; consumed by the identity overlay in Task 5. */
-  principalResolver?: (
-    connector: string,
-    namespace: string,
-    externalId: string
-  ) => { principalId: string; kind: 'owner' | 'member'; status: string } | null;
+  intake: TurnIntake;
+  config: {
+    enabled: boolean;
+    ownerChannelId?: string;
+    allowedChannels: string[];
+    ownerUserIds: string[];
+  };
+  messageLedgerPath: string;
+  messageLedger?: OwnerMessageLedger;
+  downloadsDir?: string;
+  filesRoot?: string;
+  log?: (line: string) => void;
 }
 
-interface DiscordLocalGatewayConfig extends DiscordGatewayConfig {
-  /** Owner Discord user ID. Unset means owner resolution fails closed. */
-  ownerUserId?: string;
-}
-
-type UnknownRecord = Record<string, unknown>;
-
-function isRecord(value: unknown): value is UnknownRecord {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function coerceDiscordGuildConfig(raw: unknown): Record<string, DiscordGuildConfig> | undefined {
-  if (!isRecord(raw)) {
-    return undefined;
-  }
-
-  const source = raw instanceof Map ? Object.fromEntries(raw) : raw;
-  const normalized: Record<string, DiscordGuildConfig> = {};
-
-  for (const [rawGuildId, rawGuildConfig] of Object.entries(source as Record<string, unknown>)) {
-    if (!rawGuildId || !isRecord(rawGuildConfig)) {
-      continue;
-    }
-
-    const guildConfig: DiscordGuildConfig = {};
-    if (typeof rawGuildConfig.requireMention === 'boolean') {
-      guildConfig.requireMention = rawGuildConfig.requireMention;
-    }
-
-    const rawChannels = (rawGuildConfig as UnknownRecord).channels;
-    if (isRecord(rawChannels)) {
-      const channels: Record<string, DiscordChannelConfig> = {};
-      for (const [rawChannelId, rawChannelConfig] of Object.entries(
-        rawChannels as Record<string, unknown>
-      )) {
-        if (!rawChannelId || !isRecord(rawChannelConfig)) {
-          continue;
-        }
-        const next: DiscordChannelConfig = {};
-        if (typeof rawChannelConfig.requireMention === 'boolean') {
-          next.requireMention = rawChannelConfig.requireMention;
-        }
-        channels[String(rawChannelId)] = next;
-      }
-      if (Object.keys(channels).length > 0) {
-        guildConfig.channels = channels;
-      }
-    }
-
-    normalized[String(rawGuildId)] = guildConfig;
-  }
-
-  return Object.keys(normalized).length > 0 ? normalized : undefined;
-}
-
-/**
- * Discord Gateway class
- *
- * Connects to Discord via bot token and routes messages
- * to the MessageRouter for processing.
- */
+/** Owner-only Discord transport. It accepts messages into the shared owner turn contract. */
 export class DiscordGateway extends BaseGateway {
   readonly source = 'discord' as const;
-  readonly principalResolver: DiscordGatewayOptions['principalResolver'];
+  private readonly client: Client;
+  private readonly ledger: OwnerMessageLedger;
+  private readonly log: (line: string) => void;
+  private readonly activeInputs = new Set<string>();
+  private readonly deliveryTails = new Map<string, Promise<void>>();
 
-  private client: Client;
-  private token: string;
-  private config: DiscordLocalGatewayConfig;
-  private defaultChannelId?: string;
-
-  // Message editing throttle state
-  private lastEditTime = 0;
-  private pendingEdit: string | null = null;
-  private editTimer: NodeJS.Timeout | null = null;
-
-  // Multi-agent support
-
-  protected get mentionPattern(): RegExp | null {
-    return null; // Discord uses custom cleanMessageContent with multiple patterns
-  }
-
-  constructor(options: DiscordGatewayOptions) {
-    super({
-      turnProcessor: options.turnProcessor,
-      sessionDirectory: options.sessionDirectory,
-    });
-    this.token = options.token;
-    this.principalResolver = options.principalResolver;
-    this.defaultChannelId = options.defaultChannelId;
-    this.config = {
-      enabled: true,
-      token: options.token,
-      guilds: coerceDiscordGuildConfig(options.config?.guilds) || {},
-      ownerUserId: options.ownerUserId,
-    };
-    discordLogger.info(
-      `[Discord] Initialized with guild config keys: ${
-        this.config.guilds ? Object.keys(this.config.guilds).join(', ') : '(none)'
-      }`
-    );
-
-    // Create Discord client with required intents
+  constructor(private readonly options: DiscordGatewayOptions) {
+    super({ intake: options.intake });
+    this.log = options.log ?? console.log;
+    this.ledger =
+      options.messageLedger ?? new OwnerMessageLedger(options.messageLedgerPath, { log: this.log });
     this.client = new Client({
       intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.DirectMessages,
         GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.GuildMessageReactions,
       ],
-      partials: [Partials.Channel], // Required for DM support
+      partials: [Partials.Channel],
     });
-
-    // Multi-agent handler construction was here. Gated on `multi_agent.enabled`, which is
-    // false on this install, and the handler has zero traces in the entire log history.
-
-    this.setupEventListeners();
-  }
-
-  /**
-   * Set up Discord client event listeners
-   */
-  private setupEventListeners(): void {
-    // Ready event
-    this.client.once(Events.ClientReady, (client) => {
-      console.log(`Discord bot logged in as ${client.user.tag}`);
-      this.connected = true;
-
-      this.emitEvent({
-        type: 'connected',
-        source: 'discord',
-        timestamp: new Date(),
-        data: { username: client.user.tag },
-      });
-
-      // Backfill channel names for existing sessions
-      this.backfillChannelNames();
-    });
-
-    // Message event
-    this.client.on(Events.MessageCreate, async (message) => {
-      try {
-        await this.handleMessage(message);
-      } catch (error) {
-        console.error('Error handling Discord message:', error);
+    this.client.on(Events.MessageCreate, (message) => {
+      void this.accept(message).catch((error: unknown) =>
         this.emitEvent({
           type: 'error',
-          source: 'discord',
+          source: this.source,
           timestamp: new Date(),
           error: error instanceof Error ? error : new Error(String(error)),
-        });
-      }
+        })
+      );
     });
-
-    // Disconnect event
-    this.client.on(Events.ShardDisconnect, () => {
-      this.connected = false;
-      this.emitEvent({
-        type: 'disconnected',
-        source: 'discord',
-        timestamp: new Date(),
-      });
-    });
-
-    // Error event
-    this.client.on(Events.Error, (error) => {
-      console.error('Discord client error:', error);
-      this.emitEvent({
-        type: 'error',
-        source: 'discord',
-        timestamp: new Date(),
-        error,
-      });
-    });
+    this.client.on('error', (error) => this.log(`discord client error=${error.message}`));
   }
 
-  /**
-   * Handle incoming Discord message
-   */
-  private async handleMessage(message: Message): Promise<void> {
-    // 1. Classify - handle bot messages
-    const classification = await this.classifyMessage(message);
-    if (!classification) return; // bot message, already handled or ignored
+  async start(): Promise<void> {
+    if (this.connected) return;
+    if (!this.options.config.allowedChannels.length || !this.options.config.ownerUserIds.length)
+      throw new Error('discord owner allowlist is not configured');
+    if (!this.options.token.trim()) throw new Error('MAMA_DISCORD_TOKEN is required');
+    await this.client.login(this.options.token);
+    this.connected = true;
+    this.emitEvent({ type: 'connected', source: this.source, timestamp: new Date() });
+    await this.recoverPendingResponses();
+  }
 
-    const isDM = !message.guild;
-    const namespace = message.guild?.id ?? 'direct';
-    let principal = resolveConnectorPrincipal({
-      connector: 'discord',
-      namespace,
-      userId: message.author.id,
-      ownerUserId: this.config.ownerUserId,
-      isDirectMessage: isDM,
-    });
-    if (this.principalResolver) {
-      principal = overlayMemberPrincipal(
-        principal,
-        this.principalResolver('discord', namespace, message.author.id)
-      );
-    }
-    if (principal.lane === 'divert') {
-      return;
-    }
+  async stop(): Promise<void> {
+    if (!this.connected) return;
+    this.connected = false;
+    await this.client.destroy();
+    this.emitEvent({ type: 'disconnected', source: this.source, timestamp: new Date() });
+  }
 
-    const isMentioned = message.mentions.has(this.client.user!);
-
-    // Debug logging
-    console.log(
-      `[Discord] Message received: "${message.content.substring(0, 50)}..." from ${message.author.tag}`
-    );
-    console.log(
-      `[Discord] isDM: ${isDM}, isMentioned: ${isMentioned}, channelId: ${message.channel.id}`
-    );
-
-    // Log incoming message
-    const memoryLogger = getMemoryLogger();
-    memoryLogger.logMessage('Discord', message.author.tag, message.content, false);
-
-    const cleanContent = this.cleanMessageContent(message.content);
-
-    // 2. Collect attachments + history
-    const attachmentInfo = await this.collectAttachments(message, cleanContent);
-
-    // Check if we should respond to this message
-    if (!this.shouldRespond(message, isDM, isMentioned)) {
-      console.log('[Discord] Skipping - shouldRespond returned false');
-      return;
-    }
-
-    // Emit message received event
-    this.emitEvent({
-      type: 'message_received',
-      source: 'discord',
-      timestamp: new Date(),
-      data: {
-        channelId: message.channel.id,
-        userId: message.author.id,
-        isDM,
-        isMentioned,
-      },
-    });
-
-    if (!cleanContent.trim() && attachmentInfo.effectiveAttachments.length === 0) {
-      return; // Don't process empty messages without attachments
-    }
-
-    // Start typing indicator
-    const typingInterval = setInterval(() => {
-      if ('sendTyping' in message.channel) {
-        (message.channel as { sendTyping: () => Promise<void> }).sendTyping().catch(() => {});
+  recentDeliveredMessageRefs(): string[] {
+    return this.ledger.recentDeliveredMessageRefs();
+  }
+  async recoverPendingResponses(): Promise<void> {
+    for (const entry of this.ledger.listUndelivered()) {
+      try {
+        const channel = entry.deliveryTarget?.startsWith('discord:')
+          ? entry.deliveryTarget.slice('discord:'.length)
+          : '';
+        const source = entry.key.startsWith('discord:');
+        const outbound = entry.key.startsWith('outbound:') || entry.key.startsWith('file:');
+        if (
+          (!source && !outbound) ||
+          !channel ||
+          !this.options.config.allowedChannels.includes(channel)
+        )
+          continue;
+        if (entry.deliveryUncertain) {
+          this.log(`discord delivery requires reconciliation key=${entry.key}`);
+          continue;
+        }
+        if (source && entry.state === 'processing' && !this.intake.isPending?.(entry.key)) {
+          this.ledger.markReady(entry.key, INTERRUPTED_RESPONSE);
+          await this.deliverResponse(entry.key, INTERRUPTED_RESPONSE);
+        } else if (entry.state === 'ready' && entry.response !== undefined) {
+          if (source) await this.deliverResponse(entry.key, entry.response);
+          else
+            await this.runInDestination(channel, () =>
+              this.sendChunks(channel, entry.key, entry.response!)
+            );
+        }
+      } catch (error) {
+        this.log(
+          `discord recovery failed key=${entry.key} error=${error instanceof Error ? error.message : String(error)}`
+        );
       }
-    }, 5000);
-    if ('sendTyping' in message.channel) {
-      await (message.channel as { sendTyping: () => Promise<void> }).sendTyping();
     }
+  }
 
-    // Add eyes emoji to indicate processing
+  async deliverResponse(sourceRef: string, response: string): Promise<void> {
+    const channelId = sourceRefChannel(sourceRef, 'discord');
+    this.requireAllowed(channelId);
+    const entry = this.ledger.get(sourceRef);
+    if (!entry) throw new Error(`Discord response has no accepted message ${sourceRef}`);
+    if (entry.deliveryTarget !== `discord:${channelId}`)
+      throw new Error('Discord response destination conflicts with its accepted message');
+    if (entry.state === 'delivered') return;
+    if (entry.state === 'processing') this.ledger.markReady(sourceRef, response);
+    await this.runInDestination(channelId, () => this.sendChunks(channelId, sourceRef, response));
+  }
+
+  async sendMessage(channelId: string, text: string, idempotencyKey?: string): Promise<void> {
+    this.requireConnected();
+    this.requireAllowed(channelId);
+    const key = `outbound:${createHash('sha256')
+      .update(`text\0${idempotencyKey ?? `${channelId}:${text}`}`)
+      .digest('hex')}`;
+    const claim = this.ledger.claim(key, {
+      deliveryTarget: `discord:${channelId}`,
+      payloadIdentity: createHash('sha256').update(text).digest('hex'),
+      keepDeliveredOnPayloadChange: true,
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    });
+    if (!claim.claimed) {
+      if (claim.entry.state === 'delivered') return;
+      throw new Error('Discord message delivery is already in progress or uncertain');
+    }
+    this.ledger.markReady(key, text);
+    await this.runInDestination(channelId, () => this.sendChunks(channelId, key, text));
+  }
+
+  async sendToOwner(text: string, idempotencyKey: string): Promise<void> {
+    const channel = this.options.config.ownerChannelId;
+    if (!channel) throw new Error('discord.owner_channel_id is required');
+    await this.sendMessage(channel, text, idempotencyKey);
+  }
+
+  async sendFile(
+    path: string,
+    caption: string | undefined,
+    operationId: string
+  ): Promise<OwnerFileDeliveryResult> {
+    this.requireConnected();
+    if (!operationId.trim()) throw new Error('Discord file operation id is required');
+    const channel = this.options.config.ownerChannelId;
+    if (!channel) throw new Error('discord.owner_channel_id is required');
+    this.requireAllowed(channel);
+    if (!this.options.filesRoot) throw new Error('Discord workspace files root is not configured');
+    const file = openWorkspaceFile(this.options.filesRoot, path);
     try {
-      await message.react('👀');
-    } catch (err) {
-      console.warn(
-        '[Discord] Failed to add reaction emoji:',
-        err instanceof Error ? err.message : err
+      const identity = workspaceFileIdentity(file.fd, caption);
+      const key = `file:${operationId}`;
+      const claim = this.ledger.claim(key, {
+        deliveryTarget: `discord:${channel}`,
+        payloadIdentity: identity,
+        idempotencyKey: operationId,
+      });
+      if (!claim.claimed) {
+        if (claim.entry.state === 'delivered')
+          return { sentAs: file.sentAs, size: file.size, idempotent: true };
+        throw new Error('Discord file delivery is already in progress or uncertain');
+      }
+      const target = await this.client.channels.fetch(channel);
+      if (!target?.isSendable()) throw new Error('Discord target channel cannot receive messages');
+      const sent = await this.runInDestination<
+        import('discord.js').Message<false> | import('discord.js').Message<true>
+      >(channel, () =>
+        target.send({
+          content: caption,
+          files: [new AttachmentBuilder(readFileSync(file.fd), { name: basename(file.path) })],
+        })
       );
-    }
-
-    const channelHistory = getChannelHistory();
-    // Build message history context for Claude (OpenClaw style)
-    const ownerHistoryUserIds = new Set(this.config.ownerUserId ? [this.config.ownerUserId] : []);
-    const historyContext = channelHistory.formatForContext(
-      message.channel.id,
-      message.id,
-      undefined,
-      { includeUserIds: ownerHistoryUserIds }
-    );
-    if (historyContext) {
-      console.log(
-        `[Discord] Built historyContext (${historyContext.length} chars):`,
-        historyContext.substring(0, 200)
-      );
-    } else {
-      console.log(`[Discord] No historyContext - empty history`);
-    }
-
-    // Get channel name for session display
-    const channelName = this.getChannelDisplayName(message);
-
-    // Normalize message for router - ALL messages go to Claude
-    const normalizedMessage: NormalizedMessage = {
-      source: 'discord',
-      channelId: message.channel.id,
-      channelName,
-      userId: message.author.id,
-      text: cleanContent,
-      principal,
-      contentBlocks:
-        attachmentInfo.contentBlocks.length > 0 ? attachmentInfo.contentBlocks : undefined,
-      metadata: {
-        guildId: message.guild?.id,
-        username: message.author.username,
-        messageId: message.id,
-        historyContext,
-        attachments:
-          attachmentInfo.effectiveAttachments.length > 0
-            ? attachmentInfo.effectiveAttachments
-            : undefined,
-      },
-    };
-
-    // 3. Dispatch to agent
-    let processingSuccess = false;
-    try {
-      await this.dispatchToAgent(message, cleanContent, normalizedMessage, attachmentInfo);
-      processingSuccess = true;
+      this.ledger.markDelivered(key);
+      return { messageId: sent.id, sentAs: file.sentAs, size: file.size };
     } catch (error) {
-      console.error('[Discord] Message processing failed:', error);
-      processingSuccess = false;
+      if (this.ledger.get(`file:${operationId}`)?.state === 'processing')
+        this.ledger.markFailed(`file:${operationId}`);
       throw error;
     } finally {
-      clearInterval(typingInterval);
-      // Add conditional reaction based on processing success
-      try {
-        await message.react(processingSuccess ? '✅' : '❌');
-      } catch {
-        /* ignore reaction errors */
-      }
+      closeSync(file.fd);
     }
   }
 
-  /**
-   * Classify message type and handle multi-agent bot messages.
-   * Returns null if the message was fully handled (bot-to-bot routing)
-   * or should be ignored, or classification info for further processing.
-   */
-  private async classifyMessage(message: Message): Promise<{
-    handled: boolean;
-    isBot: boolean;
-  } | null> {
-    // Agent-bot message classification was here: it recorded cross-agent chatter into a
-    // shared context and routed mention-delegation between bots. Removed with the
-    // multi-bot handler, which never ran on this install.
-
-    // Ignore other bot messages (not part of our multi-agent system)
-    if (message.author.bot) return null;
-
-    return { handled: false, isBot: false };
-  }
-
-  /**
-   * Collect attachments from message, record to history, and resolve effective attachments.
-   */
-  private async collectAttachments(
-    message: Message,
-    cleanContent: string
-  ): Promise<{
-    attachments: MessageAttachment[];
-    effectiveAttachments: MessageAttachment[];
-    contentBlocks: ContentBlock[];
-  }> {
-    // Download all attachments (images, documents, etc.)
-    const attachments: MessageAttachment[] = [];
-    for (const [, attachment] of message.attachments) {
-      try {
-        const localPath = await downloadFile(attachment.url, attachment.name);
-        const isImage = attachment.contentType?.startsWith('image/');
-        attachments.push({
-          type: isImage ? 'image' : 'file',
-          url: attachment.url,
-          localPath,
-          filename: attachment.name,
-          contentType: attachment.contentType || 'application/octet-stream',
-          size: attachment.size,
-        });
-        console.log(
-          `[Discord] Downloaded ${isImage ? 'image' : 'file'}: ${attachment.name} -> ${localPath}`
-        );
-      } catch (err) {
-        console.error(`[Discord] Failed to download attachment: ${err}`);
-      }
+  private async accept(message: import('discord.js').Message): Promise<void> {
+    const channel = message.channelId;
+    const user = message.author.id;
+    if (
+      message.author.bot ||
+      !this.options.config.allowedChannels.includes(channel) ||
+      !this.options.config.ownerUserIds.includes(user)
+    ) {
+      this.log(
+        `discord message dropped reason=non_owner channel_hash=${hash('channel', channel)} sender_hash=${hash('sender', user)}`
+      );
+      return;
     }
-
-    // Record to channel history (always, for context)
-    const channelHistory = getChannelHistory();
-    const historyEntry: HistoryEntry = {
-      messageId: message.id,
-      sender: message.author.username,
-      userId: message.author.id,
-      body: this.cleanMessageContent(message.content),
-      timestamp: Date.now(),
-      attachments: attachments.length > 0 ? attachments : undefined,
-      isBot: false,
-    };
-    channelHistory.record(message.channel.id, historyEntry);
-    console.log(
-      `[Discord] Recorded to history: ${message.channel.id} (${channelHistory.getHistory(message.channel.id).length} entries)`
-    );
-
-    // Get attachments from history if current message has none
-    // Only reuse attachments if message contains action keywords (translate, analyze, etc.)
-    let effectiveAttachments = attachments;
-    if (attachments.length === 0) {
-      const lowerContent = cleanContent.toLowerCase();
-
-      const isMetaQuestion =
-        lowerContent.includes('품질') ||
-        lowerContent.includes('어때') ||
-        lowerContent.includes('어떤가') ||
-        lowerContent.includes('어떻') ||
-        lowerContent.includes('결과') ||
-        lowerContent.includes('quality') ||
-        lowerContent.includes('how') ||
-        lowerContent.includes('result') ||
-        lowerContent.includes('어떠') ||
-        lowerContent.match(/어때[?？]/) ||
-        lowerContent.match(/어떤가[?？]/);
-
-      const hasActionKeyword =
-        lowerContent.includes('번역') ||
-        lowerContent.includes('translate') ||
-        lowerContent.includes('분석') ||
-        lowerContent.includes('analyze') ||
-        lowerContent.includes('읽어') ||
-        lowerContent.includes('read') ||
-        lowerContent.includes('뭐라') ||
-        lowerContent.includes('무슨말');
-
-      if (hasActionKeyword && !isMetaQuestion) {
-        const historyAttachments = channelHistory.getRecentAttachments(
-          message.channel.id,
-          message.author.id
-        );
-        if (historyAttachments.length > 0) {
-          effectiveAttachments = historyAttachments;
-          console.log(
-            `[Discord] Using ${historyAttachments.length} attachments from history (action keyword detected)`
-          );
-        }
-      } else if (hasActionKeyword && isMetaQuestion) {
-        console.log(
-          `[Discord] Action keyword found but meta question detected - NOT reusing attachments`
-        );
-      }
+    const ref = `discord:${channel}:${message.id}`;
+    if (this.activeInputs.has(ref)) return;
+    const existing = this.ledger.get(ref);
+    if (existing) {
+      if (existing.state === 'ready') await this.deliverResponse(ref, existing.response ?? '');
+      return;
     }
-
-    // Convert attachments to content blocks (OpenClaw-style)
-    const contentBlocks: ContentBlock[] = await buildContentBlocks(effectiveAttachments);
-
-    return { attachments, effectiveAttachments, contentBlocks };
-  }
-
-  /**
-   * Dispatch message to multi-agent or single-agent processing.
-   */
-  private async dispatchToAgent(
-    message: Message,
-    cleanContent: string,
-    normalizedMessage: NormalizedMessage,
-    _attachmentInfo: { effectiveAttachments: MessageAttachment[] }
-  ): Promise<void> {
-    // Enrich content with file reference text blocks for multi-agent (text-only)
-    let enrichedContent = cleanContent;
-    const fileRefTexts = normalizedMessage.contentBlocks
-      ?.filter((b) => b.type === 'text' && b.text?.startsWith('[File:'))
-      .map((b) => b.text!);
-    if (fileRefTexts && fileRefTexts.length > 0) {
-      enrichedContent = `${cleanContent}\n\n${fileRefTexts.join('\n')}`;
-    }
-
-    // Pre-analyze images before routing (multi-agent handler only gets text)
-    let imagesWerePreAnalyzed = false;
-    if (normalizedMessage.contentBlocks?.some((b) => b.type === 'image')) {
-      const { getImageAnalyzer, shouldUseClaudeImagePreanalysis } =
-        await import('./image-analyzer.js');
-      if (shouldUseClaudeImagePreanalysis()) {
-        imagesWerePreAnalyzed = true;
-        const analysisText = await getImageAnalyzer().processContentBlocks(
-          normalizedMessage.contentBlocks
-        );
-        if (analysisText) {
-          enrichedContent = `${enrichedContent}\n\n${analysisText}`;
-        }
-      }
-    }
-
-    // Multi-agent routing was here: it owned the message and never fell through to the
-    // message router. Removed with the handler - single-agent processing below is now
-    // the only path, which is what every message on this install has taken anyway.
-
-    // Regular single-agent processing
-    // Pass enriched content (images already analyzed above) to avoid double analysis
-    if (enrichedContent !== cleanContent) {
-      normalizedMessage.text = enrichedContent;
-    }
-    // Clear only when Claude already converted the image to text. Cline/Codex
-    // retain the original block for their configured native media path.
-    if (imagesWerePreAnalyzed && normalizedMessage.contentBlocks?.some((b) => b.type === 'image')) {
-      normalizedMessage.contentBlocks = undefined;
-    }
-    // Create tool status tracker for real-time progress
-    const discordAdapter: PlatformAdapter = {
-      postPlaceholder: async (content: string) => {
-        if ('send' in message.channel) {
-          const sent = await (message.channel as { send: (c: string) => Promise<Message> }).send(
-            content
-          );
-          return sent.id;
-        }
-        return null;
-      },
-      editPlaceholder: async (handle: string, content: string) => {
-        try {
-          const msg = await message.channel.messages.fetch(handle);
-          await msg.edit(content);
-        } catch {
-          /* ignore */
-        }
-      },
-      deletePlaceholder: async (handle: string) => {
-        try {
-          const msg = await message.channel.messages.fetch(handle);
-          await msg.delete();
-        } catch {
-          /* ignore */
-        }
-      },
-    };
-    const tracker = new ToolStatusTracker(discordAdapter, {
-      throttleMs: 3000,
-      initialDelayMs: 5000,
-    });
-    const streamCallbacks = tracker.toStreamCallbacks();
-
-    let routerResult: ProcessingResult;
+    if (!message.content.trim() && !message.attachments.size) return;
+    const identity = createHash('sha256')
+      .update(
+        `${message.content}\0${[...message.attachments.values()]
+          .map((item) => item.id)
+          .sort()
+          .join(',')}`
+      )
+      .digest('hex');
+    this.ledger.claim(ref, { deliveryTarget: `discord:${channel}`, payloadIdentity: identity });
+    this.activeInputs.add(ref);
     try {
-      routerResult = await this.turnProcessor.processTurn(normalizedMessage, {
-        onStream: streamCallbacks,
+      const attachments = await Promise.all(
+        [...message.attachments.values()].map(async (attachment) => {
+          let name = attachment.name || attachment.id;
+          try {
+            name = safeFileName(name);
+            if (!this.options.downloadsDir)
+              throw new Error('Attachment downloads directory is not configured');
+            const response = await fetch(attachment.url, { signal: AbortSignal.timeout(60_000) });
+            if (!response.ok)
+              throw new Error(`Discord attachment download failed (HTTP ${response.status})`);
+            const path = join(
+              this.options.downloadsDir,
+              'discord',
+              `${message.id}_${attachment.id}_${name}`
+            );
+            const size = await saveResponseBody(response, path);
+            return {
+              name,
+              path,
+              size,
+              ...(attachment.contentType ? { mimeType: attachment.contentType } : {}),
+            };
+          } catch (error) {
+            return { name, error: error instanceof Error ? error.message : String(error) };
+          }
+        })
+      );
+      const input: OwnerMessageInput = {
+        id: ref,
+        channelKey: channel,
+        occurredAt: message.createdTimestamp,
+        text:
+          message.content.trim() || attachments.map((file) => `[file: ${file.name}]`).join('\n'),
+        ...(attachments.length ? { payload: { attachments } as unknown as JsonValue } : {}),
+      };
+      this.intake.acceptOwnerMessage(input);
+      this.emitEvent({
+        type: 'message_received',
+        source: this.source,
+        timestamp: new Date(message.createdTimestamp),
+        data: { sourceMessageRef: ref },
       });
     } finally {
-      await tracker.cleanup();
-    }
-    if (routerResult.outcome === 'external_divert') {
-      discordLogger.info('[Discord] Turn externally diverted; no response sent');
-      return;
-    }
-    const response = routerResult.response;
-    const duration = routerResult.duration;
-
-    await this.sendResponse(message, response);
-
-    this.emitEvent({
-      type: 'message_sent',
-      source: 'discord',
-      timestamp: new Date(),
-      data: {
-        channelId: message.channel.id,
-        responseLength: response.length,
-        duration,
-      },
-    });
-
-    // Keep attachments in history for reference in subsequent turns
-    // (localPath allows "that image" references to work)
-    console.log(`[Discord] Kept attachments for future reference: ${message.channel.id}`);
-  }
-
-  /**
-   * Check if bot should respond to this message
-   */
-  private shouldRespond(message: Message, isDM: boolean, isMentioned: boolean): boolean {
-    // Always respond to DMs
-    if (isDM) return true;
-
-    // For guild messages, check configuration
-    const guildId = message.guild?.id;
-    const channelId = message.channel.id;
-
-    console.log(`[Discord] shouldRespond check - guildId: ${guildId}, channelId: ${channelId}`);
-    console.log(`[Discord] guilds config:`, JSON.stringify(this.config.guilds, null, 2));
-
-    if (!guildId) return false;
-
-    // Get guild config (or wildcard config)
-    const guildConfig = this.config.guilds?.[String(guildId)] || this.config.guilds?.['*'];
-    console.log(`[Discord] guildConfig:`, JSON.stringify(guildConfig, null, 2));
-
-    if (!guildConfig) {
-      // No config for this guild, only respond to mentions
-      return isMentioned;
-    }
-
-    // Get channel config
-    const channelConfig = guildConfig.channels?.[String(channelId)] || guildConfig.channels?.['*'];
-
-    if (channelConfig) {
-      // Channel-specific config
-      if (channelConfig.requireMention === false) {
-        return true; // No mention required for this channel
-      }
-      return isMentioned;
-    }
-
-    // Use guild default
-    if (guildConfig.requireMention === false) {
-      return true;
-    }
-
-    return isMentioned;
-  }
-
-  /**
-   * Clean message content (remove mentions)
-   */
-  protected override cleanMessageContent(content: string): string {
-    return content
-      .replace(/<@!?\d+>/g, '')
-      .replace(/<@&\d+>/g, '') // Role mentions
-      .trim();
-  }
-
-  /**
-   * Edit message with 150ms throttle to respect Discord rate limits
-   */
-  async editMessageThrottled(message: Message, content: string): Promise<void> {
-    this.pendingEdit = content;
-
-    const now = Date.now();
-    const timeSinceLastEdit = now - this.lastEditTime;
-
-    if (timeSinceLastEdit >= 150) {
-      await this.flushEdit(message);
-    } else if (!this.editTimer) {
-      const delay = 150 - timeSinceLastEdit;
-      this.editTimer = setTimeout(() => this.flushEdit(message), delay);
+      this.activeInputs.delete(ref);
     }
   }
 
-  /**
-   * Flush pending edit to Discord
-   */
-  private async flushEdit(message: Message): Promise<void> {
-    if (!this.pendingEdit) return;
-    await message.edit(this.pendingEdit);
-    this.lastEditTime = Date.now();
-    this.pendingEdit = null;
-    this.editTimer = null;
-  }
-
-  /**
-   * Send response to Discord (handling length limits and file attachments)
-   */
-  private async sendResponse(originalMessage: Message, response: string): Promise<void> {
-    const memoryLogger = getMemoryLogger();
-    memoryLogger.logMessage('Discord', 'MAMA', response, true);
-
-    // Extract file paths from response (outbound files to send)
-    const filePathPattern =
-      /(?:파일 위치|파일 경로|File|Path|saved at|저장됨):\s*\**([/~][^\s\n*]+)/gi;
-    const outboundPattern = /\/home\/[^/]+\/\.mama\/workspace\/media\/outbound\/[^\s\n*]+/g;
-
-    const filePaths: string[] = [];
-    let match;
-
-    // Helper to clean markdown/punctuation from file paths
-    const cleanPath = (p: string) =>
-      p.replace(/[*`[\]()]+$/g, '').replace(/^~/, process.env.HOME || '');
-
-    // Find explicit file location markers
-    while ((match = filePathPattern.exec(response)) !== null) {
-      const filePath = cleanPath(match[1]);
-      if (existsSync(filePath)) {
-        filePaths.push(filePath);
-        console.log(`[Discord] Found file via marker: ${filePath}`);
-      }
-    }
-
-    // Find outbound media files
-    while ((match = outboundPattern.exec(response)) !== null) {
-      const filePath = cleanPath(match[0]);
-      if (existsSync(filePath) && !filePaths.includes(filePath)) {
-        filePaths.push(filePath);
-        console.log(`[Discord] Found outbound file: ${filePath}`);
-      }
-    }
-
-    // Build attachments
-    const attachments = filePaths.map((fp) => new AttachmentBuilder(fp));
-
-    if (attachments.length > 0) {
-      console.log(`[Discord] Attaching ${attachments.length} file(s): ${filePaths.join(', ')}`);
-    }
-
-    const chunks = splitForDiscord(response);
-
-    for (let i = 0; i < chunks.length; i++) {
-      let sentMessage: Message | undefined;
-
-      // Attach files to the first message only
-      const messageOptions =
-        i === 0 && attachments.length > 0
-          ? { content: chunks[i], files: attachments }
-          : { content: chunks[i] };
-
-      if (i === 0) {
-        sentMessage = await originalMessage.reply(messageOptions);
-      } else {
-        if ('send' in originalMessage.channel) {
-          sentMessage = await (
-            originalMessage.channel as {
-              send: (options: { content: string; files?: AttachmentBuilder[] }) => Promise<Message>;
-            }
-          ).send(messageOptions);
-        }
-      }
-
-      if (sentMessage && this.client.user) {
-        const history = getChannelHistory();
-        history.record(originalMessage.channel.id, {
-          messageId: sentMessage.id,
-          sender: this.client.user.username,
-          userId: this.client.user.id,
-          body: chunks[i],
-          timestamp: Date.now(),
-          isBot: true,
-        });
-      }
-    }
-  }
-
-  /**
-   * Get human-readable channel name for session display
-   */
-  private getChannelDisplayName(message: Message): string {
-    const channel = message.channel;
-
-    // DM channel
-    if (channel.isDMBased()) {
-      const recipient = message.author.username;
-      return `DM with ${recipient}`;
-    }
-
-    // Guild channel - try to get the name
-    if ('name' in channel && channel.name) {
-      const guildName = message.guild?.name;
-      return guildName ? `#${channel.name} (${guildName})` : `#${channel.name}`;
-    }
-
-    // Fallback to channel ID
-    return `Channel ${channel.id}`;
-  }
-
-  /**
-   * Backfill channel names for existing sessions when Discord connects
-   * This updates sessions created before the channel_name feature was added
-   */
-  private backfillChannelNames(): void {
-    try {
-      // Display concern, not turn processing: this surface reads session data to name
-      // its channels, which is why it asks for that narrow capability by name.
-      const router = this.sessionDirectory;
-      if (!router) {
-        return;
-      }
-      const sessions = router.listSessions('discord');
-      let updated = 0;
-
-      for (const session of sessions) {
-        // Skip if already has a channel name
-        if (session.channelName) continue;
-
-        // Try to find the channel in the client cache
-        const channel = this.client.channels.cache.get(session.channelId);
-        if (!channel) continue;
-
-        let channelName: string;
-
-        // DM channel
-        if (channel.isDMBased()) {
-          channelName = 'DM';
-        } else if ('name' in channel && channel.name) {
-          // Guild channel
-          const guild =
-            'guild' in channel ? (channel as { guild?: { name: string } }).guild : undefined;
-          channelName = guild ? `#${channel.name} (${guild.name})` : `#${channel.name}`;
-        } else {
-          continue; // Can't determine name
-        }
-
-        // Update session with channel name
-        if (router.updateChannelName('discord', session.channelId, channelName)) {
-          updated++;
-        }
-      }
-
-      if (updated > 0) {
-        console.log(`[Discord] Backfilled ${updated} channel names`);
-      }
-    } catch (error) {
-      console.error('[Discord] Failed to backfill channel names:', error);
-    }
-  }
-
-  // ============================================================================
-  // Gateway Interface Implementation
-  // ============================================================================
-
-  /**
-   * Start the Discord gateway
-   */
-  async start(): Promise<void> {
-    if (this.connected) {
-      console.log('Discord gateway already connected');
-      return;
-    }
-
-    if (this.config.ownerUserId && this.principalResolver) {
-      const namespaces = new Set(['direct', ...Object.keys(this.config.guilds ?? {})]);
-      for (const namespace of namespaces) {
-        const owner = this.principalResolver('discord', namespace, this.config.ownerUserId);
-        if (owner?.kind !== 'owner' || owner.status !== 'active') {
-          throw new Error(`Discord configured owner identity is unavailable for ${namespace}`);
-        }
-      }
-    }
-    await this.client.login(this.token);
-  }
-
-  /**
-   * Stop the Discord gateway
-   */
-  async stop(): Promise<void> {
-    if (!this.connected) {
-      return;
-    }
-
-    await this.client.destroy();
-    this.connected = false;
-
-    this.emitEvent({
-      type: 'disconnected',
-      source: 'discord',
-      timestamp: new Date(),
-    });
-  }
-
-  // ============================================================================
-  // Configuration
-  // ============================================================================
-
-  /**
-   * Update gateway configuration
-   */
-  setConfig(config: Partial<DiscordGatewayConfig>): void {
-    if (config.guilds) {
-      this.config.guilds = { ...this.config.guilds, ...config.guilds };
-    }
-    if (config.enabled !== undefined) {
-      this.config.enabled = config.enabled;
-    }
-  }
-
-  /**
-   * Get current configuration
-   */
-  getConfig(): DiscordGatewayConfig {
-    return { ...this.config };
-  }
-
-  /**
-   * Add guild configuration
-   */
-  addGuildConfig(guildId: string, config: DiscordGuildConfig): void {
-    this.config.guilds = this.config.guilds || {};
-    this.config.guilds[guildId] = config;
-  }
-
-  /**
-   * Add channel configuration
-   */
-  addChannelConfig(guildId: string, channelId: string, config: DiscordChannelConfig): void {
-    this.config.guilds = this.config.guilds || {};
-    if (!this.config.guilds[guildId]) {
-      this.config.guilds[guildId] = { channels: {} };
-    }
-    this.config.guilds[guildId].channels = this.config.guilds[guildId].channels || {};
-    this.config.guilds[guildId].channels[channelId] = config;
-  }
-
-  private async resolveSendChannel(channelId: string): Promise<{
-    channelId: string;
-    send: (payload: string | { content?: string; files?: string[] }) => Promise<unknown>;
-  }> {
-    const tryResolve = async (
-      targetChannelId: string
-    ): Promise<{
-      channelId: string;
-      send: (payload: string | { content?: string; files?: string[] }) => Promise<unknown>;
-    } | null> => {
+  private async sendChunks(channelId: string, key: string, text: string): Promise<void> {
+    const entry = this.ledger.get(key)!;
+    if (entry.deliveryUncertain) throw new Error('Discord response delivery is uncertain');
+    const channel = await this.client.channels.fetch(channelId);
+    if (!channel?.isSendable()) throw new Error('Discord target channel cannot receive messages');
+    const chunks = splitForDiscord(text);
+    for (let i = entry.nextChunkIndex ?? 0; i < chunks.length; i++) {
+      this.ledger.markDeliveryProgress(key, i, true);
       try {
-        const channel = await this.client.channels.fetch(targetChannelId);
-        if (!channel || !('send' in channel)) {
-          return null;
-        }
-
-        return {
-          channelId: targetChannelId,
-          send: (
-            channel as {
-              send: (payload: string | { content?: string; files?: string[] }) => Promise<unknown>;
-            }
-          ).send.bind(channel),
-        };
+        const sent = await channel.send(chunks[i]!);
+        this.ledger.markDeliveryProgress(key, i + 1, false, sent.id);
       } catch (error) {
-        if (
-          typeof error === 'object' &&
-          error !== null &&
-          (error as { code?: number }).code === 10003
-        ) {
-          return null;
-        }
+        this.ledger.markDeliveryProgress(key, i, true);
         throw error;
       }
-    };
-
-    const direct = await tryResolve(channelId);
-    if (direct) {
-      return direct;
     }
-
-    if (this.defaultChannelId && this.defaultChannelId !== channelId) {
-      const fallback = await tryResolve(this.defaultChannelId);
-      if (fallback) {
-        console.warn(`[Discord] Falling back send target: ${channelId} -> ${fallback.channelId}`);
-        return fallback;
-      }
-    }
-
-    throw new Error(`Channel not found: ${channelId}`);
-  }
-
-  /**
-   * Send a message to a specific channel
-   */
-  async sendMessage(channelId: string, content: string): Promise<void> {
-    if (!this.connected) {
-      throw new Error('Discord gateway not connected');
-    }
-
-    const channel = await this.resolveSendChannel(channelId);
-
-    const chunks = splitForDiscord(content);
-    for (const chunk of chunks) {
-      await channel.send(chunk);
-    }
-  }
-
-  /**
-   * Send a file (image, document, etc.) to a specific channel
-   */
-  async sendFile(channelId: string, filePath: string, caption?: string): Promise<void> {
-    if (!this.connected) {
-      throw new Error('Discord gateway not connected');
-    }
-
-    const channel = await this.resolveSendChannel(channelId);
-    await channel.send({
-      content: caption,
-      files: [filePath],
+    this.ledger.markDelivered(key);
+    this.emitEvent({
+      type: 'message_sent',
+      source: this.source,
+      timestamp: new Date(),
+      data: { sourceMessageRef: key },
     });
   }
 
-  /**
-   * Send an image file to a specific channel (alias for sendFile)
-   * @deprecated Use sendFile instead
-   */
-  async sendImage(channelId: string, imagePath: string, caption?: string): Promise<void> {
-    return this.sendFile(channelId, imagePath, caption);
+  private async runInDestination<T>(destination: string, work: () => Promise<T>): Promise<T> {
+    const previous = this.deliveryTails.get(destination) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => gate);
+    this.deliveryTails.set(destination, tail);
+    await previous;
+    try {
+      return await work();
+    } finally {
+      release();
+      if (this.deliveryTails.get(destination) === tail) this.deliveryTails.delete(destination);
+    }
   }
+
+  private requireAllowed(channel: string): void {
+    if (!this.options.config.allowedChannels.includes(channel))
+      throw new Error('Discord destination is not allowlisted');
+  }
+  private requireConnected(): void {
+    if (!this.connected) throw new Error('Discord gateway not connected');
+  }
+}
+const INTERRUPTED_RESPONSE =
+  'The previous processing attempt was interrupted. It was not rerun because its external side effects could not be proven safe to repeat. Please send a new message if you want to retry it.';
+function hash(kind: string, value: string): string {
+  return createHash('sha256').update(`${kind}\0${value}`).digest('hex');
+}
+function sourceRefChannel(value: string, source: string): string {
+  const prefix = `${source}:`;
+  if (!value.startsWith(prefix)) throw new Error(`${source} source message reference is invalid`);
+  const parts = value.split(':');
+  if (parts.length !== 3) throw new Error(`${source} source message reference is invalid`);
+  return parts[1]!;
 }

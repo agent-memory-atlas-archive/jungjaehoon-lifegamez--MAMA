@@ -1,7 +1,8 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { isDefinitiveTelegramRejection } from './telegram-errors.js';
 
-import type { StreamCallbacks } from '../agent/types.js';
+import type { StreamCallbacks } from '@jungjaehoon/mama-core/runtime/drivers/types';
 import {
   closeOpenTelegramHtml,
   formatTelegramMessage,
@@ -211,6 +212,7 @@ export class TelegramResponsePresenter {
         this.finalized = true;
         return;
       } else {
+        if (isDefinitiveTelegramRejection(error)) await this.recordChunkProgress(0, false);
         // A timeout/network error may mean the edit was applied remotely.
         // Do not delete and resend an answer that could already be visible.
         throw error;
@@ -219,6 +221,14 @@ export class TelegramResponsePresenter {
     await this.recordChunkProgress(1, false);
     await this.sendChunks(chunks.slice(1), 1);
     this.finalized = true;
+  }
+
+  /** Stop live edits while the durable input waits for result reconciliation. */
+  async suspend(): Promise<void> {
+    this.finalized = true;
+    if (this.editTimer) clearTimeout(this.editTimer);
+    this.editTimer = null;
+    await this.inFlightEdit;
   }
 
   async fail(message: string): Promise<void> {
@@ -293,6 +303,9 @@ export class TelegramResponsePresenter {
           lastError = undefined;
           break;
         } catch (error) {
+          if (isDefinitiveTelegramRejection(error) || isSafeRateLimitRetry(error)) {
+            await this.recordChunkProgress(chunkIndex, false);
+          }
           if (!isSafeRateLimitRetry(error)) throw error;
           lastError = error;
         }

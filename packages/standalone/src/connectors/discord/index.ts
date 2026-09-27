@@ -10,6 +10,7 @@ import type {
   IConnector,
   NormalizedItem,
 } from '../framework/types.js';
+import { readConnectorState, writeConnectorState } from '../framework/connector-state.js';
 
 interface DiscordMessage {
   id: string;
@@ -22,6 +23,8 @@ interface DiscordMessage {
   };
 }
 
+const MAX_MESSAGE_PAGES_PER_CHANNEL = 20;
+
 export class DiscordConnector implements IConnector {
   readonly name = 'discord';
   readonly type = 'api' as const;
@@ -30,21 +33,29 @@ export class DiscordConnector implements IConnector {
   private token: string | null = null;
   private readonly baseUrl = 'https://discord.com/api/v10';
   private lastMessageIdPerChannel = new Map<string, string>();
+  private pendingMessageIds: Map<string, string> | null = null;
+  private pollCommitDeferred = false;
+  private stateFilePath: string;
   private lastPollTime: Date | null = null;
   private lastPollCount = 0;
   private lastError: string | undefined = undefined;
 
-  constructor(config: ConnectorConfig) {
+  constructor(config: ConnectorConfig, stateFilePath: string) {
     this.config = config;
+    if (!stateFilePath.trim()) throw new Error('Discord state file path is required');
+    this.stateFilePath = stateFilePath;
   }
 
   async init(): Promise<void> {
-    const token =
-      this.config.auth.token ?? process.env[this.config.auth.tokenName ?? 'DISCORD_BOT_TOKEN'];
+    if (this.config.auth.tokenName !== 'MAMA_DISCORD_TOKEN') {
+      throw new Error('Discord auth.tokenName must be MAMA_DISCORD_TOKEN');
+    }
+    const token = process.env[this.config.auth.tokenName];
     if (!token) {
-      throw new Error('Discord bot token not found. Set DISCORD_BOT_TOKEN environment variable.');
+      throw new Error('Discord bot token not found. Run mama secret set MAMA_DISCORD_TOKEN.');
     }
     this.token = token;
+    this.loadState();
   }
 
   async dispose(): Promise<void> {
@@ -65,7 +76,7 @@ export class DiscordConnector implements IConnector {
     return [
       {
         type: 'token',
-        tokenName: 'DISCORD_BOT_TOKEN',
+        tokenName: 'MAMA_DISCORD_TOKEN',
         description:
           'Discord Bot token from the Discord Developer Portal. Add the bot to your server with MESSAGE_CONTENT intent.',
       },
@@ -86,20 +97,23 @@ export class DiscordConnector implements IConnector {
 
   async poll(since: Date): Promise<NormalizedItem[]> {
     if (!this.token) throw new Error('DiscordConnector not initialized');
-
+    if (this.pendingMessageIds !== null) throw new Error('Discord poll handoff is already active');
+    this.pendingMessageIds = new Map(this.lastMessageIdPerChannel);
     const items: NormalizedItem[] = [];
-    let hadError = false;
-
-    for (const [channelId, channelCfg] of Object.entries(this.config.channels)) {
-      if (channelCfg.role === 'ignore') continue;
-
+    const channels = Object.entries(this.config.channels).filter(
+      ([, channel]) => channel.role !== 'ignore'
+    );
+    let failedChannels = 0;
+    let lastChannelError: string | undefined;
+    for (const [channelId] of channels) {
       try {
-        let afterId = this.lastMessageIdPerChannel.get(channelId);
-        let hasMore = true;
-        while (hasMore) {
+        const committedMessageId = this.lastMessageIdPerChannel.get(channelId);
+        let beforeId: string | undefined;
+        let reachedBoundary = false;
+        for (let page = 0; page < MAX_MESSAGE_PAGES_PER_CHANNEL; page += 1) {
           const url = new URL(`${this.baseUrl}/channels/${channelId}/messages`);
           url.searchParams.set('limit', '100');
-          if (afterId) url.searchParams.set('after', afterId);
+          if (beforeId) url.searchParams.set('before', beforeId);
 
           const controller = new AbortController();
           const timeout = setTimeout(() => controller.abort(), 30_000);
@@ -114,17 +128,28 @@ export class DiscordConnector implements IConnector {
           }
 
           if (!res.ok) {
-            hadError = true;
-            this.lastError = `Channel ${channelId}: HTTP ${res.status}`;
-            break;
+            throw new Error(`channel ${channelId} page ${page + 1} HTTP ${res.status}`);
           }
 
           const messages = (await res.json()) as DiscordMessage[];
 
           // Discord returns newest-first; reverse to get ascending order
-          const sorted = [...messages].reverse();
+          const sorted = [...messages].sort((left, right) => {
+            const leftId = BigInt(left.id);
+            const rightId = BigInt(right.id);
+            return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
+          });
+          const oldestId = sorted[0]?.id;
+          const newestId = sorted.at(-1)?.id;
+          if (newestId !== undefined) {
+            const currentId = this.pendingMessageIds.get(channelId);
+            if (currentId === undefined || BigInt(newestId) > BigInt(currentId)) {
+              this.pendingMessageIds.set(channelId, newestId);
+            }
+          }
 
           for (const msg of sorted) {
+            if (committedMessageId && BigInt(msg.id) <= BigInt(committedMessageId)) continue;
             // Skip bot messages
             if (msg.author.bot) continue;
             if (!msg.content) continue;
@@ -134,16 +159,10 @@ export class DiscordConnector implements IConnector {
             // Filter by since date
             if (timestamp <= since) continue;
 
-            // Track the newest message id for next poll
-            const current = this.lastMessageIdPerChannel.get(channelId);
-            if (!current || msg.id > current) {
-              this.lastMessageIdPerChannel.set(channelId, msg.id);
-            }
-
             items.push({
               source: 'discord',
               sourceId: `${channelId}:${msg.id}`,
-              channel: channelCfg.name ?? channelId,
+              channel: channelId,
               author: msg.author.username,
               content: msg.content,
               timestamp,
@@ -156,24 +175,83 @@ export class DiscordConnector implements IConnector {
             });
           }
 
-          hasMore = messages.length === 100;
-          if (sorted.length > 0) {
-            afterId = sorted[sorted.length - 1].id;
+          if (messages.length < 100 || oldestId === undefined) {
+            reachedBoundary = true;
+            break;
           }
+          if (beforeId === oldestId) {
+            throw new Error(
+              `channel ${channelId} pagination repeated before cursor at page ${page + 1}`
+            );
+          }
+          if (committedMessageId && BigInt(oldestId) <= BigInt(committedMessageId)) {
+            reachedBoundary = true;
+            break;
+          }
+          if (new Date(sorted[0]!.timestamp) <= since) {
+            reachedBoundary = true;
+            break;
+          }
+          beforeId = oldestId;
         }
-      } catch (err) {
-        hadError = true;
-        this.lastError = err instanceof Error ? err.message : String(err);
+        if (!reachedBoundary) {
+          throw new Error(
+            `channel ${channelId} page cap (${MAX_MESSAGE_PAGES_PER_CHANNEL}) reached`
+          );
+        }
+      } catch (error) {
+        failedChannels += 1;
+        lastChannelError = error instanceof Error ? error.message : String(error);
       }
     }
 
+    if (failedChannels > 0) {
+      this.lastError = `Discord poll failed for ${failedChannels} of ${channels.length} configured channels; last error: ${lastChannelError}`;
+      this.lastPollTime = new Date();
+      this.lastPollCount = items.length;
+      if (!this.pollCommitDeferred) this.abortPollHandoff();
+      throw new Error(this.lastError);
+    }
     items.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-
     this.lastPollTime = new Date();
     this.lastPollCount = items.length;
-    // lastError was set in catch blocks; clear only if no error occurred this pass
-    if (!hadError) this.lastError = undefined;
-
+    this.lastError = undefined;
+    if (!this.pollCommitDeferred) this.commitPoll();
     return items;
+  }
+
+  private loadState(): void {
+    const state = readConnectorState(this.stateFilePath, (value): Record<string, string> => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error('Discord connector state must contain an object');
+      }
+      const entries = Object.entries(value);
+      if (entries.some(([, id]) => typeof id !== 'string' || id === '')) {
+        throw new Error('Discord connector state must contain nonblank message ids');
+      }
+      return Object.fromEntries(entries) as Record<string, string>;
+    });
+    if (state !== undefined) this.lastMessageIdPerChannel = new Map(Object.entries(state));
+  }
+
+  commitPoll(): void {
+    if (this.pendingMessageIds === null)
+      throw new Error('Discord poll state is unavailable to commit');
+    writeConnectorState(this.stateFilePath, Object.fromEntries(this.pendingMessageIds));
+    this.lastMessageIdPerChannel = this.pendingMessageIds;
+    this.pendingMessageIds = null;
+    this.pollCommitDeferred = false;
+  }
+
+  beginPollHandoff(): void {
+    if (this.pollCommitDeferred || this.pendingMessageIds !== null) {
+      throw new Error('Discord poll handoff is already active');
+    }
+    this.pollCommitDeferred = true;
+  }
+
+  abortPollHandoff(): void {
+    this.pendingMessageIds = null;
+    this.pollCommitDeferred = false;
   }
 }

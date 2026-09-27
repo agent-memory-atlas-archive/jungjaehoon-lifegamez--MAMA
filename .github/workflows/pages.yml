@@ -4,8 +4,8 @@ on:
   push:
     branches: [main]
     paths:
-      - 'docs/website/**'
       - 'docs/**/*.md'
+      - 'docs/_config.yml'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -33,10 +33,16 @@ jobs:
         with:
           enablement: true
 
+      - name: Build documentation site
+        uses: actions/jekyll-build-pages@v1
+        with:
+          source: ./docs
+          destination: ./_site
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: './docs/website'
+          path: './_site'
 
       - name: Deploy to GitHub Pages
         id: deployment

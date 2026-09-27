@@ -1,85 +1,33 @@
-# MAMA Documentation Index
+# MAMA documentation
 
-# https://jungjaehoon-lifegamez.github.io/MAMA
+MAMA OS is one persistent owner agent with Telegram, work-source collection, task history,
+reports, wiki and correction memory. Development memory is a separate Claude Code plugin
+and in-process public MCP server. The two products share mama-core, not a data home.
 
-## Overview
-
-MAMA (Memory-Augmented MCP Assistant) is the local work agent behind your messenger. It remembers
-scoped Cases and decision evolution, composes bounded domain tools, and returns verified reports or
-artifacts through authorized destinations. Current releases are owner-first; v1 adds human-team
-principal grants and shared Work Cases without exposing a user-facing AI team.
-
-## Packages
-
-- @jungjaehoon/mama-os: Standalone AI agent with Discord/Slack/Telegram bots
-- @jungjaehoon/mama-server: MCP server for Claude Code/Desktop
-- mama-core: Shared embedding and database components
-
-## Documentation
-
-### Tutorials
-
-/tutorials/getting-started.md - Quick start guide
-/tutorials/first-decision.md - Save your first decision
-/tutorials/hook-setup.md - Configure auto-recall hooks
-
-### Guides
-
-/guides/installation.md - Complete installation
-/guides/standalone-setup.md - Set up always-on agent
-/guides/gateway-config.md - Discord, Slack, Telegram setup
-/guides/mobile-access.md - Access from any device
-/guides/troubleshooting.md - Common issues
-/guides/standalone-troubleshooting.md - Standalone issues
-/guides/configuration.md - Configuration options
-/guides/security.md - Security best practices
-/guides/code-act-sandbox.md - Code-Act sandbox and HTTP policy
-
-### Reference
-
-/reference/commands.md - Slash commands
-/reference/api.md - MCP tool API
-/reference/api.md#skills-api - Skills system API
-/reference/hooks.md - Hook configuration
-/reference/configuration-options.md - All config settings
-
-### Explanation
-
-/explanation/architecture.md - System architecture
-/explanation/mama-os.md - MAMA OS dashboard
-/explanation/work-agent.md - One-front work agent, human team, Case and artifact model
-/explanation/decision-graph.md - Decision evolution
-/explanation/semantic-search.md - How search works
-/explanation/data-privacy.md - Privacy principles
-
-### Development
-
-/development/2026-08-26-one-front-team-work-agent-design.md - Normative product identity and v1 team contract
-/development/2026-08-26-phase2b-human-team-access-plan.md - Next v1 implementation slice for human principal grants
-/development/contributing.md - How to contribute
-/development/developer-playbook.md - Architecture standards
-/development/testing.md - Test suite
-/development/code-standards.md - Coding conventions
-/development/release-process.md - Release workflow
-
-## Quick Install
-
-# MAMA OS (Standalone)
-
-npm install -g @jungjaehoon/mama-os
-mama init && mama start
-
-# MCP Server
-
-npx @jungjaehoon/mama-server
-
-# Claude Code Plugin
-
-/plugin marketplace add jungjaehoon-lifegamez/claude-plugins
-/plugin install mama
-
-## Links
-
-- GitHub: https://github.com/jungjaehoon-lifegamez/MAMA
-- npm: https://www.npmjs.com/package/@jungjaehoon/mama-server
-- Issues: https://github.com/jungjaehoon-lifegamez/MAMA/issues
+- [Documentation entry](index.md)
+- [Owner setup](start/owner-setup.md)
+- [Development memory setup](start/claude-code-plugin.md)
+- [Backends](guides/backends.md)
+- [Telegram](guides/telegram.md)
+- [Connectors](guides/connectors.md)
+- [Reports and board](guides/reports-and-board.md)
+- [Replay](guides/replay.md)
+- [Wiki](guides/wiki.md)
+- [Corrections and learning](guides/corrections-and-learning.md)
+- [Viewer](guides/viewer.md)
+- [Security](guides/security.md)
+- [Troubleshooting](guides/troubleshooting.md)
+- [Architecture](explanation/architecture.md)
+- [Owner loop](explanation/owner-loop.md)
+- [Work ledger](explanation/work-ledger.md)
+- [Memory and search](explanation/memory-and-search.md)
+- [CLI](reference/cli.md)
+- [Configuration](reference/configuration.md)
+- [Owner actions](reference/actions.md)
+- [Viewer API](reference/viewer-api.md)
+- [MCP tools](reference/mcp-tools.md)
+- [Contributing](development/contributing.md)
+- [Testing](development/testing.md)
+- [Code standards](development/code-standards.md)
+- [Release process](development/release-process.md)
+- [Intent workflow](development/intent-workflow.md)

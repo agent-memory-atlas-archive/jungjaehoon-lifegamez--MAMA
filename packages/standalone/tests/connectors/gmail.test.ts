@@ -4,18 +4,20 @@ import { GmailConnector } from '../../src/connectors/gmail/index.js';
 import type { ConnectorConfig } from '../../src/connectors/framework/types.js';
 
 // Mock child_process
-vi.mock('child_process', () => ({
+vi.mock('node:child_process', () => ({
   execSync: vi.fn(),
+  execFile: vi.fn(),
 }));
 
-import { execSync } from 'child_process';
+import { execFile, execSync } from 'node:child_process';
 const mockExecSync = vi.mocked(execSync);
+const mockExecFile = vi.mocked(execFile);
 
 function makeConfig(overrides: Partial<ConnectorConfig> = {}): ConnectorConfig {
   return {
     enabled: true,
     pollIntervalMinutes: 10,
-    channels: {},
+    channels: { inbox: { role: 'reference' } },
     auth: {
       type: 'cli',
       cli: 'gws',
@@ -25,9 +27,9 @@ function makeConfig(overrides: Partial<ConnectorConfig> = {}): ConnectorConfig {
   };
 }
 
-function makeMessageListJson(messageIds: string[]): string {
+function makeMessageListJson(messageIds: string[], nextPageToken?: string): string {
   const messages = messageIds.map((id) => ({ id, threadId: `thread-${id}` }));
-  return JSON.stringify({ messages });
+  return JSON.stringify({ messages, ...(nextPageToken ? { nextPageToken } : {}) });
 }
 
 function makeMessageJson(overrides: Record<string, unknown> = {}): string {
@@ -39,7 +41,7 @@ function makeMessageJson(overrides: Record<string, unknown> = {}): string {
     payload: {
       headers: [
         { name: 'Subject', value: 'Test Subject' },
-        { name: 'From', value: 'sender@example.com' },
+        { name: 'From', value: 'sender@fixture.invalid' },
       ],
     },
     ...overrides,
@@ -52,6 +54,14 @@ describe('GmailConnector', () => {
     vi.clearAllMocks();
     // Default: gws --version succeeds
     mockExecSync.mockReturnValue('' as unknown as ReturnType<typeof execSync>);
+    mockExecFile.mockImplementation(((_file, args, _options, callback) => {
+      try {
+        callback(null, String(mockExecSync(`gws ${args.join(' ')}`)), '');
+      } catch (error) {
+        callback(error instanceof Error ? error : new Error(String(error)), '', '');
+      }
+      return {} as ReturnType<typeof execFile>;
+    }) as typeof execFile);
   });
 
   describe('name and type', () => {
@@ -140,6 +150,46 @@ describe('GmailConnector', () => {
       expect(items[0]?.type).toBe('email');
     });
 
+    it('uses argv calls and reads every message list page', async () => {
+      mockExecSync
+        .mockReturnValueOnce('gws version 1.0.0' as unknown as ReturnType<typeof execSync>)
+        .mockReturnValueOnce(
+          makeMessageListJson(['msg001'], 'page-next') as unknown as ReturnType<typeof execSync>
+        )
+        .mockReturnValueOnce(
+          makeMessageListJson(['msg002']) as unknown as ReturnType<typeof execSync>
+        )
+        .mockReturnValueOnce(makeMessageJson() as unknown as ReturnType<typeof execSync>)
+        .mockReturnValueOnce(
+          makeMessageJson({ id: 'msg002' }) as unknown as ReturnType<typeof execSync>
+        );
+      const connector = new GmailConnector(makeConfig());
+      await connector.init();
+      const items = await connector.poll(new Date(0));
+
+      expect(items).toHaveLength(2);
+      expect(mockExecFile.mock.calls.every(([, args]) => Array.isArray(args))).toBe(true);
+      expect(
+        mockExecFile.mock.calls.some(([, args]) =>
+          args.some((value) => String(value).includes('"pageToken":"page-next"'))
+        )
+      ).toBe(true);
+    });
+
+    it('fails the poll when a message-list page cannot be fetched', async () => {
+      mockExecSync
+        .mockReturnValueOnce('gws version 1.0.0' as unknown as ReturnType<typeof execSync>)
+        .mockImplementationOnce(() => {
+          throw new Error('list unavailable');
+        });
+      const connector = new GmailConnector(makeConfig());
+      await connector.init();
+
+      await expect(connector.poll(new Date(0))).rejects.toThrow(
+        /Gmail poll failed for 1 of 1 message-list pages; last error: list unavailable/
+      );
+    });
+
     it('sets sourceId to message id', async () => {
       mockExecSync
         .mockReturnValueOnce('' as unknown as ReturnType<typeof execSync>)
@@ -167,7 +217,7 @@ describe('GmailConnector', () => {
             payload: {
               headers: [
                 { name: 'Subject', value: 'Weekly Update' },
-                { name: 'From', value: 'boss@company.com' },
+                { name: 'From', value: 'owner@fixture.invalid' },
               ],
             },
           }) as unknown as ReturnType<typeof execSync>
@@ -189,7 +239,7 @@ describe('GmailConnector', () => {
             payload: {
               headers: [
                 { name: 'Subject', value: 'Hello' },
-                { name: 'From', value: 'alice@example.com' },
+                { name: 'From', value: 'sender@fixture.invalid' },
               ],
             },
           }) as unknown as ReturnType<typeof execSync>
@@ -197,7 +247,7 @@ describe('GmailConnector', () => {
       const connector = new GmailConnector(makeConfig());
       await connector.init();
       const items = await connector.poll(new Date(0));
-      expect(items[0]?.author).toBe('alice@example.com');
+      expect(items[0]?.author).toBe('sender@fixture.invalid');
     });
 
     it('skips prefix lines like "Using keyring backend: ..." before JSON', async () => {
@@ -238,7 +288,7 @@ describe('GmailConnector', () => {
       expect(items[0]?.sourceId).toBe('new001');
     });
 
-    it('continues polling other messages if one fetch fails', async () => {
+    it('fails the poll when any message fetch fails', async () => {
       mockExecSync
         .mockReturnValueOnce('' as unknown as ReturnType<typeof execSync>)
         .mockReturnValueOnce(
@@ -252,9 +302,13 @@ describe('GmailConnector', () => {
         );
       const connector = new GmailConnector(makeConfig());
       await connector.init();
-      const items = await connector.poll(new Date(0));
-      expect(items).toHaveLength(1);
-      expect(items[0]?.sourceId).toBe('good001');
+      await expect(connector.poll(new Date(0))).rejects.toThrow(
+        /Gmail poll failed for 1 of 2 message fetches; last error: not found/
+      );
+      await expect(connector.healthCheck()).resolves.toMatchObject({
+        healthy: false,
+        error: expect.stringContaining('not found'),
+      });
     });
   });
 

@@ -228,11 +228,10 @@ export function renderTelegramFormattingForModel(
 }
 
 /**
- * Router-side suffix appended directly after the message body on both the
- * text-only and content-block paths. '' for messages without formatting.
+ * Sender styling as data in the original Telegram UTF-16 text frame.
  * Forwarded formatting is fenced as untrusted data, matching the body's fence.
  */
-export function buildTelegramFormattingSuffix(message: NormalizedMessage): string {
+export function renderTelegramFormattingEvidence(message: NormalizedMessage): string {
   const formatting = message.metadata?.telegramFormatting;
   if (!formatting || message.source !== 'telegram') {
     return '';
@@ -245,5 +244,5 @@ export function buildTelegramFormattingSuffix(message: NormalizedMessage): strin
     message.metadata?.untrustedWrapped === true
       ? wrapUntrustedContent('telegram-forward-formatting', block)
       : block;
-  return `\n\n${fenced}`;
+  return fenced;
 }

@@ -1,251 +1,70 @@
-# @jungjaehoon/mama-os
+# MAMA OS
 
-> Bounded, provenance-backed working context for AI agents running on your machine.
+One owner agent on Claude or Codex watches connected work, keeps task revisions and evidence,
+answers on Telegram, publishes reports and a board, and recalls corrections.
+[mama-core](../mama-core/README.md) supplies the shared engine.
 
-## The Problem
+Current manifest: **0.57.0**. This README describes the unreleased `rebuild/owner-flow` source.
+Use [owner setup](../../docs/start/owner-setup.md) with Node.js 22.13+ and pnpm.
 
-Your knowledge is everywhere — Slack threads, email chains, code reviews, meeting notes, spreadsheets, Telegram messages. No human can track all of it. Important decisions get buried. Context gets lost between tools. When you need to make a decision, the information that would help is scattered across ten different apps and three months of history.
+## Start and operate
 
-This isn't just a memory problem. It's a bounded context problem. You don't just need to
-_store_ information — you need something that reads everything, connects the dots, identifies what
-matters, proves where it came from, and keeps agents inside the scope they were given.
-
-## What MAMA OS Does
-
-MAMA OS is a local AI runtime that connects to your apps, reads continuously, and turns scattered
-records into scoped, auditable context for agents and humans.
-
-**What the agents actually do:**
-
-- **Identify what matters** — Out of thousands of daily messages, surface the decisions, deadlines, and changes that affect your work
-- **Connect across sources** — A Slack conversation + a Trello card + an email attachment about the same project are linked automatically
-- **Track decision evolution** — Not just what was decided, but what it replaced, what it builds on, and what it contradicts
-- **Operate inside envelopes** — Gateway and worker calls carry signed scope boundaries and audit rows
-- **Preserve provenance** — Memory writes can point back to source refs, model runs, tool traces, and envelope hashes
-- **Search with evidence** — Strict memory search can reject vector-only noise and show which lexical, entity, scope, or graph signals confirmed a result
-- **Compile actionable knowledge** — Promoted decisions become an Obsidian wiki: an append-only daily journal plus durable lesson pages that strengthen with evidence
-- **Evolve their own triggers** — The operator loop authors triggers from recurring situations, fires them to recall the right memory, and scores them by whether delivered reports actually cite them
-- **Brief you proactively** — When you start working, relevant context from all sources is already there — you didn't ask for it
-
-```
-Without MAMA:  You read 5 Slack channels, 3 email threads, check Trello,
-               re-read old PRs, then try to piece together the full picture.
-
-With MAMA:     Agents already read everything. You get a briefing with
-               what changed, what's at risk, and what needs your decision.
-```
-
-**This is what local AI agents should do** — read every channel, every thread, every document, every
-day, then explain exactly which evidence they used and which permission boundary they were inside.
-
-- **Private by design** — All data stays on your device. Nothing leaves your machine.
-- **AI-independent** — Works with Claude, Codex, or any future backend. Your memory outlives any AI provider.
-
-## How It Runs
-
-MAMA OS runs AI agents through each backend's **supported local runtime path**: Claude CLI,
-Codex app-server, or Cline's official Hub runtime.
-
-Some third-party agent frameworks (OpenClaw, etc.) use unofficial API access, token extraction, or header spoofing — approaches that violate provider policies and risk account suspension. MAMA OS doesn't do any of that. If you have Claude Code, Codex CLI, or Cline CLI installed and authenticated, MAMA OS uses that backend's supported local runtime path. No token extraction or header spoofing is required.
+From the repository root:
 
 ```bash
-# Already authenticated Claude, Codex, or Cline?
-mama --help
-mama status   # follow the reported next action until complete
+pnpm install
+pnpm build
+node packages/standalone/dist/cli/index.js init
 ```
 
-## How It's Secured
+The guides use `mama` for the built CLI. Onboarding is terminal-only: the owner types tokens
+with echo off. It writes configuration and optional launchd files; backend login and service
+startup are separate steps.
 
-MAMA OS has full system access — so security is not optional, it's foundational.
+| Command                                       | Purpose                                          |
+| --------------------------------------------- | ------------------------------------------------ |
+| `mama init`                                   | Set up the owner, backend and connectors         |
+| `mama secret set <NAME>` / `mama secret list` | Rotate a token / list names only                 |
+| `mama daemon`                                 | Run the configured daemon in the foreground      |
+| `mama replay`                                 | Replay prepared historical inputs in day windows |
+| `mama status` / `mama stop`                   | Report running/stopped / stop the process        |
 
-- **Local-only by default** — Binds to localhost. External access requires explicit tunnel setup with authentication (Cloudflare Zero Trust).
-- **Signed runtime envelopes** — Gateway and worker tool calls carry verifiable scope, expiry, and
-  actor context before irreversible side effects are allowed.
-- **Provenance ledger** — Memory writes, raw refs, model runs, and tool traces can be audited after
-  the fact without exposing prompt bodies or hidden connector payloads.
-- **5-layer prompt injection defense** — Output sanitization, channel trust boundaries, silent mode for unknown sources, bulk extraction limits. Built from a real incident, not theory.
-- **Intrusion detection** — Honeypot traps for scanner probes (`.git`, `.env`, `wp-login.php`), per-IP suspicion scoring, automatic tarpit delays, and IP deny-listing when thresholds are exceeded.
-- **Agent permission tiers** — Tier 1 (full access), Tier 2 (read + memory write), Tier 3 (read-only). Each agent only gets the tools it needs.
-- **Owner console (v0.22+)** — the `owner_console` role is granted ONLY in an allowlisted telegram chat's 1:1 DM (`telegram.allowed_chats` is the trust anchor). It reads operational artifacts (`board_read`, `audit_findings_read`), can browse/download/upload Drive files, OCR and overlay translated image text, send files back to the current Telegram chat, and issue work (`report_request`) fire-and-forget. The verified owner gets the complete Drive composition surface and may upload to the folder selected in the active request even when it is not a configured deliverable root. Configured-root capabilities remain available and are validated when supplied; non-owner Drive operations require role permission and configured connector/envelope scope and cannot select arbitrary roots. Uploads and outbound files accept only regular non-symlink files in the private MAMA workspace; memory writes refuse secret-shaped content. On a clean installation, prepare the isolated OCR runtime with `pnpm setup:ocr` and verify it with `pnpm check:ocr`; `MAMA_OCR_PYTHON` can select an equivalent managed runtime. Translated overlays also require a Korean/CJK font: macOS uses Apple SD Gothic Neo, while Ubuntu/Debian should install `fonts-noto-cjk`; other systems can set `MAMA_KOREAN_FONT` to a readable `.ttf`/`.ttc` file. The setup check verifies this dependency instead of failing on the first real overlay. DOCX/XLSX extraction runs in a memory- and time-bounded child process. PDF extraction uses PDFKit on macOS and requires Poppler's `pdftotext` on Linux (`apt install poppler-utils` or the distribution equivalent).
-- **Stage-2 workorder pipeline (v0.28+, always on)** — scheduled board/wiki/memory-promotion runs become durable, occurrence-keyed workorders consumed serially on the operator lane. Since v0.41.0 (One MAMA) every scheduled turn runs as the same `owner_console` principal as chat, with the one console brief plus a host-authored turn-kind section; the host projects the grant (artifact tools added; administration, sends, uploads and per-kind mutation blocked) and renders the board pipeline slot itself. Every worker treats connector evidence as untrusted data rather than instructions. The native ledger remains authoritative for owner tasks and pipeline state. `MAMA_STAGE2_WORKORDERS` is retired: leave it unset (or set `on` for compatibility); explicit `off` or `shadow` values fail startup.
-- **Fail-safe shutdown** — When an intrusion cannot be contained, MAMA shuts itself down gracefully rather than operating in a compromised state.
+See [CLI flags](../../docs/reference/cli.md) and
+[launchd management](../../docs/guides/troubleshooting.md).
 
-These aren't theoretical protections. The prompt injection defense was built after a real attack where an adversary injected a fake "server failure" message into a monitored channel, causing the AI agent to voluntarily expose system configuration. The IP banning system has blocked actual intrusion attempts in production.
+## Current surface
 
-See the full [Security Guide](../../docs/guides/security.md) for Cloudflare Zero Trust setup, token authentication, threat scenarios, agent isolation, and Code-Act sandbox security.
+- **Owner chat:** Telegram, with an allowed chat and owner sender.
+- **Five source connectors:** Chatwork, Slack, Trello, Kagemusha (read-only local bridge),
+  and Google Calendar through `gws`.
+- **Records:** tasks and revision history, a four-slot board, wiki pages, daily journals,
+  lessons, preferences and constraints.
+- **Reports:** live deltas, full reports at 08/13/18 KST and hourly reminders at 09–21.
+- **Viewer:** board, work, memory graph, wiki, logs and security events; read-only data routes.
+- **Files:** source attachment lookup/download, native workspace processing and
+  `deliver.telegram.file` to the configured owner.
 
-## Quick Start
+Assembly lives in `src/runtime/` and `src/cli/commands/daemon.ts`; actions in `src/api/`,
+collectors in `src/connectors/`, Telegram in `src/gateways/`, replay in `src/replay/`,
+and viewer sources/assets in `ui/` and `public/viewer/`.
 
-```bash
-# 1. Authenticate one backend (one-time)
-claude auth login   # or: codex login
-cline auth cline    # for the hosted Cline backend
+## Data, security and status
 
-# 2. Install and follow the self-teaching contract
-npm install -g @jungjaehoon/mama-os
-mama --help
-mama status
-```
+OS state lives in `~/.mama/`; its database defaults to `~/.mama/memory.db`.
+`config.yaml` and `connectors.json` hold settings; terminal-entered credentials live in
+`auth.env` (0600). Both backends have workspace-only writes and credential-read exclusions.
+The viewer binds to `127.0.0.1:3847` by default; remote data access requires a bearer token
+or verified Access JWT. See [security](../../docs/guides/security.md).
 
-Use `mama status --json` when another agent is performing setup. It reports ordered missing actions
-for initialization, Telegram owner anchoring, an authenticated work-source connector, daemon
-startup, and the first confirmed report. `mama gateway telegram --token-stdin` accepts the bot
-token without echoing it; `mama connector add <name>` handles non-Telegram work sources.
+The [public MCP server](../mcp-server/README.md) and
+[plugin](../claude-code-plugin/README.md) run independently with a separate development database.
 
-**Prerequisites:** Node.js >= 22.13.0, one authenticated backend CLI (Claude, Codex, or Cline), 500MB disk space.
+[Owner loop](../../docs/explanation/owner-loop.md) · [Connectors](../../docs/guides/connectors.md) ·
+[Backends](../../docs/guides/backends.md) · [Reports](../../docs/guides/reports-and-board.md) ·
+[Replay](../../docs/guides/replay.md) · [Viewer](../../docs/guides/viewer.md).
 
-## Connectors (13)
+Completion is measured by [INTENT.md](../../INTENT.md); open live checks are in
+[checks.md](../../docs/rebuild/checks.md). Run `pnpm test` inside this package, with isolated
+state as described in [testing](../../docs/development/testing.md).
 
-MAMA connects to your apps and extracts structured facts into the memory graph.
-
-```bash
-mama connector add slack      # Activate + auth guide
-mama connector list           # Status of all connectors
-```
-
-| Connector       | Prerequisites                                                                                                                        | Config                           |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------- |
-| **Slack**       | Bot Token (api.slack.com → OAuth scopes)                                                                                             | `bot_token`, `app_token`         |
-| **Discord**     | Bot Token (discord.com/developers → MESSAGE CONTENT INTENT)                                                                          | `token`, `default_channel_id`    |
-| **Telegram**    | Bot Token (@BotFather); text, captions, photos, image documents, and regular documents are accepted                                  | `token`, `allowed_chats`         |
-| **Chatwork**    | API Token (account settings)                                                                                                         | `api_token`, `room_ids`          |
-| **iMessage**    | macOS only (reads local chat.db)                                                                                                     | No config needed                 |
-| **Gmail**       | [gws CLI](https://github.com/nicholasgasior/gws) installed + Google OAuth                                                            | `gws` in PATH                    |
-| **Calendar**    | gws CLI installed + Google OAuth                                                                                                     | `gws` in PATH                    |
-| **Drive**       | gws CLI installed + Google OAuth; bounded polls continue through change-page backlogs, owner console also has direct file operations | `gws` in PATH                    |
-| **Sheets**      | gws CLI installed + Google OAuth                                                                                                     | `gws` in PATH, `spreadsheet_ids` |
-| **Notion**      | Integration Token (notion.so/my-integrations)                                                                                        | `api_token`, `database_ids`      |
-| **Obsidian**    | [Obsidian](https://obsidian.md) installed + [Obsidian Terminal](https://github.com/polyipseity/obsidian-terminal) plugin enabled     | `vault_path` in config.yaml      |
-| **Trello**      | API Key + Token (trello.com/app-key)                                                                                                 | `api_key`, `token`, `board_ids`  |
-| **Claude Code** | Claude Code plugin installed                                                                                                         | Automatic via hooks              |
-
-**Google Workspace connectors** (Gmail, Calendar, Drive, Sheets) require the [gws CLI](https://github.com/nicholasgasior/gws) — a Google Workspace command-line tool. Install it, run `gws auth` once for OAuth, then MAMA polls via CLI.
-
-Each connector classifies its source (truth / hub / spoke / reference) for the 3-pass extraction pipeline. Config: `~/.mama/connectors.json`.
-
-For connector polling and preconfigured deliverable roots, enable Drive and declare non-ignored
-channels. `folderId` scopes that channel to one folder; `driveId` scopes it to a shared drive. These
-roots can issue short-lived destination capabilities, but a verified owner-console request is not
-limited to them when it explicitly selects another Drive folder.
-
-```json
-{
-  "drive": {
-    "enabled": true,
-    "pollIntervalMinutes": 5,
-    "channels": {
-      "project-docs": {
-        "role": "deliverable",
-        "name": "Project docs",
-        "folderId": "GOOGLE_DRIVE_FOLDER_ID"
-      }
-    },
-    "auth": { "type": "cli", "cli": "gws", "cliAuthCommand": "gws auth login" }
-  }
-}
-```
-
-## Knowledge Agents
-
-MAMA OS runs specialized agents for knowledge management — not coding (that's what Claude Code does natively).
-
-| Agent               | Role                                                | Requires                                                                                              |
-| ------------------- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| **Conductor**       | Orchestrates other agents, handles user chat        | —                                                                                                     |
-| **Dashboard Agent** | Generates project briefings from connected sources  | —                                                                                                     |
-| **Wiki Agent**      | Compiles knowledge into Obsidian vault              | [Obsidian](https://obsidian.md) + [Terminal plugin](https://github.com/polyipseity/obsidian-terminal) |
-| **Memory Agent**    | Extracts decisions from conversations automatically | —                                                                                                     |
-
-Agents delegate via `delegate()` with skill injection and automatic retry. Configure in `~/.mama/config.yaml`.
-
-## Operational interfaces
-
-Use `mama status` for local runtime readiness and `mama connector status` for connected sources.
-The authenticated API on port 3847 remains available for health, reports, tasks, raw-source reads,
-graph data, and native runtime operations. MAMA no longer ships a browser Viewer.
-
-## Gateway Integrations
-
-Run MAMA as a bot in Discord, Slack, Telegram, or Chatwork. Configure one gateway in
-`~/.mama/config.yaml`, then use `mama status` to verify its owner trust anchor.
-
-## Architecture
-
-```
-Connectors (13)              Gateways (4)
-Slack, Gmail, Sheets...      Discord, Slack, Telegram, Chatwork
-       |                            |
-       v                            v
- 3-Pass Extraction          Reactive Runtime Envelopes
-       |                    scope, expiry, signature, audit
-       +------------+---------------+
-                    |
-             MAMA Core (mama-memory.db)
-             memory, raw refs, model runs,
-             tool traces, twin edges, packets
-                    |
-             +------+------+
-             |             |
-     Operational API  Claude Code Plugin / MCP
-```
-
-## CLI
-
-| Command                                      | Description                          |
-| -------------------------------------------- | ------------------------------------ |
-| `mama init`                                  | Initialize workspace                 |
-| `mama setup`                                 | Print onboarding contract and status |
-| `mama start`                                 | Start daemon                         |
-| `mama stop`                                  | Stop daemon                          |
-| `mama status`                                | Show status and exact next actions   |
-| `mama gateway telegram --token-stdin`        | Validate and save a Telegram token   |
-| `mama gateway telegram detect-owner`         | Discover and confirm the owner chat  |
-| `mama report now`                            | Request and confirm the first report |
-| `mama connector <add\|remove\|list\|status>` | Manage connectors                    |
-
-## Configuration
-
-Main config: `~/.mama/config.yaml`
-
-| Variable                 | Default                  |
-| ------------------------ | ------------------------ |
-| `MAMA_DB_PATH`           | `~/.mama/mama-memory.db` |
-| `MAMA_HTTP_PORT`         | `3847`                   |
-| `MAMA_WORKSPACE`         | `~/.mama/workspace`      |
-| `MAMA_STAGE2_WORKORDERS` | retired; unset or `on`   |
-
-Timeout tuning lives under `timeouts` in `config.yaml`. The persistent CLI process pool supports:
-
-| Option                               | Default                     | Purpose                                     |
-| ------------------------------------ | --------------------------- | ------------------------------------------- |
-| `persistent_process_idle_ms`         | `session_ms`                | Reclaim idle backend sessions/processes     |
-| `persistent_process_cleanup_ms`      | `session_cleanup_ms`        | How often idle-process cleanup runs         |
-| `persistent_process_pending_tool_ms` | `max(4 * idle, 30 minutes)` | Max wait for pending tool-result handshakes |
-
-## Related Packages
-
-| Package                      | Purpose                             |
-| ---------------------------- | ----------------------------------- |
-| **@jungjaehoon/mama-os**     | Always-on AI runtime (this package) |
-| **@jungjaehoon/mama-server** | MCP server for Claude Desktop       |
-| **@jungjaehoon/mama-core**   | Shared memory engine                |
-
-## Development
-
-```bash
-git clone https://github.com/jungjaehoon-lifegamez/MAMA.git
-cd MAMA && pnpm install && pnpm build
-pnpm test       # 6,421 passing tests across all packages
-```
-
-## Links
-
-[GitHub](https://github.com/jungjaehoon-lifegamez/MAMA) · [npm](https://www.npmjs.com/package/@jungjaehoon/mama-os) · [Docs](https://github.com/jungjaehoon-lifegamez/MAMA/tree/main/docs) · [Issues](https://github.com/jungjaehoon-lifegamez/MAMA/issues)
-
-## License
-
-MIT
-
----
-
-**Last Updated:** 2026-08-28
+[MIT](../../LICENSE).

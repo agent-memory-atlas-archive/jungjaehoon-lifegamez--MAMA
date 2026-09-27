@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { closeDB, getAdapter } from '../../src/db-manager.js';
+import { closeDB, getAdapter, initDB } from '../../src/db-manager.js';
 import { queryRelevantTruth, saveMemory } from '../../src/index.js';
 
 const TEST_DB = path.join(os.tmpdir(), `test-truth-projection-sync-${randomUUID()}.db`);
@@ -61,6 +61,7 @@ describe('Task 1: decisions.status is the only current memory authority', () => 
     cleanupDb();
     process.env.MAMA_DB_PATH = TEST_DB;
     process.env.MAMA_FORCE_TIER_3 = 'true';
+    await initDB();
   });
 
   afterEach(async () => {
@@ -75,7 +76,7 @@ describe('Task 1: decisions.status is the only current memory authority', () => 
   });
 
   it('reads current and historical rows from decisions and matching bindings, not memory_truth', async () => {
-    const superseded = await saveMemory({
+    const superseded = await saveMemory(getAdapter(), {
       topic: 'authority_boundary',
       kind: 'decision',
       summary: 'Use the superseded decision',
@@ -85,7 +86,7 @@ describe('Task 1: decisions.status is the only current memory authority', () => 
       scopes: [PROJECT_SCOPE],
       source: { package: 'mama-core', source_type: 'test', project_id: PROJECT_SCOPE.id },
     });
-    const active = await saveMemory({
+    const active = await saveMemory(getAdapter(), {
       topic: 'authority_boundary',
       kind: 'decision',
       summary: 'Use the active decision',
@@ -94,7 +95,7 @@ describe('Task 1: decisions.status is the only current memory authority', () => 
       scopes: [PROJECT_SCOPE],
       source: { package: 'mama-core', source_type: 'test', project_id: PROJECT_SCOPE.id },
     });
-    const otherScope = await saveMemory({
+    const otherScope = await saveMemory(getAdapter(), {
       topic: 'other_scope_authority',
       kind: 'decision',
       summary: 'Keep this decision in the other scope',
@@ -123,7 +124,7 @@ describe('Task 1: decisions.status is the only current memory authority', () => 
       truthStatus: 'active',
     });
 
-    const current = await queryRelevantTruth({
+    const current = await queryRelevantTruth(getAdapter(), {
       query: '',
       scopes: [PROJECT_SCOPE],
       includeHistory: false,
@@ -135,7 +136,7 @@ describe('Task 1: decisions.status is the only current memory authority', () => 
       effective_details: 'Current decision details',
     });
 
-    const history = await queryRelevantTruth({
+    const history = await queryRelevantTruth(getAdapter(), {
       query: '',
       scopes: [PROJECT_SCOPE],
       includeHistory: true,
@@ -145,7 +146,7 @@ describe('Task 1: decisions.status is the only current memory authority', () => 
   });
 
   it('fails closed when no scopes are authorized', async () => {
-    await saveMemory({
+    await saveMemory(getAdapter(), {
       topic: 'empty_scope_authority',
       kind: 'decision',
       summary: 'This active decision requires its project scope',
@@ -155,7 +156,7 @@ describe('Task 1: decisions.status is the only current memory authority', () => 
       source: { package: 'mama-core', source_type: 'test', project_id: PROJECT_SCOPE.id },
     });
 
-    const current = await queryRelevantTruth({
+    const current = await queryRelevantTruth(getAdapter(), {
       query: '',
       scopes: [],
       includeHistory: false,

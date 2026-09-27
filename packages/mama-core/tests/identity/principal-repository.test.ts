@@ -6,15 +6,15 @@ import Database from 'better-sqlite3';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { NodeSQLiteAdapter } from '../../src/db-adapter/node-sqlite-adapter.js';
-import type { DatabaseAdapter as DBManagerAdapter } from '../../src/db-manager.js';
+import type { DatabaseAdapter } from '../../src/db-manager.js';
 import {
   createPrincipalRepository,
   PrincipalRegistrationError,
 } from '../../src/identity/principal-repository.js';
-import { applyMigrationsThrough } from '../../src/test-utils.js';
+import { applyMigrationsThrough } from '../helpers/test-utils.js';
 
 describe('Story TG-01/TG-04 / Phase 2b Task 1 AC: principal repository at migration 065', () => {
-  let adapter: DBManagerAdapter;
+  let adapter: DatabaseAdapter;
   let tempDir: string;
 
   beforeAll(() => {
@@ -25,7 +25,7 @@ describe('Story TG-01/TG-04 / Phase 2b Task 1 AC: principal repository at migrat
     applyMigrationsThrough(migrationDb, 65);
     migrationDb.close();
 
-    adapter = new NodeSQLiteAdapter({ dbPath }) as unknown as DBManagerAdapter;
+    adapter = new NodeSQLiteAdapter({ dbPath }) as unknown as DatabaseAdapter;
     adapter.connect();
   });
 

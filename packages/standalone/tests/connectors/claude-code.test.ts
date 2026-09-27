@@ -8,12 +8,15 @@ import type { ConnectorConfig } from '../../src/connectors/framework/types.js';
 
 let tempDir: string;
 let projectsDir: string;
+const DEFAULT_PROJECT_DIR = 'fixture-project-dir';
 
 function makeConfig(overrides: Partial<ConnectorConfig> = {}): ConnectorConfig {
   return {
     enabled: true,
     pollIntervalMinutes: 5,
-    channels: {},
+    channels: {
+      [DEFAULT_PROJECT_DIR]: { role: 'reference', name: 'Fixture Project' },
+    },
     auth: { type: 'none' },
     ...overrides,
   };
@@ -34,7 +37,7 @@ describe('ClaudeCodeConnector', () => {
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'claude-code-test-'));
     projectsDir = join(tempDir, 'projects');
-    mkdirSync(projectsDir, { recursive: true });
+    mkdirSync(join(projectsDir, DEFAULT_PROJECT_DIR), { recursive: true });
   });
 
   afterEach(() => {
@@ -68,6 +71,18 @@ describe('ClaudeCodeConnector', () => {
       const connector = new ClaudeCodeConnector(makeConfig(), '/nonexistent/path');
       await expect(connector.init()).rejects.toThrow(/cannot read/i);
     });
+
+    it('requires explicitly selected project directories', async () => {
+      const connector = makeConnector({ channels: {} });
+      await expect(connector.init()).rejects.toThrow(/explicitly selected project directories/i);
+    });
+
+    it('accepts only project directory names within the configured projects root', async () => {
+      const connector = makeConnector({
+        channels: { '..': { role: 'reference', name: 'Parent directory' } },
+      });
+      await expect(connector.init()).rejects.toThrow(/project directory names/i);
+    });
   });
 
   describe('authenticate', () => {
@@ -77,7 +92,7 @@ describe('ClaudeCodeConnector', () => {
   });
 
   describe('poll', () => {
-    it('returns empty array when no project directories exist', async () => {
+    it('returns empty array when a selected project has no session files', async () => {
       const connector = makeConnector();
       await connector.init();
       const items = await connector.poll(new Date(0));
@@ -85,7 +100,7 @@ describe('ClaudeCodeConnector', () => {
     });
 
     it('extracts user and assistant messages from JSONL', async () => {
-      const projDir = join(projectsDir, '-Users-test-myproject');
+      const projDir = join(projectsDir, 'fixture-project-dir');
       const ts = '2024-06-01T12:00:00.000Z';
 
       writeJsonl(
@@ -118,7 +133,7 @@ describe('ClaudeCodeConnector', () => {
     });
 
     it('handles array content format', async () => {
-      const projDir = join(projectsDir, '-Users-test-project');
+      const projDir = join(projectsDir, 'fixture-project-dir');
 
       writeJsonl(
         join(projDir, 'session.jsonl'),
@@ -147,7 +162,7 @@ describe('ClaudeCodeConnector', () => {
     });
 
     it('respects since parameter — skips old messages', async () => {
-      const projDir = join(projectsDir, '-Users-test-proj');
+      const projDir = join(projectsDir, 'fixture-project-dir');
 
       writeJsonl(
         join(projDir, 'session.jsonl'),
@@ -175,7 +190,7 @@ describe('ClaudeCodeConnector', () => {
     });
 
     it('skips files not modified since poll time', async () => {
-      const projDir = join(projectsDir, '-Users-test-old');
+      const projDir = join(projectsDir, 'fixture-project-dir');
       const oldDate = new Date('2023-01-01T00:00:00.000Z');
 
       writeJsonl(
@@ -197,8 +212,8 @@ describe('ClaudeCodeConnector', () => {
       expect(items).toHaveLength(0);
     });
 
-    it('skips short messages (< 10 chars)', async () => {
-      const projDir = join(projectsDir, '-Users-test-short');
+    it('keeps complete short messages', async () => {
+      const projDir = join(projectsDir, DEFAULT_PROJECT_DIR);
 
       writeJsonl(
         join(projDir, 'session.jsonl'),
@@ -216,11 +231,12 @@ describe('ClaudeCodeConnector', () => {
       await connector.init();
       const items = await connector.poll(new Date(0));
 
-      expect(items).toHaveLength(0);
+      expect(items).toHaveLength(1);
+      expect(items[0]?.content).toBe('hi');
     });
 
     it('skips system-reminder and command messages', async () => {
-      const projDir = join(projectsDir, '-Users-test-system');
+      const projDir = join(projectsDir, 'fixture-project-dir');
 
       writeJsonl(
         join(projDir, 'session.jsonl'),
@@ -249,7 +265,7 @@ describe('ClaudeCodeConnector', () => {
     });
 
     it('sets source to "claude-code"', async () => {
-      const projDir = join(projectsDir, '-Users-test-src');
+      const projDir = join(projectsDir, 'fixture-project-dir');
 
       writeJsonl(
         join(projDir, 'session.jsonl'),
@@ -271,7 +287,7 @@ describe('ClaudeCodeConnector', () => {
     });
 
     it('sets type to "message"', async () => {
-      const projDir = join(projectsDir, '-Users-test-type');
+      const projDir = join(projectsDir, 'fixture-project-dir');
 
       writeJsonl(
         join(projDir, 'session.jsonl'),
@@ -292,8 +308,9 @@ describe('ClaudeCodeConnector', () => {
       expect(items[0]?.type).toBe('message');
     });
 
-    it('derives channel from project directory name', async () => {
-      const projDir = join(projectsDir, '-Users-test-MAMA');
+    it('uses the configured project alias as its channel', async () => {
+      const projectDir = 'encoded-project-directory';
+      const projDir = join(projectsDir, projectDir);
 
       writeJsonl(
         join(projDir, 'session.jsonl'),
@@ -307,15 +324,18 @@ describe('ClaudeCodeConnector', () => {
         new Date('2024-06-01T12:00:00.000Z')
       );
 
-      const connector = makeConnector();
+      const connector = makeConnector({
+        channels: { [projectDir]: { role: 'reference', name: 'source-alias' } },
+      });
       await connector.init();
       const items = await connector.poll(new Date(0));
 
-      expect(items[0]?.channel).toBe('MAMA');
+      expect(items[0]?.channel).toBe('source-alias');
+      expect(JSON.stringify(items[0])).not.toContain(projectDir);
     });
 
-    it('truncates content to 5000 characters', async () => {
-      const projDir = join(projectsDir, '-Users-test-long');
+    it('keeps complete content longer than 5000 characters', async () => {
+      const projDir = join(projectsDir, DEFAULT_PROJECT_DIR);
       const longContent = 'A'.repeat(10000);
 
       writeJsonl(
@@ -334,11 +354,11 @@ describe('ClaudeCodeConnector', () => {
       await connector.init();
       const items = await connector.poll(new Date(0));
 
-      expect(items[0]?.content.length).toBe(5000);
+      expect(items[0]?.content.length).toBe(10000);
     });
 
-    it('handles corrupt JSONL lines gracefully', async () => {
-      const projDir = join(projectsDir, '-Users-test-corrupt');
+    it('fails the poll when a selected JSONL file contains corrupt data', async () => {
+      const projDir = join(projectsDir, DEFAULT_PROJECT_DIR);
       const filePath = join(projDir, 'session.jsonl');
       mkdirSync(projDir, { recursive: true });
 
@@ -356,15 +376,28 @@ describe('ClaudeCodeConnector', () => {
 
       const connector = makeConnector();
       await connector.init();
-      const items = await connector.poll(new Date(0));
-
-      expect(items).toHaveLength(1);
-      expect(items[0]?.content).toBe('Valid message after corrupt line');
+      await expect(connector.poll(new Date(0))).rejects.toThrow(
+        /Claude Code poll failed for 1 of 1 configured project directories; last error: Claude Code JSONL contains malformed JSON/
+      );
     });
 
-    it('scans only configured channels when specified', async () => {
-      const proj1 = join(projectsDir, '-Users-test-projA');
-      const proj2 = join(projectsDir, '-Users-test-projB');
+    it('leaves an incomplete trailing JSONL line for the next poll', async () => {
+      const projDir = join(projectsDir, DEFAULT_PROJECT_DIR);
+      const filePath = join(projDir, 'live-session.jsonl');
+      mkdirSync(projDir, { recursive: true });
+      writeFileSync(
+        filePath,
+        `${JSON.stringify({ type: 'user', timestamp: '2024-06-01T12:00:00.000Z', message: { content: 'complete' } })}\n{"type":"assistant"`,
+        'utf8'
+      );
+      const connector = makeConnector();
+      await connector.init();
+      expect(await connector.poll(new Date(0))).toHaveLength(1);
+    });
+
+    it('reads only explicitly configured project directories', async () => {
+      const proj1 = join(projectsDir, 'fixture-project-a');
+      const proj2 = join(projectsDir, 'fixture-project-b');
 
       writeJsonl(
         join(proj1, 'session.jsonl'),
@@ -372,7 +405,7 @@ describe('ClaudeCodeConnector', () => {
           {
             type: 'user',
             timestamp: '2024-06-01T12:00:00.000Z',
-            message: { content: 'Message from project A testing' },
+            message: { content: 'Message from selected fixture directory' },
           },
         ],
         new Date('2024-06-01T12:00:00.000Z')
@@ -384,7 +417,7 @@ describe('ClaudeCodeConnector', () => {
           {
             type: 'user',
             timestamp: '2024-06-01T12:00:00.000Z',
-            message: { content: 'Message from project B testing' },
+            message: { content: 'Message from unselected fixture directory' },
           },
         ],
         new Date('2024-06-01T12:00:00.000Z')
@@ -393,7 +426,7 @@ describe('ClaudeCodeConnector', () => {
       const connector = new ClaudeCodeConnector(
         makeConfig({
           channels: {
-            '-Users-test-projA': { role: 'hub', name: 'projA' },
+            'fixture-project-a': { role: 'hub', name: 'Fixture A' },
           },
         }),
         projectsDir
@@ -402,11 +435,36 @@ describe('ClaudeCodeConnector', () => {
       const items = await connector.poll(new Date(0));
 
       expect(items).toHaveLength(1);
-      expect(items[0]?.content).toContain('project A');
+      expect(items[0]?.content).toContain('selected fixture directory');
+    });
+
+    it('keeps two messages with the same timestamp as separate source events', async () => {
+      writeJsonl(
+        join(projectsDir, DEFAULT_PROJECT_DIR, 'session-collision.jsonl'),
+        [
+          {
+            type: 'user',
+            timestamp: '2024-06-01T12:00:00.000Z',
+            message: { content: 'First fixture message with collision time' },
+          },
+          {
+            type: 'assistant',
+            timestamp: '2024-06-01T12:00:00.000Z',
+            message: { content: 'Second fixture message with collision time' },
+          },
+        ],
+        new Date('2024-06-01T12:00:00.000Z')
+      );
+      const connector = makeConnector();
+      await connector.init();
+      const items = await connector.poll(new Date(0));
+
+      expect(items).toHaveLength(2);
+      expect(new Set(items.map((item) => item.sourceId)).size).toBe(2);
     });
 
     it('includes sessionId in metadata', async () => {
-      const projDir = join(projectsDir, '-Users-test-meta');
+      const projDir = join(projectsDir, 'fixture-project-dir');
 
       writeJsonl(
         join(projDir, 'abc123.jsonl'),
@@ -448,7 +506,7 @@ describe('ClaudeCodeConnector', () => {
     });
 
     it('tracks lastPollCount', async () => {
-      const projDir = join(projectsDir, '-Users-test-count');
+      const projDir = join(projectsDir, 'fixture-project-dir');
 
       writeJsonl(
         join(projDir, 'session.jsonl'),

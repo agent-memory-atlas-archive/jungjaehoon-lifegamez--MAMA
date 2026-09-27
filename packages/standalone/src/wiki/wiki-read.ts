@@ -1,25 +1,16 @@
-/**
- * Host-bound wiki page access for scheduled wiki workorders (TG-03/TG-06).
- *
- * The wiki turn never touches the Obsidian CLI: it reads the configured MAMA wiki root
- * directly through `wiki_read`, and `wiki_publish` compares each page's
- * `expectedContentVersion` against the same root immediately before writing. Both sides
- * share ONE path allowlist so a run bound to `ownerDate` can only see or change Home.md,
- * its own daily page, and lesson pages.
- */
+/** Bounded reads and content versions for the configured wiki root. */
 import { createHash } from 'crypto';
-import { existsSync, lstatSync, readFileSync, realpathSync } from 'fs';
+import { existsSync, lstatSync, opendirSync, readFileSync, realpathSync } from 'fs';
 import { dirname, join, resolve, sep } from 'path';
 
-import { normalizeWikiPagePath } from './path-safety.js';
+import { normalizeWikiReadPath } from './path-safety.js';
 
 export const WIKI_READ_MAX_PATHS = 20;
 export const WIKI_READ_MAX_PAGE_CHARS = 20_000;
 export const WIKI_READ_MAX_TOTAL_CHARS = 60_000;
-export const WIKI_LESSON_ROOTS = ['lessons/clients', 'lessons/process', 'lessons/system'] as const;
+export const WIKI_LIST_MAX_PATHS = 100;
+const WIKI_LIST_MAX_ENTRIES = 20_000;
 export const WIKI_HUMAN_MARKER = '<!-- human -->';
-
-const OWNER_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export interface WikiReadPage {
   path: string;
@@ -44,41 +35,90 @@ export function wikiContentVersion(content: string): string {
 
 /** Exact normalized relative path (`a/b.md`); throws on traversal or malformed input. */
 export function normalizeWikiRelativePath(raw: unknown): string {
-  const normalized = normalizeWikiPagePath(raw);
+  const normalized = normalizeWikiReadPath(raw);
   if (!normalized.endsWith('.md')) {
     throw new Error(`wiki page path must end with .md: ${raw}`);
   }
   return normalized;
 }
 
-/** Only Home.md, the exact daily page for `ownerDate`, and lesson pages are in scope. */
-export function isAllowedWikiWorkorderPath(normalizedPath: string, ownerDate: string): boolean {
-  if (!OWNER_DATE_RE.test(ownerDate)) {
-    return false;
-  }
-  if (normalizedPath === 'Home.md') {
-    return true;
-  }
-  if (normalizedPath === `daily/${ownerDate}.md`) {
-    return true;
-  }
-  return WIKI_LESSON_ROOTS.some((root) => {
-    if (!normalizedPath.startsWith(`${root}/`)) {
-      return false;
-    }
-    const fileName = normalizedPath.slice(root.length + 1);
-    return fileName.length > 3 && !fileName.includes('/');
-  });
-}
-
-export function assertAllowedWikiWorkorderPath(raw: unknown, ownerDate: string): string {
-  const normalized = normalizeWikiRelativePath(raw);
-  if (!isAllowedWikiWorkorderPath(normalized, ownerDate)) {
+/** List only actual Markdown files under the configured root, with a pinned path-set version. */
+export function listWikiPages(input: {
+  root: string;
+  cursor?: unknown;
+  limit?: unknown;
+  version?: unknown;
+}): {
+  paths: string[];
+  returned: number;
+  total: number;
+  nextCursor: string | null;
+  readVersion: string;
+} {
+  const limit = input.limit ?? 50;
+  if (
+    !Number.isSafeInteger(limit) ||
+    (limit as number) < 1 ||
+    (limit as number) > WIKI_LIST_MAX_PATHS
+  ) {
     throw new Error(
-      `wiki page ${normalized} is outside the bound wiki scope (Home.md, daily/${ownerDate}.md, lessons/{clients,process,system}/*.md)`
+      `manage.wiki.read list_limit must be an integer from 1 to ${WIKI_LIST_MAX_PATHS}`
     );
   }
-  return normalized;
+  const cursor = input.cursor === undefined ? null : normalizeWikiRelativePath(input.cursor);
+  if (
+    input.version !== undefined &&
+    (typeof input.version !== 'string' || !/^[a-f0-9]{64}$/.test(input.version))
+  ) {
+    throw new Error('manage.wiki.read list_version must be a SHA-256 string');
+  }
+  if (cursor && !input.version) {
+    throw new Error('manage.wiki.read list_cursor requires list_version');
+  }
+
+  const root = realpathSync(resolve(input.root));
+  const paths: string[] = [];
+  let inspected = 0;
+  const visit = (absolute: string, relative: string, depth: number): void => {
+    if (depth > 32) throw new Error('manage.wiki.read listing exceeds 32 directory levels');
+    const directory = opendirSync(absolute);
+    try {
+      let entry;
+      while ((entry = directory.readSync()) !== null) {
+        inspected += 1;
+        if (inspected > WIKI_LIST_MAX_ENTRIES) {
+          throw new Error('manage.wiki.read listing exceeds 20000 entries');
+        }
+        if (entry.name.startsWith('.') || entry.isSymbolicLink()) continue;
+        const path = `${relative}${entry.name}`;
+        if (entry.isDirectory()) {
+          visit(join(absolute, entry.name), `${path}/`, depth + 1);
+        } else if (entry.isFile() && path.endsWith('.md')) {
+          paths.push(normalizeWikiRelativePath(path));
+        }
+      }
+    } finally {
+      directory.closeSync();
+    }
+  };
+  visit(root, '', 0);
+  paths.sort();
+  const readVersion = createHash('sha256').update(JSON.stringify(paths)).digest('hex');
+  if (input.version && input.version !== readVersion) {
+    throw new Error('manage.wiki.read list changed; restart from the first page');
+  }
+  const start = cursor === null ? 0 : paths.indexOf(cursor) + 1;
+  if (cursor !== null && start === 0) {
+    throw new Error('manage.wiki.read list_cursor is not in the current list');
+  }
+  const page = paths.slice(start, start + (limit as number));
+  return {
+    paths: page,
+    returned: page.length,
+    total: paths.length,
+    nextCursor: start + page.length < paths.length ? page[page.length - 1] : null,
+    readVersion,
+  };
 }
 
 function resolveInsideRoot(root: string, normalizedPath: string): string | null {
@@ -123,24 +163,34 @@ export function readWikiPageVersion(root: string, normalizedPath: string): strin
   return wikiContentVersion(readFileSync(real, 'utf-8'));
 }
 
+/** A page's full content and version at the configured root, or null when it does not exist. */
+export function readWikiPageContent(
+  root: string,
+  normalizedPath: string
+): { content: string; version: string } | null {
+  const real = resolveInsideRoot(root, normalizedPath);
+  if (real === null) return null;
+  const content = readFileSync(real, 'utf-8');
+  return { content, version: wikiContentVersion(content) };
+}
+
 export function readWikiPages(input: {
   root: string;
-  ownerDate?: string;
   paths: unknown;
   contentOffset?: unknown;
   contentLimit?: unknown;
   contentVersions?: Record<string, string | null>;
 }): WikiReadResult {
   if (!Array.isArray(input.paths) || input.paths.length === 0) {
-    throw new Error('wiki_read requires a non-empty paths array');
+    throw new Error('manage.wiki.read requires a non-empty paths array');
   }
   if (input.paths.length > WIKI_READ_MAX_PATHS) {
-    throw new Error(`wiki_read accepts at most ${WIKI_READ_MAX_PATHS} paths`);
+    throw new Error(`manage.wiki.read accepts at most ${WIKI_READ_MAX_PATHS} paths`);
   }
   const contentOffset = input.contentOffset ?? 0;
   const contentLimit = input.contentLimit ?? WIKI_READ_MAX_PAGE_CHARS;
   if (!Number.isSafeInteger(contentOffset) || (contentOffset as number) < 0) {
-    throw new Error('wiki_read content_offset must be a non-negative safe integer');
+    throw new Error('manage.wiki.read content_offset must be a non-negative safe integer');
   }
   if (
     !Number.isSafeInteger(contentLimit) ||
@@ -148,7 +198,7 @@ export function readWikiPages(input: {
     (contentLimit as number) > WIKI_READ_MAX_PAGE_CHARS
   ) {
     throw new Error(
-      `wiki_read content_limit must be an integer from 1 to ${WIKI_READ_MAX_PAGE_CHARS}`
+      `manage.wiki.read content_limit must be an integer from 1 to ${WIKI_READ_MAX_PAGE_CHARS}`
     );
   }
   const seen = new Set<string>();
@@ -156,18 +206,15 @@ export function readWikiPages(input: {
   let totalChars = 0;
   let truncatedAny = false;
   for (const raw of input.paths) {
-    const normalized =
-      input.ownerDate === undefined
-        ? normalizeWikiRelativePath(raw)
-        : assertAllowedWikiWorkorderPath(raw, input.ownerDate);
+    const normalized = normalizeWikiRelativePath(raw);
     if (seen.has(normalized)) {
       continue;
     }
     seen.add(normalized);
     const real = resolveInsideRoot(input.root, normalized);
     if (real === null) {
-      if ((contentOffset as number) > 0 && input.ownerDate === undefined) {
-        throw new Error(`wiki_read page ${normalized} disappeared; restart from offset 0`);
+      if ((contentOffset as number) > 0) {
+        throw new Error(`manage.wiki.read page ${normalized} disappeared; restart from offset 0`);
       }
       pages.push({
         path: normalized,
@@ -183,13 +230,9 @@ export function readWikiPages(input: {
     }
     const full = readFileSync(real, 'utf-8');
     const contentVersion = wikiContentVersion(full);
-    if (
-      (contentOffset as number) > 0 &&
-      input.ownerDate === undefined &&
-      input.contentVersions?.[normalized] !== contentVersion
-    ) {
+    if ((contentOffset as number) > 0 && input.contentVersions?.[normalized] !== contentVersion) {
       throw new Error(
-        `wiki_read page ${normalized} requires its unchanged content_versions entry; restart from offset 0`
+        `manage.wiki.read page ${normalized} requires its unchanged content_versions entry; restart from offset 0`
       );
     }
     const offset = Math.min(contentOffset as number, full.length);
@@ -224,54 +267,7 @@ export interface WikiWorkorderPublishPage {
 }
 
 /**
- * Host gate for `wiki_publish` inside a bound wiki workorder: allowed paths only, exactly
+ * Host gate for `manage.wiki.publish` inside a bound wiki workorder: allowed paths only, exactly
  * the bound daily page present once, and every page carrying an `expectedContentVersion`
  * that matches the configured root RIGHT NOW (hash for existing, null for missing).
  */
-export function assertWikiWorkorderPublish(input: {
-  root: string;
-  ownerDate: string;
-  pages: readonly WikiWorkorderPublishPage[];
-}): void {
-  if (!OWNER_DATE_RE.test(input.ownerDate)) {
-    throw new Error('wiki_publish is unavailable for legacy input without a host-issued ownerDate');
-  }
-  const dailyPath = `daily/${input.ownerDate}.md`;
-  let dailyCount = 0;
-  const seen = new Set<string>();
-  for (const page of input.pages) {
-    const normalized = assertAllowedWikiWorkorderPath(page.path, input.ownerDate);
-    if (seen.has(normalized)) {
-      throw new Error(`wiki_publish lists ${normalized} more than once`);
-    }
-    seen.add(normalized);
-    if (normalized === dailyPath) {
-      dailyCount += 1;
-    }
-    if (typeof page.content === 'string' && page.content.includes(WIKI_HUMAN_MARKER)) {
-      throw new Error(
-        `wiki_publish page ${normalized} content must omit ${WIKI_HUMAN_MARKER} and its owner-authored suffix`
-      );
-    }
-    if (!('expectedContentVersion' in page)) {
-      throw new Error(
-        `wiki_publish page ${normalized} requires expectedContentVersion (hash or null)`
-      );
-    }
-    const expected = page.expectedContentVersion;
-    if (expected !== null && (typeof expected !== 'string' || !/^[0-9a-f]{64}$/.test(expected))) {
-      throw new Error(
-        `wiki_publish page ${normalized} expectedContentVersion must be the SHA-256 from wiki_read or null`
-      );
-    }
-    const current = readWikiPageVersion(input.root, normalized);
-    if (current !== expected) {
-      throw new Error(
-        `wiki_publish page ${normalized} is stale: expected ${expected ?? 'missing'} but the wiki root now has ${current ?? 'no page'}; re-read it with wiki_read`
-      );
-    }
-  }
-  if (dailyCount !== 1) {
-    throw new Error(`wiki_publish in a wiki workorder must include exactly ${dailyPath} once`);
-  }
-}

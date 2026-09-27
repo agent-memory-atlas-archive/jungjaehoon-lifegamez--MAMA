@@ -339,6 +339,16 @@ describe('M3.3: Plugin Manifests', () => {
       expect(pluginConfig.version).toBe(packageJson.version);
     });
 
+    it('advertises no setting the code does not read', () => {
+      const configure = fs.readFileSync(path.join(PLUGIN_ROOT, 'commands', 'configure.md'), 'utf8');
+      expect(configure).not.toMatch(/config\.json|--model|--tier-check|--db-path/);
+      for (const file of ['.mcp.json', '.claude-plugin/.mcp.json', '.claude-plugin/plugin.json']) {
+        expect(fs.readFileSync(path.join(PLUGIN_ROOT, file), 'utf8')).not.toContain(
+          'MAMA_EMBEDDING_MODEL'
+        );
+      }
+    });
+
     it('does not advertise retired HTTP or WebSocket runtime switches', () => {
       const configure = fs.readFileSync(path.join(PLUGIN_ROOT, 'commands', 'configure.md'), 'utf8');
 

@@ -23,7 +23,7 @@ describe('Story M1.4: Embeddings Tier 3 enforcement', () => {
         },
       }));
 
-      const { generateEmbedding } = await import('../../src/embeddings.js');
+      const { generateEmbedding } = await import('../../src/embedding/embedder.js');
 
       await expect(generateEmbedding('use lexical fallback')).rejects.toThrow(
         /MAMA_FORCE_TIER_3=true/

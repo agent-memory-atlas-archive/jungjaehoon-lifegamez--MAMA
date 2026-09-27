@@ -50,128 +50,49 @@ const SEMVER = '[0-9]+\\.[0-9]+\\.[0-9]+(?:-[a-zA-Z0-9.]+)?';
  * @returns {Array<{file: string, patterns: Array<{regex: RegExp, version: string, suffix?: boolean}>}>}
  */
 function buildRules(versions) {
+  const os = versions['mama-os'];
+  const core = versions['mama-core'];
+  const server = versions['mama-server'];
+  const plugin = versions['claude-code-plugin'];
+  // Package table rows: | [Label](packages/<dir>/README.md) | role | <version> |
+  const row = (label, dir, version) => ({
+    regex: new RegExp(
+      `(\\| \\[${label}\\]\\(packages/${dir}/README\\.md\\)\\s*\\|[^|]*\\| )${SEMVER}(\\s*\\|)`,
+      'g'
+    ),
+    version,
+    suffix: true,
+  });
+  // Package README headers: Version **x.y.z**
+  const header = (version) => ({
+    regex: new RegExp(`(Version \\*\\*)${SEMVER}(\\*\\*)`, 'g'),
+    version,
+    suffix: true,
+  });
   return [
     {
       file: 'README.md',
       patterns: [
-        // **Package:** `@jungjaehoon/mama-os` 0.5.0-beta
-        {
-          regex: new RegExp(`(\\*\\*Package:\\*\\* \`@jungjaehoon/mama-os\` )${SEMVER}`, 'g'),
-          version: versions['mama-os'],
-        },
-        {
-          regex: new RegExp(`(\\*\\*Package:\\*\\* \`@jungjaehoon/mama-server\` )${SEMVER}`, 'g'),
-          version: versions['mama-server'],
-        },
-        {
-          regex: new RegExp(`(\\*\\*Package:\\*\\* \`@jungjaehoon/mama-core\` )${SEMVER}`, 'g'),
-          version: versions['mama-core'],
-        },
-        // Table rows: | [@jungjaehoon/mama-os](...) | 0.5.0-beta |
-        {
-          regex: new RegExp(`(\\| \\[@jungjaehoon/mama-os\\][^|]+\\| )${SEMVER}(\\s*\\|)`, 'g'),
-          version: versions['mama-os'],
-          suffix: true,
-        },
-        {
-          regex: new RegExp(`(\\| \\[@jungjaehoon/mama-server\\][^|]+\\| )${SEMVER}(\\s*\\|)`, 'g'),
-          version: versions['mama-server'],
-          suffix: true,
-        },
-        {
-          regex: new RegExp(`(\\| \\[@jungjaehoon/mama-core\\][^|]+\\| )${SEMVER}(\\s*\\|)`, 'g'),
-          version: versions['mama-core'],
-          suffix: true,
-        },
-        {
-          regex: new RegExp(`(\\| \\[mama(?: plugin)?\\][^|]+\\| )${SEMVER}(\\s*\\|)`, 'g'),
-          version: versions['claude-code-plugin'],
-          suffix: true,
-        },
+        row('MAMA OS', 'standalone', os),
+        row('mama-core', 'mama-core', core),
+        row('Public MCP server', 'mcp-server', server),
+        row('Claude Code plugin', 'claude-code-plugin', plugin),
       ],
     },
     {
-      file: 'docs/architecture/package-structure.md',
+      file: 'packages/standalone/README.md',
       patterns: [
+        header(os),
         {
-          regex: new RegExp(`(- \\*\\*mama-core:\\*\\* )${SEMVER}`, 'g'),
-          version: versions['mama-core'],
-        },
-        {
-          regex: new RegExp(`(- \\*\\*mama-server:\\*\\* )${SEMVER}`, 'g'),
-          version: versions['mama-server'],
-        },
-        {
-          regex: new RegExp(`(- \\*\\*claude-code-plugin:\\*\\* )${SEMVER}`, 'g'),
-          version: versions['claude-code-plugin'],
-        },
-        {
-          regex: new RegExp(`(- \\*\\*mama-os:\\*\\* )${SEMVER}`, 'g'),
-          version: versions['mama-os'],
+          regex: new RegExp(`(Current manifest: \\*\\*)${SEMVER}(\\*\\*)`, 'g'),
+          version: os,
+          suffix: true,
         },
       ],
     },
-    {
-      file: 'docs/guides/deployment.md',
-      patterns: [
-        // Top summary table (5 package rows)
-        {
-          regex: new RegExp(`(\\| MAMA OS[^|]+\\|[^|]+\\|[^|]+\\|[^|]+\\| )${SEMVER}`, 'g'),
-          version: versions['mama-os'],
-        },
-        {
-          regex: new RegExp(`(\\| MCP Server[^|]+\\|[^|]+\\|[^|]+\\|[^|]+\\| )${SEMVER}`, 'g'),
-          version: versions['mama-server'],
-        },
-        {
-          regex: new RegExp(`(\\| MAMA Core[^|]+\\|[^|]+\\|[^|]+\\|[^|]+\\| )${SEMVER}`, 'g'),
-          version: versions['mama-core'],
-        },
-        {
-          regex: new RegExp(
-            `(\\| Claude Code Plugin[^|]+\\|[^|]+\\|[^|]+\\|[^|]+\\| )${SEMVER}`,
-            'g'
-          ),
-          version: versions['claude-code-plugin'],
-        },
-        // Version Update Locations table (5 rows by package.json path)
-        {
-          regex: new RegExp(
-            `(\\| \`packages/standalone/package\\.json\`[^|]+\\|[^|]+\\| )${SEMVER}`,
-            'g'
-          ),
-          version: versions['mama-os'],
-        },
-        {
-          regex: new RegExp(
-            `(\\| \`packages/mcp-server/package\\.json\`[^|]+\\|[^|]+\\| )${SEMVER}`,
-            'g'
-          ),
-          version: versions['mama-server'],
-        },
-        {
-          regex: new RegExp(
-            `(\\| \`packages/mama-core/package\\.json\`[^|]+\\|[^|]+\\| )${SEMVER}`,
-            'g'
-          ),
-          version: versions['mama-core'],
-        },
-        {
-          regex: new RegExp(
-            `(\\| \`packages/claude-code-plugin/package\\.json\`[^|]+\\|[^|]+\\| )${SEMVER}`,
-            'g'
-          ),
-          version: versions['claude-code-plugin'],
-        },
-        {
-          regex: new RegExp(
-            `(\\| \`packages/claude-code-plugin/\\.claude-plugin/plugin\\.json\`[^|]+\\|[^|]+\\| )${SEMVER}`,
-            'g'
-          ),
-          version: versions['claude-code-plugin'],
-        },
-      ],
-    },
+    { file: 'packages/mama-core/README.md', patterns: [header(core)] },
+    { file: 'packages/mcp-server/README.md', patterns: [header(server)] },
+    { file: 'packages/claude-code-plugin/README.md', patterns: [header(plugin)] },
   ];
 }
 

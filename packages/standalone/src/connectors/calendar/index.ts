@@ -1,39 +1,25 @@
-/**
- * CalendarConnector — polls Google Calendar via the gws CLI tool.
- * Uses child_process.execSync to call gws CLI commands.
- * Skips "Using keyring backend:" prefix lines before parsing JSON.
- */
-
-import { execSync } from 'child_process';
+/** Google Calendar snapshots through the authorised gws CLI on the daemon's PATH. */
 import { createHash } from 'node:crypto';
-
 import type {
   AuthRequirement,
   ConnectorConfig,
   ConnectorHealth,
   IConnector,
   NormalizedItem,
+  ConnectorPollCursor,
 } from '../framework/types.js';
-import { execGws } from '../framework/gws-utils.js';
+import { execGwsAsync } from '../framework/gws-utils.js';
+import { readConnectorState, writeConnectorState } from '../framework/connector-state.js';
 
 interface CalendarEvent {
   id: string;
+  updated: string;
   summary?: string;
   description?: string;
-  start?: {
-    dateTime?: string;
-    date?: string;
-    timeZone?: string;
-  };
-  end?: {
-    dateTime?: string;
-    date?: string;
-    timeZone?: string;
-  };
-  organizer?: {
-    email?: string;
-    displayName?: string;
-  };
+  location?: string;
+  start?: { dateTime?: string; date?: string; timeZone?: string };
+  end?: { dateTime?: string; date?: string; timeZone?: string };
+  organizer?: { email?: string; displayName?: string };
   status?: string;
 }
 
@@ -44,41 +30,96 @@ interface CalendarEventList {
 }
 
 const MAX_EVENT_LIST_PAGES = 20;
-/**
- * `singleEvents:true` expands recurring events into instances, and without an upper
- * bound the expansion runs to the end of the recurrence — thousands of rows for an
- * ordinary personal calendar. Measured live 2026-09-07..10: every poll hit the page
- * cap, threw, saved nothing and left the cursor stuck for three days. The window is
- * therefore closed at now + 90 days; events further out enter it as time passes.
- */
+// f3f0316c7: unbounded singleEvents expansion repeatedly hit the cap and saved nothing.
 const EVENT_LIST_HORIZON_MS = 90 * 24 * 60 * 60 * 1000;
 const EVENT_LIST_PAGE_SIZE = 250;
+
+/** Free text reaches search and delta previews. Structured event times are kept separately. */
+function previewText(value: string): string {
+  return value
+    .replace(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/gi, '[email]')
+    .replace(/\+?\(?\d[\d ().-]{5,}\d/g, (candidate) => {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(candidate)) return candidate;
+      return candidate.replace(/\D/g, '').length >= 7 ? '[phone]' : candidate;
+    });
+}
 
 export class CalendarConnector implements IConnector {
   readonly name = 'calendar';
   readonly type = 'api' as const;
-
   private lastPollTime: Date | null = null;
   private lastPollCount = 0;
-  private lastError: string | undefined = undefined;
+  private lastError: string | undefined;
 
+  // The primary calendar uses the existing configured channel key "calendar".
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  constructor(_config: ConnectorConfig) {
-    // config reserved for future channel-scoped filtering
+  private readonly calendars: Array<{ key: string; id: string; label: string }>;
+  /** Calendars whose whole window has been collected once; later polls only ask for changes. */
+  private readonly synced: Set<string>;
+  private pendingSynced: Set<string> | null = null;
+
+  constructor(
+    config: ConnectorConfig,
+    private readonly statePath: string
+  ) {
+    const configured = Object.entries(config.channels).filter(
+      ([key, channel]) =>
+        channel.role !== 'ignore' && (channel.calendarId || key === 'calendar' || key === 'primary')
+    );
+    this.calendars = configured.some(([, channel]) => channel.calendarId)
+      ? configured.map(([key, channel]) => ({
+          key,
+          id: channel.calendarId ?? 'primary',
+          label: channel.name ?? key,
+        }))
+      : [{ key: 'calendar', id: 'primary', label: 'Primary calendar' }];
+    this.synced = new Set(
+      readConnectorState(statePath, (value) => {
+        const synced = (value as { synced?: unknown } | null)?.synced;
+        if (!Array.isArray(synced) || !synced.every((key) => typeof key === 'string')) {
+          throw new Error('Calendar connector state must list synced calendar keys');
+        }
+        return synced as string[];
+      }) ?? []
+    );
+  }
+
+  commitPoll(): void {
+    if (this.pendingSynced === null) return;
+    for (const key of this.pendingSynced) this.synced.add(key);
+    this.pendingSynced = null;
+    writeConnectorState(this.statePath, { synced: [...this.synced].sort() });
+  }
+
+  abortPollHandoff(): void {
+    this.pendingSynced = null;
+  }
+
+  private async verifyAccess(): Promise<void> {
+    // auth status can succeed without Calendar scope. Exercise the read permission itself.
+    await execGwsAsync([
+      'calendar',
+      'events',
+      'list',
+      '--params',
+      JSON.stringify({ calendarId: this.calendars[0]?.id ?? 'primary', maxResults: 1 }),
+    ]);
   }
 
   async init(): Promise<void> {
-    // Verify gws CLI is available
     try {
-      execSync('gws --version', { stdio: 'pipe' });
-    } catch {
-      throw new Error('gws CLI not found. Install it and run: gws auth login');
+      await this.verifyAccess();
+      this.lastError = undefined;
+    } catch (error) {
+      this.lastError =
+        (error as NodeJS.ErrnoException).code === 'ENOENT'
+          ? 'Calendar: install gws and add its bin directory to the daemon PATH in ~/.mama/start.sh; then run: gws auth login'
+          : 'Calendar: gws cannot read the primary calendar. Run: gws auth login with Google Calendar read access, then retry.';
+      throw new Error(this.lastError, { cause: error });
     }
   }
 
-  async dispose(): Promise<void> {
-    // No resources to clean up
-  }
+  async dispose(): Promise<void> {}
 
   async healthCheck(): Promise<ConnectorHealth> {
     return {
@@ -95,118 +136,132 @@ export class CalendarConnector implements IConnector {
         type: 'cli',
         cli: 'gws',
         cliAuthCommand: 'gws auth login',
-        description: 'Google Workspace CLI authentication. Run: gws auth login',
+        description:
+          'Google Calendar read access through Google Workspace CLI. Run: gws auth login',
       },
     ];
   }
 
   async authenticate(): Promise<boolean> {
     try {
-      execSync('gws auth status', { stdio: 'pipe' });
+      await this.verifyAccess();
       return true;
     } catch {
       return false;
     }
   }
 
-  private getEventTime(ev: CalendarEvent): string {
-    return ev.start?.dateTime ?? ev.start?.date ?? '';
-  }
-
-  private getEventEndTime(ev: CalendarEvent): string {
-    return ev.end?.dateTime ?? ev.end?.date ?? '';
-  }
-
-  async poll(since: Date): Promise<NormalizedItem[]> {
+  async poll(since: Date, cursor?: ConnectorPollCursor): Promise<NormalizedItem[]> {
     const items: NormalizedItem[] = [];
-
     try {
-      const timeMin = since.toISOString();
-      const timeMax = new Date(Date.now() + EVENT_LIST_HORIZON_MS).toISOString();
+      const windowStart = new Date();
+      const timeMin = windowStart.toISOString();
+      const timeMax = new Date(windowStart.getTime() + EVENT_LIST_HORIZON_MS).toISOString();
       const observedAt = new Date().toISOString();
-      let pageToken: string | undefined;
-      const visitedPageTokens = new Set<string>();
-      for (let page = 0; page < MAX_EVENT_LIST_PAGES; page += 1) {
-        const params = JSON.stringify({
-          calendarId: 'primary',
-          timeMin,
-          timeMax,
-          singleEvents: true,
-          showDeleted: true,
-          orderBy: 'startTime',
-          maxResults: EVENT_LIST_PAGE_SIZE,
-          ...(pageToken ? { pageToken } : {}),
-        });
-        // Escape single quotes so an upstream-controlled value inside the JSON (e.g. a pageToken)
-        // cannot close the shell single-quoted argument and inject a command.
-        const safeParams = params.replace(/'/g, `'\\''`);
-        const result = execGws(
-          `calendar events list --params '${safeParams}'`
-        ) as CalendarEventList;
+      const pendingSynced = new Set<string>();
+      for (const calendar of this.calendars) {
+        // A calendar added after the first poll still needs its whole window once.
+        const changesOnly = cursor?.hasCursor === true && this.synced.has(calendar.key);
+        let pageToken: string | undefined;
+        let pageComplete = false;
+        const visitedPageTokens = new Set<string>();
+        for (let page = 0; page < MAX_EVENT_LIST_PAGES; page += 1) {
+          const result = (await execGwsAsync([
+            'calendar',
+            'events',
+            'list',
+            '--params',
+            JSON.stringify({
+              calendarId: calendar.id,
+              timeMin,
+              timeMax,
+              ...(changesOnly ? { updatedMin: since.toISOString() } : {}),
+              singleEvents: true,
+              showDeleted: true,
+              orderBy: 'startTime',
+              maxResults: EVENT_LIST_PAGE_SIZE,
+              ...(pageToken ? { pageToken } : {}),
+            }),
+          ])) as CalendarEventList;
 
-        for (const ev of result.items ?? []) {
-          const start = this.getEventTime(ev);
-          const end = this.getEventEndTime(ev);
-          const summary = ev.summary ?? '(No title)';
-          const description = ev.description ?? '';
-          const organizer = ev.organizer?.displayName ?? ev.organizer?.email ?? 'unknown';
-          const allDay = ev.start?.date !== undefined;
-          const startMs = start ? new Date(start).getTime() : Date.now();
-          const timeZone = ev.start?.timeZone ?? result.timeZone ?? 'UTC';
-          const observation = {
-            eventId: ev.id,
-            summary,
-            description,
-            start,
-            end,
-            status: ev.status,
-            organizer: ev.organizer,
-            allDay,
-            endExclusive: allDay,
-            timeZone,
-          };
-          const version = createHash('sha256')
-            .update(JSON.stringify(observation))
-            .digest('hex')
-            .slice(0, 24);
+          for (const ev of result.items ?? []) {
+            const updatedAt = new Date(ev.updated);
+            if (!Number.isFinite(updatedAt.getTime())) {
+              throw new Error('Calendar event omitted a valid updated time');
+            }
+            const start = ev.start?.dateTime ?? ev.start?.date ?? '';
+            const end = ev.end?.dateTime ?? ev.end?.date ?? '';
+            const summary = ev.summary ?? '(No title)';
+            const description = ev.description ?? '';
+            const organizer = ev.organizer?.displayName ?? ev.organizer?.email ?? 'unknown';
+            const allDay = ev.start?.date !== undefined;
+            // Cancelled events can carry only an id; retain that cancellation observation.
+            const observation = {
+              eventId: ev.id,
+              calendarId: calendar.id,
+              calendarName: calendar.label,
+              updated: ev.updated,
+              summary,
+              description,
+              location: ev.location,
+              start,
+              end,
+              status: ev.status,
+              organizer: ev.organizer,
+              allDay,
+              endExclusive: allDay,
+              timeZone: ev.start?.timeZone ?? result.timeZone ?? 'UTC',
+            };
+            const version = createHash('sha256')
+              .update(JSON.stringify(observation))
+              .digest('hex')
+              .slice(0, 24);
+            items.push({
+              source: 'calendar',
+              sourceId: `${calendar.key === 'calendar' ? '' : `${calendar.key}:`}${ev.id}:${version}`,
+              sourceEntityId: `${calendar.key === 'calendar' ? '' : `${calendar.key}:`}${ev.id}`,
+              channel: calendar.key,
+              author: previewText(organizer),
+              content: [
+                `${previewText(summary)} | ${start} ~ ${end}`,
+                `Organizer: ${previewText(organizer)}`,
+                ...(ev.location ? [`Location: ${previewText(ev.location)}`] : []),
+                previewText(description),
+              ].join('\n'),
+              timestamp: updatedAt,
+              type: 'event',
+              sourceCursor: ev.updated,
+              metadata: { ...observation, observedAt },
+              ...(!this.synced.has(calendar.key) ? { collectOnly: true } : {}),
+            });
+          }
 
-          items.push({
-            source: 'calendar',
-            sourceId: `${ev.id}:${version}`,
-            sourceEntityId: ev.id,
-            channel: 'calendar',
-            author: organizer,
-            content: `${summary} | ${start} ~ ${end}\n${description}`,
-            timestamp: new Date(startMs),
-            type: 'event',
-            sourceCursor: observedAt,
-            metadata: {
-              ...observation,
-              observedAt,
-            },
-          });
+          if (!result.nextPageToken) {
+            pageComplete = true;
+            break;
+          }
+          if (visitedPageTokens.has(result.nextPageToken)) {
+            throw new Error('Calendar returned a repeated upstream page token');
+          }
+          visitedPageTokens.add(result.nextPageToken);
+          pageToken = result.nextPageToken;
         }
-
-        if (!result.nextPageToken) {
-          this.lastPollTime = new Date();
-          this.lastPollCount = items.length;
-          this.lastError = undefined;
-          return items;
-        }
-        if (visitedPageTokens.has(result.nextPageToken)) {
-          throw new Error('Calendar returned a repeated upstream page token');
-        }
-        visitedPageTokens.add(result.nextPageToken);
-        pageToken = result.nextPageToken;
+        if (!pageComplete)
+          throw new Error(
+            `Calendar page cap (${MAX_EVENT_LIST_PAGES}) reached; upstream snapshot is incomplete`
+          );
+        pendingSynced.add(calendar.key);
       }
-      throw new Error(
-        `Calendar page cap (${MAX_EVENT_LIST_PAGES}) reached; upstream snapshot is incomplete`
-      );
-    } catch (err) {
-      this.lastError = err instanceof Error ? err.message : String(err);
+      this.pendingSynced = pendingSynced;
+      this.lastPollTime = new Date();
+      this.lastPollCount = items.length;
+      this.lastError = undefined;
+      return items;
+    } catch (error) {
+      this.lastError = error instanceof Error ? error.message : String(error);
       this.lastPollTime = new Date();
       this.lastPollCount = 0;
-      throw err instanceof Error ? err : new Error(String(err));
+      throw error instanceof Error ? error : new Error(String(error));
     }
   }
 }

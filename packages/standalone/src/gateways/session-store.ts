@@ -19,29 +19,6 @@ const { DebugLogger } = debugLogger as {
   };
 };
 const logger = new DebugLogger('SessionStore');
-const USER_CONTEXT_HEAD_CHARS = 300;
-const MEDIA_CONTEXT_TAIL_CHARS = 1_200;
-const HOST_VERIFIED_MEDIA_MARKER = '\n\nHost-verified uploaded ';
-
-function truncateUserContext(content: string): string {
-  const mediaMarker = content.lastIndexOf(HOST_VERIFIED_MEDIA_MARKER);
-  if (mediaMarker < 0) {
-    return content.length > USER_CONTEXT_HEAD_CHARS
-      ? `${content.slice(0, USER_CONTEXT_HEAD_CHARS)}...`
-      : content;
-  }
-
-  const head = content.slice(0, mediaMarker);
-  const media = content.slice(mediaMarker + 2);
-  const boundedHead =
-    head.length > USER_CONTEXT_HEAD_CHARS ? `${head.slice(0, USER_CONTEXT_HEAD_CHARS)}...` : head;
-  const boundedMedia =
-    media.length > MEDIA_CONTEXT_TAIL_CHARS
-      ? `${media.slice(0, MEDIA_CONTEXT_TAIL_CHARS)}...`
-      : media;
-  return `${boundedHead}\n\n${boundedMedia}`;
-}
-
 // ============================================================================
 // Database row types
 // ============================================================================
@@ -344,6 +321,9 @@ export class SessionStore {
       throw new Error('Session turn cannot be finalized without one exact source reference');
     }
     const turn = matches[0]!;
+    if (turn.state === 'shared') {
+      throw new Error('Shared source message cannot acquire a second final response');
+    }
     const responseHash = createHash('sha256').update(response, 'utf8').digest('hex');
     if (turn.state === 'final') {
       if (
@@ -368,6 +348,50 @@ export class SessionStore {
     return result.changes > 0;
   }
 
+  /** Preserve a later user input while linking it to the one reply owner. */
+  finalizeSharedTurn(
+    sessionId: string,
+    sourceMessageRef: string,
+    replySourceMessageRef: string
+  ): boolean {
+    const session = this.getById(sessionId);
+    if (!session) return false;
+    if (!replySourceMessageRef || replySourceMessageRef === sourceMessageRef) {
+      throw new Error('Shared source message needs another reply owner');
+    }
+    let history: ConversationTurn[];
+    try {
+      history = JSON.parse(session.context) as ConversationTurn[];
+    } catch (error) {
+      throw new Error('Session context is malformed JSON', { cause: error });
+    }
+    const matches = history.filter((turn) => turn.sourceMessageRef === sourceMessageRef);
+    if (matches.length !== 1) throw new Error('Shared source message requires one exact input');
+    const turn = matches[0]!;
+    if (turn.state === 'shared') {
+      if (turn.sharedReplyRef !== replySourceMessageRef) {
+        throw new Error('Shared source message replay conflicts with its reply owner');
+      }
+      return true;
+    }
+    const targets = history.filter(
+      (candidate) => candidate.sourceMessageRef === replySourceMessageRef
+    );
+    if (targets.length !== 1) {
+      throw new Error('Shared source message requires one exact reply owner in this session');
+    }
+    if (turn.state === 'final' || turn.bot !== '' || turn.resultObservationRef) {
+      throw new Error('Shared source message conflicts with a prepared response');
+    }
+    turn.state = 'shared';
+    turn.sharedReplyRef = replySourceMessageRef;
+    turn.timestamp = Date.now();
+    const result = this.db
+      .prepare('UPDATE messenger_sessions SET context = ?, last_active = ? WHERE id = ?')
+      .run(JSON.stringify(history), Date.now(), sessionId);
+    return result.changes > 0;
+  }
+
   /**
    * Flush streaming response to the last incomplete turn.
    * Called periodically during streaming to persist partial assistant responses.
@@ -375,7 +399,8 @@ export class SessionStore {
   flushStreamingResponse(
     sessionId: string,
     accumulatedText: string,
-    resultObservationRef?: string
+    resultObservationRef?: string,
+    sourceMessageRef?: string
   ): boolean {
     const session = this.getById(sessionId);
     if (!session) {
@@ -389,16 +414,24 @@ export class SessionStore {
       history = [];
     }
 
-    const lastTurn = history[history.length - 1];
-    if (!lastTurn) {
+    const matches = sourceMessageRef
+      ? history.filter((turn) => turn.sourceMessageRef === sourceMessageRef)
+      : [];
+    if (sourceMessageRef && matches.length !== 1) {
+      throw new Error('Stream response requires one exact source message reference');
+    }
+    const targetTurn = sourceMessageRef ? matches[0] : history[history.length - 1];
+    if (!targetTurn) {
       return false;
     }
+    if (targetTurn.state === 'final' || targetTurn.state === 'shared') {
+      throw new Error('Final source message cannot be changed by a stream response');
+    }
 
-    // Update the bot field with accumulated streaming text
-    lastTurn.bot = accumulatedText;
-    lastTurn.timestamp = Date.now();
+    targetTurn.bot = accumulatedText;
+    targetTurn.timestamp = Date.now();
     if (resultObservationRef) {
-      lastTurn.resultObservationRef = resultObservationRef;
+      targetTurn.resultObservationRef = resultObservationRef;
     }
 
     const result = this.db
@@ -408,8 +441,8 @@ export class SessionStore {
     return result.changes > 0;
   }
 
-  /** Remove the most recent uncommitted turn after an agent failure. */
-  discardIncompleteTurn(sessionId: string): boolean {
+  /** Remove only the failed turn; legacy callers without a source ref use the last turn. */
+  discardIncompleteTurn(sessionId: string, sourceMessageRef?: string): boolean {
     const session = this.getById(sessionId);
     if (!session) {
       return false;
@@ -423,7 +456,19 @@ export class SessionStore {
     if (history.length === 0) {
       return false;
     }
-    history.pop();
+    const matchingIndices = sourceMessageRef
+      ? history.flatMap((turn, index) =>
+          turn.sourceMessageRef === sourceMessageRef ? [index] : []
+        )
+      : [history.length - 1];
+    if (sourceMessageRef && matchingIndices.length !== 1) {
+      throw new Error('Discard requires one exact source message reference');
+    }
+    const index = matchingIndices[0]!;
+    if (history[index]?.state === 'final' || history[index]?.state === 'shared') {
+      throw new Error('Final source message cannot be discarded');
+    }
+    history.splice(index, 1);
     const result = this.db
       .prepare('UPDATE messenger_sessions SET context = ?, last_active = ? WHERE id = ?')
       .run(JSON.stringify(history), Date.now(), sessionId);
@@ -491,6 +536,61 @@ export class SessionStore {
   /**
    * List all sessions for a source
    */
+  /**
+   * What this store holds, as the dashboard asks it: how many sessions per
+   * source, and the ten most recently active channels.
+   *
+   * The viewer used to open a second connection to this database by path and
+   * run these two queries itself. The store that owns the table answers them.
+   */
+  stats(): {
+    total: number;
+    bySource: Record<string, number>;
+    channels: Array<{
+      source: string;
+      channelId: string;
+      channelName: string | null;
+      lastActive: number;
+      messageCount: number;
+    }>;
+  } {
+    const bySourceRows = this.db
+      .prepare('SELECT source, COUNT(*) as count FROM messenger_sessions GROUP BY source')
+      .all() as Array<{ source: string; count: number }>;
+    const bySource: Record<string, number> = {};
+    let total = 0;
+    for (const row of bySourceRows) {
+      bySource[row.source] = row.count;
+      total += row.count;
+    }
+    const channelRows = this.db
+      .prepare(
+        `SELECT source, channel_id, channel_name, last_active,
+                json_array_length(context) as message_count
+         FROM messenger_sessions
+         ORDER BY last_active DESC
+         LIMIT 10`
+      )
+      .all() as Array<{
+      source: string;
+      channel_id: string;
+      channel_name: string | null;
+      last_active: number;
+      message_count: number | null;
+    }>;
+    return {
+      total,
+      bySource,
+      channels: channelRows.map((row) => ({
+        source: row.source,
+        channelId: row.channel_id,
+        channelName: row.channel_name || null,
+        lastActive: row.last_active,
+        messageCount: row.message_count || 0,
+      })),
+    };
+  }
+
   listSessions(source?: MessageSource): Session[] {
     let stmt;
     if (source) {
@@ -548,44 +648,6 @@ export class SessionStore {
     }
 
     return row ? this.rowToSession(row) : null;
-  }
-
-  /**
-   * Format context as readable string for system prompt.
-   * Only includes the most recent turns to avoid token bloat.
-   */
-  formatContextForPrompt(sessionId: string, maxTurnsToInject: number = 5): string {
-    // TG-05: provisional turns are uncommitted - a fresh session must never
-    // restore them. Legacy turns without a state are final.
-    const history = this.getHistory(sessionId).filter((turn) => turn.state !== 'provisional');
-
-    if (history.length === 0) {
-      return 'New conversation';
-    }
-
-    // Only inject the most recent N turns to keep token usage reasonable
-    const recentTurns = history.slice(-maxTurnsToInject);
-
-    // Truncate long messages when injecting to save tokens
-    // User messages: 300 chars, Bot responses: 500 chars
-    // Bot responses are aggressively truncated because they often contain
-    // tool_use blocks, verbose metadata (||⏱️ N turns||), and related decisions
-    return recentTurns
-      .map((turn) => {
-        const userMsg = truncateUserContext(turn.user);
-        // Strip tool_use noise and metadata before truncating
-        let botMsg = turn.bot
-          .replace(/\|\|[^|]*\|\|/g, '') // Remove ||⏱️ N turns|| markers
-          .replace(/```tool_call[\s\S]*?```/g, '[tool used]') // Collapse tool_call blocks
-          .replace(/## Related decisions[\s\S]*$/m, '') // Remove injected decisions footer
-          .trim();
-        botMsg = botMsg.length > 500 ? botMsg.slice(0, 500) + '...' : botMsg;
-        const refs = [turn.sourceObservationRef, turn.resultObservationRef].filter(Boolean);
-        return `User: ${userMsg}\nAssistant: ${botMsg}${
-          refs.length > 0 ? `\nCaptured observations: ${refs.join(', ')}` : ''
-        }`;
-      })
-      .join('\n\n');
   }
 
   /**

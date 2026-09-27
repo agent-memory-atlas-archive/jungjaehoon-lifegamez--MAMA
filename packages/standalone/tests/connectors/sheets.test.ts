@@ -1,31 +1,22 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { SheetsConnector } from '../../src/connectors/sheets/index.js';
 import type { ConnectorConfig } from '../../src/connectors/framework/types.js';
 
 // Mock child_process
-vi.mock('child_process', () => ({
+vi.mock('node:child_process', () => ({
   execSync: vi.fn(),
+  execFile: vi.fn(),
 }));
 
-// Mock node:fs to prevent snapshot loading from real filesystem
-vi.mock('node:fs', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:fs')>();
-  return {
-    ...actual,
-    existsSync: vi.fn((p: string) => {
-      // Block snapshot file access in tests
-      if (typeof p === 'string' && p.includes('snapshot.json')) return false;
-      return actual.existsSync(p);
-    }),
-    readFileSync: actual.readFileSync,
-    writeFileSync: vi.fn(),
-    mkdirSync: vi.fn(),
-  };
-});
-
-import { execSync } from 'child_process';
+import { execFile, execSync } from 'node:child_process';
 const mockExecSync = vi.mocked(execSync);
+const mockExecFile = vi.mocked(execFile);
+const roots: string[] = [];
+let snapshotPath = '';
 
 function makeConfig(overrides: Partial<ConnectorConfig> = {}): ConnectorConfig {
   return {
@@ -48,31 +39,50 @@ function makeConfig(overrides: Partial<ConnectorConfig> = {}): ConnectorConfig {
   };
 }
 
+function makeConnector(config: ConnectorConfig = makeConfig()): SheetsConnector {
+  return new SheetsConnector(config, snapshotPath);
+}
+
 function makeSheetValues(rows: string[][]): string {
   return JSON.stringify({ values: rows });
 }
 
 describe('SheetsConnector', () => {
   beforeEach(() => {
+    const root = mkdtempSync(join(tmpdir(), 'sheets-connector-test-'));
+    roots.push(root);
+    snapshotPath = join(root, 'snapshot.json');
     vi.clearAllMocks();
     mockExecSync.mockReturnValue('' as unknown as ReturnType<typeof execSync>);
+    mockExecFile.mockImplementation(((_file, args, _options, callback) => {
+      try {
+        callback(null, String(mockExecSync(`gws ${args.join(' ')}`)), '');
+      } catch (error) {
+        callback(error instanceof Error ? error : new Error(String(error)), '', '');
+      }
+      return {} as ReturnType<typeof execFile>;
+    }) as typeof execFile);
+  });
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   });
 
   describe('name and type', () => {
     it('has name "sheets"', () => {
-      const connector = new SheetsConnector(makeConfig());
+      const connector = makeConnector(makeConfig());
       expect(connector.name).toBe('sheets');
     });
 
     it('has type "api"', () => {
-      const connector = new SheetsConnector(makeConfig());
+      const connector = makeConnector(makeConfig());
       expect(connector.type).toBe('api');
     });
   });
 
   describe('getAuthRequirements', () => {
     it('returns cli auth requirement for gws', () => {
-      const connector = new SheetsConnector(makeConfig());
+      const connector = makeConnector(makeConfig());
       const reqs = connector.getAuthRequirements();
       expect(reqs).toHaveLength(1);
       expect(reqs[0]?.type).toBe('cli');
@@ -84,7 +94,7 @@ describe('SheetsConnector', () => {
   describe('init', () => {
     it('initializes when gws CLI is available', async () => {
       mockExecSync.mockReturnValue('gws version 1.0.0' as unknown as ReturnType<typeof execSync>);
-      const connector = new SheetsConnector(makeConfig());
+      const connector = makeConnector(makeConfig());
       await expect(connector.init()).resolves.toBeUndefined();
     });
 
@@ -92,7 +102,7 @@ describe('SheetsConnector', () => {
       mockExecSync.mockImplementation(() => {
         throw new Error('command not found: gws');
       });
-      const connector = new SheetsConnector(makeConfig());
+      const connector = makeConnector(makeConfig());
       await expect(connector.init()).rejects.toThrow(/gws/i);
     });
   });
@@ -100,7 +110,7 @@ describe('SheetsConnector', () => {
   describe('authenticate', () => {
     it('returns true when gws auth status succeeds', async () => {
       mockExecSync.mockReturnValue('' as unknown as ReturnType<typeof execSync>);
-      const connector = new SheetsConnector(makeConfig());
+      const connector = makeConnector(makeConfig());
       await connector.init();
       expect(await connector.authenticate()).toBe(true);
     });
@@ -111,7 +121,7 @@ describe('SheetsConnector', () => {
         .mockImplementationOnce(() => {
           throw new Error('not authenticated');
         });
-      const connector = new SheetsConnector(makeConfig());
+      const connector = makeConnector(makeConfig());
       await connector.init();
       expect(await connector.authenticate()).toBe(false);
     });
@@ -124,7 +134,7 @@ describe('SheetsConnector', () => {
         .mockReturnValueOnce(
           makeSheetValues([['Name', 'Status', 'Owner']]) as unknown as ReturnType<typeof execSync>
         ); // only header row
-      const connector = new SheetsConnector(makeConfig());
+      const connector = makeConnector(makeConfig());
       await connector.init();
       const items = await connector.poll(new Date(0));
       expect(items).toEqual([]);
@@ -134,7 +144,7 @@ describe('SheetsConnector', () => {
       mockExecSync
         .mockReturnValueOnce('' as unknown as ReturnType<typeof execSync>)
         .mockReturnValueOnce(JSON.stringify({}) as unknown as ReturnType<typeof execSync>);
-      const connector = new SheetsConnector(makeConfig());
+      const connector = makeConnector(makeConfig());
       await connector.init();
       const items = await connector.poll(new Date(0));
       expect(items).toEqual([]);
@@ -143,13 +153,13 @@ describe('SheetsConnector', () => {
     it('emits spreadsheet_row items for all rows on first poll', async () => {
       const rows = [
         ['Task', 'Status', 'Owner'],
-        ['Fix bug', 'In Progress', 'Alice'],
-        ['Write docs', 'Todo', 'Bob'],
+        ['Fixture task one', 'In Progress', 'fixture-person-1'],
+        ['Fixture task two', 'Todo', 'fixture-person-2'],
       ];
       mockExecSync
         .mockReturnValueOnce('' as unknown as ReturnType<typeof execSync>)
         .mockReturnValueOnce(makeSheetValues(rows) as unknown as ReturnType<typeof execSync>);
-      const connector = new SheetsConnector(makeConfig());
+      const connector = makeConnector(makeConfig());
       await connector.init();
       const items = await connector.poll(new Date(0));
       expect(items).toHaveLength(2);
@@ -165,7 +175,7 @@ describe('SheetsConnector', () => {
       mockExecSync
         .mockReturnValueOnce('' as unknown as ReturnType<typeof execSync>)
         .mockReturnValueOnce(makeSheetValues(rows) as unknown as ReturnType<typeof execSync>);
-      const connector = new SheetsConnector(makeConfig());
+      const connector = makeConnector(makeConfig());
       await connector.init();
       const items = await connector.poll(new Date(0));
       expect(items[0]?.source).toBe('sheets');
@@ -179,24 +189,26 @@ describe('SheetsConnector', () => {
       mockExecSync
         .mockReturnValueOnce('' as unknown as ReturnType<typeof execSync>)
         .mockReturnValueOnce(makeSheetValues(rows) as unknown as ReturnType<typeof execSync>);
-      const connector = new SheetsConnector(makeConfig());
+      const connector = makeConnector(makeConfig());
       await connector.init();
       const items = await connector.poll(new Date(0));
-      expect(items[0]?.sourceId).toBe('sheet-abc123:TASK-001');
+      expect(items[0]?.sourceId).toBe('sheet-abc123:tasks:TASK-001');
     });
 
     it('formats content as "Col1: val1 | Col2: val2 | ..."', async () => {
       const rows = [
         ['Task', 'Status', 'Owner'],
-        ['Fix bug', 'In Progress', 'Alice'],
+        ['Fixture task one', 'In Progress', 'fixture-person-1'],
       ];
       mockExecSync
         .mockReturnValueOnce('' as unknown as ReturnType<typeof execSync>)
         .mockReturnValueOnce(makeSheetValues(rows) as unknown as ReturnType<typeof execSync>);
-      const connector = new SheetsConnector(makeConfig());
+      const connector = makeConnector(makeConfig());
       await connector.init();
       const items = await connector.poll(new Date(0));
-      expect(items[0]?.content).toBe('Task: Fix bug | Status: In Progress | Owner: Alice');
+      expect(items[0]?.content).toBe(
+        'Task: Fixture task one | Status: In Progress | Owner: fixture-person-1'
+      );
     });
 
     it('sets author to "spreadsheet"', async () => {
@@ -204,7 +216,7 @@ describe('SheetsConnector', () => {
       mockExecSync
         .mockReturnValueOnce('' as unknown as ReturnType<typeof execSync>)
         .mockReturnValueOnce(makeSheetValues(rows) as unknown as ReturnType<typeof execSync>);
-      const connector = new SheetsConnector(makeConfig());
+      const connector = makeConnector(makeConfig());
       await connector.init();
       const items = await connector.poll(new Date(0));
       expect(items[0]?.author).toBe('spreadsheet');
@@ -215,7 +227,7 @@ describe('SheetsConnector', () => {
       mockExecSync
         .mockReturnValueOnce('' as unknown as ReturnType<typeof execSync>)
         .mockReturnValueOnce(makeSheetValues(rows) as unknown as ReturnType<typeof execSync>);
-      const connector = new SheetsConnector(makeConfig());
+      const connector = makeConnector(makeConfig());
       await connector.init();
       const items = await connector.poll(new Date(0));
       expect(items[0]?.channel).toBe('tasks');
@@ -238,12 +250,12 @@ describe('SheetsConnector', () => {
         .mockReturnValueOnce(
           makeSheetValues(updatedRows) as unknown as ReturnType<typeof execSync>
         ); // second poll
-      const connector = new SheetsConnector(makeConfig());
+      const connector = makeConnector(makeConfig());
       await connector.init();
       await connector.poll(new Date(0)); // first poll — captures snapshot
       const items = await connector.poll(new Date(0)); // second poll
       expect(items).toHaveLength(1);
-      expect(items[0]?.sourceId).toBe('sheet-abc123:TASK-001');
+      expect(items[0]?.sourceId).toBe('sheet-abc123:tasks:TASK-001');
       expect(items[0]?.content).toBe('Task: TASK-001 | Status: In Progress');
     });
 
@@ -263,27 +275,26 @@ describe('SheetsConnector', () => {
         .mockReturnValueOnce(
           makeSheetValues(updatedRows) as unknown as ReturnType<typeof execSync>
         );
-      const connector = new SheetsConnector(makeConfig());
+      const connector = makeConnector(makeConfig());
       await connector.init();
       await connector.poll(new Date(0));
       const items = await connector.poll(new Date(0));
       expect(items).toHaveLength(1);
-      expect(items[0]?.sourceId).toBe('sheet-abc123:TASK-002');
+      expect(items[0]?.sourceId).toBe('sheet-abc123:tasks:TASK-002');
     });
 
-    it('skips channels without spreadsheetId', async () => {
+    it('fails visibly when a configured channel omits spreadsheetId or sheetRange', async () => {
       const config = makeConfig({
         channels: {
           'no-sheet': { role: 'truth', name: 'no-sheet' },
         },
       });
       mockExecSync.mockReturnValueOnce('' as unknown as ReturnType<typeof execSync>);
-      const connector = new SheetsConnector(config);
+      const connector = makeConnector(config);
       await connector.init();
-      const items = await connector.poll(new Date(0));
-      expect(items).toEqual([]);
-      // Should not call gws sheets
-      expect(mockExecSync).toHaveBeenCalledTimes(1); // only init
+      await expect(connector.poll(new Date(0))).rejects.toThrow(
+        /Sheets poll failed for 1 of 1 configured sheets; last error: channel no-sheet requires spreadsheetId and sheetRange/
+      );
     });
 
     it('skips channels with role "ignore"', async () => {
@@ -298,7 +309,7 @@ describe('SheetsConnector', () => {
         },
       });
       mockExecSync.mockReturnValueOnce('' as unknown as ReturnType<typeof execSync>);
-      const connector = new SheetsConnector(config);
+      const connector = makeConnector(config);
       await connector.init();
       const items = await connector.poll(new Date(0));
       expect(items).toEqual([]);
@@ -313,10 +324,183 @@ describe('SheetsConnector', () => {
       mockExecSync
         .mockReturnValueOnce('' as unknown as ReturnType<typeof execSync>)
         .mockReturnValueOnce(makeSheetValues(rows) as unknown as ReturnType<typeof execSync>);
-      const connector = new SheetsConnector(makeConfig());
+      const connector = makeConnector(makeConfig());
       await connector.init();
       const items = await connector.poll(new Date(0));
       expect(items).toEqual([]);
+    });
+
+    it('reads separate header and data ranges through argv calls', async () => {
+      const config = makeConfig({
+        channels: {
+          sheet: {
+            role: 'reference',
+            spreadsheetId: 'spreadsheet-fixture',
+            sheetRange: 'Records!A1:B1',
+            dataRange: 'Records!A2:B',
+          },
+        },
+      });
+      mockExecSync
+        .mockReturnValueOnce('gws version 1.0.0' as unknown as ReturnType<typeof execSync>)
+        .mockReturnValueOnce(
+          makeSheetValues([['Key', 'State']]) as unknown as ReturnType<typeof execSync>
+        )
+        .mockReturnValueOnce(
+          makeSheetValues([['ROW-001', 'Open']]) as unknown as ReturnType<typeof execSync>
+        );
+      const connector = makeConnector(config);
+      await connector.init();
+      const items = await connector.poll(new Date(0));
+
+      expect(items[0]?.sourceId).toBe('spreadsheet-fixture:sheet:ROW-001');
+      expect(mockExecFile.mock.calls.every(([, args]) => Array.isArray(args))).toBe(true);
+      expect(mockExecFile.mock.calls.some(([, args]) => args.includes('sheets'))).toBe(true);
+    });
+
+    it('fails instead of collapsing duplicate first nonempty row keys', async () => {
+      mockExecSync
+        .mockReturnValueOnce('gws version 1.0.0' as unknown as ReturnType<typeof execSync>)
+        .mockReturnValueOnce(
+          makeSheetValues([
+            ['Key', 'State'],
+            ['ROW-001', 'Open'],
+            ['', 'ROW-001'],
+          ]) as unknown as ReturnType<typeof execSync>
+        );
+      const connector = makeConnector();
+      await connector.init();
+
+      await expect(connector.poll(new Date(0))).rejects.toThrow(/duplicate row identity ROW-001/);
+    });
+
+    it('keeps equal row keys from two configured channels as separate entities', async () => {
+      const values = makeSheetValues([
+        ['Key', 'State'],
+        ['ROW-001', 'Open'],
+      ]);
+      const config = makeConfig({
+        channels: {
+          first: { role: 'truth', spreadsheetId: 'shared-sheet-fixture', sheetRange: 'First!A:B' },
+          second: {
+            role: 'reference',
+            spreadsheetId: 'shared-sheet-fixture',
+            sheetRange: 'Second!A:B',
+          },
+        },
+      });
+      mockExecSync
+        .mockReturnValueOnce('gws version 1.0.0' as unknown as ReturnType<typeof execSync>)
+        .mockReturnValueOnce(values as unknown as ReturnType<typeof execSync>)
+        .mockReturnValueOnce(values as unknown as ReturnType<typeof execSync>);
+      const connector = makeConnector(config);
+      await connector.init();
+      const items = await connector.poll(new Date(0));
+
+      expect(items.map((item) => item.sourceId)).toEqual([
+        'shared-sheet-fixture:first:ROW-001',
+        'shared-sheet-fixture:second:ROW-001',
+      ]);
+    });
+
+    it('emits a deletion revision when a row disappears', async () => {
+      mockExecSync
+        .mockReturnValueOnce('gws version 1.0.0' as unknown as ReturnType<typeof execSync>)
+        .mockReturnValueOnce(
+          makeSheetValues([
+            ['Key', 'State'],
+            ['ROW-001', 'Open'],
+          ]) as unknown as ReturnType<typeof execSync>
+        )
+        .mockReturnValueOnce(
+          makeSheetValues([['Key', 'State']]) as unknown as ReturnType<typeof execSync>
+        );
+      const connector = makeConnector();
+      await connector.init();
+      await connector.poll(new Date(0));
+      const items = await connector.poll(new Date(0));
+
+      expect(items).toHaveLength(1);
+      expect(items[0]?.sourceId).toBe('sheet-abc123:tasks:ROW-001');
+      expect(items[0]?.metadata?.deleted).toBe(true);
+      expect(items[0]?.content).toContain('Deleted row ROW-001');
+    });
+
+    it('keeps deletion evidence when the provider omits values for an empty sheet', async () => {
+      mockExecSync
+        .mockReturnValueOnce('gws version 1.0.0' as unknown as ReturnType<typeof execSync>)
+        .mockReturnValueOnce(
+          makeSheetValues([
+            ['Key', 'State'],
+            ['ROW-001', 'Open'],
+          ]) as unknown as ReturnType<typeof execSync>
+        )
+        .mockReturnValueOnce(JSON.stringify({}) as unknown as ReturnType<typeof execSync>);
+      const connector = makeConnector();
+      await connector.init();
+      await connector.poll(new Date(0));
+      const items = await connector.poll(new Date(0));
+
+      expect(items).toHaveLength(1);
+      expect(items[0]?.metadata?.deleted).toBe(true);
+      expect(items[0]?.content).toContain('Deleted row ROW-001');
+    });
+
+    it('leaves the row snapshot unchanged when the handoff is aborted', async () => {
+      const values = makeSheetValues([
+        ['Key', 'State'],
+        ['ROW-001', 'Open'],
+      ]);
+      mockExecSync
+        .mockReturnValueOnce('gws version 1.0.0' as unknown as ReturnType<typeof execSync>)
+        .mockReturnValueOnce(values as unknown as ReturnType<typeof execSync>)
+        .mockReturnValueOnce(values as unknown as ReturnType<typeof execSync>);
+      const connector = makeConnector();
+      await connector.init();
+      connector.beginPollHandoff();
+      expect(await connector.poll(new Date(0))).toHaveLength(1);
+      connector.abortPollHandoff();
+      expect(await connector.poll(new Date(0))).toHaveLength(1);
+    });
+
+    it('restores the committed snapshot after connector restart', async () => {
+      const values = makeSheetValues([
+        ['Key', 'State'],
+        ['ROW-001', 'Open'],
+      ]);
+      mockExecSync
+        .mockReturnValueOnce('gws version 1.0.0' as unknown as ReturnType<typeof execSync>)
+        .mockReturnValueOnce(values as unknown as ReturnType<typeof execSync>);
+      const first = makeConnector();
+      await first.init();
+      await first.poll(new Date(0));
+      await first.dispose();
+
+      mockExecSync
+        .mockReturnValueOnce('gws version 1.0.0' as unknown as ReturnType<typeof execSync>)
+        .mockReturnValueOnce(values as unknown as ReturnType<typeof execSync>);
+      const second = makeConnector();
+      await second.init();
+      expect(await second.poll(new Date(0))).toEqual([]);
+    });
+
+    it('uses poll time as the source timestamp', async () => {
+      const before = Date.now();
+      mockExecSync
+        .mockReturnValueOnce('gws version 1.0.0' as unknown as ReturnType<typeof execSync>)
+        .mockReturnValueOnce(
+          makeSheetValues([
+            ['Key', 'State'],
+            ['ROW-001', 'Open'],
+          ]) as unknown as ReturnType<typeof execSync>
+        );
+      const connector = makeConnector();
+      await connector.init();
+      const items = await connector.poll(new Date(0));
+      const after = Date.now();
+
+      expect(items[0]!.timestamp.getTime()).toBeGreaterThanOrEqual(before);
+      expect(items[0]!.timestamp.getTime()).toBeLessThanOrEqual(after);
     });
 
     it('handles "Using keyring backend:" prefix before JSON', async () => {
@@ -325,7 +509,7 @@ describe('SheetsConnector', () => {
       mockExecSync
         .mockReturnValueOnce('' as unknown as ReturnType<typeof execSync>)
         .mockReturnValueOnce(prefixed as unknown as ReturnType<typeof execSync>);
-      const connector = new SheetsConnector(makeConfig());
+      const connector = makeConnector(makeConfig());
       await connector.init();
       const items = await connector.poll(new Date(0));
       expect(items).toHaveLength(1);
@@ -337,7 +521,7 @@ describe('SheetsConnector', () => {
       mockExecSync
         .mockReturnValueOnce('' as unknown as ReturnType<typeof execSync>)
         .mockReturnValueOnce(makeSheetValues([['Task']]) as unknown as ReturnType<typeof execSync>);
-      const connector = new SheetsConnector(makeConfig());
+      const connector = makeConnector(makeConfig());
       await connector.init();
       await connector.poll(new Date(0));
       const health = await connector.healthCheck();
@@ -356,7 +540,7 @@ describe('SheetsConnector', () => {
         .mockReturnValueOnce('' as unknown as ReturnType<typeof execSync>)
         .mockReturnValueOnce(makeSheetValues(rows) as unknown as ReturnType<typeof execSync>)
         .mockReturnValueOnce(makeSheetValues(rows) as unknown as ReturnType<typeof execSync>);
-      const connector = new SheetsConnector(makeConfig());
+      const connector = makeConnector(makeConfig());
       await connector.init();
       await connector.poll(new Date(0)); // captures snapshot
       await connector.dispose();

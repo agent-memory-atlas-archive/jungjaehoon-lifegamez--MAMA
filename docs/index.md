@@ -1,153 +1,36 @@
-# MAMA Documentation
+---
+title: MAMA
+nav_order: 1
+---
 
-**Navigation Hub**
+# MAMA
 
-MAMA is a memory store that runs on your own computer, and an AI assistant that works from it. It
-keeps what flows through your connected messengers, mail, documents, and calendars as-is, and the
-assistant reads that record to tell you what changed and do what you ask.
+MAMA keeps your work history on your computer and gives you one place to ask about it. Connect
+your work sources, ask questions in Telegram, and get reports with the records behind them.
+MAMA also keeps decisions and checkpoints available between Claude Code sessions.
+
+MAMA runs with Claude or Codex. Your records stay on your computer; connected services and the
+model receive the information needed for each task.
 
 ## Start here
 
-1. [Getting Started](tutorials/getting-started.md) - First-time setup and basic usage
-2. [Standalone Setup](guides/standalone-setup.md) - Run the always-on assistant
-3. [Gateway Configuration](guides/gateway-config.md) - Connect Telegram, Slack, Discord
-4. [Correcting procedures](guides/procedure-corrections.md) - Turn a correction into a standing rule
-5. [Security](guides/security.md) - Boundaries, allow-lists, and remote access
+- [Your first day with MAMA](start/tutorial.md) walks through setup and a first owner conversation.
+- [Owner setup](start/owner-setup.md) explains terminal onboarding and the local daemon.
+- [Development memory](start/claude-code-plugin.md) sets up the Claude Code plugin and MCP server.
 
-## Quick Links
+## Guides
 
-- **[Main README](../README.md)** - Quick overview, installation, and key features
-- **[Work Agent](explanation/work-agent.md)** - Product identity, human team, Cases, and artifacts
-- **[Normative v1 Design](development/2026-08-26-one-front-team-work-agent-design.md)** - One-front team work-agent contract and roadmap boundary
-- **[Phase 2b Access Plan](development/2026-08-26-phase2b-human-team-access-plan.md)** - Human principal grants and effective-scope implementation plan
-- **[GitHub Repository](https://github.com/jungjaehoon-lifegamez/MAMA)** - Source code and issues
+Read about [sources](guides/connectors.md), [messengers](guides/messengers.md),
+[reports and the board](guides/reports-and-board.md), [corrections](guides/corrections-and-learning.md),
+and [security](guides/security.md).
 
----
+## Learn how MAMA works
 
-## Documentation Structure
+[Architecture](explanation/architecture.md), [memory and search](explanation/memory-and-search.md),
+and [the owner conversation](explanation/owner-loop.md) describe the main parts.
 
-This documentation follows the [Diátaxis framework](https://diataxis.fr/) for clarity and ease of navigation:
+## Reference and development
 
-### 📚 [Tutorials](tutorials/) - Learning-Oriented
-
-_Step-by-step lessons for beginners_
-
-- [Getting Started](tutorials/getting-started.md) - First-time setup and basic usage
-- [First Decision](tutorials/first-decision.md) - Save and search your first decision
-- [Hook Setup](tutorials/hook-setup.md) - Configure automatic context injection
-
-### 🛠️ [Guides](guides/) - Task-Oriented
-
-_Step-by-step instructions for specific tasks_
-
-- [Installation Guide](guides/installation.md) - Complete installation process
-- [Standalone Setup](guides/standalone-setup.md) - Set up always-on AI agent
-- [Gateway Configuration](guides/gateway-config.md) - Configure Discord, Slack, Telegram bots
-- [Troubleshooting](guides/troubleshooting.md) - Common issues and solutions
-- [Standalone Troubleshooting](guides/standalone-troubleshooting.md) - Fix standalone agent issues
-- [Configuration](guides/configuration.md) - Configuration options and setup
-- [Performance Tuning](guides/performance-tuning.md) - Optimize MAMA performance
-- [Codex Backend](guides/codex-backend.md) - Codex app-server setup and managed runtime behavior
-- [Cline Backend](guides/cline-backend.md) - Cline CLI and DeepSeek backend setup
-- [Internal Worker Orchestration](guides/multi-agent-advanced.md) - Advanced/legacy worker and persona configuration; not the v1 team model
-- [Code-Act Sandbox](guides/code-act-sandbox.md) - QuickJS/WASM isolated code execution
-
-### 📖 [Reference](reference/) - Information-Oriented
-
-_Technical specifications and API documentation_
-
-- [Commands Reference](reference/commands.md) - Plugin commands and the self-teaching `mama` CLI
-- [MCP Tool API](reference/api.md) - MCP tool interfaces
-- [Hooks Reference](reference/hooks.md) - Hook configuration
-- [Configuration Options](reference/configuration-options.md) - All config settings
-
-### 💡 [Explanation](explanation/) - Understanding-Oriented
-
-_Conceptual explanations and design decisions_
-
-- [Architecture](explanation/architecture.md) - System architecture overview
-- [MAMA OS](explanation/mama-os.md) - Messenger runtime, operational API, and background work
-- [Work Agent](explanation/work-agent.md) - Why MAMA has one front, scoped Cases, and domain capabilities
-- [Worker Tool Tiers](explanation/tier-system.md) - Which native tools a worker subprocess may use
-- [Decision Graph](explanation/decision-graph.md) - Decision evolution tracking
-- [Semantic Search](explanation/semantic-search.md) - How semantic search works
-- [Data Privacy](explanation/data-privacy.md) - Privacy-first design principles
-- [Performance](explanation/performance.md) - Performance characteristics
-
-### 👨‍💻 [Development](development/) - For Contributors
-
-_Contributing, testing, and development guidelines_
-
-- [Contributing Guide](development/contributing.md) - How to contribute
-- [Developer Playbook](development/developer-playbook.md) - Architecture and coding standards
-- [Testing Guide](development/testing.md) - Test suite and testing practices
-- [Code Standards](development/code-standards.md) - Coding conventions
-- [Release Process](development/release-process.md) - How releases are created
-
----
-
-## User Journeys
-
-### 🆕 I'm a New User
-
-1. Start with [Getting Started Tutorial](tutorials/getting-started.md)
-2. Save your [First Decision](tutorials/first-decision.md)
-3. Optional: Set up [Always-On Context](tutorials/hook-setup.md)
-
-### 🔧 I Need to Fix Something
-
-1. Check [Troubleshooting Guide](guides/troubleshooting.md)
-2. Review [Configuration Guide](guides/configuration.md)
-
-### 📚 I Want to Understand How It Works
-
-1. Read [Architecture Explanation](explanation/architecture.md)
-2. Understand [Decision Graph](explanation/decision-graph.md) concept
-3. Learn about [Semantic Search](explanation/semantic-search.md)
-4. Review [Data Privacy](explanation/data-privacy.md) principles
-
-### 👩‍💻 I Want to Contribute
-
-1. Read [Contributing Guide](development/contributing.md)
-2. Study [Developer Playbook](development/developer-playbook.md)
-3. Review [Code Standards](development/code-standards.md)
-4. Check [Testing Guide](development/testing.md)
-
-### 🤖 I Want to Run an Always-On AI Agent
-
-1. Read [MAMA OS Explanation](explanation/mama-os.md)
-2. Follow [Standalone Setup Guide](guides/standalone-setup.md)
-3. Configure [Gateway Integrations](guides/gateway-config.md)
-4. Troubleshoot with [Standalone Troubleshooting](guides/standalone-troubleshooting.md)
-
-### 🧪 I Need Internal Workers or Scheduled Work
-
-1. Read [Internal Worker Orchestration](guides/multi-agent-advanced.md) - advanced/legacy process and tool-tier behavior
-2. Set up [Codex Backend](guides/codex-backend.md) for the runtime backend
-3. Learn about [Code-Act Sandbox](guides/code-act-sandbox.md) for bounded domain composition
-4. Understand the workorder pipeline in [Architecture](explanation/architecture.md) - it runs
-   scheduled board, wiki and memory work
-
-### 🛠️ I Need to Operate a Live Install
-
-- [Entity Substrate Runbook](operations/entity-substrate-runbook.md)
-- [Channel Key Backfill](operations/channel-key-backfill.md) - repairing channels stored under
-  a display name instead of their upstream id
-
-### 📖 I Need API/Command Reference
-
-- [Commands Reference](reference/commands.md) - Plugin commands and all `mama` CLI setup actions
-- [MCP Tool API](reference/api.md) - Tool interfaces
-- [Configuration Options](reference/configuration-options.md) - All settings
-
----
-
-## Support
-
-- **Issues:** [GitHub Issues](https://github.com/jungjaehoon-lifegamez/MAMA/issues)
-- **Discussions:** [GitHub Discussions](https://github.com/jungjaehoon-lifegamez/MAMA/discussions)
-- **Documentation:** You're here!
-
----
-
-**Last Updated:** 2026-09-09
+Look up the [command line](reference/cli.md), [configuration](reference/configuration.md),
+[available actions](reference/actions.md), or [MCP tools](reference/mcp-tools.md). Contributors can
+start with [development notes](development/contributing.md).

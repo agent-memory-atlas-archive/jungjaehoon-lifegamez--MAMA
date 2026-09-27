@@ -14,9 +14,6 @@
  * @module list-decisions
  */
 
-// eslint-disable-next-line no-unused-vars
-const path = require('path');
-
 // Import MAMA API from core directory
 const mama = require('@jungjaehoon/mama-core/mama-api');
 

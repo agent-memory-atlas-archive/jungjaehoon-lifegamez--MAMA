@@ -1,110 +1,60 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { getAdapter } from '../../src/db-manager.js';
+import { openDatabase, type DatabaseHandle } from '../../src/storage/database.js';
+import { recallMemory } from '../../src/memory/api.js';
+import { cleanupTestDB, initTestDB } from '../helpers/test-utils.js';
 
-const generateEmbeddingMock = vi.fn();
-const vectorSearchMock = vi.fn();
-const expandWithGraphMock = vi.fn();
-
-vi.mock('../../src/embeddings.js', () => ({
-  generateEmbedding: generateEmbeddingMock,
-  generateEnhancedEmbedding: generateEmbeddingMock,
+// Exercise actual FTS and graph queries; the model is irrelevant to DB identity.
+vi.mock('../../src/embedding/embedder.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/embedding/embedder.js')>()),
+  generateEmbedding: async () => new Float32Array(1024),
+  generateEnhancedEmbedding: async () => new Float32Array(1024),
   isForceTier3Enabled: () => false,
 }));
 
-vi.mock('../../src/db-manager.js', () => ({
-  initDB: vi.fn(async () => {}),
-  getAdapter: vi.fn(() => ({
-    prepare(sql: string) {
-      return {
-        all: (..._args: unknown[]) => {
-          if (sql.includes('FROM memory_scope_bindings') || sql.includes('FROM decision_edges')) {
-            return [];
-          }
-          if (sql.includes('FROM decisions')) {
-            return [];
-          }
-          return [];
-        },
-        get: (..._args: unknown[]) => {
-          if (sql.includes('SELECT status FROM decisions')) {
-            return { status: 'active' };
-          }
-          return undefined;
-        },
-      };
-    },
-  })),
-  insertDecisionWithEmbedding: vi.fn(),
-  ensureMemoryScopeInAdapter: vi.fn(() => 1),
-}));
-
-vi.mock('../../src/knowledge/search.js', () => ({
-  vectorSearch: vectorSearchMock,
-  fts5Search: vi.fn(async () => []),
-}));
-
-vi.mock('../../src/knowledge/graph-query.js', () => ({
-  queryDecisionGraph: vi.fn(async () => []),
-  querySemanticEdges: vi.fn(async () => []),
-}));
-
-vi.mock('../../src/mama-api.js', () => ({
-  default: {
-    expandWithGraph: expandWithGraphMock,
-  },
-}));
-
-const BASE_VECTOR_RESULT = {
-  id: 'memory-a',
-  topic: 'project_architecture',
-  decision: 'We use hexagonal architecture for testability.',
-  reasoning: 'Separation of concerns improves testing.',
-  similarity: 0.91,
-  created_at: 1000,
-  status: 'active',
-};
-
-const RELATED_RESULT = {
-  id: 'memory-b',
-  topic: 'project_architecture_v2',
-  decision: 'We added ports-and-adapters to the hexagonal model.',
-  reasoning: 'Extends the original design.',
-  graph_rank: 0.75,
-  graph_source: 'graph_expansion',
-  created_at: 2000,
-  status: 'active',
-};
-
-describe('recallMemory graph expansion', () => {
-  beforeEach(() => {
-    vi.resetModules();
-
-    generateEmbeddingMock.mockResolvedValue(new Float32Array([0.1, 0.2, 0.3]));
-    vectorSearchMock.mockResolvedValue([BASE_VECTOR_RESULT]);
-    expandWithGraphMock.mockResolvedValue([BASE_VECTOR_RESULT, RELATED_RESULT]);
+describe('F3.3 instance-bound recall graph expansion', () => {
+  let globalPath: string;
+  let dir: string;
+  let local: DatabaseHandle;
+  beforeAll(async () => {
+    globalPath = await initTestDB('recall-global');
+    dir = mkdtempSync(join(tmpdir(), 'recall-local-'));
+    local = await openDatabase({ path: join(dir, 'local.db') });
+    for (const [db, label] of [
+      [getAdapter(), 'foreign'],
+      [local.adapter, 'local'],
+    ] as const) {
+      const insert =
+        db.prepare(`INSERT INTO decisions (id,topic,decision,reasoning,confidence,status,kind,created_at,updated_at)
+        VALUES (?, ?, ?, 'fixture', 0.9, 'active', 'decision', 1000, 1000)`);
+      insert.run('anchor', 'needle', 'needle');
+      insert.run('related', 'other', `${label} graph content`);
+      db.prepare(
+        "INSERT INTO decision_edges (from_id,to_id,relationship,approved_by_user) VALUES ('anchor','related','builds_on',1)"
+      ).run();
+    }
   });
-
-  it('should populate graph_context.expanded when edges exist', async () => {
-    const { recallMemory } = await import('../../src/memory/api.js');
-
-    const bundle = await recallMemory('What architecture do we use?');
-
-    // Primary matched memory should be present
-    expect(bundle.memories.length).toBeGreaterThan(0);
-    expect(bundle.memories[0]?.id).toBe('memory-a');
-
-    // expandWithGraph returned memory-b as a new node → should be in expanded
-    expect(bundle.graph_context.expanded.length).toBeGreaterThan(0);
-    expect(bundle.graph_context.expanded[0]?.id).toBe('memory-b');
+  afterAll(async () => {
+    await local.close();
+    await cleanupTestDB(globalPath);
+    rmSync(dir, { recursive: true, force: true });
   });
-
-  it('should return empty expanded when skipGraphExpansion is true', async () => {
-    const { recallMemory } = await import('../../src/memory/api.js');
-
-    const bundle = await recallMemory('What architecture do we use?', {
+  it('expands from the supplied adapter even when the global DB has the same IDs', async () => {
+    const bundle = await recallMemory(local.adapter, 'needle', { limit: 1, includeRelated: true });
+    expect(bundle.memories.map((row) => row.id)).toEqual(['anchor']);
+    expect(bundle.graph_context.expanded.map((row) => row.summary)).toEqual([
+      'local graph content',
+    ]);
+  });
+  it('skips expansion when requested', async () => {
+    const bundle = await recallMemory(local.adapter, 'needle', {
+      limit: 1,
       skipGraphExpansion: true,
     });
-
+    expect(bundle.memories.map((row) => row.id)).toEqual(['anchor']);
     expect(bundle.graph_context.expanded).toEqual([]);
-    expect(bundle.graph_context.edges).toEqual([]);
   });
 });

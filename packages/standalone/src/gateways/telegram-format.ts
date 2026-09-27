@@ -244,7 +244,15 @@ export function sanitizeTelegramHtml(input: string): string {
       const openIndex = open.pop() as number;
       top.closeAt = at;
       top.partner = index;
-      spans.push({ at, end: at + raw.length, raw, tag, type: top.type, partner: openIndex, escaped: false });
+      spans.push({
+        at,
+        end: at + raw.length,
+        raw,
+        tag,
+        type: top.type,
+        partner: openIndex,
+        escaped: false,
+      });
       continue;
     }
     const read = readOpeningTag(raw);

@@ -10,7 +10,7 @@
  * @date 2025-11-14
  */
 
-import { cosineSimilarity } from './embeddings.js';
+import { cosineSimilarity } from './embedding/embedder.js';
 
 /**
  * Decision object for relevance scoring

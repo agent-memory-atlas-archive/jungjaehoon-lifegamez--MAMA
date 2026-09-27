@@ -1,166 +1,87 @@
-/**
- * Telegram Gateway for MAMA Standalone
- *
- * Production-hardened Telegram bot integration using grammY:
- * - Telegram message_id dedup without dropping repeated short replies
- * - Photo/document/caption ingestion through MAMA content blocks
- * - Group chat filtering (mention/command/reply-to-bot only)
- * - Sticker receive/send with emotion mapping
- * - Single-message streaming presenter (placeholder → final answer)
- * - Typing indicator, error handling
- */
-
-import { readFile, unlink } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { createHash } from 'node:crypto';
+import { closeSync } from 'node:fs';
+import { basename } from 'node:path';
 
-import { Bot } from 'grammy';
+import { Bot, InputFile } from 'grammy';
 import type { Context } from 'grammy';
-import type { ContentBlock, MessageAttachment, NormalizedMessage } from './types.js';
+import type { JsonValue } from '@jungjaehoon/mama-core/knowledge';
 import { BaseGateway } from './base-gateway.js';
-// Only the turn contract, and from the neutral module: importing it through the router
-// module would leave a source dependency on the very thing the boundary removes.
-import type { TurnProcessor, ProcessingResult } from './turn-contract.js';
-import { getMemoryLogger } from '../memory/memory-logger.js';
-import { wrapUntrustedContent } from '../utils/untrusted-content.js';
-import { buildContentBlocks, detectImageType } from './attachment-utils.js';
+import type { OwnerMessageInput, TurnIntake } from './turn-contract.js';
 import {
   captureTelegramTextFormatting,
   selectTelegramTextEntities,
 } from './telegram-text-entities.js';
 import {
-  downloadTelegramMedia,
-  pruneTelegramMediaRoot,
-  type TelegramMediaDownloadRequest,
-} from './telegram-media.js';
-import { TelegramResponsePresenter } from './telegram-response-presenter.js';
-import {
   formatTelegramMessage,
   isTelegramEntityRejection,
   type TelegramFormattedText,
 } from './telegram-format.js';
-import { TelegramMessageLedger } from './telegram-message-ledger.js';
-import { getMemberCandidateStore, MEMBER_CANDIDATE_TTL_MS } from './member-candidate-store.js';
 import {
-  laneChannelId,
-  overlayMemberPrincipal,
-  resolveTelegramPrincipal,
-  type PrincipalContext,
-} from './principal.js';
-import { logSecurityEventOnly } from '../security/security-monitor.js';
-import type {
-  ReportDeliveryBinding,
-  ReportDeliveryLease,
-  TelegramReportDeliveryControl,
-  TypedTelegramDeliveryOutcome,
-} from '../operator/report-delivery-coordinator.js';
-import * as debugLogger from '@jungjaehoon/mama-core/debug-logger';
-
-const { DebugLogger } = debugLogger as {
-  DebugLogger: new (context?: string) => {
-    info: (...args: unknown[]) => void;
-  };
-};
-const telegramLogger = new DebugLogger('telegram');
+  TelegramMessageLedger,
+  type OwnerMessageLedger,
+  type TelegramMessageLedgerEntry,
+} from './telegram-message-ledger.js';
+import { TelegramResponsePresenter } from './telegram-response-presenter.js';
+import {
+  openWorkspaceFile,
+  readWorkspaceFile,
+  workspaceFileIdentity,
+  type TelegramFileDeliveryResult,
+} from '../api/file-delivery.js';
+import { isDefinitiveTelegramRejection } from './telegram-errors.js';
+import { downloadTelegramFiles, telegramFiles } from './telegram-attachments.js';
 
 const TELEGRAM_MAX_LENGTH = 4096;
 const MESSAGE_DEDUP_TTL_MS = 60_000;
-const REJECTED_CHAT_WARN_INTERVAL_MS = 60_000;
-const TYPING_INTERVAL_MS = 4_000;
+const INTERRUPTED_RESPONSE =
+  'The previous processing attempt was interrupted. It was not rerun because its external ' +
+  'side effects could not be proven safe to repeat. Please send a new message if you want to ' +
+  'retry it.';
 
-function parseOutboundChunkProgress(value: string): { nextIndex: number; uncertain: boolean } {
-  const parsed: unknown = JSON.parse(value);
-  if (!parsed || typeof parsed !== 'object') throw new Error('Invalid Telegram outbound progress');
-  const record = parsed as Record<string, unknown>;
-  if (
-    record.version !== 1 ||
-    !Number.isSafeInteger(record.nextIndex) ||
-    (record.nextIndex as number) < 0 ||
-    typeof record.uncertain !== 'boolean'
-  ) {
-    throw new Error('Invalid Telegram outbound progress');
-  }
-  return { nextIndex: record.nextIndex as number, uncertain: record.uncertain };
-}
-
-function isDefiniteTelegramApiRejection(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false;
-  const record = error as Record<string, unknown>;
-  if (Number.isSafeInteger(record.error_code)) return true;
-  const response = record.response;
-  return (
-    Boolean(response) &&
-    typeof response === 'object' &&
-    Number.isSafeInteger((response as Record<string, unknown>).error_code)
-  );
-}
-
-/**
- * Report-delivery terminal classifier (design Decision 3): ONLY a definite
- * Telegram non-acceptance may park a report as `prepared_definite_rejection`.
- * 429 and 5xx (and anything carrying `retry_after`) remain retryable - a
- * routine rate limit must never permanently silence owner reporting. This is
- * deliberately narrower than isDefiniteTelegramApiRejection, which answers a
- * different question (was the chunk send outcome unambiguous?).
- */
-function isTerminalTelegramRejection(error: unknown): boolean {
-  if (!isDefiniteTelegramApiRejection(error)) return false;
-  const record = error as Record<string, unknown>;
-  const errorCode = Number.isSafeInteger(record.error_code)
-    ? (record.error_code as number)
-    : Number.isSafeInteger((record.response as Record<string, unknown> | undefined)?.error_code)
-      ? ((record.response as Record<string, unknown>).error_code as number)
-      : null;
-  if (errorCode === null) return false;
-  const parameters = record.parameters as Record<string, unknown> | undefined;
-  if (parameters && Number.isSafeInteger(parameters.retry_after)) return false;
-  if (errorCode === 429 || errorCode >= 500) return false;
-  return errorCode >= 400;
-}
-
-function telegramRejectionReason(error: unknown): string {
-  if (error && typeof error === 'object') {
-    const record = error as Record<string, unknown>;
-    if (typeof record.description === 'string' && record.description.length > 0) {
-      return record.description;
-    }
-    const response = record.response;
-    if (response && typeof response === 'object') {
-      const description = (response as Record<string, unknown>).description;
-      if (typeof description === 'string' && description.length > 0) return description;
-    }
-  }
-  return error instanceof Error ? error.message : String(error);
-}
-
+type TelegramMessage = NonNullable<Context['message']>;
 type TelegramApi = Bot['api'];
 type SendMessageOther = Parameters<TelegramApi['sendMessage']>[2];
 type EditMessageTextOther = Parameters<TelegramApi['editMessageText']>[3];
 
-/**
- * Telegram's own MessageEntity union is narrower than the structural entity the
- * formatter produces; the wire shape is identical.
- */
+export interface TelegramGatewayConfig {
+  enabled: boolean;
+  allowedChats?: string[];
+  ownerUserIds?: string[];
+  ownerChatId?: string;
+  polling?: boolean;
+}
+
+export interface TelegramGatewayOptions {
+  token: string;
+  intake: TurnIntake;
+  config?: Partial<TelegramGatewayConfig>;
+  messageLedgerPath?: string;
+  messageLedger?: OwnerMessageLedger;
+  filesRoot?: string;
+  downloadsDir?: string;
+  log?: (line: string) => void;
+  onFatalError?: (error: unknown) => void;
+}
+
 function entityOptions<T>(entities: TelegramFormattedText['entities']): T {
   return { entities } as unknown as T;
 }
 
-/**
- * Send one formatted chunk. If Telegram rejects the entity list, resend the
- * same text unstyled: losing the styling is acceptable, losing the answer is
- * not. Any other failure stays a failure so the delivery ledger sees it.
- * Unstyled text is sent exactly as before, without an options argument.
- */
+function telegramErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function sendErrorIsEntityOnly(error: unknown): boolean {
+  return isTelegramEntityRejection(telegramErrorMessage(error));
+}
+
 async function sendFormattedMessage(
   api: TelegramApi,
-  chatId: number | string,
+  chatId: number,
   message: TelegramFormattedText
 ): Promise<{ message_id: number }> {
-  if (!message.entities.length) {
-    return await api.sendMessage(chatId, message.text);
-  }
+  if (message.entities.length === 0) return api.sendMessage(chatId, message.text);
   try {
     return await api.sendMessage(
       chatId,
@@ -168,19 +89,18 @@ async function sendFormattedMessage(
       entityOptions<SendMessageOther>(message.entities)
     );
   } catch (error) {
-    if (!isTelegramEntityRejection(telegramRejectionReason(error))) throw error;
-    return await api.sendMessage(chatId, message.text);
+    if (!sendErrorIsEntityOnly(error)) throw error;
+    return api.sendMessage(chatId, message.text);
   }
 }
 
-/** Edit one formatted chunk, with the same styling-only fallback. */
 async function editFormattedMessage(
   api: TelegramApi,
-  chatId: number | string,
+  chatId: number,
   messageId: number,
   message: TelegramFormattedText
 ): Promise<void> {
-  if (!message.entities.length) {
+  if (message.entities.length === 0) {
     await api.editMessageText(chatId, messageId, message.text);
     return;
   }
@@ -191,1148 +111,232 @@ async function editFormattedMessage(
       message.text,
       entityOptions<EditMessageTextOther>(message.entities)
     );
-    return;
   } catch (error) {
-    if (!isTelegramEntityRejection(telegramRejectionReason(error))) throw error;
+    if (!sendErrorIsEntityOnly(error)) throw error;
+    await api.editMessageText(chatId, messageId, message.text);
   }
-  await api.editMessageText(chatId, messageId, message.text);
 }
 
-const EMOTION_EMOJI: Record<string, string[]> = {
-  happy: ['😊', '😀', '😄', '🙂'],
-  laugh: ['😂', '🤣', '😆'],
-  love: ['❤️', '😍', '🥰', '💕'],
-  sad: ['😢', '😞', '😔'],
-  cry: ['😭', '😿'],
-  angry: ['😠', '😡', '🤬'],
-  surprised: ['😮', '😲', '😯', '🤯'],
-  ok: ['👌', '👍', '✅'],
-  thanks: ['🙏', '🤗'],
-  sorry: ['🙇', '😓', '💦'],
-  hello: ['👋', '🙋', '✋'],
-  bye: ['👋', '🫡'],
-  thinking: ['🤔', '💭'],
-  excited: ['🎉', '🥳', '✨'],
-  tired: ['😫', '😩', '😴'],
-};
-
-const DEFAULT_STICKER_SET = 'HotCherry';
-
-/**
- * Telegram Gateway configuration
- */
-export interface TelegramGatewayConfig {
-  /** Enable Telegram gateway */
-  enabled: boolean;
-  /** Telegram bot token from @BotFather */
-  token: string;
-  /** Allowed chat IDs (required before Telegram authentication or polling) */
-  allowedChats?: string[];
-  /** Owner Telegram user IDs. Unset means owner resolution fails closed. */
-  ownerUserIds?: string[];
+function sourceMessageRef(chatId: string, messageId: number): string {
+  return `telegram:${chatId}:${messageId}`;
 }
 
-/**
- * Telegram Gateway options
- */
-export interface TelegramGatewayOptions {
-  /** Telegram bot token */
-  token: string;
-  /** Message router for processing messages */
-  turnProcessor: TurnProcessor;
-  /** Gateway configuration */
-  config?: Partial<TelegramGatewayConfig>;
-  /** Polling interval in ms (unused with grammY, kept for interface compat) */
-  pollIntervalMs?: number;
-  /** Internal test seam; production defaults to MAMA's private Telegram media directory. */
-  mediaRoot?: string;
-  /** Internal test seam for the external Telegram file request. */
-  fetchImpl?: TelegramMediaDownloadRequest['fetchImpl'];
-  /** Internal test/operations seam for restart-safe completed-message deduplication. */
-  messageLedgerPath?: string;
-  /** Optional core-backed principal lookup; consumed by the identity overlay in Task 5. */
-  principalResolver?: (
-    connector: string,
-    namespace: string,
-    externalId: string
-  ) => { principalId: string; kind: 'owner' | 'member'; status: string } | null;
+function chatIdFromSourceMessageRef(value: string): string {
+  const prefix = 'telegram:';
+  if (!value.startsWith(prefix)) throw new Error('Telegram source message reference is invalid');
+  const rest = value.slice(prefix.length);
+  const separator = rest.lastIndexOf(':');
+  if (separator <= 0 || !/^\d+$/.test(rest.slice(separator + 1))) {
+    throw new Error('Telegram source message reference is invalid');
+  }
+  return rest.slice(0, separator);
 }
 
-export type TelegramOutboundVariant = 'text' | 'file' | 'image' | 'sticker';
-
-export interface TelegramOutboundDeliveryReceipt {
-  deliveryId: string;
-  variant: TelegramOutboundVariant;
-  state: 'delivered';
-  payloadIdentity: string;
-  confirmedAt: number;
+function outboundLedgerKey(idempotencyKey: string): string {
+  return `outbound:${createHash('sha256').update(`text\0${idempotencyKey}`).digest('hex')}`;
 }
 
-/**
- * Telegram Gateway class
- */
+/** Telegram owner ingress and its durable response transport. */
 export class TelegramGateway extends BaseGateway {
   readonly source = 'telegram' as const;
-  readonly principalResolver: TelegramGatewayOptions['principalResolver'];
 
-  private token: string;
-  private config: TelegramGatewayConfig;
-  private bot: Bot | null = null;
-  private botId = 0;
-  private botUsername = '';
-  private lastError: string | null = null;
-  private lastMessageAt: number | undefined;
-  private readonly mediaRoot: string;
-  private readonly fetchImpl?: TelegramMediaDownloadRequest['fetchImpl'];
+  private readonly token: string;
+  private readonly config: TelegramGatewayConfig;
+  private readonly filesRoot?: string;
+  private readonly downloadsDir?: string;
+  private readonly log: (line: string) => void;
+  private readonly onFatalError: (error: unknown) => void;
   private readonly messageLedger: TelegramMessageLedger;
   private readonly chatTails = new Map<string, Promise<void>>();
-  private readonly inboundTails = new Map<string, Promise<void>>();
-  private readonly activeInboundMessages = new Set<string>();
-  private readonly activeChat = new AsyncLocalStorage<{ key: string; active: boolean }>();
-
-  // Telegram update dedup
-  private recentMessageIds = new Map<string, number>();
-  private rejectedChatWarnAt = new Map<string, number>();
-
-  // Dedup cleanup timer
-  private dedupCleanupTimer: ReturnType<typeof setInterval> | null = null;
-
-  // Sticker cache
-  private stickerCache = new Map<string, string>();
-  private stickerSetLoaded = false;
+  private readonly activePresenters = new Map<string, TelegramResponsePresenter>();
+  private readonly recentMessageIds = new Map<string, number>();
+  private readonly activeChat = new AsyncLocalStorage<{ chatId: string; active: boolean }>();
+  private bot: Bot | null = null;
+  private lastError: string | null = null;
+  private lastMessageAt: number | undefined;
 
   protected get mentionPattern(): RegExp | null {
-    return null; // Group filtering handled explicitly in handleMessage
+    return null;
   }
 
   constructor(options: TelegramGatewayOptions) {
-    // The seam lives on the shared surface role, not on this gateway.
-    super({ turnProcessor: options.turnProcessor });
+    super({ intake: options.intake });
     this.token = options.token;
-    this.principalResolver = options.principalResolver;
     this.config = {
-      enabled: true,
-      token: options.token,
-      allowedChats: options.config?.allowedChats || [],
-      ownerUserIds: options.config?.ownerUserIds,
+      enabled: options.config?.enabled ?? true,
+      allowedChats: options.config?.allowedChats ?? [],
+      ...(options.config?.ownerUserIds === undefined
+        ? {}
+        : { ownerUserIds: options.config.ownerUserIds }),
+      ...(options.config?.ownerChatId === undefined
+        ? {}
+        : { ownerChatId: options.config.ownerChatId }),
+      ...(options.config?.polling === undefined ? {} : { polling: options.config.polling }),
     };
-    this.mediaRoot =
-      options.mediaRoot ??
-      join(
-        process.env.MAMA_WORKSPACE || join(homedir(), '.mama', 'workspace'),
-        'media',
-        'inbound',
-        'telegram'
-      );
-    this.fetchImpl = options.fetchImpl;
-    this.messageLedger = new TelegramMessageLedger(
-      options.messageLedgerPath ??
-        process.env.MAMA_TELEGRAM_MESSAGE_LEDGER_PATH ??
-        `${this.mediaRoot}.processed-message-ids.json`,
-      { log: (line) => console.error(line) }
-    );
+    this.filesRoot = options.filesRoot;
+    this.downloadsDir = options.downloadsDir;
+    this.onFatalError =
+      options.onFatalError ??
+      ((error) => {
+        queueMicrotask(() => {
+          throw error;
+        });
+      });
+    this.log = options.log ?? ((line) => console.log(line));
+    const ledgerPath = options.messageLedgerPath ?? process.env.MAMA_TELEGRAM_MESSAGE_LEDGER_PATH;
+    if (!options.messageLedger && !ledgerPath?.trim()) {
+      throw new Error('Telegram message ledger path is required');
+    }
+    this.messageLedger =
+      options.messageLedger ?? new TelegramMessageLedger(ledgerPath!, { log: this.log });
   }
 
   async start(): Promise<void> {
-    if (this.connected) {
-      console.log('Telegram gateway already connected');
-      return;
-    }
+    if (this.connected) return;
     if (!this.config.allowedChats?.some((chatId) => chatId.trim().length > 0)) {
       throw new Error('telegram gateway disabled: allowed_chats is not set. Run: mama status');
     }
+    if (!this.token.trim()) throw new Error('telegram gateway requires a token');
 
     try {
       this.bot = new Bot(this.token);
-
       this.bot.on('message', async (ctx: Context) => {
-        try {
-          if (ctx.message) {
-            await this.handleMessage(ctx.message);
-          }
-        } catch (error) {
-          console.error('[Telegram] Error handling message:', error);
-          this.emitEvent({
-            type: 'error',
-            source: 'telegram',
-            timestamp: new Date(),
-            data: { error: error instanceof Error ? error.message : String(error) },
-          });
-          // Let grammY treat the update as failed. The durable message ledger
-          // prevents unsafe turn re-execution and replays a ready outbox response.
-          throw error;
-        }
+        if (ctx.message) await this.handleMessage(ctx.message);
       });
-
-      this.bot.catch((err) => {
-        this.lastError = err.message ?? String(err);
-        console.error(`[Telegram] error: ${this.lastError}`);
+      this.bot.catch((error) => {
+        this.lastError = telegramErrorMessage(error);
+        console.error(`telegram handler failed error=${this.lastError}`);
       });
-
       await this.bot.init();
-      this.botId = this.bot.botInfo.id;
-      this.botUsername = this.bot.botInfo.username || '';
-      console.log(`Telegram bot logged in as @${this.botUsername}`);
-
-      await this.recoverPendingInboundDeliveries();
-
-      console.log(
-        `[Telegram] Inbound allowlist active: ${this.config.allowedChats.length} chat(s)`
-      );
-
       this.connected = true;
       this.lastError = null;
-
-      await pruneTelegramMediaRoot(this.mediaRoot);
-
-      // Periodic dedup cleanup
-      this.dedupCleanupTimer = setInterval(() => {
-        const now = Date.now();
-        for (const [key, ts] of this.recentMessageIds) {
-          if (now - ts > MESSAGE_DEDUP_TTL_MS) this.recentMessageIds.delete(key);
-        }
-        for (const [key, ts] of this.rejectedChatWarnAt) {
-          if (now - ts > REJECTED_CHAT_WARN_INTERVAL_MS) {
-            this.rejectedChatWarnAt.delete(key);
-          }
-        }
-        void pruneTelegramMediaRoot(this.mediaRoot).catch((error: unknown) => {
-          console.error(
-            `[Telegram] media retention cleanup failed: ${
-              error instanceof Error ? error.message : String(error)
-            }`
-          );
+      this.emitEvent({ type: 'connected', source: 'telegram', timestamp: new Date() });
+      await this.recoverPendingResponses();
+      if (this.config.polling !== false) {
+        // Polling runs for the life of the process; a failure here means no owner message
+        // is ever received, so it is logged, not swallowed.
+        this.bot.start().catch((error: unknown) => {
+          this.lastError = telegramErrorMessage(error);
+          this.connected = false;
+          console.error(`telegram polling stopped error=${this.lastError}`);
+          this.onFatalError(error);
         });
-        void this.recoverPendingInboundDeliveries().catch((error: unknown) => {
-          console.error(
-            `[Telegram] pending response recovery failed: ${
-              error instanceof Error ? error.message : String(error)
-            }`
-          );
-        });
-      }, 60_000);
-
-      this.emitEvent({
-        type: 'connected',
-        source: 'telegram',
-        timestamp: new Date(),
-        data: { username: this.botUsername },
-      });
-
-      // Start long polling (non-blocking)
-      this.bot.start();
-    } catch (error) {
-      if (this.bot) {
-        try {
-          await this.bot.stop();
-        } catch {
-          /* ignore */
-        }
-        this.bot = null;
+        console.log(`telegram polling started polling=${this.config.polling ?? 'default'}`);
+      } else {
+        console.log('telegram polling disabled by config');
       }
-      this.lastError = error instanceof Error ? error.message : String(error);
-      console.error('Telegram connection failed:', error);
+    } catch (error) {
+      this.lastError = telegramErrorMessage(error);
+      if (this.bot) await this.bot.stop().catch(() => {});
+      this.bot = null;
+      this.connected = false;
       throw error;
     }
   }
 
   async stop(): Promise<void> {
-    if (this.dedupCleanupTimer) {
-      clearInterval(this.dedupCleanupTimer);
-      this.dedupCleanupTimer = null;
-    }
-    if (this.bot) {
-      try {
-        await this.bot.stop();
-      } catch {
-        /* ignore */
-      }
-      this.bot = null;
-      this.stickerCache.clear();
-      this.stickerSetLoaded = false;
-    }
-    this.rejectedChatWarnAt.clear();
+    if (this.bot) await this.bot.stop().catch(() => {});
+    this.bot = null;
     this.connected = false;
-    this.emitEvent({
-      type: 'disconnected',
-      source: 'telegram',
-      timestamp: new Date(),
-    });
+    this.recentMessageIds.clear();
+    this.emitEvent({ type: 'disconnected', source: 'telegram', timestamp: new Date() });
   }
 
-  private async handleMessage(msg: NonNullable<Context['message']>): Promise<void> {
-    if (!msg.from || !msg.chat) return;
-
-    const now = Date.now();
-    const messageKey = `${msg.chat.id}:${msg.message_id}`;
-    if (this.messageLedger.get(messageKey)?.state === 'delivered') return;
-    if (this.recentMessageIds.has(messageKey)) return;
-    this.recentMessageIds.set(messageKey, now);
-
-    for (const [key, ts] of this.recentMessageIds) {
-      if (now - ts > MESSAGE_DEDUP_TTL_MS) this.recentMessageIds.delete(key);
-    }
-
-    const chatId = String(msg.chat.id);
-    if (this.config.allowedChats && this.config.allowedChats.length > 0) {
-      if (!this.config.allowedChats.includes(chatId)) {
-        const lastWarn = this.rejectedChatWarnAt.get(chatId) ?? 0;
-        if (now - lastWarn > REJECTED_CHAT_WARN_INTERVAL_MS) {
-          this.rejectedChatWarnAt.set(chatId, now);
-          console.warn(
-            `[Telegram] Dropped message from non-allowlisted chat ${msg.chat.id} (user ${msg.from.id})`
-          );
-        }
-        return;
-      }
-    }
-
-    let principal = resolveTelegramPrincipal({
-      userId: String(msg.from.id),
-      chatId,
-      chatType: msg.chat.type,
-      allowedChats: new Set(this.config.allowedChats ?? []),
-      ownerUserIds:
-        this.config.ownerUserIds === undefined ? undefined : new Set(this.config.ownerUserIds),
-    });
-    if (this.principalResolver) {
-      principal = overlayMemberPrincipal(
-        principal,
-        this.principalResolver('telegram', 'global', String(msg.from.id))
-      );
-    }
-    if (
-      principal.class === 'owner' &&
-      principal.consoleEligible &&
-      msg.forward_origin?.type === 'user' &&
-      Boolean(msg.forward_origin.sender_user)
-    ) {
-      getMemberCandidateStore().upsert({
-        connector: 'telegram',
-        namespace: 'global',
-        externalId: String(msg.forward_origin.sender_user.id),
-        displayName: msg.forward_origin.sender_user.first_name,
-        firstSeen: now,
-        expiresAt: now + MEMBER_CANDIDATE_TTL_MS,
-      });
-    }
-    if (principal.lane === 'divert') {
-      logSecurityEventOnly({
-        type: 'telegram_principal_diverted',
-        severity: 'warn',
-        message: 'Telegram ingress diverted before processing',
-        details: { source: 'telegram', chatType: msg.chat.type },
-      });
-      return;
-    }
-
-    const laneKey = laneChannelId(chatId, principal.lane);
-    await this.runInQueue(this.inboundTails, laneKey, async () => {
-      this.activeInboundMessages.add(messageKey);
-      try {
-        await this.processMessage(msg, messageKey, principal);
-      } finally {
-        this.activeInboundMessages.delete(messageKey);
-      }
-    });
+  /** Delivered inbound identities; message and answer text stay in the durable runtime journal. */
+  recentDeliveredMessageRefs(): string[] {
+    return this.messageLedger.recentDeliveredMessageRefs();
   }
 
-  private async runInChatQueue<T>(
-    chatKey: string,
-    work: () => Promise<T>,
-    allowReentrant = false
-  ): Promise<T> {
-    const active = this.activeChat.getStore();
-    if (allowReentrant && active?.active && active.key === chatKey) return work();
-    return this.runInQueue(this.chatTails, chatKey, async () => {
-      const lease = { key: chatKey, active: true };
-      try {
-        return await this.activeChat.run(lease, work);
-      } finally {
-        // Async work inherited from a completed send cannot bypass a later batch.
-        lease.active = false;
-      }
-    });
-  }
-
-  /** Inbound ordering and outbound atomic batches have separate lifetimes. */
-  private async runInQueue<T>(
-    tails: Map<string, Promise<void>>,
-    key: string,
-    work: () => Promise<T>
-  ): Promise<T> {
-    const previous = tails.get(key);
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const currentTail = (previous ?? Promise.resolve()).catch(() => {}).then(() => gate);
-    tails.set(key, currentTail);
-
-    try {
-      if (previous) await previous.catch(() => {});
-      return await work();
-    } finally {
-      release();
-      if (tails.get(key) === currentTail) tails.delete(key);
+  /** Final response callback used by the owner runtime after a native turn settles. */
+  async deliverResponse(sourceRef: string, response: string): Promise<void> {
+    const chatId = chatIdFromSourceMessageRef(sourceRef);
+    this.requireAllowedChat(chatId);
+    const existing = this.messageLedger.get(sourceRef);
+    if (!existing) throw new Error(`Telegram response has no accepted message ${sourceRef}`);
+    if (existing.deliveryTarget && existing.deliveryTarget !== `telegram:${chatId}`) {
+      throw new Error('Telegram response destination conflicts with its accepted message');
     }
-  }
-
-  private async processMessage(
-    msg: NonNullable<Context['message']>,
-    messageKey: string,
-    principal: PrincipalContext
-  ): Promise<void> {
-    if (!msg.from || !msg.chat) return;
-
-    const now = Date.now();
-
-    const hasMedia = Boolean((msg.photo && msg.photo.length > 0) || msg.document);
-    if (hasMedia && (!this.config.allowedChats || this.config.allowedChats.length === 0)) {
-      const lastWarn = this.rejectedChatWarnAt.get(String(msg.chat.id)) ?? 0;
-      if (now - lastWarn > REJECTED_CHAT_WARN_INTERVAL_MS) {
-        this.rejectedChatWarnAt.set(String(msg.chat.id), now);
-        console.warn('[Telegram] Dropped media because telegram.allowed_chats is not configured');
-      }
-      return;
+    if (existing.state === 'delivered') return;
+    if (existing.state === 'ready' && existing.response !== response) {
+      throw new Error('Telegram response conflicts with its durable ledger entry');
     }
-
-    // Task G: text pairs with `entities`, caption with `caption_entities`. The
-    // selected field is the ORIGINAL reference frame for every entity offset
-    // (UTF-16 code units); later host adjustments never rewrite it.
-    const {
-      field: selectedField,
-      text: selectedText,
-      entities: selectedEntities,
-    } = selectTelegramTextEntities(msg);
-    const telegramFormatting = msg.sticker
-      ? undefined
-      : captureTelegramTextFormatting(selectedField, selectedText, selectedEntities);
-
-    // Group chat filtering
-    const isGroup = msg.chat.type === 'group' || msg.chat.type === 'supergroup';
-    if (isGroup) {
-      const isMention =
-        this.botUsername &&
-        selectedEntities?.some(
-          (e) =>
-            e.type === 'mention' &&
-            selectedText.slice(e.offset, e.offset + e.length).toLowerCase() ===
-              `@${this.botUsername.toLowerCase()}`
-        );
-      const isBotCommand = selectedEntities?.some((e) => e.type === 'bot_command');
-      const isReplyToBot = msg.reply_to_message?.from?.id === this.botId;
-      if (!isMention && !isBotCommand && !isReplyToBot) return;
-    }
-
-    let text = selectedText;
-    if (msg.sticker) {
-      text = `[sticker: ${msg.sticker.emoji || '😊'}]`;
-    }
-
-    if (isGroup && this.botUsername) {
-      const escaped = this.botUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      text = text.replace(new RegExp(`@${escaped}\\b`, 'gi'), '').trim();
-    }
-
-    // Provenance labeling: a FORWARDED message is third-party content the
-    // owner relayed, not the owner speaking. Selection and mention removal
-    // happen first so caption provenance follows the same trust boundary.
-    const isForwarded = Boolean(msg.forward_origin);
-
-    const durableEntry = this.messageLedger.get(messageKey);
-    const numChatId = msg.chat.id;
-    const api = this.bot!.api;
-    let initialResponseMessageId: number | null = null;
-    const presenter = this.createResponsePresenter(
-      numChatId,
-      messageKey,
-      durableEntry?.nextChunkIndex ?? 0,
-      (messageId) => {
-        initialResponseMessageId = messageId;
-      }
-    );
-    if (durableEntry?.state !== 'ready') await presenter.start();
-    if (durableEntry?.state === 'ready' && durableEntry.response !== undefined) {
-      try {
-        await presenter.finalize(durableEntry.response);
-        this.messageLedger.markDelivered(messageKey);
-      } catch (error) {
-        this.recentMessageIds.delete(messageKey);
-        throw error;
-      }
-      return;
-    }
-    if (durableEntry?.state === 'processing') {
-      const interruptedNotice =
-        'The previous processing attempt was interrupted. It was not rerun because its external ' +
-        'side effects could not be proven safe to repeat. Please send a new message if you want ' +
-        'to retry it.';
-      this.messageLedger.markReady(messageKey, interruptedNotice, 'html-v1');
-      try {
-        await presenter.finalize(interruptedNotice);
-        this.messageLedger.markDelivered(messageKey);
-      } catch (error) {
-        this.recentMessageIds.delete(messageKey);
-        throw error;
-      }
-      return;
-    }
-
-    const attachments: MessageAttachment[] = [];
-    const contentBlocks: ContentBlock[] = [];
-    let transientMediaPath: string | undefined;
-    // The public lane is conversation-only: a non-owner's attachment is never
-    // downloaded with the bot's credentials and never becomes a model-visible
-    // content block. Text/caption still flows.
-    const mediaAllowed = principal.lane === 'owner';
-    try {
-      if (mediaAllowed && msg.photo && msg.photo.length > 0) {
-        const photo = msg.photo[msg.photo.length - 1];
-        const downloaded = await downloadTelegramMedia({
-          botToken: this.token,
-          fileId: photo.file_id,
-          fileUniqueId: photo.file_unique_id,
-          declaredSize: photo.file_size,
-          kind: 'photo',
-          mediaRoot: this.mediaRoot,
-          getFile: (fileId) => api.getFile(fileId),
-          fetchImpl: this.fetchImpl,
-        });
-        transientMediaPath = downloaded.localPath;
-        const detectedType = detectImageType(await readFile(downloaded.localPath));
-        if (!detectedType) {
-          await presenter.fail('This image format is not supported.');
-          return;
-        }
-        const attachment: MessageAttachment = {
-          type: 'image',
-          sourceRef: downloaded.sourceRef,
-          localPath: downloaded.localPath,
-          filename: downloaded.filename,
-          contentType: detectedType,
-          size: downloaded.size,
-        };
-        attachments.push(attachment);
-        const builtBlocks = await buildContentBlocks([attachment]);
-        const imageBlocks = builtBlocks.filter((block) => block.type === 'image');
-        if (imageBlocks.length === 0) {
-          await presenter.fail('This image format is not supported.');
-          return;
-        }
-        for (const block of imageBlocks) {
-          contentBlocks.push({ type: 'image', source: block.source });
-        }
-        // Keep the private local path for bounded OCR/overlay follow-ups. The
-        // media retention sweeper removes it after the configured TTL/quota.
-        transientMediaPath = undefined;
-        if (!text.trim()) {
-          text = '[Image]';
-        }
-      } else if (mediaAllowed && msg.document) {
-        const downloaded = await downloadTelegramMedia({
-          botToken: this.token,
-          fileId: msg.document.file_id,
-          fileUniqueId: msg.document.file_unique_id,
-          filename: msg.document.file_name,
-          mimeType: msg.document.mime_type,
-          declaredSize: msg.document.file_size,
-          kind: 'document',
-          mediaRoot: this.mediaRoot,
-          getFile: (fileId) => api.getFile(fileId),
-          fetchImpl: this.fetchImpl,
-        });
-        transientMediaPath = downloaded.localPath;
-        const detectedType = detectImageType(await readFile(downloaded.localPath));
-        if (downloaded.mimeType.startsWith('image/') && !detectedType) {
-          await presenter.fail('This image format is not supported.');
-          return;
-        }
-        const attachment: MessageAttachment = {
-          type: detectedType ? 'image' : 'file',
-          sourceRef: downloaded.sourceRef,
-          localPath: downloaded.localPath,
-          filename: downloaded.filename,
-          contentType: detectedType ?? downloaded.mimeType,
-          size: downloaded.size,
-        };
-        attachments.push(attachment);
-        if (detectedType) {
-          const builtBlocks = await buildContentBlocks([attachment]);
-          const imageBlocks = builtBlocks.filter((block) => block.type === 'image');
-          if (imageBlocks.length === 0) {
-            await presenter.fail('This image format is not supported.');
-            return;
-          }
-          for (const block of imageBlocks) {
-            contentBlocks.push({ type: 'image', source: block.source });
-          }
-          if (!text.trim()) {
-            text = `[Image: ${downloaded.filename}]`;
-          }
-          transientMediaPath = undefined;
-        } else {
-          contentBlocks.push({
-            type: 'text',
-            text: `[File: ${downloaded.filename}, type: ${downloaded.mimeType}]`,
-          });
-          if (!text.trim()) {
-            text = `[File: ${downloaded.filename}]`;
-          }
-          // Documents remain in the private inbound workspace so the routed
-          // turn and a bounded follow-up can read the actual attachment.
-          transientMediaPath = undefined;
-        }
-      }
-    } catch {
-      await presenter.fail(
-        msg.document ? 'The file could not be downloaded.' : 'The image could not be downloaded.'
-      );
-      return;
-    } finally {
-      if (transientMediaPath) {
-        await unlink(transientMediaPath).catch(() => {});
-      }
-    }
-
-    if (!text.trim()) {
-      await presenter.fail('This Telegram message type is not supported.');
-      return;
-    }
-
-    if (isForwarded) {
-      text = wrapUntrustedContent('telegram-forward', text);
-    }
-
-    const sender = msg.from.username || String(msg.from.id);
-    console.log(`[Telegram] Message from ${sender} (${text.length} chars)`);
-
-    const memoryLogger = getMemoryLogger();
-    memoryLogger.logMessage('Telegram', sender, text, false);
-
-    this.emitEvent({
-      type: 'message_received',
-      source: 'telegram',
-      timestamp: new Date(),
-      data: { chatId: String(msg.chat.id), userId: String(msg.from.id) },
-    });
-
-    const normalizedMessage: NormalizedMessage = {
-      source: 'telegram',
-      channelId: String(msg.chat.id),
-      userId: String(msg.from.id),
-      text,
-      principal,
-      contentBlocks: contentBlocks.length > 0 ? contentBlocks : undefined,
-      metadata: {
-        username: msg.from.username,
-        messageId: String(msg.message_id),
-        chatType: msg.chat.type,
-        attachments: attachments.length > 0 ? attachments : undefined,
-        // Trusted provenance flag: downstream strips untrusted blocks ONLY
-        // when the GATEWAY wrapped them - sender-typed markers are not a
-        // security boundary (forgeable in-band data).
-        untrustedWrapped: isForwarded,
-        // Sender styling as data. Offsets stay bound to originalText, so the
-        // mention removal / placeholder / wrapper applied to `text` above
-        // cannot shift them. A forwarded body's formatting is fenced by the
-        // router under the same untrustedWrapped flag.
-        ...(telegramFormatting ? { telegramFormatting } : {}),
-      },
-    };
-
-    // Typing indicator
-    const chatId = String(msg.chat.id);
-    const sendTyping = () => this.bot?.api.sendChatAction(numChatId, 'typing').catch(() => {});
-    sendTyping();
-    const typingInterval = setInterval(sendTyping, TYPING_INTERVAL_MS);
-
-    try {
-      // Process through message router
-      let result: ProcessingResult;
-      this.messageLedger.claim(messageKey);
-      try {
-        result = await this.turnProcessor.processTurn(normalizedMessage, {
-          onStream: presenter.callbacks(),
-          onQueued: () => presenter.markQueued(),
-        });
-      } catch (error) {
-        const failureNotice = 'An error occurred while processing the message.';
-        this.messageLedger.markReady(messageKey, failureNotice, 'html-v1');
-        try {
-          await presenter.fail(failureNotice);
-          this.messageLedger.markDelivered(messageKey);
-        } catch {
-          this.recentMessageIds.delete(messageKey);
-        }
-        throw error;
-      }
-
-      if (result.outcome === 'external_divert') {
-        if (initialResponseMessageId !== null) {
-          await api.deleteMessage(numChatId, initialResponseMessageId).catch(() => {});
-        }
-        this.messageLedger.markReady(messageKey, '', 'html-v1');
-        this.messageLedger.markDelivered(messageKey);
-        telegramLogger.info('[Telegram] Turn externally diverted; no response sent');
-        return;
-      }
-
-      this.messageLedger.markReady(messageKey, result.response, 'html-v1');
-      try {
-        await presenter.finalize(result.response);
-        this.messageLedger.markDelivered(messageKey);
-      } catch (error) {
-        this.recentMessageIds.delete(messageKey);
-        throw error;
-      }
-
-      this.lastMessageAt = Date.now();
-
-      memoryLogger.logMessage('Telegram', 'MAMA', result.response, true);
-
-      this.emitEvent({
-        type: 'message_sent',
-        source: 'telegram',
-        timestamp: new Date(),
-        data: {
-          chatId,
-          responseLength: result.response.length,
-          duration: result.duration,
-        },
-      });
-    } finally {
-      clearInterval(typingInterval);
-    }
+    if (existing.state === 'processing')
+      this.messageLedger.markReady(sourceRef, response, 'html-v1');
+    if (!this.bot || !this.connected) return;
+    await this.deliverReadyEntry(sourceRef);
   }
 
   async sendMessage(chatId: string, text: string, idempotencyKey?: string): Promise<void> {
-    if (!this.bot) throw new Error('Telegram gateway not connected');
-    if (!text.trim()) return;
-    await this.runInChatQueue(chatId, () => this.sendMessageNow(chatId, text, idempotencyKey));
+    if (!this.bot || !this.connected) throw new Error('Telegram gateway not connected');
+    this.requireAllowedChat(chatId);
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    await this.runInChatQueue(chatId, () => this.sendMessageNow(chatId, trimmed, idempotencyKey));
   }
 
-  /** Detached system work must wait behind the normal per-chat delivery queue. */
-  async sendSystemMessage(chatId: string, text: string, deliveryId?: string): Promise<void> {
-    await this.sendMessage(chatId, text, deliveryId);
-  }
-
-  /**
-   * TG-05/TG-06: narrow owner-report delivery surface for the report
-   * coordinator. Pins the delivery-ID-bound ledger entry before the first
-   * send so a confirmed-send proof cannot be pruned while the report-context
-   * SQLite row remains nonterminal, and classifies send failures with the
-   * gateway's own definite-rejection test.
-   */
-  createReportDeliveryControl(): TelegramReportDeliveryControl {
-    const pinnedTargets = new Map<string, { chatId: string; text: string }>();
-    const ledgerKey = (deliveryId: string) => this.outboundLedgerKey(deliveryId, 'text');
-
-    return {
-      claimAndPin: async (binding: ReportDeliveryBinding): Promise<ReportDeliveryLease> => {
-        const key = ledgerKey(binding.deliveryId);
-        this.messageLedger.claim(key, {
-          deliveryTarget: `telegram:${binding.target.channelId}`,
-          payloadIdentity: createHash('sha256').update(binding.text).digest('hex'),
-        });
-        this.messageLedger.pin(key);
-        pinnedTargets.set(binding.deliveryId, {
-          chatId: binding.target.channelId,
-          text: binding.text,
-        });
-        return { deliveryId: binding.deliveryId };
-      },
-
-      sendPinned: async (lease: ReportDeliveryLease): Promise<TypedTelegramDeliveryOutcome> => {
-        const pinned = pinnedTargets.get(lease.deliveryId);
-        if (!pinned) {
-          throw new Error(
-            `Owner report delivery ${lease.deliveryId} was not pinned by this control`
-          );
-        }
-        try {
-          await this.sendMessage(pinned.chatId, pinned.text, lease.deliveryId);
-          return { kind: 'confirmed' };
-        } catch (error) {
-          if (isTerminalTelegramRejection(error)) {
-            return { kind: 'definite_rejection', reason: telegramRejectionReason(error) };
-          }
-          return {
-            kind: 'retryable',
-            detail: error instanceof Error ? error.message : String(error),
-          };
-        }
-      },
-
-      releasePin: async (deliveryId: string): Promise<void> => {
-        this.messageLedger.unpin(ledgerKey(deliveryId));
-        pinnedTargets.delete(deliveryId);
-      },
-
-      reconcilePins: async (nonterminalIds: string[], terminalIds: string[]): Promise<void> => {
-        for (const deliveryId of nonterminalIds) {
-          const key = ledgerKey(deliveryId);
-          if (this.messageLedger.get(key)) this.messageLedger.pin(key);
-        }
-        for (const deliveryId of terminalIds) {
-          this.messageLedger.unpin(ledgerKey(deliveryId));
-        }
-      },
-    };
-  }
-
-  async sendMessageFromActiveTurn(
-    chatId: string,
-    text: string,
-    idempotencyKey?: string
-  ): Promise<void> {
-    if (!this.bot) throw new Error('Telegram gateway not connected');
-    if (!text.trim()) return;
-    await this.runInChatQueue(
-      chatId,
-      () => this.sendMessageNow(chatId, text, idempotencyKey),
-      true
-    );
-  }
-
-  private async sendMessageNow(
-    chatId: string,
-    text: string,
-    idempotencyKey?: string
-  ): Promise<void> {
-    const bot = this.bot;
-    if (!bot) throw new Error('Telegram gateway not connected');
-    const ledgerKey = idempotencyKey ? this.outboundLedgerKey(idempotencyKey, 'text') : undefined;
-    const pending = ledgerKey ? this.messageLedger.get(ledgerKey) : null;
-    const chunkFormat =
-      pending?.state === 'ready' ? (pending.chunkFormat ?? 'plain-v1') : 'html-v1';
-    const chunks = formatTelegramMessage(text, TELEGRAM_MAX_LENGTH, chunkFormat);
-    // Zero chunks means zero API calls. Claiming the ledger and marking it
-    // delivered would record a send that never happened and suppress every
-    // retry of it, so refuse before touching the ledger at all.
-    if (chunks.length === 0) throw new Error('Refusing to record an empty Telegram delivery');
-    const numChatId = Number(chatId);
-    if (!ledgerKey) {
-      for (const chunk of chunks) await sendFormattedMessage(bot.api, numChatId, chunk);
-      return;
-    }
-
-    const binding = {
-      deliveryTarget: `telegram:${chatId}`,
-      payloadIdentity: createHash('sha256').update(text).digest('hex'),
-    };
-    const { entry: existing } = this.messageLedger.claim(ledgerKey, binding);
-    if (existing?.state === 'delivered') return;
-
-    let nextIndex = 0;
-    if (existing?.state === 'ready' && existing.response) {
-      const progress = parseOutboundChunkProgress(existing.response);
-      nextIndex = progress.nextIndex;
-      if (progress.uncertain) {
-        console.warn(
-          `[Telegram] Retrying delivery ${ledgerKey} from chunk ${nextIndex} after an ` +
-            'ambiguous prior acceptance; at-least-once delivery may duplicate that chunk'
-        );
-      }
-    }
-    for (let index = nextIndex; index < chunks.length; index += 1) {
-      this.messageLedger.markReady(
-        ledgerKey,
-        JSON.stringify({ version: 1, nextIndex: index, uncertain: true }),
-        chunkFormat
-      );
-      try {
-        await sendFormattedMessage(bot.api, numChatId, chunks[index]);
-      } catch (error) {
-        if (isDefiniteTelegramApiRejection(error)) {
-          this.messageLedger.markReady(
-            ledgerKey,
-            JSON.stringify({ version: 1, nextIndex: index, uncertain: false }),
-            chunkFormat
-          );
-        }
-        throw error;
-      }
-      this.messageLedger.markReady(
-        ledgerKey,
-        JSON.stringify({ version: 1, nextIndex: index + 1, uncertain: false }),
-        chunkFormat
-      );
-    }
-    this.messageLedger.markDelivered(ledgerKey);
+  async sendToOwner(text: string, idempotencyKey: string): Promise<void> {
+    const ownerChatId = this.config.ownerChatId?.trim();
+    if (!ownerChatId) throw new Error('telegram.owner_chat_id is required for delta delivery');
+    await this.sendMessage(ownerChatId, text, idempotencyKey);
   }
 
   async sendFile(
-    chatId: string,
-    filePath: string,
-    caption?: string,
-    idempotencyKey?: string
-  ): Promise<void> {
-    if (!this.bot) throw new Error('Telegram gateway not connected');
-    const { InputFile } = await import('grammy');
-    await this.runInChatQueue(chatId, () =>
-      this.sendOutboundOnce(idempotencyKey, 'file', chatId, `${filePath}\0${caption ?? ''}`, () =>
-        this.bot!.api.sendDocument(Number(chatId), new InputFile(filePath), { caption }).then(
-          () => {}
-        )
-      )
-    );
-  }
+    path: string,
+    caption: string | undefined,
+    operationId: string
+  ): Promise<TelegramFileDeliveryResult> {
+    if (!this.bot || !this.connected) throw new Error('Telegram gateway not connected');
+    if (operationId.trim() === '') throw new Error('Telegram file operation id is required');
+    const ownerChatId = this.config.ownerChatId?.trim();
+    if (!ownerChatId) throw new Error('telegram.owner_chat_id is required for file delivery');
+    this.requireAllowedChat(ownerChatId);
+    if (!this.filesRoot) throw new Error('Telegram workspace files root is not configured');
 
-  async sendFileFromActiveTurn(
-    chatId: string,
-    filePath: string,
-    caption?: string,
-    idempotencyKey?: string
-  ): Promise<void> {
-    if (!this.bot) throw new Error('Telegram gateway not connected');
-    const { InputFile } = await import('grammy');
-    await this.runInChatQueue(
-      chatId,
-      () =>
-        this.sendOutboundOnce(idempotencyKey, 'file', chatId, `${filePath}\0${caption ?? ''}`, () =>
-          this.bot!.api.sendDocument(Number(chatId), new InputFile(filePath), { caption }).then(
-            () => {}
-          )
-        ),
-      true
-    );
-  }
-
-  async sendImage(
-    chatId: string,
-    imagePath: string,
-    caption?: string,
-    idempotencyKey?: string
-  ): Promise<void> {
-    if (!this.bot) throw new Error('Telegram gateway not connected');
-    const { InputFile } = await import('grammy');
-    await this.runInChatQueue(chatId, () =>
-      this.sendOutboundOnce(idempotencyKey, 'image', chatId, `${imagePath}\0${caption ?? ''}`, () =>
-        this.bot!.api.sendPhoto(Number(chatId), new InputFile(imagePath), { caption }).then(
-          () => {}
-        )
-      )
-    );
-  }
-
-  async sendImageFromActiveTurn(
-    chatId: string,
-    imagePath: string,
-    caption?: string,
-    idempotencyKey?: string
-  ): Promise<void> {
-    if (!this.bot) throw new Error('Telegram gateway not connected');
-    const { InputFile } = await import('grammy');
-    await this.runInChatQueue(
-      chatId,
-      () =>
-        this.sendOutboundOnce(
-          idempotencyKey,
-          'image',
-          chatId,
-          `${imagePath}\0${caption ?? ''}`,
-          () =>
-            this.bot!.api.sendPhoto(Number(chatId), new InputFile(imagePath), { caption }).then(
-              () => {}
-            )
-        ),
-      true
-    );
-  }
-
-  private async sendOutboundOnce(
-    idempotencyKey: string | undefined,
-    kind: string,
-    chatId: string,
-    payload: string,
-    send: () => Promise<void>
-  ): Promise<void> {
-    if (!idempotencyKey) {
-      await send();
-      return;
-    }
-    const ledgerKey = this.outboundLedgerKey(idempotencyKey, kind);
-    const { entry: existing } = this.messageLedger.claim(ledgerKey, {
-      deliveryTarget: `telegram:${chatId}`,
-      payloadIdentity: createHash('sha256').update(payload).digest('hex'),
-    });
-    if (existing.state === 'delivered') return;
-    await send();
-    this.messageLedger.markDelivered(ledgerKey);
-  }
-
-  private async recoverPendingInboundDeliveries(): Promise<void> {
-    for (const snapshot of this.messageLedger.listUndelivered()) {
-      if (snapshot.key.startsWith('outbound:')) continue;
-      const separator = snapshot.key.lastIndexOf(':');
-      if (separator <= 0) continue;
-      const chatId = snapshot.key.slice(0, separator);
-      await this.runInChatQueue(chatId, async () => {
-        const entry = this.messageLedger.get(snapshot.key);
-        // The live presenter owns ready as well as processing until it settles.
-        // Recovery must not jump ahead while that presenter drains a streaming edit.
-        if (this.activeInboundMessages.has(snapshot.key)) return;
-        if (!entry || entry.state === 'delivered') return;
-        if (entry.state === 'processing' && this.messageLedger.isOwnedByCurrentProcess(entry)) {
-          return;
-        }
-        const response =
-          entry.state === 'ready' && entry.response !== undefined
-            ? entry.response
-            : 'The previous processing attempt was interrupted. It was not rerun because its ' +
-              'external side effects could not be proven safe to repeat. Please send a new message ' +
-              'if you want to retry it.';
-        if (entry.state !== 'ready') this.messageLedger.markReady(entry.key, response, 'html-v1');
-        if (entry.deliveryUncertain) {
-          console.warn(
-            `[Telegram] Resuming inbound delivery ${entry.key} from uncertain chunk ` +
-              `${entry.nextChunkIndex ?? 0}; that chunk may appear twice`
-          );
-        }
-        const presenter = this.createResponsePresenter(
-          Number(chatId),
-          entry.key,
-          entry.nextChunkIndex ?? 0
-        );
-        await presenter.finalize(response);
-        this.messageLedger.markDelivered(entry.key);
+    const validated = openWorkspaceFile(this.filesRoot, path);
+    try {
+      const payloadIdentity = workspaceFileIdentity(validated.fd, caption);
+      const claim = this.messageLedger.claim(`file:${operationId}`, {
+        deliveryTarget: `telegram:${ownerChatId}`,
+        payloadIdentity,
       });
-    }
-  }
-
-  private createResponsePresenter(
-    chatId: number,
-    messageKey: string,
-    resumeFromChunk = 0,
-    onInitialSend?: (messageId: number) => void
-  ): TelegramResponsePresenter {
-    const api = this.bot!.api;
-    return new TelegramResponsePresenter(
-      {
-        send: async (content) => {
-          const sent = await this.runInChatQueue(
-            String(chatId),
-            () => sendFormattedMessage(api, chatId, content),
-            true
-          );
-          onInitialSend?.(sent.message_id);
-          return String(sent.message_id);
-        },
-        edit: async (handle, content) => {
-          await this.runInChatQueue(
-            String(chatId),
-            () => editFormattedMessage(api, chatId, Number(handle), content),
-            true
-          );
-        },
-        delete: async (handle) => {
-          await this.runInChatQueue(
-            String(chatId),
-            () => api.deleteMessage(chatId, Number(handle)),
-            true
-          );
-        },
-      },
-      {
-        resumeFromChunk,
-        chunkFormat:
-          this.messageLedger.get(messageKey)?.state === 'ready'
-            ? (this.messageLedger.get(messageKey)?.chunkFormat ?? 'plain-v1')
-            : 'html-v1',
-        withDelivery: (send) => this.runInChatQueue(String(chatId), send, true),
-        onChunkProgress: (nextIndex, uncertain) => {
-          if (this.messageLedger.get(messageKey)?.state === 'ready') {
-            this.messageLedger.markDeliveryProgress(messageKey, nextIndex, uncertain);
-          }
-        },
+      if (!claim.claimed) {
+        if (claim.entry.state === 'delivered') {
+          return {
+            sentAs: validated.sentAs,
+            size: validated.size,
+            idempotent: true,
+          };
+        }
+        throw new Error('Telegram file delivery operation is already in progress or uncertain');
       }
-    );
-  }
 
-  private outboundLedgerKey(idempotencyKey: string, kind: string): string {
-    const digest = createHash('sha256').update(`${kind}\0${idempotencyKey}`).digest('hex');
-    return `outbound:${digest}`;
-  }
-
-  /** Read the existing durable proof for one exact outbound delivery occurrence. */
-  readOutboundDeliveryReceipt(
-    deliveryId: string,
-    variant: TelegramOutboundVariant
-  ): TelegramOutboundDeliveryReceipt | null {
-    const entry = this.messageLedger.get(this.outboundLedgerKey(deliveryId, variant));
-    if (
-      entry?.state !== 'delivered' ||
-      typeof entry.payloadIdentity !== 'string' ||
-      !/^[a-f0-9]{64}$/.test(entry.payloadIdentity)
-    ) {
-      return null;
-    }
-    return {
-      deliveryId,
-      variant,
-      state: 'delivered',
-      payloadIdentity: entry.payloadIdentity,
-      confirmedAt: entry.updatedAt,
-    };
-  }
-
-  async sendSticker(
-    chatId: string | number,
-    emotion: string,
-    idempotencyKey?: string
-  ): Promise<boolean> {
-    if (!this.bot) throw new Error('Telegram gateway not connected');
-    return this.runInChatQueue(String(chatId), () =>
-      this.sendStickerNow(chatId, emotion, idempotencyKey)
-    );
-  }
-
-  async sendStickerFromActiveTurn(
-    chatId: string | number,
-    emotion: string,
-    idempotencyKey?: string
-  ): Promise<boolean> {
-    if (!this.bot) throw new Error('Telegram gateway not connected');
-    return this.runInChatQueue(
-      String(chatId),
-      () => this.sendStickerNow(chatId, emotion, idempotencyKey),
-      true
-    );
-  }
-
-  private async sendStickerNow(
-    chatId: string | number,
-    emotion: string,
-    idempotencyKey?: string
-  ): Promise<boolean> {
-    const bot = this.bot;
-    if (!bot) throw new Error('Telegram gateway not connected');
-    await this.loadStickerSet();
-
-    const candidates = EMOTION_EMOJI[emotion] ?? EMOTION_EMOJI.happy;
-    const numChatId = typeof chatId === 'string' ? Number(chatId) : chatId;
-    for (const emoji of candidates) {
-      const fileId = this.stickerCache.get(emoji);
-      if (fileId) {
-        await this.sendOutboundOnce(
-          idempotencyKey,
-          'sticker',
-          String(chatId),
-          `${emotion}\0${fileId}`,
-          () => bot.api.sendSticker(numChatId, fileId).then(() => {})
-        );
-        return true;
+      const upload = new InputFile(readWorkspaceFile(validated.fd), basename(validated.path));
+      try {
+        const sent =
+          validated.sentAs === 'photo'
+            ? await this.bot.api.sendPhoto(
+                ownerChatId,
+                upload,
+                caption === undefined ? undefined : { caption }
+              )
+            : await this.bot.api.sendDocument(
+                ownerChatId,
+                upload,
+                caption === undefined ? undefined : { caption }
+              );
+        this.messageLedger.markDelivered(`file:${operationId}`);
+        return {
+          messageId: sent.message_id,
+          sentAs: validated.sentAs,
+          size: validated.size,
+        };
+      } catch (error) {
+        this.messageLedger.markFailed(`file:${operationId}`);
+        throw error;
       }
+    } finally {
+      closeSync(validated.fd);
     }
-    await this.sendOutboundOnce(
-      idempotencyKey,
-      'sticker',
-      String(chatId),
-      `${emotion}\0${candidates[0]}`,
-      () => bot.api.sendMessage(numChatId, candidates[0]).then(() => {})
-    );
-    return false;
   }
 
   getLastError(): string | null {
@@ -1343,18 +347,277 @@ export class TelegramGateway extends BaseGateway {
     return this.lastMessageAt;
   }
 
-  private async loadStickerSet(): Promise<void> {
-    if (this.stickerSetLoaded || !this.bot) return;
+  private ownerAllowed(chatId: string, userId: string): boolean {
+    if (!this.config.allowedChats?.includes(chatId)) return false;
+    if (this.config.ownerUserIds !== undefined) return this.config.ownerUserIds.includes(userId);
+    return this.config.allowedChats.length === 1 && this.config.allowedChats[0] === userId;
+  }
+
+  private requireAllowedChat(chatId: string): void {
+    if (!this.config.allowedChats?.includes(chatId)) {
+      throw new Error('Telegram destination is not allowlisted');
+    }
+  }
+
+  private async handleMessage(message: TelegramMessage): Promise<void> {
+    if (!message.chat || !message.from) return;
+    const chatId = String(message.chat.id);
+    const userId = String(message.from.id);
+    if (message.from.is_bot || !this.ownerAllowed(chatId, userId)) {
+      const chatHash = createHash('sha256').update(`chat\0${chatId}`).digest('hex');
+      const senderHash = createHash('sha256').update(`sender\0${userId}`).digest('hex');
+      console.warn(
+        `telegram message dropped reason=non_owner chat_hash=${chatHash} sender_hash=${senderHash}`
+      );
+      return;
+    }
+
+    const ref = sourceMessageRef(chatId, message.message_id);
+    const now = Date.now();
+    const previous = this.recentMessageIds.get(ref);
+    if (previous !== undefined && now - previous <= MESSAGE_DEDUP_TTL_MS) return;
+    this.recentMessageIds.set(ref, now);
+    for (const [key, timestamp] of this.recentMessageIds) {
+      if (now - timestamp > MESSAGE_DEDUP_TTL_MS) this.recentMessageIds.delete(key);
+    }
+
+    const durable = this.messageLedger.get(ref);
+    if (durable?.state === 'delivered') return;
+    if (durable?.state === 'ready') {
+      await this.deliverReadyEntry(ref);
+      return;
+    }
+    if (durable?.state === 'processing' && this.activePresenters.has(ref)) return;
+    if (durable?.state === 'processing' && this.intake.isPending?.(ref)) return;
+    if (durable?.state === 'processing') {
+      this.messageLedger.markReady(ref, INTERRUPTED_RESPONSE, 'html-v1');
+      await this.deliverReadyEntry(ref);
+      return;
+    }
+
+    const selected = selectTelegramTextEntities(message);
+    const files = telegramFiles(message);
+    if (!selected.text.trim() && files.length === 0) return;
+    const formatting = captureTelegramTextFormatting(
+      selected.field,
+      selected.text,
+      selected.entities
+    );
+    const inputIdentity = createHash('sha256')
+      .update(`${selected.text}\0${files.map(({ file }) => file.file_unique_id).join(',')}`)
+      .digest('hex');
+    const ledgerEntry = this.messageLedger.claim(ref, {
+      deliveryTarget: `telegram:${chatId}`,
+      payloadIdentity: inputIdentity,
+    }).entry;
+    const presenter = this.createResponsePresenter(ref, Number(message.chat.id));
+    this.activePresenters.set(ref, presenter);
     try {
-      const set = await this.bot.api.getStickerSet(DEFAULT_STICKER_SET);
-      for (const sticker of set.stickers) {
-        if (sticker.emoji && !this.stickerCache.has(sticker.emoji)) {
-          this.stickerCache.set(sticker.emoji, sticker.file_id);
-        }
+      if (ledgerEntry.state !== 'ready') await presenter.start();
+      const attachments = await downloadTelegramFiles(files, {
+        api: this.bot!.api,
+        token: this.token,
+        downloadsDir: this.downloadsDir,
+        messageId: message.message_id,
+      });
+      const input: OwnerMessageInput = {
+        id: ref,
+        channelKey: chatId,
+        occurredAt: message.date * 1000,
+        text: selected.text.trim()
+          ? selected.text
+          : attachments.map(({ name }) => `[file: ${name}]`).join('\n'),
+        ...(formatting === undefined && attachments.length === 0
+          ? {}
+          : {
+              payload: {
+                ...(formatting === undefined ? {} : { telegramFormatting: formatting }),
+                ...(attachments.length === 0 ? {} : { attachments }),
+              } as unknown as JsonValue,
+            }),
+      };
+      this.intake.acceptOwnerMessage(input);
+      this.emitEvent({
+        type: 'message_received',
+        source: 'telegram',
+        timestamp: new Date(),
+        data: { sourceMessageRef: ref },
+      });
+    } catch (error) {
+      this.activePresenters.delete(ref);
+      throw error;
+    }
+  }
+
+  private createResponsePresenter(sourceRef: string, chatId: number): TelegramResponsePresenter {
+    if (!this.bot) throw new Error('Telegram gateway not connected');
+    return new TelegramResponsePresenter(
+      {
+        send: (content) =>
+          sendFormattedMessage(this.bot!.api, chatId, content).then((sent) =>
+            String(sent.message_id)
+          ),
+        edit: (handle, content) =>
+          editFormattedMessage(this.bot!.api, chatId, Number(handle), content),
+        delete: async (handle) => {
+          await this.bot!.api.deleteMessage(chatId, Number(handle));
+        },
+      },
+      {
+        resumeFromChunk: this.messageLedger.get(sourceRef)?.nextChunkIndex ?? 0,
+        chunkFormat: this.messageLedger.get(sourceRef)?.chunkFormat ?? 'html-v1',
+        withDelivery: (send) => this.runInChatQueue(String(chatId), send, true),
+        onChunkProgress: (nextIndex, uncertain) => {
+          const entry = this.messageLedger.get(sourceRef);
+          if (entry?.state === 'ready') {
+            this.messageLedger.markDeliveryProgress(sourceRef, nextIndex, uncertain);
+          }
+        },
       }
-      this.stickerSetLoaded = true;
-    } catch {
-      this.stickerSetLoaded = true;
+    );
+  }
+
+  private async deliverReadyEntry(sourceRef: string): Promise<void> {
+    const entry = this.messageLedger.get(sourceRef);
+    if (!entry || entry.state === 'delivered') return;
+    if (entry.response === undefined) throw new Error('Telegram ready entry has no response');
+    const chatId = Number(chatIdFromSourceMessageRef(sourceRef));
+    await this.runInChatQueue(String(chatId), async () => {
+      const current = this.messageLedger.get(sourceRef);
+      if (!current || current.state === 'delivered') return;
+      if (current.deliveryUncertain) throw new Error('Telegram response delivery is uncertain');
+      const presenter =
+        this.activePresenters.get(sourceRef) ?? this.createResponsePresenter(sourceRef, chatId);
+      try {
+        await presenter.finalize(current.response!);
+      } finally {
+        this.activePresenters.delete(sourceRef);
+      }
+      this.messageLedger.markDelivered(sourceRef);
+      this.lastMessageAt = Date.now();
+      this.emitEvent({
+        type: 'message_sent',
+        source: 'telegram',
+        timestamp: new Date(),
+        data: { sourceMessageRef: sourceRef },
+      });
+    });
+  }
+
+  async recoverPendingResponses(): Promise<void> {
+    for (const entry of this.messageLedger.listUndelivered()) {
+      try {
+        if (entry.deliveryUncertain) {
+          this.log(
+            `telegram delivery requires reconciliation key=${entry.key} state=${entry.state} next_chunk_index=${entry.nextChunkIndex ?? 0}`
+          );
+          continue;
+        }
+        if (entry.key.startsWith('outbound:') && entry.state === 'ready') {
+          const chatId = entry.deliveryTarget?.slice('telegram:'.length);
+          if (!entry.deliveryTarget?.startsWith('telegram:') || !chatId) {
+            throw new Error('Telegram outbound entry has no valid destination');
+          }
+          if (!this.config.allowedChats?.includes(chatId)) continue;
+          await this.runInChatQueue(chatId, () => this.deliverOutboundEntry(entry.key, chatId));
+          continue;
+        }
+        if (!entry.key.startsWith('telegram:')) continue;
+        const chatId = chatIdFromSourceMessageRef(entry.key);
+        if (!this.config.allowedChats?.includes(chatId)) continue;
+        if (entry.state === 'ready' && entry.response !== undefined) {
+          await this.deliverReadyEntry(entry.key);
+          continue;
+        }
+        if (entry.state === 'processing' && !this.intake.isPending?.(entry.key)) {
+          this.messageLedger.markReady(entry.key, INTERRUPTED_RESPONSE, 'html-v1');
+          await this.deliverReadyEntry(entry.key);
+        }
+      } catch (error) {
+        // Delivery already recorded its progress; one entry must not keep polling from starting.
+        this.log(`telegram recovery failed key=${entry.key} error=${telegramErrorMessage(error)}`);
+      }
+    }
+  }
+
+  private async sendMessageNow(
+    chatId: string,
+    text: string,
+    idempotencyKey?: string
+  ): Promise<void> {
+    if (!this.bot) throw new Error('Telegram gateway not connected');
+    const chunks = formatTelegramMessage(text, TELEGRAM_MAX_LENGTH, 'html-v1');
+    if (!idempotencyKey) {
+      for (const chunk of chunks) await sendFormattedMessage(this.bot.api, Number(chatId), chunk);
+      return;
+    }
+
+    const key = outboundLedgerKey(idempotencyKey);
+    const binding = {
+      deliveryTarget: `telegram:${chatId}`,
+      payloadIdentity: createHash('sha256').update(text).digest('hex'),
+      idempotencyKey,
+      keepDeliveredOnPayloadChange: true,
+    };
+    const existing = this.messageLedger.claim(key, binding).entry;
+    if (existing.state === 'delivered') return;
+    if (existing.state !== 'ready') this.messageLedger.markReady(key, text, 'html-v1');
+    await this.deliverOutboundEntry(key, chatId);
+  }
+
+  private async deliverOutboundEntry(key: string, chatId: string): Promise<void> {
+    const entry = this.messageLedger.get(key);
+    if (!entry) throw new Error(`Telegram outbound entry is missing: ${key}`);
+    if (entry.state === 'delivered') return;
+    if (entry.deliveryUncertain) throw new Error('Telegram outbound delivery is uncertain');
+    if (!this.bot) throw new Error('Telegram gateway not connected');
+    if (entry.response === undefined) throw new Error('Telegram outbound entry has no response');
+    // markReady persists both fields; inventing them could resend chunks or change their formatting.
+    if (entry.chunkFormat === undefined || entry.nextChunkIndex === undefined) {
+      throw new Error('Telegram outbound entry has incomplete delivery metadata');
+    }
+    const chunks = formatTelegramMessage(entry.response, TELEGRAM_MAX_LENGTH, entry.chunkFormat);
+    const start = entry.nextChunkIndex;
+    for (let index = start; index < chunks.length; index += 1) {
+      this.messageLedger.markDeliveryProgress(key, index, true);
+      try {
+        const sent = await sendFormattedMessage(this.bot.api, Number(chatId), chunks[index]!);
+        this.messageLedger.markDeliveryProgress(key, index + 1, false, sent.message_id);
+      } catch (error) {
+        if (isDefinitiveTelegramRejection(error)) {
+          this.messageLedger.markDeliveryProgress(key, index, false);
+        }
+        throw error;
+      }
+    }
+    this.messageLedger.markDelivered(key);
+    this.log(
+      `telegram outbound delivered idempotency_key=${JSON.stringify(entry.idempotencyKey)} message_ids=${JSON.stringify(this.messageLedger.get(key)!.messageIds ?? [])}`
+    );
+  }
+
+  private async runInChatQueue<T>(
+    chatId: string,
+    work: () => Promise<T>,
+    allowReentrant = false
+  ): Promise<T> {
+    const active = this.activeChat.getStore();
+    if (allowReentrant && active?.active && active.chatId === chatId) return work();
+    const previous = this.chatTails.get(chatId);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const current = (previous ?? Promise.resolve()).catch(() => {}).then(() => gate);
+    this.chatTails.set(chatId, current);
+    try {
+      if (previous) await previous.catch(() => {});
+      return await this.activeChat.run({ chatId, active: true }, work);
+    } finally {
+      release();
+      if (this.chatTails.get(chatId) === current) this.chatTails.delete(chatId);
     }
   }
 }
+
+export type { TelegramMessageLedgerEntry };

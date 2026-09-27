@@ -8,7 +8,21 @@ export type {
   ConnectorHealth,
   ConnectorsConfig,
 } from './types.js';
+export { readConnectorState, writeConnectorState } from './connector-state.js';
+export {
+  attachmentConnector,
+  type AttachmentConnector,
+  type AttachmentDescriptor,
+  type AttachmentListRequest,
+  type AttachmentDownloadRequest,
+  type AttachmentMatchRule,
+} from './attachments.js';
 export { ConnectorRegistry } from './connector-registry.js';
 export { PollingScheduler } from './polling-scheduler.js';
-export { RawStore } from '@jungjaehoon/mama-core/storage/source-archive';
-export { parseGwsOutput, execGws } from './gws-utils.js';
+export type {
+  PollingSchedulerOptions,
+  RawBatchCommittedCallback,
+  SourceDelta,
+  SourceObservationRef,
+} from './polling-scheduler.js';
+export { RawStore } from '../../storage/source-archive.js';

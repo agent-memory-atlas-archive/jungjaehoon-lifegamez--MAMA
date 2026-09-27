@@ -87,39 +87,6 @@ function normalizeDecisionText(text) {
   return text.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
-function extractFileHint(decision, reasoning) {
-  const sources = [decision, reasoning].filter(Boolean);
-  for (const source of sources) {
-    const match = source.match(/defined in\s+([^\s,]+)/i) || source.match(/from\s+([^\s,]+)/i);
-    if (match && match[1]) {
-      return match[1];
-    }
-  }
-  return null;
-}
-
-function buildContractTrustContext(decision, reasoning) {
-  const fileHint = extractFileHint(decision, reasoning);
-  return {
-    source: {
-      file: fileHint || 'unknown',
-      line: '?',
-      author: 'haiku',
-      timestamp: Date.now(),
-    },
-    causality: {
-      impact: 'Auto-extracted by LLM from code changes; verify before use.',
-    },
-    verification: {
-      test_file: null,
-      result: 'not_verified',
-    },
-    context_match: {
-      user_intent: 'contract extraction',
-    },
-  };
-}
-
 /**
  * Create save decision tool with dependencies
  * @param {Object} mamaApi - MAMA API instance
@@ -269,9 +236,6 @@ Structure your reasoning with these layers for maximum value:
       confidence = 0.5,
       type = 'user_decision',
       outcome = 'pending',
-      evidence,
-      alternatives,
-      risks,
       scopes,
       event_date,
       item,
@@ -297,7 +261,6 @@ Structure your reasoning with these layers for maximum value:
 
       let contractWarning = null;
       let contractSkipId = null;
-      let trustContext = null;
 
       if (isContractTopic(topic)) {
         const validation = validateContractDecision(topic, decision, reasoning);
@@ -310,7 +273,6 @@ Structure your reasoning with these layers for maximum value:
           };
         }
 
-        trustContext = buildContractTrustContext(decision, reasoning);
         try {
           const recallResult = await mamaApi.recall(topic);
           const existing = recallResult?.supersedes_chain?.[0];
@@ -350,10 +312,6 @@ Structure your reasoning with these layers for maximum value:
         confidence,
         type,
         outcome,
-        evidence,
-        alternatives,
-        risks,
-        trust_context: trustContext,
         ...(scopes && { scopes }),
         ...(event_date && { event_date }),
         ...(item && { item }),

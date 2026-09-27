@@ -6,7 +6,7 @@
  * @module ingest-conversation
  */
 
-const { ingestConversation } = require('@jungjaehoon/mama-core');
+const { ingestConversation } = require('@jungjaehoon/mama-core/mama-api');
 
 const createIngestConversationTool = (mamaApi) => ({
   name: 'ingest_conversation',
@@ -70,8 +70,7 @@ const createIngestConversationTool = (mamaApi) => ({
         };
       }
 
-      const ingestFn = mamaApi.ingestConversation || ingestConversation;
-      const result = await ingestFn({
+      const result = await mamaApi.ingestConversation({
         messages,
         scopes: scopes || [],
         source: {
@@ -97,6 +96,6 @@ const createIngestConversationTool = (mamaApi) => ({
   },
 });
 
-const ingestConversationTool = createIngestConversationTool({});
+const ingestConversationTool = createIngestConversationTool({ ingestConversation });
 
 module.exports = { ingestConversationTool, createIngestConversationTool };

@@ -13,7 +13,7 @@ import {
   cleanupTestDB,
   isEmbeddingsAvailable,
   createMockToolContext,
-} from '@jungjaehoon/mama-core/test-utils';
+} from '../helpers/test-db.js';
 import { MAMAServer } from '../../src/server.js';
 import { saveDecisionTool } from '../../src/tools/save-decision.js';
 
@@ -80,6 +80,16 @@ describe.skipIf(!embeddingsAvailable)(
           })
         );
       }
+    });
+
+    it('keeps a queryless topic prefix lookup within its ledger', async () => {
+      const response = await server.handleSearch({
+        type: 'decision',
+        topicPrefix: 'context_compile',
+      });
+      expect(response.success).toBe(true);
+      expect(response.results).toHaveLength(1);
+      expect(response.results[0].topic).toBe('context_compile_strategy');
     });
 
     it('omits diagnostics block when diagnostics is not requested', async () => {

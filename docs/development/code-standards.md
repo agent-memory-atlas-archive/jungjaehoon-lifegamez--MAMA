@@ -1,362 +1,77 @@
-# Code Standards
-
-Coding conventions and quality standards for MAMA.
-
+---
+title: Code standards
+parent: Development
+nav_order: 2
 ---
 
-## Quick Rules
+# Code standards
 
-### Non-Negotiable Rules
+Follow [AGENTS](../../AGENTS.md) and preserve the product requirements in [INTENT](../../INTENT.md).
+Choose a mechanism because code, source data or an owner decision requires it.
 
-```javascript
-// ❌ FORBIDDEN
-return { bones: [] };           // Dummy/fallback data
-if (error) return defaultValue; // Silent fallback
-const x: any = getData();       // `any` type
-console.log('debug info');      // console.log
+## Keep ownership explicit
 
-// ✅ REQUIRED
-if (!data) throw new Error("Data required");
-const x: Decision = getData();  // Proper typing
-DebugLogger.log('debug info');  // Use DebugLogger
+Core owns reusable storage, records, revisions, evidence, search and runtime mechanisms. Product
+vocabulary and integration assembly belong to the consumer. Other projects import core through
+its published exports, with their own database and authority. Verify this with the packed-core
+check in [the intent workflow](intent-workflow.md).
+
+Keep transport adapters thin. Read the assembly point before claiming a module is unused or an
+action is unavailable. Prefer relocating proven mechanisms to duplicating or deleting them.
+Before removing a host procedure or policy, identify where its domain knowledge and corrections
+will reach the agent and confirm that path with a real owner turn.
+
+The agent judges meaning, relevance, identity, roles and what to do. Host code supplies collection,
+storage, search, execution, permissions and receipts. Do not turn uncertain interpretation into
+keyword rules or introduce an alternate path just to hide a missing contract.
+
+## Preserve contracts and errors
+
+Use explicit types at boundaries and `unknown` for unvalidated input. The TypeScript ESLint rules
+reject explicit `any`. Validate external values before using them and preserve structured error
+codes through callers and traces. A legitimate empty result is different from failed retrieval;
+do not substitute dummy data for an error.
+
+Use the package's existing logging interface. Keep MCP stdout reserved for protocol traffic.
+Log bounded operational evidence without tokens, configuration contents or private source text.
+The root lint config does not ban every `console` call; choose the logger appropriate to the
+runtime rather than inventing a repository-wide logging API.
+
+Schema changes use the next-numbered migration in `packages/mama-core/db/migrations`. Never
+reuse numbers 044–060; the retired migration chain already occupies them. Preserve old record
+revisions and provenance while changing the current view. Record API, architecture and config
+schema decisions through MAMA MCP `save`.
+
+## Keep owner isolation intact
+
+The owner runtime uses its workspace, a Git boundary, isolated plugin/settings sources and a
+persistent backend session. Workspace writes, credential-read denies and secret-filtered backend
+environments are part of the contract. Core's shell and web defaults remain off; standalone
+explicitly enables the owner's tools. Do not widen these boundaries as a convenience fix.
+
+The owner agent and its subagents retain ordinary work authority. The boundaries are non-owner
+grants and scopes, configured delivery destinations, protected credentials, and administration
+requiring an interactive owner request. Observe other work in tool traces. See
+[backends](../guides/backends.md) and [security](../guides/security.md).
+
+## Use the repository style
+
+Prettier sets two spaces, single quotes, semicolons, ES5 trailing commas and a 100-character print
+width. ESLint requires `const` where possible, braces and strict equality, and checks unused
+variables. Run the configured tools instead of copying old style examples:
+
+```bash
+pnpm lint
+pnpm format:check
 ```
 
----
-
-## File Organization
-
-### Directory Structure
-
-```
-mama-plugin/
-├── src/
-│   ├── core/           # Business logic (DB, embeddings, scoring)
-│   ├── commands/       # /mama-* command handlers
-│   ├── hooks/          # Hook implementations
-│   └── skills/         # Auto-context skill
-├── scripts/            # Hook entry points
-├── tests/              # Test suite
-└── docs/               # Documentation
-```
-
-### File Size Limits
-
-- **Maximum file length:** 1000 lines
-- **Maximum function length:** 40 lines
-- **Recommended file length:** <300 lines
-
-**If file exceeds limit:** Split into modules.
-
----
-
-## TypeScript Standards
-
-### Type Safety
-
-```typescript
-// ❌ BAD: `any` type
-function process(data: any) {
-  return data.value;
-}
-
-// ✅ GOOD: Proper typing
-interface Decision {
-  topic: string;
-  decision: string;
-  reasoning: string;
-}
-
-function process(data: Decision): string {
-  return data.decision;
-}
-```
-
-### No Implicit Any
-
-```typescript
-// tsconfig.json
-{
-  "compilerOptions": {
-    "noImplicitAny": true,
-    "strict": true
-  }
-}
-```
-
----
-
-## Naming Conventions
-
-### Functions
-
-```javascript
-// ✅ Verb + noun (action-oriented)
-function saveDecision() {}
-function getEmbedding() {}
-function computeSimilarity() {}
-
-// ❌ Avoid noun-only names
-function decision() {} // Unclear action
-```
-
-### Variables
-
-```javascript
-// ✅ Descriptive names
-const embeddings = [];
-const similarityThreshold = 0.5;
-
-// ❌ Single letters (except loop indices)
-const e = [];
-const t = 0.5;
-```
-
-### Constants
-
-```javascript
-// ✅ UPPER_SNAKE_CASE for true constants
-const MAX_SEARCH_RESULTS = 10;
-const DEFAULT_EMBEDDING_MODEL = 'Xenova/multilingual-e5-small';
-
-// ❌ Don't use for regular variables
-const RESULTS = []; // Should be `results`
-```
-
----
-
-## Error Handling
-
-### Throw Errors, Don't Return Nulls
-
-```javascript
-// ❌ BAD: Silent failure
-function getDecision(id) {
-  if (!exists(id)) return null; // Caller must check
-  return decision;
-}
-
-// ✅ GOOD: Explicit error
-function getDecision(id) {
-  if (!exists(id)) {
-    throw new Error(`Decision ${id} not found`);
-  }
-  return decision;
-}
-```
-
-### No Dummy/Fallback Data
-
-```javascript
-// ❌ FORBIDDEN: Dummy data
-function getBones() {
-  if (error) return { bones: [] }; // Silent failure
-}
-
-// ✅ REQUIRED: Throw error
-function getBones() {
-  if (error) throw new Error('Failed to load bones');
-}
-```
-
----
-
-## Logging
-
-### Use DebugLogger
-
-```javascript
-// ❌ FORBIDDEN
-console.log('Search results:', results);
-console.error('Failed to load model');
-
-// ✅ REQUIRED
-import { DebugLogger } from './core/debug-logger.js';
-
-DebugLogger.log('Search results:', results);
-DebugLogger.error('Failed to load model');
-```
-
-### No Debug Logs in Production
-
-```javascript
-// Remove before commit
-DebugLogger.log('TODO: remove this debug');
-```
-
----
-
-## Comments
-
-### When to Comment
-
-```javascript
-// ✅ GOOD: Explain WHY, not WHAT
-// Use cosine similarity instead of Euclidean distance
-// because we care about direction, not magnitude
-const similarity = cosineSimilarity(v1, v2);
-
-// ❌ BAD: Obvious comments
-// Calculate similarity
-const similarity = cosineSimilarity(v1, v2);
-```
-
-### No TODO/FIXME in Commits
-
-```javascript
-// ❌ FORBIDDEN in commits
-// TODO: Fix this later
-// FIXME: Handle edge case
-
-// ✅ ALLOWED during development (must remove before commit)
-```
-
----
-
-## Testing Standards
-
-### Test Coverage
-
-- **Unit tests:** >80% coverage
-- **Integration tests:** All commands/hooks
-- **Regression tests:** All bug fixes
-
-### Test Real Implementation
-
-```javascript
-// ❌ FORBIDDEN: Mock internal code
-class MockSceneGraph {}
-test('uses SceneGraph', () => {
-  const mock = new MockSceneGraph();
-  // ...
-});
-
-// ✅ REQUIRED: Test real implementation
-test('exports all bones', () => {
-  const bones = createBones(3);
-  expect(JSON.parse(exportSkeleton()).bones).toHaveLength(3);
-});
-```
-
-**See also:** [Testing Guide](testing.md)
-
----
-
-## Performance Standards
-
-### Latency Targets
-
-| Operation            | Target (p95) |
-| -------------------- | ------------ |
-| Hook injection       | <500ms       |
-| Embedding generation | <30ms        |
-| Vector search        | <100ms       |
-| Decision save        | <50ms        |
-
-### Measure, Don't Estimate
-
-```javascript
-// ✅ GOOD: Measure actual performance
-const start = Date.now();
-await operation();
-const duration = Date.now() - start;
-DebugLogger.log(`Operation took ${duration}ms`);
-
-// ❌ BAD: Assume performance
-// This should be fast enough (no measurement)
-```
-
----
-
-## Documentation Standards
-
-### Code Documentation
-
-```javascript
-/**
- * Computes cosine similarity between two vectors.
- *
- * @param {number[]} v1 - First vector
- * @param {number[]} v2 - Second vector
- * @returns {number} Similarity score (0.0-1.0)
- * @throws {Error} If vectors have different dimensions
- */
-function cosineSimilarity(v1, v2) {
-  // Implementation
-}
-```
-
-### Update Docs with Code
-
-**When changing code, also update:**
-
-- User-facing docs (tutorials/, guides/)
-- Reference docs (reference/)
-- FR mapping (reference/fr-mapping.md)
-
----
-
-## Git Commit Standards
-
-### Commit Message Format
-
-```
-<type>: <description>
-
-[optional body]
-
-[optional footer]
-```
-
-**Types:**
-
-- `feat:` New feature
-- `fix:` Bug fix
-- `docs:` Documentation only
-- `test:` Tests
-- `refactor:` Code refactoring (no behavior change)
-- `perf:` Performance improvement
-
-**Examples:**
-
-```
-feat: Add recency boosting to search
-
-Implements FR10 (recency boosting) with exponential decay.
-Default weight is 30% (configurable).
-
-Closes #42
-```
-
-```
-fix: Prevent null pointer in graph expansion
-
-Bug: Graph expansion crashed when decision had no supersedes links.
-Fix: Check for null before traversing.
-
-Regression test added.
-```
-
----
-
-## Review Checklist
-
-Before submitting PR, verify:
-
-- [ ] All tests pass (`npm test`)
-- [ ] No `any` types
-- [ ] No `console.log`
-- [ ] No TODO/FIXME comments
-- [ ] File length <1000 lines
-- [ ] Function length <40 lines
-- [ ] Test coverage >80%
-- [ ] Documentation updated
-- [ ] Performance measured (if applicable)
-
----
-
-## See Also
-
-- [Developer Playbook](developer-playbook.md) - Development setup
-- [Testing Guide](testing.md) - Test standards
-- [Contributing Guide](contributing.md) - How to contribute
-- [Architecture](../explanation/architecture.md) - System design
+The root format scripts cover package source and tests. Check documentation explicitly with
+`pnpm exec prettier --check <changed-docs>` when needed.
+
+Use descriptive names and comments that explain a constraint or decision. Keep modules cohesive;
+line counts are a review signal, not proof of good boundaries. Count what a refactor removes as
+well as what it adds. Add behaviour tests at the affected boundary and use neutral fixtures.
+
+Do not commit personal or business identifiers, private source content or credentials in code,
+comments, examples, fixtures or commit messages. Keep local `docs/superpowers/` artifacts out of
+commits. Before reporting completion, inspect the diff and actual verification output.

@@ -2,10 +2,7 @@
  * Tests for case_timeline_range MCP tool
  */
 
-import { readdirSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import Database from 'better-sqlite3';
+import { initDB, getAdapter, closeDB } from '@jungjaehoon/mama-core/db-manager';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
@@ -16,28 +13,6 @@ import {
 import { createMemoryTools } from '../../src/tools/index.js';
 
 const CASE_ID = '11111111-1111-4111-8111-111111111111';
-
-function applyMigrations(db) {
-  const testDir = dirname(fileURLToPath(import.meta.url));
-  const migrationsDir = resolve(testDir, '../../../mama-core/db/migrations');
-
-  for (const file of readdirSync(migrationsDir)
-    .filter((entry) => entry.endsWith('.sql'))
-    .sort()) {
-    db.exec(readFileSync(join(migrationsDir, file), 'utf8'));
-  }
-}
-
-function createAdapter(db) {
-  return {
-    prepare(sql) {
-      return db.prepare(sql);
-    },
-    transaction(fn) {
-      return db.transaction(fn)();
-    },
-  };
-}
 
 function seedTimelineCase(db) {
   const now = '2026-04-18T00:00:00.000Z';
@@ -83,39 +58,22 @@ function seedTimelineCase(db) {
 
   db.prepare(
     `INSERT INTO observation_versions
-      (observation_id, source_connector, source_id, body, observed_at, content_hash,
-       metadata_json, scope_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      (observation_id, source, source_id, source_type, source_locator, title, body,
+       source_at, observed_at, content_hash, metadata_json, scope_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     'obs-timeline-artifact',
     'drive',
     'artifact-version-1',
+    'document',
+    'drive:artifact-version-1',
+    'artifact title',
     'artifact body',
+    Date.parse('2026-04-11T12:00:00.000Z'),
     Date.parse('2026-04-11T12:00:00.000Z'),
     'artifact-hash',
     '{}',
     '{}'
-  );
-  db.prepare(
-    `INSERT INTO connector_event_index
-      (event_index_id, source_connector, source_type, source_id, source_locator, content,
-       event_datetime, source_timestamp_ms, metadata_json, content_hash, indexed_at, updated_at,
-       current_observation_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    'event-timeline-artifact',
-    'drive',
-    'document',
-    'artifact-version-1',
-    'drive:artifact-version-1',
-    'artifact body',
-    Date.parse('2026-04-11T12:00:00.000Z'),
-    Date.parse('2026-04-11T12:00:00.000Z'),
-    '{}',
-    Buffer.alloc(32),
-    now,
-    now,
-    'obs-timeline-artifact'
   );
   db.prepare(
     `INSERT INTO case_memberships (
@@ -123,23 +81,26 @@ function seedTimelineCase(db) {
        added_by, added_at, updated_at, user_locked
      ) VALUES (?, 'artifact', ?, 'evidence', 0.9, 'captured artifact',
        'active', 'wiki-compiler', ?, ?, 0)`
-  ).run(CASE_ID, 'event-timeline-artifact', now, now);
+  ).run(CASE_ID, 'obs-timeline-artifact', now, now);
 }
 
 describe('case_timeline_range MCP tool', () => {
   let db;
 
-  beforeEach(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    applyMigrations(db);
+  beforeEach(async () => {
+    await initDB();
+    db = getAdapter();
+    db.prepare('DELETE FROM case_memberships').run();
+    db.prepare('DELETE FROM case_truth').run();
+    db.prepare('DELETE FROM decisions').run();
+    db.prepare('DELETE FROM observation_versions').run();
     seedTimelineCase(db);
-    setCaseTimelineRangeAdapterForTest(createAdapter(db));
+    setCaseTimelineRangeAdapterForTest(db);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     resetCaseTimelineRangeAdapterForTest();
-    db.close();
+    await closeDB();
   });
 
   it('is registered in createMemoryTools', () => {
@@ -186,5 +147,35 @@ describe('case_timeline_range MCP tool', () => {
         }),
       })
     );
+  });
+  it('resolves a merged case through the canonical chain', async () => {
+    const mergedId = '22222222-2222-4222-8222-222222222222';
+    db.prepare(
+      `INSERT INTO case_truth
+      (case_id, canonical_case_id, current_wiki_path, title, status, created_at, updated_at)
+      VALUES (?, ?, 'cases/merged.md', 'Merged case', 'active', ?, ?)`
+    ).run(mergedId, CASE_ID, '2026-04-12T00:00:00.000Z', '2026-04-12T00:00:00.000Z');
+    const result = await caseTimelineRangeTool.handler({ case_id: mergedId });
+    expect(result.terminal_case_id).toBe(CASE_ID);
+    expect(result.resolved_via_case_id).toBe(mergedId);
+    expect(result.items.map((item) => item.source_id)).toEqual([
+      'dec-timeline-range',
+      'obs-timeline-artifact',
+    ]);
+  });
+
+  it('honors event bounds, ordering and limit', async () => {
+    const bounded = await caseTimelineRangeTool.handler({
+      case_id: CASE_ID,
+      from: '2026-04-11T00:00:00.000Z',
+      to: '2026-04-11T23:59:59.999Z',
+    });
+    expect(bounded.items.map((item) => item.source_id)).toEqual(['obs-timeline-artifact']);
+    const descending = await caseTimelineRangeTool.handler({
+      case_id: CASE_ID,
+      order: 'desc',
+      limit: 1,
+    });
+    expect(descending.items.map((item) => item.source_id)).toEqual(['obs-timeline-artifact']);
   });
 });

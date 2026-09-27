@@ -1,13 +1,10 @@
 import type {
   MemoryEventRecord,
-  MemoryScopeRef,
   MemoryWriteProvenance,
   PublicIngestConversationInput,
   PublicIngestMemoryInput,
   PublicSaveMemoryInput,
 } from './types.js';
-
-const issuedCapabilities = new WeakSet<object>();
 
 const ALLOWED_PROVENANCE_FIELDS = new Set<keyof MemoryWriteProvenance>([
   'actor',
@@ -22,16 +19,6 @@ const ALLOWED_PROVENANCE_FIELDS = new Set<keyof MemoryWriteProvenance>([
   'source_refs',
 ]);
 
-export interface TrustedProvenanceCapability {
-  readonly __trustedProvenanceCapability: 'mama-core';
-}
-
-export interface TrustedMemoryWriteOptions {
-  provenance: MemoryWriteProvenance;
-  capability: TrustedProvenanceCapability;
-  authoritativeScopes?: readonly MemoryScopeRef[];
-}
-
 export interface NormalizedMemoryProvenance {
   actor: MemoryEventRecord['actor'];
   agent_id: string | null;
@@ -43,22 +30,6 @@ export interface NormalizedMemoryProvenance {
   source_message_ref: string | null;
   source_refs: string[];
   provenance: Record<string, unknown>;
-}
-
-export function createTrustedProvenanceCapability(): TrustedProvenanceCapability {
-  const capability = Object.freeze({
-    __trustedProvenanceCapability: 'mama-core' as const,
-  });
-  issuedCapabilities.add(capability);
-  return capability;
-}
-
-export function assertTrustedProvenanceCapability(
-  capability: TrustedProvenanceCapability | undefined
-): asserts capability is TrustedProvenanceCapability {
-  if (!capability || typeof capability !== 'object' || !issuedCapabilities.has(capability)) {
-    throw new Error('Invalid trusted provenance capability');
-  }
 }
 
 export function stripCallerProvenance<T extends Record<string, unknown>>(input: T): T {
@@ -86,14 +57,11 @@ export function sanitizePublicIngestConversationInput(
 }
 
 export function normalizeMemoryWriteProvenance(
-  options?: TrustedMemoryWriteOptions
+  provenance?: MemoryWriteProvenance
 ): NormalizedMemoryProvenance {
-  if (!options) {
+  if (!provenance) {
     return buildFallbackProvenance();
   }
-
-  assertTrustedProvenanceCapability(options.capability);
-  const provenance = options.provenance ?? {};
   const actor = provenance.actor ?? 'main_agent';
   const sourceRefs = normalizeStringArray(provenance.source_refs);
   const compact: Record<string, unknown> = {
@@ -124,23 +92,6 @@ export function normalizeMemoryWriteProvenance(
     source_message_ref: normalizeNullableString(provenance.source_message_ref),
     source_refs: sourceRefs,
     provenance: compact,
-  };
-}
-
-export function appendProvenanceSourceRefs(
-  options: TrustedMemoryWriteOptions | undefined,
-  refs: string[]
-): TrustedMemoryWriteOptions | undefined {
-  if (!options) {
-    return undefined;
-  }
-  assertTrustedProvenanceCapability(options.capability);
-  return {
-    capability: options.capability,
-    provenance: {
-      ...options.provenance,
-      source_refs: [...(options.provenance.source_refs ?? []), ...refs],
-    },
   };
 }
 

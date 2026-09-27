@@ -34,7 +34,7 @@ export interface WikiArtifactRecord {
 
 export interface WikiPublishPageInput {
   path: string;
-  /** Scheduled wiki CAS token from wiki_read. Ignored for non-workorder callers. */
+  /** Scheduled wiki CAS token from manage.wiki.read. Ignored for non-workorder callers. */
   expectedContentVersion?: string | null;
   title: string;
   type?: string;

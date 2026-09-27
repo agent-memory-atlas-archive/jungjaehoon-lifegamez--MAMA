@@ -67,7 +67,7 @@ describe('ObsidianConnector', () => {
 
     it('throws when vaultPath does not exist', async () => {
       const connector = new ObsidianConnector(makeConfig('/nonexistent/path/vault'));
-      await expect(connector.init()).rejects.toThrow(/does not exist/i);
+      await expect(connector.init()).rejects.toThrow(/not readable/i);
     });
   });
 
@@ -104,7 +104,7 @@ describe('ObsidianConnector', () => {
       const items = await connector.poll(since);
 
       expect(items).toHaveLength(1);
-      expect(items[0]?.sourceId).toBe('new-note.md');
+      expect(items[0]?.sourceId).toBe('vault:new-note.md');
     });
 
     it('sets sourceId to relative path from vault root', async () => {
@@ -118,7 +118,9 @@ describe('ObsidianConnector', () => {
       const items = await connector.poll(new Date(0));
 
       const noteItem = items.find((i) => i.sourceId.includes('my-note.md'));
-      expect(noteItem?.sourceId).toBe('notes/my-note.md');
+      expect(noteItem?.sourceId).toBe('vault:notes/my-note.md');
+      expect(noteItem?.metadata).toMatchObject({ relPath: 'notes/my-note.md' });
+      expect(JSON.stringify(noteItem)).not.toContain(tempDir);
     });
 
     it('sets source to "obsidian"', async () => {
@@ -146,7 +148,7 @@ describe('ObsidianConnector', () => {
       expect(items[0]?.content).toBe(content);
     });
 
-    it('sets channel to parent directory name for nested files', async () => {
+    it('maps nested files to the configured vault channel', async () => {
       const subDir = join(tempDir, 'projects');
       mkdirSync(subDir);
       createMdFile(join(subDir, 'plan.md'), '# Plan', new Date('2024-06-01T00:00:00.000Z'));
@@ -156,17 +158,17 @@ describe('ObsidianConnector', () => {
       const items = await connector.poll(new Date(0));
 
       const item = items.find((i) => i.sourceId.includes('plan.md'));
-      expect(item?.channel).toBe('projects');
+      expect(item?.channel).toBe('vault');
     });
 
-    it('sets channel to "vault" for root-level files', async () => {
+    it('maps root-level files to the configured vault channel', async () => {
       createMdFile(join(tempDir, 'root.md'), '# Root', new Date('2024-06-01T00:00:00.000Z'));
 
       const connector = new ObsidianConnector(makeConfig(tempDir));
       await connector.init();
       const items = await connector.poll(new Date(0));
 
-      const item = items.find((i) => i.sourceId === 'root.md');
+      const item = items.find((i) => i.sourceId === 'vault:root.md');
       expect(item?.channel).toBe('vault');
     });
 
@@ -194,6 +196,44 @@ describe('ObsidianConnector', () => {
       await connector.init();
       const items = await connector.poll(new Date(0));
       expect(items.some((i) => i.sourceId.includes('deep.md'))).toBe(true);
+    });
+
+    it('routes each configured vault to its own channel key', async () => {
+      const secondVault = join(tempDir, '.second-vault');
+      mkdirSync(secondVault);
+      createMdFile(join(tempDir, 'primary.md'), '# Primary', new Date('2024-06-01T00:00:00.000Z'));
+      createMdFile(
+        join(secondVault, 'reference.md'),
+        '# Reference',
+        new Date('2024-06-01T00:00:00.000Z')
+      );
+      const config = makeConfig(undefined, {
+        channels: {
+          primary: { role: 'truth', name: 'Primary notes', vaultPath: tempDir },
+          reference: { role: 'reference', name: 'Reference notes', vaultPath: secondVault },
+        },
+      });
+      const connector = new ObsidianConnector(config);
+      await connector.init();
+      const items = await connector.poll(new Date(0));
+
+      expect(items.find((item) => item.sourceId.endsWith('primary.md'))?.channel).toBe('primary');
+      expect(items.find((item) => item.sourceId.endsWith('reference.md'))?.channel).toBe(
+        'reference'
+      );
+      expect(items.every((item) => !JSON.stringify(item).includes(tempDir))).toBe(true);
+    });
+
+    it('fails the poll when a configured vault path becomes unreadable', async () => {
+      const vaultPath = join(tempDir, 'selected-vault');
+      mkdirSync(vaultPath);
+      const connector = new ObsidianConnector(makeConfig(vaultPath));
+      await connector.init();
+      rmSync(vaultPath, { recursive: true, force: true });
+
+      await expect(connector.poll(new Date(0))).rejects.toThrow(
+        /Obsidian poll failed for 1 of 1 configured vault paths; last error:/
+      );
     });
   });
 

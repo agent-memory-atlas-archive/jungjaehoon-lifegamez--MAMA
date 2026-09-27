@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { getAdapter } from '../../src/db-manager.js';
 import { queryDecisionGraph } from '../../src/knowledge/graph-query.js';
-import { cleanupTestDB, initTestDB } from '../../src/test-utils.js';
+import { cleanupTestDB, initTestDB } from '../helpers/test-utils.js';
 import { createNode, mergeNodes } from '../../src/registry/store.js';
 import {
   RecordIdentityError,
@@ -10,7 +10,6 @@ import {
   readRecordIdentity,
 } from '../../src/registry/record-identity.js';
 import { saveLegacyMemory, saveMemory } from '../../src/memory/api.js';
-import { createTrustedProvenanceCapability } from '../../src/memory/provenance.js';
 
 /**
  * A record says what it is about by pointing at a node, not by spelling it in `topic`.
@@ -47,9 +46,9 @@ describe('record identity', () => {
     adapter.prepare('DELETE FROM embeddings').run();
     adapter.prepare('DELETE FROM registry_aliases').run();
     adapter.prepare('DELETE FROM registry_nodes').run();
-    item = createNode({ kind: 'item', name: 'alpha item', aliases: ['a_0001'] });
-    worker = createNode({ kind: 'person', name: 'person one' });
-    contact = createNode({ kind: 'person', name: 'person two' });
+    item = createNode(getAdapter(), { kind: 'item', name: 'alpha item', aliases: ['a_0001'] });
+    worker = createNode(getAdapter(), { kind: 'person', name: 'person one' });
+    contact = createNode(getAdapter(), { kind: 'person', name: 'person two' });
     adapter
       .prepare(
         `INSERT INTO decisions (id, topic, decision, reasoning, confidence, created_at, updated_at,
@@ -67,7 +66,7 @@ describe('record identity', () => {
     itemId?: string | null;
     actors?: Array<{ personId: string; role: string }>;
   }) =>
-    saveMemory({
+    saveMemory(getAdapter(), {
       topic: 'alpha item',
       kind: 'decision',
       summary: 'a fact',
@@ -86,8 +85,8 @@ describe('record identity', () => {
       ],
     });
 
-    expect(readRecordIdentity(saved.id)?.itemId).toBe(item);
-    expect(listActors(saved.id)).toEqual([
+    expect(readRecordIdentity(getAdapter(), saved.id)?.itemId).toBe(item);
+    expect(listActors(getAdapter(), saved.id)).toEqual([
       { personId: worker, role: 'worker' },
       { personId: contact, role: 'client contact' },
     ]);
@@ -102,7 +101,7 @@ describe('record identity', () => {
       ],
     });
 
-    expect(listActors(saved.id)).toHaveLength(2);
+    expect(listActors(getAdapter(), saved.id)).toHaveLength(2);
   });
 
   it('refuses an item id that is not a registered item, instead of storing a dangling string', async () => {
@@ -118,28 +117,28 @@ describe('record identity', () => {
   });
 
   it('resolves a merged node to its survivor, so old references keep answering', async () => {
-    const survivor = createNode({ kind: 'item', name: 'alpha item canonical' });
-    mergeNodes({ loser: item, survivor, reason: 'owner confirmed same item' });
+    const survivor = createNode(getAdapter(), { kind: 'item', name: 'alpha item canonical' });
+    mergeNodes(getAdapter(), { loser: item, survivor, reason: 'owner confirmed same item' });
 
     const saved = await save({ itemId: item });
 
-    expect(readRecordIdentity(saved.id)?.itemId).toBe(survivor);
+    expect(readRecordIdentity(getAdapter(), saved.id)?.itemId).toBe(survivor);
   });
 
   it('saves the decision, embedding, scope, item and actors in one adapter transaction', async () => {
     getAdapter().prepare('DELETE FROM decisions').run();
-    const scopedItem = createNode({
+    const scopedItem = createNode(getAdapter(), {
       kind: 'item',
       name: 'scoped atomic item',
       scopes: [{ kind: 'project', id: 'synthetic-project' }],
     });
-    const scopedWorker = createNode({
+    const scopedWorker = createNode(getAdapter(), {
       kind: 'person',
       name: 'scoped atomic worker',
       scopes: [{ kind: 'project', id: 'synthetic-project' }],
     });
 
-    const saved = await saveMemory({
+    const saved = await saveMemory(getAdapter(), {
       topic: 'atomic record identity',
       kind: 'decision',
       summary: 'Persist the explicit work identity',
@@ -150,8 +149,10 @@ describe('record identity', () => {
       actors: [{ personId: scopedWorker, role: 'worker' }],
     });
 
-    expect(readRecordIdentity(saved.id)).toEqual({ itemId: scopedItem });
-    expect(listActors(saved.id)).toEqual([{ personId: scopedWorker, role: 'worker' }]);
+    expect(readRecordIdentity(getAdapter(), saved.id)).toEqual({ itemId: scopedItem });
+    expect(listActors(getAdapter(), saved.id)).toEqual([
+      { personId: scopedWorker, role: 'worker' },
+    ]);
     expect(
       getAdapter()
         .prepare('SELECT COUNT(*) AS count FROM memory_scope_bindings WHERE memory_id = ?')
@@ -163,12 +164,12 @@ describe('record identity', () => {
     const db = getAdapter();
     db.prepare('DELETE FROM decisions').run();
     const rollbackScope = { kind: 'project' as const, id: 'previously-absent-scope' };
-    const scopedItem = createNode({
+    const scopedItem = createNode(getAdapter(), {
       kind: 'item',
       name: 'rollback scoped item',
       scopes: [rollbackScope],
     });
-    const scopedWorker = createNode({
+    const scopedWorker = createNode(getAdapter(), {
       kind: 'person',
       name: 'rollback scoped worker',
       scopes: [rollbackScope],
@@ -182,7 +183,7 @@ describe('record identity', () => {
     `);
 
     await expect(
-      saveMemory({
+      saveMemory(getAdapter(), {
         topic: 'rollback record identity',
         kind: 'decision',
         summary: 'This must leave no partial record',
@@ -213,14 +214,14 @@ describe('record identity', () => {
     const db = getAdapter();
     db.prepare('DELETE FROM memory_events').run();
     db.prepare('DELETE FROM decisions').run();
-    const hidden = createNode({
+    const hidden = createNode(getAdapter(), {
       kind: 'item',
       name: 'scope a item',
       scopes: [{ kind: 'project', id: 'scope-a' }],
     });
 
     await expect(
-      saveMemory({
+      saveMemory(getAdapter(), {
         topic: 'hidden identity',
         kind: 'decision',
         summary: 'Must fail closed',
@@ -271,7 +272,7 @@ describe('record identity', () => {
     const db = getAdapter();
     db.prepare('DELETE FROM memory_events').run();
     db.prepare('DELETE FROM decisions').run();
-    const target = await saveMemory({
+    const target = await saveMemory(getAdapter(), {
       topic: 'target',
       kind: 'decision',
       summary: 'target',
@@ -280,6 +281,7 @@ describe('record identity', () => {
       source: { package: 'mama-core', source_type: 'test' },
     });
     await saveLegacyMemory(
+      getAdapter(),
       {
         topic: 'dedupe',
         kind: 'decision',
@@ -299,6 +301,7 @@ describe('record identity', () => {
     const before = db.prepare('SELECT COUNT(*) AS count FROM decisions').get();
     await expect(
       saveLegacyMemory(
+        getAdapter(),
         {
           topic: 'denied',
           kind: 'decision',
@@ -309,12 +312,9 @@ describe('record identity', () => {
         },
         { relationships: [{ type: 'supersedes', targetIds: [target.id] }] },
         {
-          capability: createTrustedProvenanceCapability(),
-          provenance: { actor: 'main_agent' },
-          authoritativeScopes: [
-            { kind: 'project', id: 'a' },
-            { kind: 'project', id: 'b' },
-          ],
+          principalId: 'main_agent',
+          agentId: 'main_agent',
+          scopes: [{ kind: 'project', id: 'a' }],
         }
       )
     ).rejects.toMatchObject({
@@ -323,6 +323,7 @@ describe('record identity', () => {
     });
     await expect(
       saveLegacyMemory(
+        getAdapter(),
         {
           topic: 'unknown-denied',
           kind: 'decision',
@@ -333,9 +334,9 @@ describe('record identity', () => {
         },
         { relationships: [{ type: 'supersedes', targetIds: ['decision_unknown'] }] },
         {
-          capability: createTrustedProvenanceCapability(),
-          provenance: { actor: 'main_agent' },
-          authoritativeScopes: [{ kind: 'project', id: 'a' }],
+          principalId: 'main_agent',
+          agentId: 'main_agent',
+          scopes: [{ kind: 'project', id: 'a' }],
         }
       )
     ).rejects.toMatchObject({
@@ -349,6 +350,7 @@ describe('record identity', () => {
     };
     db.insertEmbedding(targetRow.rowid, [1, 0]);
     await saveLegacyMemory(
+      getAdapter(),
       {
         topic: 'authorized',
         kind: 'decision',
@@ -359,9 +361,9 @@ describe('record identity', () => {
       },
       { relationships: [{ type: 'supersedes', targetIds: [target.id] }] },
       {
-        capability: createTrustedProvenanceCapability(),
-        provenance: { actor: 'main_agent' },
-        authoritativeScopes: [{ kind: 'project', id: 'b' }],
+        principalId: 'main_agent',
+        agentId: 'main_agent',
+        scopes: [{ kind: 'project', id: 'b' }],
       }
     );
     expect(db.prepare('SELECT status FROM decisions WHERE id = ?').get(target.id)).toEqual({
@@ -373,16 +375,18 @@ describe('record identity', () => {
   it('includes records bound to transitive merged losers in the survivor timeline', () => {
     const db = getAdapter();
     db.prepare('DELETE FROM decisions').run();
-    const first = createNode({ kind: 'item', name: 'first loser' });
-    const second = createNode({ kind: 'item', name: 'second loser' });
-    const survivor = createNode({ kind: 'item', name: 'timeline survivor' });
+    const first = createNode(getAdapter(), { kind: 'item', name: 'first loser' });
+    const second = createNode(getAdapter(), { kind: 'item', name: 'second loser' });
+    const survivor = createNode(getAdapter(), { kind: 'item', name: 'timeline survivor' });
     db.prepare(
       `INSERT INTO decisions
        (id, topic, decision, confidence, item_id, created_at, updated_at)
        VALUES ('timeline-old', 'old', 'old', 1, ?, 1, 1)`
     ).run(first);
-    mergeNodes({ loser: first, survivor: second, reason: 'explicit' });
-    mergeNodes({ loser: second, survivor, reason: 'explicit' });
-    expect(listRecordIdsForItem(survivor).map((row) => row.id)).toContain('timeline-old');
+    mergeNodes(getAdapter(), { loser: first, survivor: second, reason: 'explicit' });
+    mergeNodes(getAdapter(), { loser: second, survivor, reason: 'explicit' });
+    expect(listRecordIdsForItem(getAdapter(), survivor).map((row) => row.id)).toContain(
+      'timeline-old'
+    );
   });
 });

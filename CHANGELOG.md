@@ -2,6 +2,125 @@
 
 All notable changes to this project will be documented in this file.
 
+## mama-os [0.57.0] / mama-core [4.0.0] / mcp-server [2.2.1] / plugin [2.0.1] - 2026-09-27
+
+This is the first npm release since mama-os 0.53.1, mama-core 2.4.1 and mcp-server 1.15.0: versions
+0.53.2 through 0.56.0 were prepared on main but never published. If you install from npm, read the
+entries below this one down to 0.53.2 as well; the breaking changes listed here are relative to the
+last entry, 0.56.0.
+
+### Highlights
+
+- Follow work with one owner agent on Claude or Codex. MAMA keeps source evidence, work history,
+  reports, a board, wiki pages, and corrections on your computer.
+- Development memory is available through Claude Code commands, hooks, and an MCP server that
+  uses the shared engine in-process without the MAMA OS daemon.
+- Telegram, Discord and Slack are selectable owner messengers. See the
+  [messengers guide](docs/guides/messengers.md).
+
+### Changed since 0.56
+
+- `mama init` now sets up the local configuration in a terminal and stores tokens in `auth.env`;
+  use `mama daemon`, `mama status`, and `mama stop` to manage the service.
+- Source records keep their original content, revisions, and links to evidence. The agent reads
+  saved work before answering, updates a board and wiki, sends scheduled reports, and carries
+  applicable corrections into later conversations.
+- File attachments sent to the owner arrive in `~/.mama/downloads/`; the agent can read that
+  directory but cannot write there.
+- Corrections are kept as guidance: lessons, preferences, constraints and workflows, each with a
+  line saying when it applies. The agent sees the list when a session starts, reads an entry when it
+  applies, and saves, revises or retires a workflow as you agree on it.
+- A source change is handled in one turn. The agent continues from what it already knows: it updates
+  the affected work item (the host attaches up to five open items that may be related), the board
+  sections that item is in or leaves, and the topic's wiki page, then decides whether to notify you.
+  It no longer re-reads all work and the whole board for every change. A chat answer that changes
+  work updates the board the same way; only scheduled full reports rewrite the whole board.
+- Your timezone is one setting. `mama init` asks for it (default: this machine's timezone), and you
+  can change it by telling MAMA in chat. Report hours, times, deadlines and all-day events follow it.
+- A source whose last collection failed is listed in reports with its error, so a failure is not
+  read as "no change". An iCal booking that disappears from its feed before it ends is recorded as
+  cancelled.
+- Scheduled reports read the recent changes in every source, all open work by stage, and the next 14
+  days of schedule, including several Google calendars, holiday calendars and iCal reservation feeds.
+- The board header counts open, overdue and unassigned work, and each board section shows when it
+  was last written.
+
+### Removed
+
+- Multi-agent and Conductor orchestration, the Code-Act execution layer, envelopes, and tier
+  levels have been removed.
+- Workorders and the trigger loop have been removed. Heartbeat and cron no longer act as owners
+  of scheduled work; scheduled reports run through the owner session.
+- The Cline backend and the old `mama setup`, `mama start`, `mama run`, `mama report`,
+  `mama gateway`, and `mama connector` commands have been removed. The old JSON status option
+  and `init` flags were also removed.
+- The old API routes that drove assistant actions have been removed. The current local viewer
+  exposes read-only pages for the board, work, memory, wiki, logs, and security events.
+
+### Restored
+
+- Security hardening was restored: terminal-only credential entry, separate credential storage,
+  restricted agent file access, untrusted-source handling, and authenticated remote viewer access.
+- The public MCP server again uses `mama-core` in-process and its own development-memory database.
+- Source connectors were restored: Calendar, Gmail, Drive, Sheets, Notion, Obsidian, Discord, the
+  Telegram source, iMessage, and Claude Code. Discord and Slack messengers were restored as
+  selectable owner destinations.
+
+### Breaking changes
+
+- **Configuration:** old configuration is not carried forward. Back up the files, run `mama init`
+  in a terminal to write the current `config.yaml` and `connectors.json`, then reconnect the sources.
+- **Telegram token:** remove `telegram.token` from old configuration and enter the bot token at
+  the `mama init` prompt. It is stored as `MAMA_TELEGRAM_TOKEN` in `~/.mama/auth.env`. Telegram
+  source access uses the separate `MAMA_TELEGRAM_SOURCE_TOKEN`.
+- **Connector tokens:** use `MAMA_CHATWORK_TOKEN`, `MAMA_SLACK_TOKEN`, `MAMA_TRELLO_KEY` and
+  `MAMA_TRELLO_TOKEN`, `MAMA_NOTION_TOKEN`, and `MAMA_DISCORD_TOKEN` in `auth.env`. Google
+  Calendar, Gmail, Drive, and Sheets use the logged-in `gws` command. Re-enter selected connector
+  credentials through `mama init` or `mama secret set <NAME>`.
+- **CLI:** replace `mama setup`, `mama start`, `mama run`, `mama report`, `mama gateway`, and
+  `mama connector` commands with `mama init`, `mama daemon`, `mama status`, `mama stop`, and
+  `mama secret`. `mama init` no longer accepts the old flags, and `mama status --json` is gone.
+  See the [CLI reference](docs/reference/cli.md).
+- **Downloads:** attachment downloads moved to `~/.mama/downloads/`. Copy a file into the
+  workspace before editing it.
+- **Reply ledger:** the daemon keeps delivery records for every messenger in
+  `~/.mama/runtime/owner-message-ledger.json`. The old Telegram record file is not read, so a reply
+  in flight during the upgrade is not resumed.
+- **Report hours:** set them in `config.yaml` under `reports` (`full_report_hours`,
+  `reminder_start_hour`, `reminder_end_hour`). `MAMA_TRIGGER_LOOP_FULL_REPORT_HOURS` in `start.sh`
+  is no longer read.
+- **Connector token names:** a connector's `auth.tokenName` must be a name `mama secret set`
+  accepts: one of the listed MAMA secret names, or `MAMA_ICAL_URL_<NAME>` for an iCal feed.
+- **Timezone:** 0.56 used Korea time everywhere. 0.57 uses the `timezone` setting, which defaults
+  to this machine's timezone. On a machine set to another timezone, add `timezone: Asia/Seoul` (or
+  tell MAMA in chat) to keep the old report hours.
+- **report.publish:** the `basis_revision` input and the board freshness fields were removed; a call
+  that still sends `basis_revision` is rejected as invalid input.
+- **Database migrations:** migrations 096–098 drop the unused connector event full-text index,
+  guard a native-input view against malformed historical JSON, and add `workflow` as a memory
+  kind. Let MAMA apply these migrations; do not edit the database schema by hand.
+- **mama-core 4.0:** old package subpaths for `config-loader`, `decision-tracker`, `db-adapter`,
+  `agent-graph`, `context-compile`, `storage/*`, `edges/*`, and several `cases/*` and
+  `connectors/*` modules were removed. Some former root exports are no longer public. Compare the
+  3.2 and 4.0 `exports` maps, update imports to current public paths, and rebuild against 4.0 before
+  upgrading.
+
+### Known issues
+
+- Fresh-machine onboarding has not been verified end to end. Source-provider logins and post-restart
+  reads also still need live checks.
+- Historical replay needs a separate Jev key; onboarding does not configure it. Historical
+  backfill is available only through a script.
+- The first live download-copy-deliver run and the one-turn source-change flow on a live change have
+  not yet been observed.
+- iCal recurring events (RRULE/EXDATE) are not expanded; only the first occurrence is read.
+- If the first poll of a new calendar or iCal feed fails after saving and an event changes before the
+  retry, the older version can arrive as one live change.
+- Response time depends strongly on the model's reasoning effort: the same owner report took 291 s
+  with `agent.effort: high` and 19 s with `medium` after the read changes. `medium` is recommended.
+- A live correction has not yet confirmed that guidance changes the next related answer. Live
+  connector coverage, full report delivery, and daemon restart recovery remain incomplete.
+
 ## mama-core [3.2.0] / mcp-server [2.2.0] / mama-os [0.56.0] - 2026-09-13
 
 Connector polls and authenticated owner turns now create immutable observation versions and carry

@@ -10,11 +10,11 @@
  * timeline that is missing history, which is the failure mode this whole design exists to remove.
  *
  * The binding is written only inside the transaction that appends the record it belongs to, so
- * this module offers no standalone entry point that rewrites the identity of a record already
+ * this module offers no separate entry point that rewrites the identity of a record already
  * stored. Changing what a stored record is about is a correction, not an overwrite.
  */
 
-import { getAdapter } from '../db-manager.js';
+import type { DatabaseAdapter } from '../db-manager.js';
 import { resolveNodeById } from './store.js';
 import type { RecordActor, RecordIdentity, RegistryScopeRef } from './types.js';
 
@@ -30,25 +30,17 @@ export class RecordIdentityError extends Error {
   }
 }
 
-function adapter(): {
-  prepare(sql: string): {
-    run(...params: unknown[]): { changes: number };
-    get(...params: unknown[]): unknown;
-    all(...params: unknown[]): unknown[];
-  };
-  transaction<T>(fn: () => T): T;
-} {
-  return getAdapter() as never;
-}
+type RecordIdentityAdapter = Pick<DatabaseAdapter, 'prepare'>;
 
 /** The live node for an id, following merges. Raises when it is absent or the wrong kind. */
 function requireNode(
+  adapter: RecordIdentityAdapter,
   id: string,
   kind: 'item' | 'person',
   slot: string,
   scopes?: readonly RegistryScopeRef[]
 ): string {
-  const node = resolveNodeById(id);
+  const node = resolveNodeById(adapter, id);
   if (!node) {
     throw new RecordIdentityError(
       'unknown_node',
@@ -61,7 +53,7 @@ function requireNode(
       `${slot} expects a ${kind} node; ${id} is a ${node.kind}.`
     );
   }
-  const bindings = adapter()
+  const bindings = adapter
     .prepare('SELECT scope_kind, scope_id FROM registry_scope_bindings WHERE node_id = ?')
     .all(node.id) as Array<{ scope_kind: RegistryScopeRef['kind']; scope_id: string }>;
   const visible =
@@ -80,31 +72,26 @@ function requireNode(
 }
 
 /** Resolve every supplied identity reference before a record write begins. */
-export function validateRecordIdentityReferences(input: {
-  itemId?: string | null;
-  actors?: readonly RecordActor[];
-  scopes?: readonly RegistryScopeRef[];
-}): void {
+export function validateRecordIdentityReferences(
+  adapter: RecordIdentityAdapter,
+  input: {
+    itemId?: string | null;
+    actors?: readonly RecordActor[];
+    scopes?: readonly RegistryScopeRef[];
+  }
+): void {
   if (input.itemId !== undefined && input.itemId !== null) {
-    requireNode(input.itemId, 'item', 'item_id', input.scopes);
+    requireNode(adapter, input.itemId, 'item', 'item_id', input.scopes);
   }
   for (const actor of input.actors ?? []) {
     if (!actor.role.trim()) {
       throw new RecordIdentityError('empty_role', 'An actor needs a role.');
     }
-    requireNode(actor.personId, 'person', 'actor', input.scopes);
+    requireNode(adapter, actor.personId, 'person', 'actor', input.scopes);
   }
 }
 
-interface RecordIdentityAdapter {
-  prepare(sql: string): {
-    run(...params: unknown[]): { changes: number };
-    get(...params: unknown[]): unknown;
-    all(...params: unknown[]): unknown[];
-  };
-}
-
-export function writeRecordIdentityInAdapter(
+export function writeRecordIdentity(
   db: RecordIdentityAdapter,
   input: {
     recordId: string;
@@ -116,9 +103,9 @@ export function writeRecordIdentityInAdapter(
   const itemId =
     input.itemId === undefined || input.itemId === null
       ? null
-      : requireNode(input.itemId, 'item', 'item_id', input.scopes);
+      : requireNode(db, input.itemId, 'item', 'item_id', input.scopes);
   const actors = (input.actors ?? []).map((actor, position) => ({
-    personId: requireNode(actor.personId, 'person', 'actor', input.scopes),
+    personId: requireNode(db, actor.personId, 'person', 'actor', input.scopes),
     role: actor.role.trim(),
     position,
   }));
@@ -138,8 +125,11 @@ export function writeRecordIdentityInAdapter(
   }
 }
 
-export function readRecordIdentity(recordId: string): RecordIdentity | null {
-  const row = adapter().prepare('SELECT item_id FROM decisions WHERE id = ?').get(recordId) as
+export function readRecordIdentity(
+  adapter: RecordIdentityAdapter,
+  recordId: string
+): RecordIdentity | null {
+  const row = adapter.prepare('SELECT item_id FROM decisions WHERE id = ?').get(recordId) as
     | { item_id: string | null }
     | undefined;
   if (!row) {
@@ -147,34 +137,35 @@ export function readRecordIdentity(recordId: string): RecordIdentity | null {
   }
   // Canonicalise on read: a merge moves aliases but rewrites no consumer, so an id stored
   // before the merge still has to answer with the surviving node.
-  const itemId = row.item_id ? (resolveNodeById(row.item_id)?.id ?? null) : null;
+  const itemId = row.item_id ? (resolveNodeById(adapter, row.item_id)?.id ?? null) : null;
   return { itemId };
 }
 
-export function listActors(recordId: string): RecordActor[] {
-  const rows = adapter()
+export function listActors(adapter: RecordIdentityAdapter, recordId: string): RecordActor[] {
+  const rows = adapter
     .prepare(
       'SELECT person_id, role FROM record_actors WHERE record_id = ? ORDER BY position, rowid'
     )
     .all(recordId) as Array<{ person_id: string; role: string }>;
   return rows.map((row) => ({
-    personId: resolveNodeById(row.person_id)?.id ?? row.person_id,
+    personId: resolveNodeById(adapter, row.person_id)?.id ?? row.person_id,
     role: row.role,
   }));
 }
 
 /** Records bound to one item, newest first. The read `item_timeline` is built on. */
 export function listRecordIdsForItem(
+  adapter: RecordIdentityAdapter,
   itemId: string,
   options?: { limit?: number; before?: { timestamp: number; id: string } }
 ): Array<{ id: string; timestamp: number }> {
-  const node = resolveNodeById(itemId);
+  const node = resolveNodeById(adapter, itemId);
   if (!node) {
     throw new RecordIdentityError('unknown_node', `No registry node ${itemId}.`);
   }
   const limit = Math.min(Math.max(options?.limit ?? 20, 1), 100);
   const before = options?.before;
-  const rows = adapter()
+  const rows = adapter
     .prepare(
       `WITH RECURSIVE item_ids(id) AS (
          SELECT ?

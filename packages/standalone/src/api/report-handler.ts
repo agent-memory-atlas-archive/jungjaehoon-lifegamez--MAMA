@@ -9,32 +9,33 @@ export interface ReportSlot {
   html: string;
   priority: number;
   updatedAt: number;
-  /** Task-ledger basis of authored analysis, never inferred from publish time. */
-  basisRevision?: string | null;
-  currentBasisRevision?: string;
-  freshness?: 'current' | 'stale' | 'unknown';
-}
-
-export interface TaskFactProjection {
-  basisRevision: string;
-  html: string;
+  /** The action that last wrote this slot; absent on snapshots predating trace attribution. */
+  operationId?: string | null;
+  modelRunId?: string | null;
 }
 
 export interface ReportUpdateOptions {
-  basisRevision?: string | null;
+  operationId?: string | null;
+  modelRunId?: string | null;
 }
 
 export interface ReportStore {
   get(slotId: string): ReportSlot | undefined;
+  /** Whether report.publish may author this slot under the current store binding. */
+  isPublishable(slotId: string): boolean;
   update(slotId: string, html: string, priority: number, options?: ReportUpdateOptions): void;
+  /** Commit one agent-authored batch before reporting publication success. */
+  publishBatch(
+    updates: readonly {
+      slotId: string;
+      html: string;
+      priority: number;
+      options?: ReportUpdateOptions;
+    }[]
+  ): void;
   delete(slotId: string): void;
   getAll(): Record<string, ReportSlot>;
   getAllSorted(): ReportSlot[];
-  setTaskProjectionProvider(
-    provider: (() => TaskFactProjection) | null,
-    onRefresh?: (slots: ReportSlot[]) => void
-  ): void;
-  refreshTaskProjection(): boolean;
 }
 
 export interface ReportPublishResult {
@@ -46,96 +47,40 @@ export function createReportStore(
   options: {
     initialSlots?: Readonly<Record<string, ReportSlot>>;
     onChange?: (slots: Record<string, ReportSlot>) => void;
+    beforePublish?: (slots: Record<string, ReportSlot>) => void;
   } = {}
 ): ReportStore {
-  const slots = new Map<string, ReportSlot>(
+  let slots = new Map<string, ReportSlot>(
     Object.entries(options.initialSlots ?? {}).map(([id, slot]) => [id, { ...slot }])
   );
-  let projectionProvider: (() => TaskFactProjection) | null = null;
-  let projectionObserver: ((slots: ReportSlot[]) => void) | undefined;
-  let currentBasis: string | undefined;
-  let refreshing = false;
   const snapshot = (): Record<string, ReportSlot> =>
     Object.fromEntries(Array.from(slots, ([id, slot]) => [id, { ...slot }]));
   const sorted = (): ReportSlot[] =>
     Array.from(slots.values(), (slot) => ({ ...slot })).sort((a, b) => a.priority - b.priority);
   const changed = (): void => options.onChange?.(snapshot());
-  const assertBasis = (basis: string): void => {
-    if (typeof basis !== 'string' || !basis.trim() || basis !== basis.trim()) {
-      throw new Error('Report basisRevision must be a non-empty canonical string');
-    }
-  };
-  const freshness = (basis: string | null | undefined): ReportSlot['freshness'] =>
-    basis === null || basis === undefined
-      ? 'unknown'
-      : basis === currentBasis
-        ? 'current'
-        : 'stale';
-  const refreshTaskProjection = (): boolean => {
-    if (!projectionProvider || refreshing) {
-      return false;
-    }
-    refreshing = true;
-    try {
-      const projection = projectionProvider();
-      assertBasis(projection.basisRevision);
-      if (typeof projection.html !== 'string') {
-        throw new Error('Task projection HTML is required');
-      }
-      currentBasis = projection.basisRevision;
-      let didChange = false;
-      const pipeline = slots.get('pipeline');
-      if (
-        !pipeline ||
-        pipeline.html !== projection.html ||
-        pipeline.basisRevision !== currentBasis ||
-        pipeline.currentBasisRevision !== currentBasis ||
-        pipeline.freshness !== 'current'
-      ) {
-        slots.set('pipeline', {
-          slotId: 'pipeline',
-          html: projection.html,
-          priority: pipeline?.priority ?? 3,
-          updatedAt: Date.now(),
-          basisRevision: currentBasis,
-          currentBasisRevision: currentBasis,
-          freshness: 'current',
-        });
-        didChange = true;
-      }
-      for (const [id, slot] of slots) {
-        if (id === 'pipeline') {
-          continue;
-        }
-        const basis = slot.basisRevision ?? null;
-        const state = freshness(basis);
-        if (
-          slot.basisRevision !== basis ||
-          slot.currentBasisRevision !== currentBasis ||
-          slot.freshness !== state
-        ) {
-          slots.set(id, {
-            ...slot,
-            basisRevision: basis,
-            currentBasisRevision: currentBasis,
-            freshness: state,
-          });
-          didChange = true;
-        }
-      }
-      if (didChange) {
-        changed();
-        projectionObserver?.(sorted());
-      }
-      return didChange;
-    } finally {
-      refreshing = false;
-    }
+  const authoredSlot = (
+    slotId: string,
+    html: string,
+    priority: number,
+    updateOptions?: ReportUpdateOptions
+  ): ReportSlot => {
+    return {
+      slotId,
+      html,
+      priority,
+      updatedAt: Date.now(),
+      ...(updateOptions?.operationId === undefined
+        ? {}
+        : { operationId: updateOptions.operationId }),
+      ...(updateOptions?.modelRunId === undefined ? {} : { modelRunId: updateOptions.modelRunId }),
+    };
   };
 
   return {
+    isPublishable(_slotId: string): boolean {
+      return true;
+    },
     get(slotId: string): ReportSlot | undefined {
-      refreshTaskProjection();
       const slot = slots.get(slotId);
       return slot ? { ...slot } : undefined;
     },
@@ -146,53 +91,39 @@ export function createReportStore(
       priority: number,
       updateOptions?: ReportUpdateOptions
     ): void {
-      if (projectionProvider && slotId === 'pipeline') {
-        throw new Error('pipeline is a managed task projection; update the task ledger instead');
-      }
-      if (updateOptions?.basisRevision !== null && updateOptions?.basisRevision !== undefined) {
-        assertBasis(updateOptions.basisRevision);
-      }
-      const basis = updateOptions?.basisRevision ?? null;
-      slots.set(slotId, {
-        slotId,
-        html,
-        priority,
-        updatedAt: Date.now(),
-        ...(projectionProvider || updateOptions?.basisRevision !== undefined
-          ? {
-              basisRevision: basis,
-              ...(currentBasis
-                ? { currentBasisRevision: currentBasis, freshness: freshness(basis) }
-                : {}),
-            }
-          : {}),
-      });
+      slots.set(slotId, authoredSlot(slotId, html, priority, updateOptions));
       changed();
     },
 
-    delete(slotId: string): void {
-      if (projectionProvider && slotId === 'pipeline') {
-        throw new Error('pipeline is a managed task projection; update the task ledger instead');
+    publishBatch(updates): void {
+      if (updates.length === 0) {
+        return;
       }
+      const staged = new Map(slots);
+      for (const update of updates) {
+        staged.set(
+          update.slotId,
+          authoredSlot(update.slotId, update.html, update.priority, update.options)
+        );
+      }
+      const next = Object.fromEntries(Array.from(staged, ([id, slot]) => [id, { ...slot }]));
+      options.beforePublish?.(next);
+      slots = staged;
+      options.onChange?.(next);
+    },
+
+    delete(slotId: string): void {
       slots.delete(slotId);
       changed();
     },
 
     getAll(): Record<string, ReportSlot> {
-      refreshTaskProjection();
       return snapshot();
     },
 
     getAllSorted(): ReportSlot[] {
-      refreshTaskProjection();
       return sorted();
     },
-    setTaskProjectionProvider(provider, onRefresh) {
-      projectionProvider = provider;
-      projectionObserver = onRefresh;
-      refreshTaskProjection();
-    },
-    refreshTaskProjection,
   };
 }
 
@@ -231,29 +162,37 @@ export function createReportPublisher(
         `[Report] publish carried ${entries.length} slots; keeping the first ${MAX_SLOTS_PER_PUBLISH}`
       );
     }
-    const accepted: string[] = [];
-    const changed: string[] = [];
-    for (const [slotId, html] of entries.slice(0, MAX_SLOTS_PER_PUBLISH)) {
+    const publishableEntries = entries.slice(0, MAX_SLOTS_PER_PUBLISH).filter(([slotId, html]) => {
       if (Buffer.byteLength(html, 'utf-8') > MAX_SLOT_BYTES) {
         console.warn(`[Report] slot '${slotId}' exceeds ${MAX_SLOT_BYTES} bytes -- skipped`);
-        continue;
+        return false;
       }
+      return true;
+    });
+    const accepted: string[] = [];
+    const changed: string[] = [];
+    const batch: Array<{
+      slotId: string;
+      html: string;
+      priority: number;
+      options?: ReportUpdateOptions;
+    }> = [];
+    for (const [slotId, html] of publishableEntries) {
       accepted.push(slotId);
       const existing = store.get(slotId);
-      if (
-        existing?.html === html &&
-        (options?.basisRevision === undefined || existing.basisRevision === options.basisRevision)
-      ) {
+      if (existing?.html === html) {
         continue;
       }
-      if (options === undefined) {
-        store.update(slotId, html, existing?.priority ?? 0);
-      } else {
-        store.update(slotId, html, existing?.priority ?? 0, options);
-      }
+      batch.push({
+        slotId,
+        html,
+        priority: existing?.priority ?? 0,
+        ...(options ? { options } : {}),
+      });
       changed.push(slotId);
     }
     if (changed.length > 0) {
+      store.publishBatch(batch);
       broadcastReportUpdate(sseClients, { slots: store.getAllSorted() });
       reportLogger.info(`published slots: ${changed.join(', ')}`);
     }
@@ -293,11 +232,11 @@ export function createReportRouter(store: ReportStore, sseClients: Set<ServerRes
   // PUT / — bulk update
   router.put('/', (req: Request, res: Response) => {
     const body = req.body as {
-      slots?: Record<string, { html: string; priority?: number; basisRevision?: string | null }>;
+      slots?: Record<string, { html: string; priority?: number }>;
     };
     const incoming = body?.slots ?? {};
-    for (const [id, { html, priority = 0, basisRevision }] of Object.entries(incoming)) {
-      store.update(id, html, priority, { basisRevision });
+    for (const [id, { html, priority = 0 }] of Object.entries(incoming)) {
+      store.update(id, html, priority);
     }
     broadcastReportUpdate(sseClients, { slots: store.getAllSorted() });
     res.json({ ok: true });
@@ -306,12 +245,8 @@ export function createReportRouter(store: ReportStore, sseClients: Set<ServerRes
   // PUT /slots/:slotId — single update
   router.put('/slots/:slotId', (req: Request<{ slotId: string }>, res: Response) => {
     const slotId = req.params.slotId as string;
-    const {
-      html,
-      priority = 0,
-      basisRevision,
-    } = req.body as { html: string; priority?: number; basisRevision?: string | null };
-    store.update(slotId, html, priority, { basisRevision });
+    const { html, priority = 0 } = req.body as { html: string; priority?: number };
+    store.update(slotId, html, priority);
     broadcastReportUpdate(sseClients, { slots: store.getAllSorted() });
     res.json({ ok: true, slot: slotId });
   });

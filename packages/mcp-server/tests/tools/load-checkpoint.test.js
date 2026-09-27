@@ -284,8 +284,7 @@ describe.sequential('load_checkpoint MCP Tool', () => {
       expect(duration).toBeLessThan(10000); // Should complete within 10 seconds
     });
 
-    // TODO: Fix DB isolation issue - test fails in full suite but passes individually
-    it.sequential.skip('should log failed restart when no checkpoint exists', async () => {
+    it.sequential('should log failed restart when no checkpoint exists', async () => {
       // Force-delete ALL checkpoints to ensure test isolation
       const adapter = getAdapter();
       adapter.prepare('DELETE FROM checkpoints').run();
