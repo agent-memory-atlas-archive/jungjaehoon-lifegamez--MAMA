@@ -4,6 +4,17 @@ Current work is in the [rebuild plan](docs/rebuild/plan.md); evidence and unreso
 [checks.md](docs/rebuild/checks.md). These follow-ups serve [INTENT.md](INTENT.md).
 A task and its revisions are the container for a case.
 
+## Backfill for every connector and optional Jev — Recognise and Attach
+
+Deferred from the rebuild PR (owner decision 2026-09-27). Replace the operator script
+`scripts/replay/import-september.mjs` and its `september-*` runtime files with a `mama import`
+command that takes a connector and a date range, for every selectable connector (today only the
+Kagemusha bridge and Trello history can be imported). Replay must run without `jev.keyFile`: the
+owner agent classifies each day window itself; with a key, the window queue keeps Jev's scores.
+An agent-facing Jev action for sameness pairs (off by default: owner text leaves for the Jev
+service) waits for a measurement that live duplicates or attribution improve; the 9/17 backfill
+measurement put Jev's value in backfill volume (about 1,278 judgments against about 11 a day live).
+
 ## Human-member canary — after the owner checks
 
 Resume a real member canary only after recognise, attach, answer, report and learn pass on real
