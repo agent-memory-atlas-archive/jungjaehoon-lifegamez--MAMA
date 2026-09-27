@@ -222,6 +222,8 @@ export class TrelloConnector implements IConnector {
 
     const items: NormalizedItem[] = [];
     let hadError = false;
+    let failedBoards = 0;
+    let polledBoards = 0;
     const pendingCardStates = new Map(
       [...this.lastCardStates].map(([boardId, states]) => [boardId, new Map(states)])
     );
@@ -229,6 +231,7 @@ export class TrelloConnector implements IConnector {
     for (const [channelKey, channelCfg] of Object.entries(this.config.channels)) {
       if (channelCfg.role === 'ignore') continue;
       if (!channelCfg.boardId) continue;
+      polledBoards += 1;
 
       const channelName = channelCfg.name ?? channelKey;
       const boardId = channelCfg.boardId;
@@ -243,6 +246,7 @@ export class TrelloConnector implements IConnector {
 
         if (!res.ok) {
           hadError = true;
+          failedBoards += 1;
           this.lastError = `Board ${boardId}: HTTP ${res.status}`;
           continue;
         }
@@ -346,6 +350,7 @@ export class TrelloConnector implements IConnector {
         pendingCardStates.set(boardId, newCardState);
       } catch (err) {
         hadError = true;
+        failedBoards += 1;
         this.lastError = err instanceof Error ? err.message : String(err);
       }
     }
@@ -353,7 +358,9 @@ export class TrelloConnector implements IConnector {
     if (hadError) {
       this.pendingCardStates = null;
       this.pollCommitDeferred = false;
-      throw new Error('Trello poll failed for one or more configured boards');
+      throw new Error(
+        `Trello poll failed for ${failedBoards} of ${polledBoards} configured boards; last error: ${this.lastError}`
+      );
     }
 
     this.pendingCardStates = pendingCardStates;
