@@ -44,7 +44,7 @@ Scheduled stimuli now execute report turns. Full reports publish `briefing`, `ac
 writes `runtime/report-schedule-state.json` only after delivery succeeds; restart recovery retains
 pending work and exposes uncertain results.
 
-The calendar connector was restored in `9835c7efc`. It collects Google Calendar through `gws`
+The calendar connector was restored in `ba90c51cb`. It collects Google Calendar through `gws`
 over a 90-day horizon; the live 23:00 check stored 66 events and produced a source delta.
 Calendar and lodging lines are in the full-report instruction. Their source coverage and the
 resulting report still need comparison with the owner's actual schedule. Static workflow

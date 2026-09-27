@@ -129,3 +129,5 @@ Codex re-read every item against the code: all F1–F3 defects resolved except t
    outbound text path opts in.
 3. P2 (final pass) `agent.codex_cwd` could place the workspace at or around the downloads directory and
    make it agent-writable again; the daemon refuses overlapping paths at boot.
+   Known limit: the check compares resolved paths, not realpaths, so a `codex_cwd` that is a symlink to
+   the downloads directory passes; it is owner configuration, not agent-reachable.
