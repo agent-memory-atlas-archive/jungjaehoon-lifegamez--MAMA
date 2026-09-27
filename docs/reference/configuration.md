@@ -46,23 +46,34 @@ See [backends](../guides/backends.md) and [reports](../guides/reports-and-board.
 
 ## connectors.json
 
-The file is an object keyed by connector name: `chatwork`, `slack`, `trello`, `kagemusha`, or
-`calendar`. Names are normalized to lowercase; case collisions fail validation. Unknown connector
+The file is an object keyed by connector name: `chatwork`, `slack`, `trello`, `kagemusha`,
+`calendar`, `gmail`, `drive`, `sheets`, `notion`, `obsidian`, `discord`, `telegram`, `imessage`, or
+`claude-code`. Names are normalized to lowercase; case collisions fail validation. Unknown connector
 names and unknown fields are logged as ignored. A missing file means no configured connectors.
 
-| Field within each connector       | Required content                                                                                                |
-| --------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `enabled`                         | Boolean.                                                                                                        |
-| `pollIntervalMinutes`             | Finite number greater than zero. `init` writes `5`.                                                             |
-| `channels`                        | Object keyed by source channel ID. Each entry needs `role`; optional `name` and `boardId` are nonblank strings. |
-| `channels.<id>.role`              | `truth`, `hub`, `deliverable`, `spoke`, `reference`, or `ignore`.                                               |
-| `auth.type`                       | `token`, `cli`, or `none`.                                                                                      |
-| `auth.tokenName`                  | Optional environment variable name, never its token value.                                                      |
-| `auth.cli`, `auth.cliAuthCommand` | Optional CLI authentication metadata; Calendar uses `gws` and `gws auth login`.                                 |
+| Field within each connector       | Required content                                                                                        |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `enabled`                         | Boolean.                                                                                                |
+| `pollIntervalMinutes`             | Finite number greater than zero. `init` writes `5`.                                                     |
+| `channels`                        | Object keyed by source ID. Each entry needs `role`; supported additional fields are listed below.       |
+| `channels.<id>.role`              | `truth`, `hub`, `deliverable`, `spoke`, `reference`, or `ignore`.                                       |
+| `channels.<id>.name`              | Optional display name. Claude Code requires a unique display alias for each selected project directory. |
+| `channels.<id>.boardId`           | Trello board ID.                                                                                        |
+| `channels.<id>.folderId`          | Drive folder ID.                                                                                        |
+| `channels.<id>.driveId`           | Drive shared-drive ID.                                                                                  |
+| `channels.<id>.spreadsheetId`     | Google Sheets spreadsheet ID.                                                                           |
+| `channels.<id>.sheetRange`        | Google Sheets range including the header row, unless `dataRange` is set.                                |
+| `channels.<id>.dataRange`         | Optional Google Sheets data range when headers and rows use separate ranges.                            |
+| `channels.<id>.vaultPath`         | Obsidian vault path. Each configured channel maps one vault to a channel ID.                            |
+| `auth.type`                       | `token`, `cli`, or `none`.                                                                              |
+| `auth.tokenName`                  | Environment variable name, never its token value; required for Notion, Discord and Telegram source.     |
+| `auth.cli`, `auth.cliAuthCommand` | Optional CLI authentication metadata; Google connectors use `gws` and `gws auth login`.                 |
 
-`init` uses `MAMA_CHATWORK_TOKEN`, `MAMA_SLACK_TOKEN` and `MAMA_TRELLO_TOKEN` as token names.
-Trello additionally reads `MAMA_TRELLO_KEY`. Kagemusha uses the read-only local bridge; Calendar
-uses the authenticated `gws` CLI and its primary-calendar source channel `calendar`.
+`init` uses `MAMA_CHATWORK_TOKEN`, `MAMA_SLACK_TOKEN`, `MAMA_TRELLO_KEY`, `MAMA_TRELLO_TOKEN`,
+`MAMA_NOTION_TOKEN`, `MAMA_DISCORD_TOKEN`, and `MAMA_TELEGRAM_SOURCE_TOKEN` as connector secret
+names. The owner Telegram messenger uses the separate `MAMA_TELEGRAM_TOKEN`. Gmail, Drive, Sheets,
+and Calendar use a logged-in `gws` CLI; Kagemusha uses the read-only local bridge. Claude Code
+channel keys are selected project directory names and their `name` values are display aliases.
 See [connectors](../guides/connectors.md) for per-source setup and channel roles.
 
 ## Environment and credentials
@@ -74,7 +85,9 @@ owner backend. Pass non-secret service settings through the startup environment.
 | Variable                                      | Purpose                                                                                                                            |
 | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | `MAMA_TELEGRAM_TOKEN`                         | Telegram bot credential.                                                                                                           |
+| `MAMA_TELEGRAM_SOURCE_TOKEN`                  | Separate bot credential used by the Telegram source connector.                                                                     |
 | `MAMA_CHATWORK_TOKEN`, `MAMA_SLACK_TOKEN`     | Connector credentials used by generated connector configuration.                                                                   |
+| `MAMA_DISCORD_TOKEN`, `MAMA_NOTION_TOKEN`     | Discord and Notion connector credentials.                                                                                          |
 | `MAMA_TRELLO_KEY`, `MAMA_TRELLO_TOKEN`        | Separate Trello API key and token.                                                                                                 |
 | `MAMA_AUTH_TOKEN`                             | Viewer API bearer credential.                                                                                                      |
 | `MAMA_CF_ACCESS_ISSUER`, `MAMA_CF_ACCESS_AUD` | Expected Cloudflare Access issuer and audience for JWT verification. Both must be configured.                                      |

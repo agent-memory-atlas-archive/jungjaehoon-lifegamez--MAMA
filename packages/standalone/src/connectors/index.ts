@@ -8,6 +8,15 @@ export const LOADABLE_CONNECTORS = [
   'trello',
   'kagemusha',
   'calendar',
+  'gmail',
+  'drive',
+  'sheets',
+  'notion',
+  'obsidian',
+  'discord',
+  'telegram',
+  'imessage',
+  'claude-code',
 ] as const;
 
 export type LoadableConnector = (typeof LOADABLE_CONNECTORS)[number];
@@ -15,6 +24,9 @@ export type LoadableConnector = (typeof LOADABLE_CONNECTORS)[number];
 export interface ConnectorLoadPaths {
   trelloStatePath?: string;
   kagemushaDbPath?: string;
+  connectorStatePath?: string;
+  imessageDbPath?: string;
+  claudeCodeProjectsPath?: string;
 }
 
 const loaders: Record<
@@ -24,6 +36,45 @@ const loaders: Record<
   chatwork: async (config) => new (await import('./chatwork/index.js')).ChatworkConnector(config),
   slack: async (config) => new (await import('./slack/index.js')).SlackConnector(config),
   calendar: async (config) => new (await import('./calendar/index.js')).CalendarConnector(config),
+  gmail: async (config) => new (await import('./gmail/index.js')).GmailConnector(config),
+  drive: async (config, paths) => {
+    if (paths?.connectorStatePath === undefined)
+      throw new Error('Drive connector state file path is required');
+    return new (await import('./drive/index.js')).DriveConnector(config, paths.connectorStatePath);
+  },
+  sheets: async (config, paths) => {
+    if (paths?.connectorStatePath === undefined)
+      throw new Error('Sheets connector state file path is required');
+    return new (await import('./sheets/index.js')).SheetsConnector(
+      config,
+      paths.connectorStatePath
+    );
+  },
+  notion: async (config) => new (await import('./notion/index.js')).NotionConnector(config),
+  obsidian: async (config) => new (await import('./obsidian/index.js')).ObsidianConnector(config),
+  discord: async (config, paths) => {
+    if (paths?.connectorStatePath === undefined)
+      throw new Error('Discord connector state file path is required');
+    return new (await import('./discord/index.js')).DiscordConnector(
+      config,
+      paths.connectorStatePath
+    );
+  },
+  telegram: async (config, paths) => {
+    if (paths?.connectorStatePath === undefined)
+      throw new Error('Telegram connector state file path is required');
+    return new (await import('./telegram/index.js')).TelegramConnector(
+      config,
+      paths.connectorStatePath
+    );
+  },
+  imessage: async (config, paths) =>
+    new (await import('./imessage/index.js')).IMessageConnector(config, paths?.imessageDbPath),
+  'claude-code': async (config, paths) =>
+    new (await import('./claude-code/index.js')).ClaudeCodeConnector(
+      config,
+      paths?.claudeCodeProjectsPath
+    ),
   trello: async (config, paths) => {
     if (paths?.trelloStatePath === undefined) throw new Error('Trello state file path is required');
     return new (await import('./trello/index.js')).TrelloConnector(config, paths.trelloStatePath);

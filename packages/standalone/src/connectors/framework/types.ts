@@ -6,6 +6,12 @@ export interface ChannelConfig {
   role: 'truth' | 'hub' | 'deliverable' | 'spoke' | 'reference' | 'ignore';
   name?: string;
   boardId?: string;
+  folderId?: string;
+  driveId?: string;
+  spreadsheetId?: string;
+  sheetRange?: string;
+  dataRange?: string;
+  vaultPath?: string;
 }
 
 export interface AuthConfig {

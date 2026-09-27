@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { loadConnectorConfig } from '../../src/connectors/config-loader.js';
+import { loadConnector, LOADABLE_CONNECTORS } from '../../src/connectors/index.js';
 
 const roots: string[] = [];
 
@@ -28,6 +29,42 @@ const valid = {
 };
 
 describe('connector config loader', () => {
+  it('registers every restored connector with a loadable factory', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'connector-factory-'));
+    roots.push(root);
+    const paths = {
+      trelloStatePath: join(root, 'trello-state.json'),
+      kagemushaDbPath: join(root, 'kagemusha.db'),
+      connectorStatePath: join(root, 'connector-state.json'),
+      imessageDbPath: join(root, 'chat.db'),
+      claudeCodeProjectsPath: join(root, 'projects'),
+    };
+    for (const name of [
+      'gmail',
+      'drive',
+      'sheets',
+      'notion',
+      'obsidian',
+      'discord',
+      'telegram',
+      'imessage',
+      'claude-code',
+    ]) {
+      expect(LOADABLE_CONNECTORS).toContain(name);
+      const connector = await loadConnector(
+        name,
+        {
+          enabled: false,
+          pollIntervalMinutes: 5,
+          channels: {},
+          auth: { type: 'none' },
+        },
+        paths
+      );
+      expect(connector.name).toBe(name);
+    }
+  });
+
   it.each([false, true])(
     'loads calendar CLI auth without ignoring or enabling it (%s)',
     (enabled) => {
@@ -54,6 +91,69 @@ describe('connector config loader', () => {
     );
     expect(result).toMatchObject({ ok: true, enabledNames: ['slack'] });
     expect(result.ok && result.config.slack?.channels['channel-key']?.name).toBe('display-name');
+  });
+
+  it('loads every restored source connector and its channel-specific settings', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const names = [
+      'gmail',
+      'drive',
+      'sheets',
+      'notion',
+      'obsidian',
+      'discord',
+      'telegram',
+      'imessage',
+      'claude-code',
+    ];
+    const config = Object.fromEntries(
+      names.map((name) => [
+        name,
+        {
+          ...valid,
+          auth:
+            name === 'gmail' || name === 'drive' || name === 'sheets'
+              ? { type: 'cli', cli: 'gws', cliAuthCommand: 'gws auth login' }
+              : name === 'obsidian' || name === 'imessage' || name === 'claude-code'
+                ? { type: 'none' }
+                : {
+                    type: 'token',
+                    tokenName: `MAMA_${name.toUpperCase().replace('-', '_')}_TOKEN`,
+                  },
+          channels: {
+            source: {
+              role: 'reference',
+              ...(name === 'drive' ? { folderId: 'folder-fixture', driveId: 'drive-fixture' } : {}),
+              ...(name === 'sheets'
+                ? {
+                    spreadsheetId: 'spreadsheet-fixture',
+                    sheetRange: 'Notes!A:Z',
+                    dataRange: 'Notes!A2:Z',
+                  }
+                : {}),
+              ...(name === 'obsidian' ? { vaultPath: '/tmp/vault-fixture' } : {}),
+            },
+          },
+        },
+      ])
+    );
+
+    const result = loadConnectorConfig(writeConfig(config));
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.enabledNames).toEqual(names);
+    expect(result.ok && result.config.drive?.channels.source).toMatchObject({
+      folderId: 'folder-fixture',
+      driveId: 'drive-fixture',
+    });
+    expect(result.ok && result.config.sheets?.channels.source).toMatchObject({
+      spreadsheetId: 'spreadsheet-fixture',
+      sheetRange: 'Notes!A:Z',
+      dataRange: 'Notes!A2:Z',
+    });
+    expect(result.ok && result.config.obsidian?.channels.source?.vaultPath).toBe(
+      '/tmp/vault-fixture'
+    );
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it('treats a missing file as an empty successful configuration', () => {

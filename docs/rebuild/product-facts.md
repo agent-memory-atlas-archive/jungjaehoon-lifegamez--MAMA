@@ -34,8 +34,10 @@ run_token_budget, codex_home, codex_cwd, codex_sandbox, tools.mcp_config}`, `dat
   `jev`, `wiki {enabled, vaultPath, wikiDir}`, `reports {full_report_hours [8,13,18],
 reminder_start_hour 9, reminder_end_hour 21}`. Other keys are logged as ignored; `telegram.token` in
   config.yaml is an error (the token lives in auth.env as MAMA_TELEGRAM_TOKEN).
-- Secrets (auth.env): MAMA_TELEGRAM_TOKEN, MAMA_SLACK_TOKEN, MAMA_CHATWORK_TOKEN, MAMA_TRELLO_KEY,
-  MAMA_TRELLO_TOKEN, MAMA_AUTH_TOKEN (viewer). Non-secret environment: MAMA_CF_ACCESS_ISSUER,
+- Secrets (auth.env): MAMA_TELEGRAM_TOKEN (owner messenger), MAMA_TELEGRAM_SOURCE_TOKEN (Telegram
+  source connector), MAMA_SLACK_TOKEN, MAMA_CHATWORK_TOKEN, MAMA_TRELLO_KEY, MAMA_TRELLO_TOKEN,
+  MAMA_NOTION_TOKEN, MAMA_DISCORD_TOKEN, MAMA_AUTH_TOKEN (viewer). Gmail, Drive, Sheets and Calendar
+  use the logged-in `gws` CLI and have no MAMA connector token. Non-secret environment: MAMA_CF_ACCESS_ISSUER,
   MAMA_CF_ACCESS_AUD, MAMA_VIEWER_HOSTNAMES, MAMA_VIEWER_OWNER_EMAILS, MAMA_API_HOST, MAMA_API_PORT.
 - One owner agent session. Backends: `claude` (Claude CLI; MAMA actions as MCP tools with a caller hook;
   sandboxed Bash, workspace-only writes, WebFetch/WebSearch; subagents run inside the turn) or `codex`
@@ -44,9 +46,10 @@ reminder_start_hour 9, reminder_end_hour 21}`. Other keys are logged as ignored;
 - Gateway: Telegram only. Only the owner (allowed chat + owner user id) is answered; others are dropped
   and logged with hashed ids. Files the owner sends are downloaded to `~/.mama/downloads/telegram/`;
   copy into `workspace/files/` before modifying, unzipping, or delivering them.
-- Connectors: chatwork, slack, trello (API tokens), kagemusha (read-only bridge to a local Kagemusha
-  database: kakao, line, telegram, feedback chats), calendar (Google Calendar via the gws CLI, 90-day
-  window). Channel roles: truth, hub, deliverable, spoke, reference, ignore.
+- Connectors: chatwork, slack, trello, discord, telegram source, and notion (API tokens); kagemusha
+  (read-only local bridge); calendar, gmail, drive, and sheets (logged-in `gws` CLI); obsidian,
+  imessage, and claude-code (selected local sources). Channel roles: truth, hub, deliverable, spoke,
+  reference, ignore.
 - Owner actions (19): graph.query; source.search/read; source.attachment.list/download;
   work.create/revise/list/show; memory.save/search/read:provenance; memory.checkpoint.list;
   report.read/publish; manage.wiki.publish/read/update; deliver.telegram.file.

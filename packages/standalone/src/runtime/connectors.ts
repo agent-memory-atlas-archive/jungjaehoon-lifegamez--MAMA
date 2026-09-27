@@ -169,9 +169,13 @@ export async function startConnectorRuntime(
 
   try {
     for (const name of enabledConnectorNames) {
+      const connectorStatePath = ['drive', 'sheets', 'discord', 'telegram'].includes(name)
+        ? join(options.statePath, `${name}-state.json`)
+        : undefined;
       const connector = await load(name, config.config[name], {
         trelloStatePath: options.trelloStatePath,
         kagemushaDbPath: options.kagemushaDbPath,
+        ...(connectorStatePath === undefined ? {} : { connectorStatePath }),
       });
       await connector.init();
       registry.register(name, connector);

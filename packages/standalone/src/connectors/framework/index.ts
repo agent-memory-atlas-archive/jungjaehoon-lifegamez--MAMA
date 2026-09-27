@@ -8,6 +8,7 @@ export type {
   ConnectorHealth,
   ConnectorsConfig,
 } from './types.js';
+export { readConnectorState, writeConnectorState } from './connector-state.js';
 export {
   attachmentConnector,
   type AttachmentConnector,

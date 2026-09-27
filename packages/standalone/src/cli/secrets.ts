@@ -15,8 +15,11 @@ import { CliInputError, nonblankLine } from './prompt.js';
 
 export const SECRET_NAMES = [
   'MAMA_TELEGRAM_TOKEN',
+  'MAMA_TELEGRAM_SOURCE_TOKEN',
   'MAMA_SLACK_TOKEN',
   'MAMA_CHATWORK_TOKEN',
+  'MAMA_DISCORD_TOKEN',
+  'MAMA_NOTION_TOKEN',
   'MAMA_TRELLO_KEY',
   'MAMA_TRELLO_TOKEN',
   'MAMA_AUTH_TOKEN',

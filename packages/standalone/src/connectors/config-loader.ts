@@ -78,13 +78,35 @@ function collectIgnoredKeys(
 
 function channel(value: unknown, field: string, state: ValidationState): ChannelConfig {
   const raw = record(value, field);
-  collectIgnoredKeys(raw, ['role', 'name', 'boardId'], field, state);
+  collectIgnoredKeys(
+    raw,
+    [
+      'role',
+      'name',
+      'boardId',
+      'folderId',
+      'driveId',
+      'spreadsheetId',
+      'sheetRange',
+      'dataRange',
+      'vaultPath',
+    ],
+    field,
+    state
+  );
   if (typeof raw.role !== 'string' || !ROLES.has(raw.role as ChannelConfig['role'])) {
     throw new ConfigValidationError(`${field}.role must be a valid channel role`);
   }
   const result: ChannelConfig = { role: raw.role as ChannelConfig['role'] };
   if (raw.name !== undefined) result.name = text(raw.name, `${field}.name`);
   if (raw.boardId !== undefined) result.boardId = text(raw.boardId, `${field}.boardId`);
+  if (raw.folderId !== undefined) result.folderId = text(raw.folderId, `${field}.folderId`);
+  if (raw.driveId !== undefined) result.driveId = text(raw.driveId, `${field}.driveId`);
+  if (raw.spreadsheetId !== undefined)
+    result.spreadsheetId = text(raw.spreadsheetId, `${field}.spreadsheetId`);
+  if (raw.sheetRange !== undefined) result.sheetRange = text(raw.sheetRange, `${field}.sheetRange`);
+  if (raw.dataRange !== undefined) result.dataRange = text(raw.dataRange, `${field}.dataRange`);
+  if (raw.vaultPath !== undefined) result.vaultPath = text(raw.vaultPath, `${field}.vaultPath`);
   return result;
 }
 

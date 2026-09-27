@@ -27,6 +27,9 @@ const fixtureSecrets = {
   MAMA_CHATWORK_TOKEN: 'fixture-chatwork',
   MAMA_TRELLO_KEY: 'fixture-key',
   MAMA_TRELLO_TOKEN: 'fixture-trello',
+  MAMA_NOTION_TOKEN: 'fixture-notion',
+  MAMA_DISCORD_TOKEN: 'fixture-discord',
+  MAMA_TELEGRAM_SOURCE_TOKEN: 'fixture-telegram-source',
 };
 
 function prompt(answers: string[], hidden: string[], tty = [true, true]) {
@@ -143,12 +146,14 @@ describe('owner-only onboarding', () => {
         'fixture-model',
         '100',
         '101',
-        'slack,chatwork,trello,kagemusha,calendar',
+        'slack,chatwork,trello,kagemusha,calendar,notion,discord,telegram',
         'channel-a,channel-b',
         'room-a',
         'board-a',
         'source-a',
         'calendar',
+        'channel-discord',
+        'chat-telegram',
         'y',
         'https://access.example.test',
         'fixture-audience',
@@ -165,9 +170,15 @@ describe('owner-only onboarding', () => {
     expect(loaded.config.slack.auth.tokenName).toBe('MAMA_SLACK_TOKEN');
     expect(loaded.config.chatwork.auth.tokenName).toBe('MAMA_CHATWORK_TOKEN');
     expect(loaded.config.trello.auth.tokenName).toBe('MAMA_TRELLO_TOKEN');
+    expect(loaded.config.notion.auth.tokenName).toBe('MAMA_NOTION_TOKEN');
+    expect(loaded.config.discord.auth.tokenName).toBe('MAMA_DISCORD_TOKEN');
+    expect(loaded.config.telegram.auth.tokenName).toBe('MAMA_TELEGRAM_SOURCE_TOKEN');
     expect(loaded.config.trello.channels['board-a']).toEqual({ role: 'hub', boardId: 'board-a' });
     expect(Object.keys(loaded.config.slack.channels)).toEqual(['channel-a', 'channel-b']);
     expect(loaded.config.calendar.auth.cli).toBe('gws');
+    expect(loaded.config.discord.channels['channel-discord']).toEqual({
+      role: 'hub',
+    });
     const auth = execFileSync('/bin/sh', ['-c', '. "$1"; env', 'sh', join(root, 'auth.env')], {
       env: { HOME: home },
       encoding: 'utf8',
@@ -222,6 +233,49 @@ describe('owner-only onboarding', () => {
     expect(readdirSync(join(root, 'runtime'))).toEqual([]);
   });
 
+  it('prompts for the fields needed by the restored Google, vault, and project sources', async () => {
+    const vaultPath = join(home, 'fixture-vault');
+    const p = prompt(
+      [
+        'codex',
+        'fixture-model',
+        '100',
+        '101',
+        'gmail,drive,sheets,notion,obsidian,claude-code,imessage',
+        'folder-fixture',
+        'spreadsheet-fixture',
+        'Records!A1:B1',
+        '',
+        vaultPath,
+        'project-fixture',
+        'Fixture Project',
+        'chat-fixture-1',
+        'n',
+        'n',
+      ],
+      [fixtureSecrets.MAMA_TELEGRAM_TOKEN, fixtureSecrets.MAMA_NOTION_TOKEN]
+    );
+    await runInit(options(p.adapter));
+    const loaded = loadConnectorConfig(join(root, 'connectors.json'));
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) throw new Error('Generated connector config was rejected');
+    expect(loaded.config.gmail?.channels.inbox).toMatchObject({ role: 'hub' });
+    expect(loaded.config.drive?.channels['folder-fixture']).toMatchObject({
+      role: 'hub',
+      folderId: 'folder-fixture',
+    });
+    expect(loaded.config.sheets?.channels.spreadsheet).toMatchObject({
+      spreadsheetId: 'spreadsheet-fixture',
+      sheetRange: 'Records!A1:B1',
+    });
+    expect(loaded.config.notion?.channels.workspace?.name).toBe('Notion workspace');
+    expect(loaded.config.obsidian?.channels.vault?.vaultPath).toBe(vaultPath);
+    expect(loaded.config['claude-code']?.channels['project-fixture']?.name).toBe('Fixture Project');
+    expect(loaded.config.imessage?.channels['chat-fixture-1']).toMatchObject({ role: 'hub' });
+    expect(p.answers).toEqual([]);
+    expect(p.hidden).toEqual([]);
+  });
+
   it('does not overwrite an existing launch agent', async () => {
     const dir = join(home, 'Library', 'LaunchAgents');
     mkdirSync(dir, { recursive: true });
@@ -243,6 +297,15 @@ describe('owner-only onboarding', () => {
 });
 
 describe('secret rotation', () => {
+  it.each(['MAMA_NOTION_TOKEN', 'MAMA_DISCORD_TOKEN', 'MAMA_TELEGRAM_SOURCE_TOKEN'])(
+    'stores the enabled connector credential %s by its MAMA name',
+    async (name) => {
+      const p = prompt([], ['fixture-secret']);
+      await runSecret(['set', name], { home, prompt: p.adapter });
+      expect(readFileSync(join(root, 'auth.env'), 'utf8')).toContain(`${name}='fixture-secret'`);
+    }
+  );
+
   it('replaces only the chosen name atomically, preserves literal shell characters and lists names only without a TTY', async () => {
     mkdirSync(root);
     writeFileSync(

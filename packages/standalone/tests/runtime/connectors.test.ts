@@ -14,9 +14,15 @@ import {
   setLiveConnectorPollCursors,
   startConnectorRuntime,
 } from '../../src/runtime/connectors.js';
-import type { IConnector, NormalizedItem } from '../../src/connectors/framework/types.js';
+import type {
+  ConnectorConfig,
+  IConnector,
+  NormalizedItem,
+} from '../../src/connectors/framework/types.js';
 import { openCoreDatabase } from '../../src/runtime/core-db.js';
 import { RawStore } from '../../src/storage/source-archive.js';
+import { storedSourceFamilies } from '../../src/connectors/framework/stored-index-read.js';
+import { ownerSystemPrompt } from '../../src/runtime/owner-system-prompt.js';
 import { sourceActionRegistrations } from '../../src/api/source-actions.js';
 import { createStoredSourceReader } from '../../src/api/stored-source-reader.js';
 import {
@@ -256,6 +262,138 @@ describe('connector runtime', () => {
       expect(raw.query('slack', new Date(0))).toHaveLength(1);
     } finally {
       raw.close();
+      await database.close();
+    }
+  });
+
+  it('aborts a connector handoff when source projection fails', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'connector-runtime-projection-failure-'));
+    roots.push(root);
+    const rawStore = new RawStore(join(root, 'raw'));
+    const connector = fake('discord', [
+      {
+        source: 'discord',
+        sourceId: 'source-fixture',
+        channel: 'channel-fixture',
+        author: 'fixture-author',
+        content: 'fixture source content',
+        timestamp: new Date('2026-09-26T00:00:00.000Z'),
+        type: 'message',
+      },
+    ]);
+    connector.beginPollHandoff = vi.fn();
+    connector.commitPoll = vi.fn();
+    connector.abortPollHandoff = vi.fn();
+    const runtime = await startConnectorRuntime({
+      configPath: join(root, 'connectors.json'),
+      rawPath: join(root, 'raw'),
+      statePath: join(root, 'state'),
+      rawStore,
+      rawIndexSink: () => {
+        throw new Error('fixture projection failure');
+      },
+      configResult: {
+        ok: true,
+        config: {
+          discord: {
+            enabled: true,
+            pollIntervalMinutes: 5,
+            channels: { 'channel-fixture': { role: 'hub' } },
+            auth: { type: 'none' },
+          },
+        },
+        enabledNames: ['discord'],
+      },
+      acceptSourceDelta: vi.fn(),
+      loadConnector: async () => connector,
+      setInterval: vi.fn(() => 1 as unknown as ReturnType<typeof setInterval>),
+      clearInterval: vi.fn(),
+    });
+
+    try {
+      expect(connector.beginPollHandoff).toHaveBeenCalledOnce();
+      expect(connector.abortPollHandoff).toHaveBeenCalledOnce();
+      expect(connector.commitPoll).not.toHaveBeenCalled();
+      expect(rawStore.listPendingProjections('discord')).toHaveLength(1);
+    } finally {
+      await runtime.stop();
+      rawStore.close();
+    }
+  });
+
+  it('projects every restored source family into the owner readable-sources line', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'restored-connector-index-'));
+    roots.push(root);
+    const database = await openCoreDatabase({ path: join(root, 'core.db') });
+    const names = [
+      'gmail',
+      'drive',
+      'sheets',
+      'notion',
+      'obsidian',
+      'discord',
+      'telegram',
+      'imessage',
+      'claude-code',
+    ];
+    const config = Object.fromEntries(
+      names.map((name) => [
+        name,
+        {
+          enabled: true,
+          pollIntervalMinutes: 5,
+          channels: { [`${name}:fixture-family:fixture-room`]: { role: 'hub' } },
+          auth: { type: 'none' },
+        } satisfies ConnectorConfig,
+      ])
+    );
+    const commits = new Map<string, ReturnType<typeof vi.fn>>();
+    const connectorPaths = new Map<string, unknown>();
+    const runtime = await startConnectorRuntime({
+      configPath: join(root, 'connectors.json'),
+      rawPath: join(root, 'raw'),
+      statePath: join(root, 'state'),
+      clock: () => Date.parse('2026-09-27T00:00:00.000Z'),
+      coreAdapter: database.adapter,
+      configResult: { ok: true, config, enabledNames: names },
+      acceptSourceDelta: async () => {},
+      loadConnector: async (name, _config, paths) => {
+        connectorPaths.set(name, paths);
+        const item: NormalizedItem = {
+          source: name,
+          sourceId: `source-${name}`,
+          channel: `${name}:fixture-family:fixture-room`,
+          author: 'fixture-author',
+          content: `fixture source content for ${name}`,
+          timestamp: new Date('2026-09-26T23:59:00.000Z'),
+          type: 'message',
+        };
+        const connector = fake(name, [item]);
+        const commitPoll = vi.fn();
+        connector.beginPollHandoff = vi.fn();
+        connector.commitPoll = commitPoll;
+        connector.abortPollHandoff = vi.fn();
+        commits.set(name, commitPoll);
+        return connector;
+      },
+      setInterval: vi.fn(() => 1 as unknown as ReturnType<typeof setInterval>),
+      clearInterval: vi.fn(),
+    });
+
+    try {
+      await runtime.stop();
+      const families = storedSourceFamilies(database.adapter, names);
+      const prompt = ownerSystemPrompt('codex', null, families);
+      for (const name of names) {
+        expect(prompt).toContain(`${name} (1; fixture-family 1)`);
+        expect(commits.get(name)).toHaveBeenCalledOnce();
+      }
+      for (const name of ['drive', 'sheets', 'discord', 'telegram']) {
+        expect(connectorPaths.get(name)).toMatchObject({
+          connectorStatePath: join(root, 'state', `${name}-state.json`),
+        });
+      }
+    } finally {
       await database.close();
     }
   });

@@ -1093,3 +1093,21 @@ The implementation writes raw/index data during import only. Replay is the owner
   and the recheck code is deleted (+164/−221); the delivered-receipt exception is opt-in for outbound
   text only, so a different file under one operation id is refused again; the final pass made the
   daemon refuse an `agent.codex_cwd` overlapping downloads. Live: `~/.mama/downloads` created 0700 at boot.
+
+### Restoration Phase A0 — 2026-09-27
+
+- Result: registered all nine restored sources, validated their channel fields, and passed state paths into the branch poll handoff.
+- Evidence: root build, typecheck and changed-file lint pass; factory/config and scheduler-to-RawStore/event-index prompt tests pass; standalone reports 1,004 pass and 23 socket `EPERM` failures across eight files.
+- Still fails: no live source accounts or owner turns were used; no daemon state under `~/.mama` was accessed.
+
+### Restoration Phase A1 — 2026-09-27
+
+- Result: restored Gmail, Drive and Sheets from `origin/main`; added argv-based gws calls, complete page draining, staged cursors/snapshots and removal/deletion events.
+- Evidence: Gmail page/message failures, Drive later-page retry/removal, and Sheets range/duplicate/delete/restart tests pass; root build/typecheck/lint pass.
+- Still fails: live Google login, source changes and owner reads were not exercised; Sheets retains first-nonempty-cell identity and poll-time source timestamps.
+
+### Restoration Phase A2 — 2026-09-27
+
+- Result: restored Notion, Obsidian, Discord, Telegram and Claude Code, restored iMessage, and added scoped credentials and local-path aliases.
+- Evidence: restored connector, iMessage, onboarding and owner readable-source tests pass; root build/typecheck/lint pass and standalone reports 1,004 pass / 23 socket `EPERM` failures.
+- Still fails: live provider access and post-restart owner reads were not exercised; Notion reads integration-shared pages and Gmail has no mailbox label scope.

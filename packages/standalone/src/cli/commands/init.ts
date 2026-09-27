@@ -23,14 +23,41 @@ export interface InitOptions {
   findExecutable?: (name: string) => string | undefined;
 }
 
-const connectorNames = ['slack', 'chatwork', 'trello', 'kagemusha', 'calendar'] as const;
+const connectorNames = [
+  'slack',
+  'chatwork',
+  'trello',
+  'kagemusha',
+  'calendar',
+  'gmail',
+  'drive',
+  'sheets',
+  'notion',
+  'obsidian',
+  'discord',
+  'telegram',
+  'imessage',
+  'claude-code',
+] as const;
 const connectorSecrets: Record<string, SecretName[]> = {
   slack: ['MAMA_SLACK_TOKEN'],
   chatwork: ['MAMA_CHATWORK_TOKEN'],
   trello: ['MAMA_TRELLO_KEY', 'MAMA_TRELLO_TOKEN'],
   kagemusha: [],
   calendar: [],
+  gmail: [],
+  drive: [],
+  sheets: [],
+  notion: ['MAMA_NOTION_TOKEN'],
+  obsidian: [],
+  discord: ['MAMA_DISCORD_TOKEN'],
+  telegram: ['MAMA_TELEGRAM_SOURCE_TOKEN'],
+  imessage: [],
+  'claude-code': [],
 };
+
+const gwsConnectorNames = new Set(['calendar', 'gmail', 'drive', 'sheets']);
+const noSecretConnectorNames = new Set(['kagemusha', 'obsidian', 'imessage', 'claude-code']);
 
 async function yes(prompt: PromptAdapter, label: string): Promise<boolean> {
   const value = (await prompt.text(`${label} [y/N]`)).trim().toLowerCase();
@@ -41,6 +68,11 @@ async function yes(prompt: PromptAdapter, label: string): Promise<boolean> {
 
 async function text(prompt: PromptAdapter, label: string): Promise<string> {
   return nonblankLine(await prompt.text(label)).trim();
+}
+
+async function optionalText(prompt: PromptAdapter, label: string): Promise<string | undefined> {
+  const value = (await prompt.text(label)).trim();
+  return value === '' ? undefined : nonblankLine(value).trim();
 }
 
 async function collectConnectors(
@@ -64,6 +96,98 @@ async function collectConnectors(
       prompt.write(
         'Calendar currently reads the primary calendar only; its source channel id is calendar.'
       );
+
+    if (name === 'gmail') {
+      config.gmail = {
+        enabled: true,
+        pollIntervalMinutes: 5,
+        channels: { inbox: { role: 'hub' } },
+        auth: { type: 'cli', cli: 'gws', cliAuthCommand: 'gws auth login' },
+      };
+      continue;
+    }
+    if (name === 'notion') {
+      config.notion = {
+        enabled: true,
+        pollIntervalMinutes: 5,
+        channels: { workspace: { role: 'hub', name: 'Notion workspace' } },
+        auth: { type: 'token', tokenName: 'MAMA_NOTION_TOKEN' },
+      };
+      continue;
+    }
+    if (name === 'obsidian') {
+      const vaultPath = await text(prompt, 'Obsidian vault path');
+      config.obsidian = {
+        enabled: true,
+        pollIntervalMinutes: 5,
+        channels: { vault: { role: 'hub', name: 'Vault', vaultPath } },
+        auth: { type: 'none' },
+      };
+      continue;
+    }
+    if (name === 'claude-code') {
+      const selectedProjects = (
+        await text(prompt, 'Claude Code project directory names (comma-separated)')
+      )
+        .split(',')
+        .map((project) => project.trim());
+      if (selectedProjects.some((project) => !project || /[/\\\s]/.test(project))) {
+        throw new CliInputError(
+          'Enter Claude Code project directory names without paths or spaces.'
+        );
+      }
+      const channels: ConnectorsConfig[string]['channels'] = {};
+      for (const project of selectedProjects) {
+        const alias = await text(prompt, `Display alias for ${project}`);
+        channels[project] = { role: 'hub', name: alias };
+      }
+      config['claude-code'] = {
+        enabled: true,
+        pollIntervalMinutes: 5,
+        channels,
+        auth: { type: 'none' },
+      };
+      continue;
+    }
+    if (name === 'drive') {
+      const folderIds = (await text(prompt, 'Drive folder ids (comma-separated)'))
+        .split(',')
+        .map((id) => id.trim());
+      if (folderIds.some((id) => !id || /\s/.test(id)))
+        throw new CliInputError('Enter Drive folder ids separated by commas without spaces.');
+      config.drive = {
+        enabled: true,
+        pollIntervalMinutes: 5,
+        channels: Object.fromEntries(
+          folderIds.map((folderId) => [folderId, { role: 'hub', folderId }])
+        ),
+        auth: { type: 'cli', cli: 'gws', cliAuthCommand: 'gws auth login' },
+      };
+      continue;
+    }
+    if (name === 'sheets') {
+      const spreadsheetId = await text(prompt, 'Google Sheets spreadsheet id');
+      const sheetRange = await text(prompt, 'Google Sheets header-and-data range');
+      const dataRange = await optionalText(
+        prompt,
+        'Separate data range (blank to use the full range)'
+      );
+      config.sheets = {
+        enabled: true,
+        pollIntervalMinutes: 5,
+        channels: {
+          spreadsheet: {
+            role: 'hub',
+            spreadsheetId,
+            sheetRange,
+            ...(dataRange ? { dataRange } : {}),
+          },
+        },
+        auth: { type: 'cli', cli: 'gws', cliAuthCommand: 'gws auth login' },
+      };
+      continue;
+    }
+
     const ids = (
       await text(
         prompt,
@@ -85,12 +209,11 @@ async function collectConnectors(
       channels: Object.fromEntries(
         ids.map((id) => [id, { role: 'hub', ...(name === 'trello' ? { boardId: id } : {}) }])
       ),
-      auth:
-        name === 'calendar'
-          ? { type: 'cli', cli: 'gws', cliAuthCommand: 'gws auth login' }
-          : name === 'kagemusha'
-            ? { type: 'none' }
-            : { type: 'token', tokenName: connectorSecrets[name].at(-1)! },
+      auth: gwsConnectorNames.has(name)
+        ? { type: 'cli', cli: 'gws', cliAuthCommand: 'gws auth login' }
+        : noSecretConnectorNames.has(name)
+          ? { type: 'none' }
+          : { type: 'token', tokenName: connectorSecrets[name].at(-1)! },
     };
   }
   return config;
@@ -220,10 +343,10 @@ export async function runInit(options: InitOptions = {}): Promise<void> {
   prompt.write(
     `If you have not logged in, run: ${backend === 'claude' ? 'claude auth login' : `CODEX_HOME=${shellQuote(join(root, '.codex'))} codex login`}`
   );
-  if (connectors.calendar) {
+  if (Object.keys(connectors).some((name) => gwsConnectorNames.has(name))) {
     if (!gwsPath)
       prompt.write('Install gws and add its bin directory to PATH in ~/.mama/start.sh.');
-    prompt.write('If Calendar access is not authorised, run: gws auth login');
+    prompt.write('Log in with the Google scopes your selected connectors need: gws auth login.');
   }
   if (viewer.MAMA_VIEWER_HOSTNAMES)
     prompt.write(
