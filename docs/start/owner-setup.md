@@ -1,3 +1,9 @@
+---
+title: Set up the owner agent
+parent: Start
+nav_order: 4
+---
+
 # Set up the owner agent
 
 MAMA OS keeps work history, answers the owner on Telegram, and publishes a board and

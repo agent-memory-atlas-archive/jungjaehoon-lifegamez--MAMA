@@ -1,3 +1,9 @@
+---
+title: Viewer API
+parent: Reference
+nav_order: 7
+---
+
 # Viewer API
 
 Read the daemon's current board, work, evidence and logs at `http://127.0.0.1:3847`.

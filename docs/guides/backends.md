@@ -1,3 +1,9 @@
+---
+title: Choose and authenticate a backend
+parent: Guides
+nav_order: 2
+---
+
 # Choose and authenticate a backend
 
 MAMA runs one persistent owner session with either `claude` or `codex`. Choose it

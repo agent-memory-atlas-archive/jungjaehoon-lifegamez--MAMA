@@ -2,29 +2,87 @@
 
 All notable changes to this project will be documented in this file.
 
-## mama-core [4.0.0] / mcp-server [2.2.1] / mama-os [0.57.0] / plugin [2.0.1] - 2026-09-27
+## mama-os [0.57.0] / mama-core [4.0.0] / mcp-server [2.2.1] / plugin [2.0.1] - 2026-09-27
 
-The `rebuild/owner-flow` branch rebuilds the product around one owner agent on Claude or Codex.
-Start from the [owner setup guide](docs/start/owner-setup.md); published versions below describe
-earlier releases.
+This is an unreleased rebuild. Published packages still describe the previous product until this
+version is released.
 
-- Telegram is the owner chat. Five source connectors collect Chatwork, Slack, Trello,
-  the read-only Kagemusha bridge and Google Calendar through `gws`.
-- Tasks retain revisions and evidence; the agent maintains the board, wiki and daily journals,
-  recalls corrections, and answers from stored work and similar cases.
-- Live delta reports, full reports at 08/13/18 KST, hourly reminders and historical day-window
-  replay use the owner runtime. The viewer exposes work, memory, wiki, reports and logs.
-- Terminal onboarding lets the owner type tokens with echo off into mode-0600 `auth.env`;
-  configuration stays secret-free. Token rotation also requires the owner's terminal.
-- Both backends keep workspace write boundaries and credential-read exclusions. External evidence
-  is quoted as untrusted; recallable writes reject recognised secret shapes. Remote viewer data
-  access requires a bearer token or verified Access JWT, with Host checks, security-event recording
-  and Telegram alerts for suspicious request classes.
-- The public MCP server again calls core in-process with its separate development-memory database.
-  Claude Code commands and hooks use that memory without the MAMA OS daemon.
+### Highlights
 
-Implementation and live proof are recorded separately in [checks.md](docs/rebuild/checks.md).
-Fresh-machine onboarding, scheduled-report delivery and remaining owner checks are still open.
+- Follow work with one owner agent on Claude or Codex. MAMA keeps source evidence, work history,
+  reports, a board, wiki pages, and corrections on your computer.
+- Development memory is available through Claude Code commands, hooks, and an MCP server that
+  uses the shared engine in-process without the MAMA OS daemon.
+- Telegram is the owner messenger today. Discord and Slack are selectable messengers. See the
+  [Telegram guide](docs/guides/telegram.md).
+
+### Changed since 0.56
+
+- `mama init` now sets up the local configuration in a terminal and stores tokens in `auth.env`;
+  use `mama daemon`, `mama status`, and `mama stop` to manage the service.
+- Source records keep their original content, revisions, and links to evidence. The agent reads
+  saved work before answering, updates a board and wiki, sends scheduled reports, and carries
+  applicable corrections into later conversations.
+- File attachments sent to the owner arrive in `~/.mama/downloads/`; the agent can read that
+  directory but cannot write there.
+
+### Removed
+
+- Multi-agent and Conductor orchestration, the Code-Act execution layer, envelopes, and tier
+  levels have been removed.
+- Workorders and the trigger loop have been removed. Heartbeat and cron no longer act as owners
+  of scheduled work; scheduled reports run through the owner session.
+- The Cline backend and the old `mama setup`, `mama start`, `mama run`, `mama report`,
+  `mama gateway`, and `mama connector` commands have been removed. The old JSON status option
+  and `init` flags were also removed.
+- The old API routes that drove assistant actions have been removed. The current local viewer
+  exposes read-only pages for the board, work, memory, wiki, logs, and security events.
+
+### Restored
+
+- Security hardening was restored: terminal-only credential entry, separate credential storage,
+  restricted agent file access, untrusted-source handling, and authenticated remote viewer access.
+- The public MCP server again uses `mama-core` in-process and its own development-memory database.
+- Source connectors were restored: Calendar, Gmail, Drive, Sheets, Notion, Obsidian, Discord, the
+  Telegram source, iMessage, and Claude Code. Discord and Slack messengers were restored as
+  selectable owner destinations.
+
+### Breaking changes
+
+- **Configuration:** old configuration is not carried forward. Back up the files, run `mama init`
+  in a terminal to write the current `config.yaml` and `connectors.json`, then reconnect the sources.
+- **Telegram token:** remove `telegram.token` from old configuration and enter the bot token at
+  the `mama init` prompt. It is stored as `MAMA_TELEGRAM_TOKEN` in `~/.mama/auth.env`. Telegram
+  source access uses the separate `MAMA_TELEGRAM_SOURCE_TOKEN`.
+- **Connector tokens:** use `MAMA_CHATWORK_TOKEN`, `MAMA_SLACK_TOKEN`, `MAMA_TRELLO_KEY` and
+  `MAMA_TRELLO_TOKEN`, `MAMA_NOTION_TOKEN`, and `MAMA_DISCORD_TOKEN` in `auth.env`. Google
+  Calendar, Gmail, Drive, and Sheets use the logged-in `gws` command. Re-enter selected connector
+  credentials through `mama init` or `mama secret set <NAME>`.
+- **CLI:** replace `mama setup`, `mama start`, `mama run`, `mama report`, `mama gateway`, and
+  `mama connector` commands with `mama init`, `mama daemon`, `mama status`, `mama stop`, and
+  `mama secret`. `mama init` no longer accepts the old flags, and `mama status --json` is gone.
+  See the [CLI reference](docs/reference/cli.md).
+- **Downloads:** attachment downloads moved to `~/.mama/downloads/`. Copy a file into the
+  workspace before editing it.
+- **Database migrations:** migrations 096–098 drop the unused connector event full-text index,
+  guard a native-input view against malformed historical JSON, and add `workflow` as a memory
+  kind. Let MAMA apply these migrations; do not edit the database schema by hand.
+- **mama-core 4.0:** old package subpaths for `config-loader`, `decision-tracker`, `db-adapter`,
+  `agent-graph`, `context-compile`, `storage/*`, `edges/*`, and several `cases/*` and
+  `connectors/*` modules were removed. Some former root exports are no longer public. Compare the
+  3.2 and 4.0 `exports` maps, update imports to current public paths, and rebuild against 4.0 before
+  upgrading.
+
+### Known issues
+
+- Fresh-machine onboarding has not been verified end to end. Source-provider logins and post-restart
+  reads also still need live checks.
+- Historical replay needs a separate Jev key; onboarding does not configure it. Historical
+  backfill is available only through a script.
+- The first live report run that also writes wiki pages and the first live download-copy-deliver
+  run have not yet been observed.
+- A live correction has not yet confirmed that guidance changes the next related answer. Live
+  connector coverage, full report delivery, and daemon restart recovery remain incomplete.
 
 ## mama-core [3.2.0] / mcp-server [2.2.0] / mama-os [0.56.0] - 2026-09-13
 

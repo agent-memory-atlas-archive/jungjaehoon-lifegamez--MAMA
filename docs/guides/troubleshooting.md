@@ -1,3 +1,9 @@
+---
+title: Troubleshoot the owner loop
+parent: Guides
+nav_order: 10
+---
+
 # Troubleshoot the owner loop
 
 Start with a short, private diagnostic sample:
@@ -20,7 +26,7 @@ share whole configuration files and logs. For development-memory setup, see the
 
 Edit only the setting named in the error. `config.yaml` uses `version: 1` and the
 current `agent`, `database`, `logging`, `telegram`, `jev`, `wiki`, and `reports`
-sections. Unsupported keys are logged as `ignored in W1`; parsing an old setting
+sections. Unsupported keys are logged as `ignored`; parsing an old setting
 does not make that feature run. See [Configuration](../reference/configuration.md).
 
 If startup says `run mama secret set MAMA_TELEGRAM_TOKEN and remove telegram.token`,

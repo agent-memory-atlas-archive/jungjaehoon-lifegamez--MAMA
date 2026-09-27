@@ -1,10 +1,16 @@
+---
+title: The owner loop
+parent: Explanation
+nav_order: 5
+---
+
 # The owner loop
 
 MAMA should answer what is happening, how it got there and what changed after a correction.
 The five checks in [INTENT](../../INTENT.md) define that outcome. Code provides the path; a real
 owner turn establishes whether the result is useful.
 
-## Recognise work in the originals
+## Understand work in source messages
 
 Connectors retain source content and emit deltas with observation references, source time and
 observation time. The runtime accepts those deltas into its mailbox. The owner agent receives a
@@ -15,7 +21,7 @@ Source text is quoted as untrusted evidence. Its instructions do not become owne
 Collection coverage is separate from work status: no collected update does not establish that
 nothing changed or that a task finished.
 
-## Attach changes to existing work
+## Keep changes with their work item
 
 The owner guidance tells the agent to read existing work before creating a new item. A change
 belongs on that item's next revision, with a summary, evidence links, source event time and the

@@ -1,3 +1,9 @@
+---
+title: Keep a readable work history
+parent: Guides
+nav_order: 12
+---
+
 # Keep a readable work history
 
 Ask MAMA to update the wiki when work changes, then inspect it in the viewer's Wiki

@@ -1,3 +1,9 @@
+---
+title: Memory and search
+parent: Explanation
+nav_order: 4
+---
+
 # Memory and search
 
 Use memory to retain decisions and corrections, the work ledger to retain progress, and source

@@ -1,3 +1,9 @@
+---
+title: Inspect work in the viewer
+parent: Guides
+nav_order: 11
+---
+
 # Inspect work in the viewer
 
 With the daemon running, open `http://127.0.0.1:3847/viewer` on the same machine.

@@ -1,3 +1,9 @@
+---
+title: Connect work sources
+parent: Guides
+nav_order: 3
+---
+
 # Connect work sources
 
 Connectors collect evidence for the owner agent. Configure them during
@@ -22,7 +28,9 @@ The JSON stores settings and secret names; enter token values with `mama secret 
 | `claude-code` | User and assistant messages in selected Claude Code projects      | None                                   | Project directory names and display aliases         |
 
 Tokens belong in `~/.mama/auth.env`, never in `connectors.json`. Restart through `start.sh` after
-changing credentials so the daemon loads them. The owner messenger uses `MAMA_TELEGRAM_TOKEN`;
+changing credentials so the daemon loads them. Telegram is the owner messenger today; Discord
+and Slack are selectable messengers. See the [Telegram guide](telegram.md). The owner messenger
+uses `MAMA_TELEGRAM_TOKEN`;
 the Telegram source connector uses a separate bot and `MAMA_TELEGRAM_SOURCE_TOKEN` so both do not
 poll the same update stream.
 

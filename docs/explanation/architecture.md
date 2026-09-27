@@ -1,3 +1,9 @@
+---
+title: Architecture
+parent: Explanation
+nav_order: 2
+---
+
 # Architecture
 
 MAMA has two products built on one engine. MAMA OS carries the owner's work across messages,

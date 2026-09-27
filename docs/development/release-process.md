@@ -1,3 +1,9 @@
+---
+title: Release process
+parent: Development
+nav_order: 6
+---
+
 # Release process
 
 Establish the promised owner result before publishing. Builds, test counts, package installation

@@ -1,3 +1,9 @@
+---
+title: Read reports and reconcile the board
+parent: Guides
+nav_order: 7
+---
+
 # Read reports and reconcile the board
 
 Ask MAMA for the current situation in the owner Telegram chat, then open the
@@ -41,7 +47,8 @@ reminder. Scheduled report text is currently requested in Korean.
 
 The scheduler checks every minute. It records an hour as sent only after Telegram
 delivery succeeds; pending reports prevent another scheduled report from starting.
-Reports depend on the Telegram gateway being enabled.
+Reports currently reach the owner through Telegram. Discord and Slack are selectable messengers;
+see the [Telegram guide](telegram.md) for today's owner setup.
 
 ## Check a discrepancy
 

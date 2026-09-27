@@ -1,3 +1,9 @@
+---
+title: Remember development decisions in Claude Code
+parent: Start
+nav_order: 2
+---
+
 # Remember development decisions in Claude Code
 
 Install the MAMA plugin to keep decisions and checkpoints across coding sessions. It includes a

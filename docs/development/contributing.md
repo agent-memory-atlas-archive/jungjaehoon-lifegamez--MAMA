@@ -1,7 +1,14 @@
+---
+title: Contributing
+parent: Development
+nav_order: 3
+---
+
 # Contributing
 
 Start with [INTENT](../../INTENT.md) and [AGENTS](../../AGENTS.md). Name the owner check your
-change serves: recognise, attach, answer, report or learn. Engine changes also need the shared
+change serves: understanding source material, keeping work history together, answering from
+saved evidence, reporting changes, or applying corrections. Engine changes also need the shared
 core check. The active work list is [the rebuild plan](../rebuild/plan.md).
 
 ## Set up the workspace

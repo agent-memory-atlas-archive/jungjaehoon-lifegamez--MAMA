@@ -1,3 +1,9 @@
+---
+title: Replay retained history
+parent: Guides
+nav_order: 6
+---
+
 # Replay retained history
 
 Use replay to process already imported originals chronologically through the owner

@@ -1145,3 +1145,9 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Owner-first ordering already existed (stimulus-delivery prefer owner_message); the 15:02 wait was
   the in-flight turn, whose cause (calendar repeats) W15 part 1 removed. No core change.
 - Still open: a live delta or 13:00/18:00 report writing wiki pages, and an owner answer without markers.
+
+### W13 — public documentation (2026-09-27)
+
+- Result: GitHub Pages now builds the Markdown docs tree; README, site home, first-day tutorial, and current release notes describe the rebuild for readers.
+- Evidence: checked CLI commands, onboarding/config facts, selectable sources, exports, migrations 096–098, version sync, front matter YAML, and 192 local Markdown links across 34 public Markdown files; no broken paths or heading links.
+- Still open: the hosted Pages build and fresh-machine tutorial flow have not been run. Live report/wiki and file-delivery steps remain unobserved as noted above.

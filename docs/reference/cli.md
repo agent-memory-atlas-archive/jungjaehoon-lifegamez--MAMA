@@ -1,3 +1,9 @@
+---
+title: CLI reference
+parent: Reference
+nav_order: 3
+---
+
 # CLI reference
 
 Use `mama` from `@jungjaehoon/mama-os` to configure and run the owner agent. Start with

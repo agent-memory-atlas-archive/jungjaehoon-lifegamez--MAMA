@@ -93,21 +93,6 @@ function buildRules(versions) {
     { file: 'packages/mama-core/README.md', patterns: [header(core)] },
     { file: 'packages/mcp-server/README.md', patterns: [header(server)] },
     { file: 'packages/claude-code-plugin/README.md', patterns: [header(plugin)] },
-    {
-      file: 'docs/website/index.html',
-      patterns: [
-        { regex: new RegExp(`(class="nav-cta">)${SEMVER}( · )`, 'g'), version: os, suffix: true },
-        {
-          regex: new RegExp(`(class="footer-version">)${SEMVER}( · )`, 'g'),
-          version: os,
-          suffix: true,
-        },
-        { regex: new RegExp(`(>MAMA OS · )${SEMVER}(<)`, 'g'), version: os, suffix: true },
-        { regex: new RegExp(`(>mama-core · )${SEMVER}(<)`, 'g'), version: core, suffix: true },
-        { regex: new RegExp(`(Plugin )${SEMVER}( \\+ MCP )`, 'g'), version: plugin, suffix: true },
-        { regex: new RegExp(`( \\+ MCP )${SEMVER}( · )`, 'g'), version: server, suffix: true },
-      ],
-    },
   ];
 }
 

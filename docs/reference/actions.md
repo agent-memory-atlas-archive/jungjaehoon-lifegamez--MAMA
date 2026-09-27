@@ -1,3 +1,9 @@
+---
+title: Owner actions
+parent: Reference
+nav_order: 2
+---
+
 # Owner actions
 
 Use these actions inside a MAMA OS owner turn to read evidence, maintain work, and publish results.

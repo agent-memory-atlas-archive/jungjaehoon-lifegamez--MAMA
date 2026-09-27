@@ -1,6 +1,12 @@
+---
+title: Code standards
+parent: Development
+nav_order: 2
+---
+
 # Code standards
 
-Follow [AGENTS](../../AGENTS.md) and preserve the owner checks in [INTENT](../../INTENT.md).
+Follow [AGENTS](../../AGENTS.md) and preserve the product requirements in [INTENT](../../INTENT.md).
 Choose a mechanism because code, source data or an owner decision requires it.
 
 ## Keep ownership explicit

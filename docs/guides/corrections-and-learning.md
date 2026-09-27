@@ -1,3 +1,9 @@
+---
+title: Correct MAMA and check what it learns
+parent: Guides
+nav_order: 4
+---
+
 # Correct MAMA and check what it learns
 
 Tell the owner agent what was wrong, what should change, and when the correction

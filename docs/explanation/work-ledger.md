@@ -1,3 +1,9 @@
+---
+title: Work ledger
+parent: Explanation
+nav_order: 6
+---
+
 # Work ledger
 
 A work item keeps its current state and the changes that produced it. The agent writes those

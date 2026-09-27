@@ -1,6 +1,12 @@
+---
+title: Security guide
+parent: Guides
+nav_order: 8
+---
+
 # Security guide
 
-This guide describes `rebuild/owner-flow`. MAMA runs one owner agent, stores its
+MAMA runs one owner agent, stores its
 work history, and serves the owner's tasks, memory, wiki, reports and logs. The
 security boundary protects those records and connector credentials while keeping
 the owner's existing tools available.

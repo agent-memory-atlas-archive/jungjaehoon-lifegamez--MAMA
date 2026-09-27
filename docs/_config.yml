@@ -1,18 +1,9 @@
-title: 'MAMA Docs'
-description: 'MAMA - the local work agent behind your messenger'
+title: MAMA
+description: A local work agent and memory for development sessions.
 url: 'https://jungjaehoon-lifegamez.github.io'
 baseurl: '/MAMA'
-markdown: kramdown
-highlighter: rouge
-
-# Theme
 remote_theme: just-the-docs/just-the-docs
 
-# Logo and branding
-logo: '/assets/images/logo.svg'
-favicon_ico: '/assets/images/favicon.ico'
-
-# Search
 search_enabled: true
 search:
   heading_level: 2
@@ -21,19 +12,24 @@ search:
   preview_words_after: 10
   tokenizer_separator: /[\s/]+/
 
-# Navigation
 nav_sort: case_insensitive
-
-# Plugins
 plugins:
   - jekyll-relative-links
   - jekyll-seo-tag
-
 relative_links:
   enabled: true
   collections: true
 
-# Collections for docs
+exclude:
+  - rebuild
+  - website
+  - superpowers
+  - sdd
+  - v10
+  - planning
+  - Gemfile
+  - Gemfile.lock
+
 collections:
   tutorials:
     output: true
@@ -48,49 +44,33 @@ collections:
     output: true
     permalink: /:collection/:name
 
-# Defaults
 defaults:
   - scope:
       path: ''
     values:
       layout: default
   - scope:
-      path: 'tutorials'
+      path: 'guides/telegram.md'
     values:
-      nav_order: 1
-      parent: Tutorials
-  - scope:
-      path: 'guides'
-    values:
-      nav_order: 2
+      title: Telegram
       parent: Guides
+      nav_order: 11
   - scope:
-      path: 'reference'
+      path: 'reference/configuration.md'
     values:
-      nav_order: 3
+      title: Configuration
       parent: Reference
-  - scope:
-      path: 'explanation'
-    values:
-      nav_order: 4
-      parent: Explanation
+      nav_order: 2
 
-# Aux links (top right)
 aux_links:
   'GitHub':
     - 'https://github.com/jungjaehoon-lifegamez/MAMA'
   'npm':
-    - 'https://www.npmjs.com/package/@jungjaehoon/mama-server'
-
+    - 'https://www.npmjs.com/package/@jungjaehoon/mama-os'
 aux_links_new_tab: true
-
-# Footer
 footer_content: 'MIT License &copy; 2024-2026 SpineLift Team'
-
-# Color scheme
 color_scheme: dark
 
-# Kramdown
 kramdown:
   input: GFM
   hard_wrap: false

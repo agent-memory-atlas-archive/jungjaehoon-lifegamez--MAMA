@@ -1,3 +1,9 @@
+---
+title: Check the product intent
+parent: Development
+nav_order: 5
+---
+
 # Check the product intent
 
 Use these checks to evaluate changes against [INTENT](../../INTENT.md). They are development
@@ -14,7 +20,9 @@ acceptance evidence, not an extra host approval gate or a prescribed owner-agent
 | C5    | An owner correction changes the next relevant action, leaves unrelated actions unchanged and survives restart.                       |
 | C6    | A packed core installed in a temporary directory uses public exports and its own database to write, revise, link and search records. |
 
-C1–C5 serve recognise, attach, answer, report and learn. C6 serves the shared-engine goal. Internal
+The product requirements cover understanding source material, keeping related work together,
+answering from saved records, reporting changes, and applying corrections. The shared engine has
+separate requirements. Internal
 references belong in records and traces; owner-facing answers use readable sentences without
 internal identifiers. Traceable reads and correct explanation together support the answer.
 
@@ -58,5 +66,5 @@ Before removing a procedure or policy, identify where its knowledge will reach t
 confirm it in an owner turn. Compare guidance changes with the same model, effort, tools and frozen
 sources. Record quality, completion, correction scope and request-to-delivery time together.
 
-Team sharing follows the owner checks. Future requester, executor, approver and recipient roles
+Team sharing follows the single-owner product requirements. Future requester, executor, approver and recipient roles
 must remain distinguishable, but a future team contract is not evidence that today's owner flow works.

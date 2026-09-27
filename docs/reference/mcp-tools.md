@@ -1,3 +1,9 @@
+---
+title: Development-memory MCP tools
+parent: Reference
+nav_order: 6
+---
+
 # Development-memory MCP tools
 
 Use `@jungjaehoon/mama-server` from Claude Code, Claude Desktop or another stdio MCP client to
