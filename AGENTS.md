@@ -124,6 +124,9 @@ the owner turn (background tasks off). Any other widening needs an owner decisio
 
 ## Owner credential boundary — 2026-09-27
 
+- Scope (owner decision 2026-09-27): the boundary covers MAMA's own credentials — auth.env,
+  config.yaml, runtime/, the managed Codex home and the replay key file. Other tools' credential stores
+  on the machine are not denied; the agent's native reads of them are recorded in tool_traces.
 - Standalone removes secret-shaped environment names before launching either backend; core accepts
   a complete consumer-supplied environment. Native children inherit it; daemon connectors keep theirs.
 - Claude CLI Read denies and Bash sandbox denyRead exclude auth.env, config.yaml, runtime/ and the

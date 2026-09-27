@@ -63,7 +63,8 @@ describe('connector event index schema', () => {
           INSERT INTO connector_event_index_fts(event_index_id, title, content, author, channel)
           VALUES (NEW.event_index_id, NEW.title, NEW.content, NEW.author, NEW.channel);
         END;
-        DELETE FROM schema_version WHERE source = 'core' AND version = 96;
+        -- A pre-096 database has neither 096 nor anything after it (the runner applies versions above the max).
+        DELETE FROM schema_version WHERE source = 'core' AND version >= 96;
       `);
       const input = {
         source_connector: 'connector-test',

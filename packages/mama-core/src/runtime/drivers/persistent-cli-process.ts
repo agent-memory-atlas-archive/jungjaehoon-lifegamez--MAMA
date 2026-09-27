@@ -1498,13 +1498,21 @@ export class PersistentClaudeProcess extends EventEmitter {
     // When SessionPool creates new sessions without cleaning up old processes,
     // Claude processes accumulate and exhaust system memory.
     if (this.process && !this.process.killed) {
-      this.process.kill('SIGTERM');
-      // If SIGTERM doesn't work, force kill after 3 seconds
-      setTimeout(() => {
-        if (this.process && !this.process.killed) {
-          this.process.kill('SIGKILL');
-        }
+      // `killed` turns true as soon as SIGTERM is sent, so escalation must watch the exit itself.
+      const child = this.process;
+      let exited = false;
+      const markExited = () => {
+        exited = true;
+      };
+      if (typeof child.once === 'function') {
+        child.once('exit', markExited);
+        child.once('close', markExited);
+      }
+      child.kill('SIGTERM');
+      const forceKillTimer = setTimeout(() => {
+        if (!exited) child.kill('SIGKILL');
       }, 3000);
+      forceKillTimer.unref?.();
     }
     this.state = 'dead';
     this.awaitingToolResults = false;
