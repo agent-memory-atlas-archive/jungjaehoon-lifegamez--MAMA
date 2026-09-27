@@ -36,9 +36,7 @@ const rows = [
     current_observation_id: 'obs-event',
     metadata_json: JSON.stringify({
       start: new Date(now + 3_600_000).toISOString(),
-      startKind: 'utc',
       end: new Date(now + 7_200_000).toISOString(),
-      endKind: 'utc',
       summary: 'Calendar event',
       status: 'confirmed',
       calendarName: 'Owner calendar',
@@ -53,9 +51,7 @@ const rows = [
     current_observation_id: 'obs-booking',
     metadata_json: JSON.stringify({
       start: new Date(now + 4_000_000).toISOString(),
-      startKind: 'utc',
       end: new Date(now + 8_000_000).toISOString(),
-      endKind: 'utc',
       summary: 'Booking',
       status: 'confirmed',
       feedName: 'Lodging feed',
@@ -184,9 +180,7 @@ describe('report source reads', () => {
       source_entity_id: 'event-local',
       metadata_json: JSON.stringify({
         start: '2026-10-01T10:00:00+09:00',
-        startKind: 'offset',
         end: '2026-10-01T11:00:00+09:00',
-        endKind: 'offset',
         summary: 'Local time first',
         status: 'confirmed',
       }),
@@ -197,9 +191,7 @@ describe('report source reads', () => {
       source_entity_id: 'event-utc',
       metadata_json: JSON.stringify({
         start: '2026-10-01T02:00:00Z',
-        startKind: 'utc',
         end: '2026-10-01T03:00:00Z',
-        endKind: 'utc',
         summary: 'UTC time second',
         status: 'confirmed',
       }),
@@ -238,29 +230,21 @@ describe('report source reads', () => {
     const items = [
       make('all-day-ended', 'Ended all day', {
         start: prior,
-        startKind: 'date',
         end: today,
-        endKind: 'date',
         allDay: true,
         endExclusive: true,
       }),
       make('date-only', 'Date only', {
         start: '20261001',
         end: '20261002',
-        startKind: 'date',
-        endKind: 'date',
       }),
       make('utc', 'UTC', {
         start: '2026-10-01T06:00:00Z',
-        startKind: 'utc',
         end: '2026-10-01T07:00:00Z',
-        endKind: 'utc',
       }),
       make('offset', 'Offset', {
         start: '2026-10-01T02:00:00+02:00',
-        startKind: 'offset',
         end: '2026-10-01T03:00:00+02:00',
-        endKind: 'offset',
       }),
     ];
     const { dispatch, access } = setup(items);

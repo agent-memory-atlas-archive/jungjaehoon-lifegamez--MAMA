@@ -8,16 +8,18 @@ import type {
 import { readConnectorState, writeConnectorState } from '../framework/connector-state.js';
 import { parseICalendar } from './parser.js';
 import type { TimeZoneSetting } from '../../runtime/timezone.js';
-import { durationEndEpoch, epochForCalendarValue } from '../../runtime/timezone.js';
+import {
+  calendarValueKind,
+  durationEndEpoch,
+  epochForCalendarValue,
+} from '../../runtime/timezone.js';
 
 interface ICalEntityState {
   version: string;
   firstSeenAt: number;
   start: string;
-  startKind: string;
   startTimeZone?: string;
   end?: string;
-  endKind?: string;
   endTimeZone?: string;
   duration?: string;
   summary: string;
@@ -148,10 +150,8 @@ export class ICalConnector implements IConnector {
             firstSeenAt,
             start: event.start,
             end: event.end,
-            startKind: event.startKind,
             ...(event.startTimeZone ? { startTimeZone: event.startTimeZone } : {}),
             ...(event.end === undefined ? {} : { end: event.end }),
-            ...(event.endKind === undefined ? {} : { endKind: event.endKind }),
             ...(event.endTimeZone ? { endTimeZone: event.endTimeZone } : {}),
             ...(event.duration === undefined ? {} : { duration: event.duration }),
             summary: event.summary,
@@ -172,13 +172,11 @@ export class ICalConnector implements IConnector {
             metadata: {
               start: event.start,
               ...(event.end === undefined ? {} : { end: event.end }),
-              startKind: event.startKind,
               ...(event.startTimeZone ? { startTimeZone: event.startTimeZone } : {}),
-              ...(event.endKind === undefined ? {} : { endKind: event.endKind }),
               ...(event.endTimeZone ? { endTimeZone: event.endTimeZone } : {}),
               ...(event.duration === undefined ? {} : { duration: event.duration }),
-              ...(event.startKind === 'date' &&
-              (event.endKind === undefined || event.endKind === 'date')
+              ...(calendarValueKind(event.start) === 'date' &&
+              (event.end === undefined || calendarValueKind(event.end) === 'date')
                 ? { allDay: true, endExclusive: true }
                 : {}),
               summary: event.summary,
@@ -198,23 +196,16 @@ export class ICalConnector implements IConnector {
           const previousEnd = previous.end
             ? epochForCalendarValue(
                 previous.end,
-                previous.endKind ?? '',
                 previous.endTimeZone ?? previous.startTimeZone,
                 this.timeZone.get()
               )
             : previous.duration
               ? durationEndEpoch(
                   previous.start,
-                  previous.startKind,
                   previous.duration,
                   previous.startTimeZone ?? this.timeZone.get()
                 )
-              : epochForCalendarValue(
-                  previous.start,
-                  previous.startKind,
-                  previous.startTimeZone,
-                  this.timeZone.get()
-                );
+              : epochForCalendarValue(previous.start, previous.startTimeZone, this.timeZone.get());
           if (previousEnd <= Date.now()) {
             delete this.entities[entityKey];
             continue;
@@ -223,11 +214,7 @@ export class ICalConnector implements IConnector {
             uid: entityKey.slice(feed.key.length + 1),
             start: previous.start,
             end: previous.end,
-            startKind: previous.startKind as (typeof events)[number]['startKind'],
             ...(previous.startTimeZone ? { startTimeZone: previous.startTimeZone } : {}),
-            ...(previous.endKind
-              ? { endKind: previous.endKind as (typeof events)[number]['endKind'] }
-              : {}),
             ...(previous.endTimeZone ? { endTimeZone: previous.endTimeZone } : {}),
             ...(previous.duration ? { duration: previous.duration } : {}),
             summary: previous.summary,

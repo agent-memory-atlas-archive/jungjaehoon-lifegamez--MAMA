@@ -409,22 +409,26 @@ export function recordConnectorPollOutcome(
   const at = new Date(outcome.at).toISOString();
   adapter.transaction(() => {
     if (outcome.error === undefined) {
-      adapter.prepare(
-        `INSERT INTO connector_event_index_cursors (connector_name, last_success_at, last_error, last_error_at)
+      adapter
+        .prepare(
+          `INSERT INTO connector_event_index_cursors (connector_name, last_success_at, last_error, last_error_at)
          VALUES (?, ?, NULL, NULL)
          ON CONFLICT(connector_name) DO UPDATE SET
            last_success_at = excluded.last_success_at,
            last_error = NULL,
            last_error_at = NULL`
-      ).run(connectorName, at);
+        )
+        .run(connectorName, at);
     } else {
-      adapter.prepare(
-        `INSERT INTO connector_event_index_cursors (connector_name, last_error, last_error_at)
+      adapter
+        .prepare(
+          `INSERT INTO connector_event_index_cursors (connector_name, last_error, last_error_at)
          VALUES (?, ?, ?)
          ON CONFLICT(connector_name) DO UPDATE SET
            last_error = excluded.last_error,
            last_error_at = excluded.last_error_at`
-      ).run(connectorName, outcome.error, at);
+        )
+        .run(connectorName, outcome.error, at);
     }
   });
 }

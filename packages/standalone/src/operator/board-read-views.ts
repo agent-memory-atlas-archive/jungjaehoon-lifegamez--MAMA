@@ -38,7 +38,7 @@ export interface BoardSlotDescriptor {
 
 export type BoardReadResult =
   | { success: true; slots: BoardSlotDescriptor[] }
-  | ({
+  | {
       success: true;
       slot: string;
       format: BoardFormat;
@@ -53,7 +53,7 @@ export type BoardReadResult =
       complete: boolean;
       /** Binds (slot, format, content); a continuation must echo it or restart. */
       readVersion: string;
-    });
+    };
 
 export function readBoardView(rawInput: unknown, slots: BoardSlots): BoardReadResult {
   const input = asObject(rawInput, 'report.read');

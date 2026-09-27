@@ -53,7 +53,10 @@ describe('connector config loader', () => {
     const invalid = loadConnectorConfig(
       writeConfig({ ical: { ...valid, channels: { '7stay': { role: 'reference' } } } })
     );
-    expect(invalid).toMatchObject({ ok: false, error: { message: expect.stringContaining('7stay') } });
+    expect(invalid).toMatchObject({
+      ok: false,
+      error: { message: expect.stringContaining('7stay') },
+    });
     const collision = loadConnectorConfig(
       writeConfig({
         ical: {

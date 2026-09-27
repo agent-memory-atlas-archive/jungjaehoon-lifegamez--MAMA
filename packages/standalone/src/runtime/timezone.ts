@@ -3,6 +3,17 @@ export interface TimeZoneSetting {
   set(timeZone: string): void;
 }
 
+export type CalendarValueKind = 'date' | 'floating' | 'utc' | 'offset';
+
+export function calendarValueKind(value: string): CalendarValueKind {
+  if (/^(?:\d{4}-\d{2}-\d{2}|\d{8})$/.test(value)) return 'date';
+  if (/^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?|\d{8}T\d{6})Z$/.test(value)) return 'utc';
+  if (/^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?|\d{8}T\d{6})[+-]\d{2}:?\d{2}$/.test(value))
+    return 'offset';
+  if (/^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}|\d{8}T\d{6})$/.test(value)) return 'floating';
+  throw new Error(`invalid calendar value ${value}`);
+}
+
 export function validateTimeZone(timeZone: string): void {
   try {
     new Intl.DateTimeFormat('en', { timeZone });
@@ -78,43 +89,39 @@ export function epochAtLocalDateTime(value: string, timeZone: string): number {
 
 export function epochForCalendarValue(
   value: string,
-  kind: string,
   eventTimeZone: string | undefined,
   ownerTimeZone: string
 ): number {
-  if (kind === 'date') {
-    const match = /^(\d{4})-?(\d{2})-?(\d{2})$/.exec(value);
-    if (!match) return Number.NaN;
-    return epochAtLocalDateTime(
-      `${match[1]}-${match[2]}-${match[3]}T00:00:00`,
-      eventTimeZone ?? ownerTimeZone
-    );
+  switch (calendarValueKind(value)) {
+    case 'date': {
+      const match = /^(\d{4})-?(\d{2})-?(\d{2})$/.exec(value)!;
+      return epochAtLocalDateTime(
+        `${match[1]}-${match[2]}-${match[3]}T00:00:00`,
+        eventTimeZone ?? ownerTimeZone
+      );
+    }
+    case 'utc':
+    case 'offset': {
+      const normalized = value
+        .replace(/^(\d{4})(\d{2})(\d{2})T/, '$1-$2-$3T')
+        .replace(/([+-]\d{2})(\d{2})$/, '$1:$2');
+      return Date.parse(normalized);
+    }
+    case 'floating': {
+      const normalized = value.replace(
+        /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})$/,
+        '$1-$2-$3T$4:$5:$6'
+      );
+      return epochAtLocalDateTime(normalized, eventTimeZone ?? ownerTimeZone);
+    }
   }
-  if (kind === 'utc' || kind === 'offset') {
-    const normalized = value
-      .replace(/^(\d{4})(\d{2})(\d{2})T/, '$1-$2-$3T')
-      .replace(/([+-]\d{2})(\d{2})$/, '$1:$2');
-    return Date.parse(normalized);
-  }
-  if (kind === 'floating') {
-    const normalized = value.replace(
-      /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})$/,
-      '$1-$2-$3T$4:$5:$6'
-    );
-    return epochAtLocalDateTime(normalized, eventTimeZone ?? ownerTimeZone);
-  }
-  throw new Error(`unknown calendar value kind "${kind}"`);
 }
 
-export function durationEndEpoch(
-  startValue: string,
-  startKind: string,
-  duration: string,
-  zone: string
-): number {
+export function durationEndEpoch(startValue: string, duration: string, zone: string): number {
   const match = /^P(?:(\d+)W|(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/.exec(duration);
   if (!match) return Number.NaN;
-  const start = epochForCalendarValue(startValue, startKind, undefined, zone);
+  const startKind = calendarValueKind(startValue);
+  const start = epochForCalendarValue(startValue, undefined, zone);
   const dayCount = Number(match[1] ?? 0) * 7 + Number(match[2] ?? 0);
   const timeMs =
     Number(match[3] ?? 0) * 3_600_000 +

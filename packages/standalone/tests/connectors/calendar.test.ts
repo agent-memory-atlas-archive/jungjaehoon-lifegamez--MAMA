@@ -208,6 +208,8 @@ describe('CalendarConnector (ported from the pre-stub connector)', () => {
         endExclusive: false,
       },
     });
+    expect(first?.metadata).not.toHaveProperty('startKind');
+    expect(first?.metadata).not.toHaveProperty('endKind');
     for (const field of [
       'Schedule review',
       '2024-01-16T10:00:00+09:00',

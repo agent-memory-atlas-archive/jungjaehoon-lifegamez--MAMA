@@ -29,13 +29,6 @@ interface CalendarEventList {
   timeZone?: string;
 }
 
-function calendarTimeKind(value: string, allDay: boolean): 'date' | 'utc' | 'offset' {
-  if (allDay) return 'date';
-  if (/Z$/i.test(value)) return 'utc';
-  if (/[+-]\d{2}:\d{2}$/.test(value)) return 'offset';
-  throw new Error('Calendar event time must include its stored UTC offset');
-}
-
 const MAX_EVENT_LIST_PAGES = 20;
 // f3f0316c7: unbounded singleEvents expansion repeatedly hit the cap and saved nothing.
 const EVENT_LIST_HORIZON_MS = 90 * 24 * 60 * 60 * 1000;
@@ -213,8 +206,6 @@ export class CalendarConnector implements IConnector {
               location: ev.location,
               start,
               end,
-              ...(start === '' ? {} : { startKind: calendarTimeKind(start, allDay) }),
-              ...(end === '' ? {} : { endKind: calendarTimeKind(end, allDay) }),
               status: ev.status,
               organizer: ev.organizer,
               allDay,

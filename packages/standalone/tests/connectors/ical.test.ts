@@ -52,10 +52,8 @@ describe('iCal connector', () => {
       {
         uid: 'event-1',
         start: '20261001T100000',
-        startKind: 'floating',
         startTimeZone: 'Asia/Seoul',
         end: '20261001T110000',
-        endKind: 'floating',
         endTimeZone: 'Asia/Seoul',
         summary: 'Planning, review',
         status: 'confirmed',
@@ -85,7 +83,6 @@ describe('iCal connector', () => {
       {
         uid: 'duration',
         start: '20261001',
-        startKind: 'date',
         duration: 'P1D',
         summary: '(Untitled event)',
         status: 'confirmed',
@@ -93,7 +90,6 @@ describe('iCal connector', () => {
       {
         uid: 'instant',
         start: '20261001T100000',
-        startKind: 'floating',
         summary: '(Untitled event)',
         status: 'confirmed',
       },
@@ -124,13 +120,18 @@ describe('iCal connector', () => {
       sourceEntityId: 'primary:event-1',
       metadata: { feedName: 'Feed', summary: 'Planning, review' },
     });
+    expect(first[0]?.metadata).not.toHaveProperty('startKind');
+    expect(first[0]?.metadata).not.toHaveProperty('endKind');
     expect(second[0]?.sourceId).toBe(first[0]?.sourceId);
     expect(first[0]?.collectOnly).toBe(true);
     connector.commitPoll?.();
-    expect(JSON.parse(readFileSync(join(stateDirs[0]!, 'state.json'), 'utf8'))).toMatchObject({
+    const state = JSON.parse(readFileSync(join(stateDirs[0]!, 'state.json'), 'utf8'));
+    expect(state).toMatchObject({
       synced: ['primary'],
       entities: { 'primary:event-1': { status: 'confirmed', summary: 'Planning, review' } },
     });
+    expect(state.entities['primary:event-1']).not.toHaveProperty('startKind');
+    expect(state.entities['primary:event-1']).not.toHaveProperty('endKind');
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 

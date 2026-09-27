@@ -1225,3 +1225,9 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Result: removed machine-zone defaults from timezone consumers; production call sites now pass the daemon setting, and calendar epochs require their stored kind.
 - Evidence: standalone build/typecheck, ESLint, Prettier, and 154 focused tests pass; grep leaves only config loading and onboarding machine-zone resolution.
 - Still open: socket-backed viewer and owner-runtime tests still fail to bind with `listen EPERM` in this sandbox; no home-state directories were accessed.
+
+### Calendar kind derivation follow-up — 2026-09-28
+
+- Result: calendar kinds now derive from timestamp values; legacy rows without kind metadata remain readable.
+- Evidence: standalone build, typecheck, changed-file ESLint, Prettier, and 47 affected tests pass.
+- Still open: no live calendar poll or owner turn was run; `~/.mama` and `~/.claude` were not accessed.

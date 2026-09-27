@@ -1,12 +1,10 @@
-export type ICalDateKind = 'date' | 'floating' | 'utc' | 'offset';
+import { calendarValueKind } from '../../runtime/timezone.js';
 
 export interface ParsedICalEvent {
   uid: string;
   start: string;
-  startKind: ICalDateKind;
   startTimeZone?: string;
   end?: string;
-  endKind?: ICalDateKind;
   endTimeZone?: string;
   duration?: string;
   summary: string;
@@ -22,16 +20,8 @@ function unescapeText(value: string): string {
     .replace(/\\\\/g, '\\');
 }
 
-function dateKind(value: string): ICalDateKind {
-  if (/^\d{8}$/.test(value)) return 'date';
-  if (/Z$/.test(value)) return 'utc';
-  if (/[+-]\d{4}$/.test(value)) return 'offset';
-  if (/^\d{8}T\d{6}$/.test(value)) return 'floating';
-  throw new Error(`invalid date-time value ${value}`);
-}
-
 function revisionEpoch(value: string): number {
-  const kind = dateKind(value);
+  const kind = calendarValueKind(value);
   if (kind === 'date')
     return Date.parse(`${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}T00:00:00Z`);
   const normalized = value
@@ -101,8 +91,8 @@ export function parseICalendar(source: string): ParsedICalEvent[] {
     if (!uid || !startValue) throw new Error('VEVENT requires UID and DTSTART');
     if (endValue && duration)
       throw new Error(`VEVENT ${uid} cannot contain both DTEND and DURATION`);
-    const startKind = dateKind(startValue.value);
-    const endKind = endValue ? dateKind(endValue.value) : undefined;
+    const startKind = calendarValueKind(startValue.value);
+    if (endValue) calendarValueKind(endValue.value);
     if (duration) validateDuration(duration);
     if (endValue && revisionEpoch(endValue.value) < revisionEpoch(startValue.value))
       throw new Error(`VEVENT ${uid} ends before it starts`);
@@ -110,10 +100,9 @@ export function parseICalendar(source: string): ParsedICalEvent[] {
     return {
       uid,
       start: startValue.value,
-      startKind,
       ...(startValue.zone ? { startTimeZone: startValue.zone } : {}),
       ...(endValue
-        ? { end: endValue.value, endKind, ...(endValue.zone ? { endTimeZone: endValue.zone } : {}) }
+        ? { end: endValue.value, ...(endValue.zone ? { endTimeZone: endValue.zone } : {}) }
         : {}),
       ...(duration ? { duration } : !endValue && startKind === 'date' ? { duration: 'P1D' } : {}),
       summary: unescapeText(read('SUMMARY')?.value ?? '(Untitled event)'),

@@ -322,27 +322,16 @@ function upcomingAction(ports: ReportReadPorts): ActionRegistration {
             : typeof metadata.startTimeZone === 'string'
               ? metadata.startTimeZone
               : undefined;
-        const start = epochForCalendarValue(
-          startRaw,
-          String(metadata.startKind),
-          eventZone,
-          ownerTimeZone
-        );
+        const start = epochForCalendarValue(startRaw, eventZone, ownerTimeZone);
         let end: number;
         if (typeof endRaw === 'string') {
           end = epochForCalendarValue(
             endRaw,
-            String(metadata.endKind),
             typeof metadata.endTimeZone === 'string' ? metadata.endTimeZone : eventZone,
             ownerTimeZone
           );
         } else if (typeof metadata.duration === 'string') {
-          end = durationEndEpoch(
-            startRaw,
-            String(metadata.startKind),
-            metadata.duration,
-            eventZone ?? ownerTimeZone
-          );
+          end = durationEndEpoch(startRaw, metadata.duration, eventZone ?? ownerTimeZone);
         } else {
           end = start + (metadata.allDay === true ? 86_400_000 : 0);
         }

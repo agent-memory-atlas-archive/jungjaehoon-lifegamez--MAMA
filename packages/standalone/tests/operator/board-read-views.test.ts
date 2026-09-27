@@ -43,9 +43,13 @@ describe('Task B: board_read descriptors (default)', () => {
         updatedAt: '2026-09-07T01:00:00Z',
       },
     };
-    expect(readBoardView({}, slots)).toMatchObject({ slots: [{ updatedAt: '2026-09-07T01:00:00Z' }] });
+    expect(readBoardView({}, slots)).toMatchObject({
+      slots: [{ updatedAt: '2026-09-07T01:00:00Z' }],
+    });
     expect(JSON.stringify(readBoardView({}, slots))).not.toContain('freshness');
-    expect(JSON.stringify(readBoardView({ slot: 'briefing' }, slots))).not.toContain('basisRevision');
+    expect(JSON.stringify(readBoardView({ slot: 'briefing' }, slots))).not.toContain(
+      'basisRevision'
+    );
   });
   it('lists slot names, updatedAt and html length in code points, never the HTML', () => {
     const slots = makeSlots();
