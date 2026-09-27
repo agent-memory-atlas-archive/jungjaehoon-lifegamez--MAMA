@@ -62,6 +62,8 @@ jobs:
             node_modules
             packages/*/node_modules
             packages/*/dist
+            packages/standalone/ui/node_modules
+            packages/standalone/public/viewer
           key: ${{ runner.os }}-build-${{ github.sha }}
 
   # Test mama-core
@@ -81,6 +83,8 @@ jobs:
             node_modules
             packages/*/node_modules
             packages/*/dist
+            packages/standalone/ui/node_modules
+            packages/standalone/public/viewer
           key: ${{ runner.os }}-build-${{ github.sha }}
       - name: Test mama-core
         run: pnpm --filter @jungjaehoon/mama-core test
@@ -104,6 +108,8 @@ jobs:
             node_modules
             packages/*/node_modules
             packages/*/dist
+            packages/standalone/ui/node_modules
+            packages/standalone/public/viewer
           key: ${{ runner.os }}-build-${{ github.sha }}
       - uses: actions/cache@v5
         with:
@@ -132,6 +138,8 @@ jobs:
             node_modules
             packages/*/node_modules
             packages/*/dist
+            packages/standalone/ui/node_modules
+            packages/standalone/public/viewer
           key: ${{ runner.os }}-build-${{ github.sha }}
       - name: Test plugin
         run: pnpm --filter mama-plugin test
@@ -155,6 +163,8 @@ jobs:
             node_modules
             packages/*/node_modules
             packages/*/dist
+            packages/standalone/ui/node_modules
+            packages/standalone/public/viewer
           key: ${{ runner.os }}-build-${{ github.sha }}
       - name: Test mcp-server
         run: pnpm --filter @jungjaehoon/mama-server test
