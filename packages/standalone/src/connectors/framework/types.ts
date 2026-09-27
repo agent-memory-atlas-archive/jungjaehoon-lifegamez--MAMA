@@ -12,6 +12,12 @@ export interface ChannelConfig {
   sheetRange?: string;
   dataRange?: string;
   vaultPath?: string;
+  calendarId?: string;
+  feedName?: string;
+}
+
+export interface ConnectorPollCursor {
+  hasCursor: boolean;
 }
 
 export interface AuthConfig {
@@ -48,7 +54,7 @@ export interface IConnector {
   getAuthRequirements(): AuthRequirement[];
   authenticate(): Promise<boolean>;
   beginPollHandoff?(): void;
-  poll(since: Date): Promise<NormalizedItem[]>;
+  poll(since: Date, cursor?: ConnectorPollCursor): Promise<NormalizedItem[]>;
   commitPoll?(): void | Promise<void>;
   abortPollHandoff?(): void;
 }

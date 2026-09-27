@@ -25,10 +25,14 @@ export const SECRET_NAMES = [
   'MAMA_TRELLO_TOKEN',
   'MAMA_AUTH_TOKEN',
 ] as const;
-export type SecretName = (typeof SECRET_NAMES)[number];
+export type SecretName = (typeof SECRET_NAMES)[number] | `MAMA_ICAL_URL_${string}`;
+
+function isIcalSecret(name: string | undefined): name is `MAMA_ICAL_URL_${string}` {
+  return typeof name === 'string' && /^MAMA_ICAL_URL_[A-Z][A-Z0-9_]*$/.test(name);
+}
 
 export function secretName(name: string | undefined): SecretName {
-  if (!(SECRET_NAMES as readonly (string | undefined)[]).includes(name)) {
+  if (!(SECRET_NAMES as readonly (string | undefined)[]).includes(name) && !isIcalSecret(name)) {
     throw new CliInputError(`Allowed secret names: ${SECRET_NAMES.join(', ')}`);
   }
   return name as SecretName;
@@ -53,13 +57,17 @@ function assignmentName(line: string): string | undefined {
 
 export function listSecrets(home: string): string[] {
   const names = authSource(home).split('\n').map(assignmentName);
-  return SECRET_NAMES.filter((name) => names.includes(name)).sort();
+  return [
+    ...SECRET_NAMES.filter((name) => names.includes(name)),
+    ...names.filter(isIcalSecret),
+  ].sort();
 }
 
 /** Stage inside runtime/, which both owner backends deny reading, then atomically replace auth.env. */
 export function updateSecrets(home: string, values: Partial<Record<SecretName, string>>): void {
   for (const [name, value] of Object.entries(values)) {
     secretName(name);
+    if (typeof value !== 'string') throw new CliInputError(`${name} must have a value`);
     nonblankLine(value);
   }
   const original = authSource(home);
@@ -70,7 +78,7 @@ export function updateSecrets(home: string, values: Partial<Record<SecretName, s
   const source = `${retained}${retained && !retained.endsWith('\n') ? '\n' : ''}${Object.entries(
     values
   )
-    .map(([name, value]) => `export ${name}=${shellQuote(value)}`)
+    .map(([name, value]) => `export ${name}=${shellQuote(value!)}`)
     .join('\n')}\n`;
   const root = join(home, '.mama');
   mkdirSync(root, { recursive: true, mode: 0o700 });

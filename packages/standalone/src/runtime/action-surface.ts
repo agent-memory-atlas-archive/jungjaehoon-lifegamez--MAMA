@@ -21,6 +21,7 @@ import {
   type AttachmentActionPorts,
 } from '../api/attachment-actions.js';
 import { sourceActionRegistrations } from '../api/source-actions.js';
+import { reportSourceActionRegistrations } from '../api/report-source-actions.js';
 import {
   minimalWorkActionRegistrations,
   workListActionRegistrations,
@@ -33,6 +34,8 @@ import { LOADABLE_CONNECTORS as OWNER_CONNECTORS } from '../connectors/index.js'
 const OWNER_ACTIONS = [
   'graph.query',
   'source.search',
+  'source.recent',
+  'schedule.upcoming',
   'source.read',
   'memory.checkpoint.list',
   'work.create',
@@ -146,6 +149,10 @@ export function createActionSurface(options: ActionSurfaceOptions): ActionSurfac
   const registrations = [
     ...core,
     ...sourceActionRegistrations({ stored: options.storedSourceReader }),
+    ...reportSourceActionRegistrations({
+      adapter: options.adapter,
+      ownerPrincipalId: options.ownerPrincipalId,
+    }),
     ...createAttachmentActionRegistrations({
       ...(options.attachmentPorts ?? {}),
       stored: options.storedSourceReader,

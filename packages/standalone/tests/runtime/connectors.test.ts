@@ -224,7 +224,7 @@ describe('connector runtime', () => {
     expect(connectorPaths.get('trello')).toEqual({ trelloStatePath, kagemushaDbPath });
     expect(connectorPaths.get('kagemusha')).toEqual({ trelloStatePath, kagemushaDbPath });
     for (const value of calls.values()) {
-      expect(value.poll).toHaveBeenCalledWith(new Date(now - 86_400_000));
+      expect(value.poll).toHaveBeenCalledWith(new Date(now - 86_400_000), { hasCursor: false });
     }
     expect(deltas).toHaveLength(3);
     expect(setIntervalMock).toHaveBeenCalledTimes(3);

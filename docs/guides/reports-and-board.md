@@ -39,11 +39,19 @@ reports:
   reminder_end_hour: 21
 ```
 
-Full reports read recent sources and current work, update the board, and cover
-situation, responses needed, decisions, pipeline and next actions. Reminders run
-hourly in the inclusive window, select priority work, include gathered non-urgent
-changes, and update `action_required`. A full-report hour takes precedence over a
-reminder. Scheduled report text is currently requested in Korean.
+Full reports read `source.recent` (24 hours by default), the complete open
+`work.list` pipeline, and `schedule.upcoming` (14 days by default). Recent source
+lines carry references that can be opened with `source.read`; poll failures appear
+beside the affected readable channels. The report names work under each stage,
+lists every item waiting for an owner decision, and compares deadlines with
+calendar events and holidays. The five parts are key situation today, needs a
+response, needs a decision, pipeline, and next actions. The owner schedule appears
+under key situation today. An empty activity window is reported plainly, and a
+collection failure is never described as no change.
+
+Reminders use the same three reads, update changed wiki pages, and publish all
+four board slots before delivering a short priority reminder. A full-report hour
+takes precedence over a reminder. Scheduled report text is requested in Korean.
 
 The scheduler checks every minute. It records an hour as sent only after delivery
 through `delivery.reports` succeeds; pending reports prevent another scheduled report

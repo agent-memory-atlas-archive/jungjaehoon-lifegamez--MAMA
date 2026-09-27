@@ -647,19 +647,20 @@ describe('one stimulus intake and delivery', () => {
           'needs a response',
           'needs a decision',
           'next actions',
-          'source.search',
-          'report.read',
+          'source.recent',
+          'work.list with view="pipeline"',
+          'schedule.upcoming with days=14',
         ])
           expect(prompt).toContain(part);
       } else {
         for (const part of [
-          'priority',
-          'deadline',
+          'source.recent',
+          'view="pipeline"',
+          'schedule.upcoming',
           '5–8',
           '3–6',
           'action_required',
-          'since the previous report',
-          'not already notified',
+          'last full report',
         ])
           expect(prompt).toContain(part);
       }

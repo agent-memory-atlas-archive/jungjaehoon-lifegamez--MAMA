@@ -21,6 +21,7 @@ describe('owner credential boundary', () => {
       MAMA_TRELLO_KEY: 'synthetic',
       MAMA_TRELLO_TOKEN: 'synthetic',
       MAMA_TRELLO_USER_TOKEN: 'synthetic',
+      MAMA_ICAL_URL_STAYS: 'synthetic',
       OTHER_SECRET: 'synthetic',
       PASSWORD: 'synthetic',
       app_credential: 'synthetic',
@@ -36,7 +37,7 @@ describe('owner credential boundary', () => {
       'MAX_THINKING_TOKENS',
       'PATH',
     ]);
-    expect(Object.keys(daemon)).toHaveLength(16);
+    expect(Object.keys(daemon)).toHaveLength(17);
   });
 
   it('denies credentials in both CLI Read and sandbox Bash, including a custom Codex home', () => {

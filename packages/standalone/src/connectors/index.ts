@@ -8,6 +8,7 @@ export const LOADABLE_CONNECTORS = [
   'trello',
   'kagemusha',
   'calendar',
+  'ical',
   'gmail',
   'drive',
   'sheets',
@@ -36,6 +37,7 @@ const loaders: Record<
   chatwork: async (config) => new (await import('./chatwork/index.js')).ChatworkConnector(config),
   slack: async (config) => new (await import('./slack/index.js')).SlackConnector(config),
   calendar: async (config) => new (await import('./calendar/index.js')).CalendarConnector(config),
+  ical: async (config) => new (await import('./ical/index.js')).ICalConnector(config),
   gmail: async (config) => new (await import('./gmail/index.js')).GmailConnector(config),
   drive: async (config, paths) => {
     if (paths?.connectorStatePath === undefined)

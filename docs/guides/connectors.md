@@ -108,19 +108,56 @@ When `dataRange` is omitted, `sheetRange` includes the header row and the data r
 
 ### Calendar
 
-Calendar reads the primary calendar from the poll start through 90 days ahead. It includes
-cancellation observations returned by the API.
+Calendar reads upcoming events through 90 days ahead. On its first poll it collects
+the whole window, including events created earlier; later polls use the change cursor.
+Add calendars under `channels` with their Google calendar id and a display name. This
+also lets a holiday calendar appear in `schedule.upcoming`.
 
 ```json
 {
   "calendar": {
     "enabled": true,
     "pollIntervalMinutes": 5,
-    "channels": { "calendar": { "role": "reference" } },
+    "channels": {
+      "primary": { "role": "reference", "calendarId": "primary", "name": "Main calendar" },
+      "holidays": {
+        "role": "reference",
+        "calendarId": "holiday-calendar-id",
+        "name": "Public holidays"
+      }
+    },
     "auth": { "type": "cli", "cli": "gws", "cliAuthCommand": "gws auth login" }
   }
 }
 ```
+
+### iCal feeds
+
+An iCal feed is configured as a channel. Store its private URL as a secret; it is
+never written into connector configuration or poll logs. Use an uppercase feed key
+for the matching secret name.
+
+```sh
+mama secret set MAMA_ICAL_URL_STAYS
+```
+
+```json
+{
+  "ical": {
+    "enabled": true,
+    "pollIntervalMinutes": 30,
+    "channels": {
+      "stays": { "role": "reference", "name": "Reservations", "feedName": "Stay calendar" }
+    },
+    "auth": { "type": "token", "tokenName": "MAMA_ICAL_URL_STAYS" }
+  }
+}
+```
+
+The feed key `stays` maps to `MAMA_ICAL_URL_STAYS`. MAMA stores event revisions
+by UID, removes the latest cancelled revision from upcoming results, and reports
+fetch or parse failures with the configured feed name. `schedule.upcoming` combines
+these events with every configured Google calendar.
 
 ## Messaging sources
 

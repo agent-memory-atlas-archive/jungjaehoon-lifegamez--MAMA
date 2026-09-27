@@ -47,10 +47,11 @@ reminder_start_hour 9, reminder_end_hour 21}`. Other keys are logged as ignored;
   and logged with hashed ids. Files the owner sends are downloaded under `~/.mama/downloads/<messenger>/`;
   copy into `workspace/files/` before modifying, unzipping, or delivering them.
 - Connectors: chatwork, slack, trello, discord, telegram source, and notion (API tokens); kagemusha
-  (read-only local bridge); calendar, gmail, drive, and sheets (logged-in `gws` CLI); obsidian,
+  (read-only local bridge); calendar (multiple labelled calendars), iCal (per-feed URL secrets),
+  gmail, drive, and sheets (logged-in `gws` CLI); obsidian,
   imessage, and claude-code (selected local sources). Channel roles: truth, hub, deliverable, spoke,
   reference, ignore.
-- Owner actions (23): graph.query; source.search/read; source.attachment.list/download;
+- Owner actions (25): graph.query; source.search/recent/read; schedule.upcoming; source.attachment.list/download;
   work.create/revise/list/show; memory.save; memory.search; memory.read:record;
   memory.read:provenance; memory.retire; memory.checkpoint.list;
   report.read/publish; manage.wiki.publish/read/update; deliver.telegram.file, deliver.discord.file,

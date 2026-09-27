@@ -94,7 +94,20 @@ interface WorkListDetail {
   observedAt: string;
 }
 
-export type WorkListViewResult = WorkListOverview | WorkListItems | WorkListDetail;
+interface WorkListPipeline {
+  success: true;
+  view: 'pipeline';
+  stages: Array<{ stage: string; count: number; tasks: Array<Record<string, unknown>> }>;
+  total: number;
+  cap: number;
+  observedAt: string;
+}
+
+export type WorkListViewResult =
+  | WorkListOverview
+  | WorkListItems
+  | WorkListDetail
+  | WorkListPipeline;
 
 const WORK_LIST_DEFAULT_LIMIT = 25;
 const WORK_LIST_MAX_LIMIT = 50;
@@ -453,7 +466,10 @@ function encodeWorkListCursor(cursor: WorkListCursor): string {
 }
 
 function decodeWorkListCursor(value: unknown, filter: WorkListFilter): WorkListCursor {
-  if (typeof value !== 'string' || value.length === 0 || value.length > 4_096) {
+  if (value === '') {
+    throw new Error('work.list cursor is empty; omit cursor to start from the first page');
+  }
+  if (typeof value !== 'string' || value.length > 4_096) {
     throw new Error('work.list cursor is malformed; restart the items read from the first page');
   }
   let parsed: unknown;
@@ -663,8 +679,8 @@ export async function runWorkListView(
 ): Promise<WorkListViewResult> {
   const input = workListObject(rawInput);
   const view = input.view === undefined ? 'items' : input.view;
-  if (view !== 'overview' && view !== 'items' && view !== 'detail') {
-    throw new Error('work.list view must be one of overview|items|detail');
+  if (view !== 'overview' && view !== 'items' && view !== 'detail' && view !== 'pipeline') {
+    throw new Error('work.list view must be one of overview|items|detail|pipeline');
   }
   if (input.ids !== undefined && view !== 'detail') {
     throw new Error('work.list ids are only valid with view=detail');
@@ -673,6 +689,44 @@ export async function runWorkListView(
   const filter = workListFilter(input);
   const snapshot = workListReadSnapshot(ctx, filter);
   const now = ctx.now?.() ?? snapshot.observedAt;
+  if (input.readVersion !== undefined && input.readVersion !== snapshot.readVersion) {
+    throw new Error('work.list readVersion changed; restart the items read from the first page');
+  }
+  if (view === 'pipeline') {
+    const open = snapshot.items.filter(
+      (item) => !['done', 'cancelled'].includes(workListStatus(item))
+    );
+    const cap = 100;
+    if (open.length > cap) {
+      throw new Error(
+        `work.list pipeline contains ${open.length} open items; cap is ${cap}, filter by stage or project`
+      );
+    }
+    const groups = new Map<string, Array<Record<string, unknown>>>();
+    for (const item of open) {
+      const compact = workListCompact(item, now);
+      const values = workListValueObject(item.values);
+      compact.latest_change = item.updatedAt;
+      const nextAction = workListText(values.nextAction ?? values.next_action);
+      const waitingOn = workListText(values.waitingOn ?? values.waiting_on);
+      compact.next_action = nextAction;
+      compact.waiting_on = waitingOn;
+      const stage = workListText(values.stage) ?? 'Unstaged';
+      const group = groups.get(stage) ?? [];
+      group.push(compact);
+      groups.set(stage, group);
+    }
+    return {
+      success: true,
+      view: 'pipeline',
+      stages: [...groups.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([stage, tasks]) => ({ stage, count: tasks.length, tasks })),
+      total: open.length,
+      cap,
+      observedAt: new Date(snapshot.observedAt).toISOString(),
+    };
+  }
   if (view === 'overview') {
     const rankedItems = workListRankedItems(snapshot.items, filter);
     return workListOverview(snapshot, rankedItems, now);
@@ -724,12 +778,12 @@ export function workListActionRegistrations(ports: WorkListPorts): ActionRegistr
       contract: {
         name: 'work.list',
         summary:
-          'Read owner work progressively: overview counts, bounded items pages, or up to four detailed records with history and text continuation.',
+          'Read owner work progressively: overview counts, a compact open-work pipeline, bounded items pages, or up to four detailed records with history and text continuation.',
         inputSchema: {
           type: 'object',
           additionalProperties: false,
           properties: {
-            view: { type: 'string', enum: ['overview', 'items', 'detail'] },
+            view: { type: 'string', enum: ['overview', 'items', 'detail', 'pipeline'] },
             ids: {
               type: 'array',
               minItems: 1,
@@ -742,7 +796,12 @@ export function workListActionRegistrations(ports: WorkListPorts): ActionRegistr
               },
             },
             limit: { type: 'integer', minimum: 1, maximum: WORK_LIST_MAX_LIMIT },
-            cursor: { type: 'string', minLength: 1 },
+            cursor: { type: 'string', minLength: 0 },
+            readVersion: {
+              type: 'string',
+              minLength: 1,
+              description: 'Optional echoed read version; must match the current read.',
+            },
             status: {
               oneOf: [
                 { type: 'string', enum: WORK_LIST_STATUSES },
@@ -766,6 +825,7 @@ export function workListActionRegistrations(ports: WorkListPorts): ActionRegistr
         },
         examples: [
           { title: 'Work overview', input: { view: 'overview' } },
+          { title: 'Open work pipeline', input: { view: 'pipeline' } },
           { title: 'First work page', input: { view: 'items', limit: WORK_LIST_DEFAULT_LIMIT } },
           { title: 'Work detail', input: { view: 'detail', ids: ['commitment-reference'] } },
         ],

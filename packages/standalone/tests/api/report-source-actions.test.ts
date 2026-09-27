@@ -1,0 +1,163 @@
+import { describe, expect, it } from 'vitest';
+import { createCatalog, createDispatcher, type ActionContext } from '@jungjaehoon/mama-core';
+import { reportSourceActionRegistrations } from '../../src/api/report-source-actions.js';
+
+const now = Date.now();
+const rows = [
+  {
+    source_connector: 'chat',
+    source_id: 'one',
+    source_entity_id: 'one',
+    channel: 'room-a',
+    author: 'Writer',
+    content: 'First update',
+    source_timestamp_ms: now - 1_000,
+    current_observation_id: 'obs-one',
+    metadata_json: '{"channelName":"Room A"}',
+  },
+  {
+    source_connector: 'chat',
+    source_id: 'two',
+    source_entity_id: 'two',
+    channel: 'room-b',
+    author: 'Writer',
+    content: 'Hidden update',
+    source_timestamp_ms: now - 2_000,
+    current_observation_id: 'obs-two',
+    metadata_json: '{}',
+  },
+  {
+    source_connector: 'calendar',
+    source_id: 'event-v1',
+    source_entity_id: 'event',
+    channel: 'main',
+    source_timestamp_ms: now,
+    current_observation_id: 'obs-event',
+    metadata_json: JSON.stringify({
+      start: new Date(now + 3_600_000).toISOString(),
+      end: new Date(now + 7_200_000).toISOString(),
+      summary: 'Calendar event',
+      status: 'confirmed',
+      calendarName: 'Owner calendar',
+    }),
+  },
+  {
+    source_connector: 'ical',
+    source_id: 'booking-v1',
+    source_entity_id: 'booking',
+    channel: 'lodging',
+    source_timestamp_ms: now,
+    current_observation_id: 'obs-booking',
+    metadata_json: JSON.stringify({
+      start: new Date(now + 4_000_000).toISOString(),
+      end: new Date(now + 8_000_000).toISOString(),
+      summary: 'Booking',
+      status: 'confirmed',
+      feedName: 'Lodging feed',
+    }),
+  },
+];
+
+function setup() {
+  const adapter = {
+    prepare: (sql: string) => ({
+      all: (..._params: unknown[]) => {
+        if (sql.includes('connector_event_index_cursors'))
+          return [
+            {
+              connector_name: 'chat',
+              last_error: 'poll failed',
+              last_error_at: new Date(now).toISOString(),
+            },
+          ];
+        if (sql.includes('SELECT DISTINCT source_connector'))
+          return rows.filter((row) => row.source_connector === 'chat');
+        if (sql.includes('ROW_NUMBER()'))
+          return rows.filter(
+            (row) => row.source_connector === 'calendar' || row.source_connector === 'ical'
+          );
+        return rows.filter((row) => row.source_connector === 'chat');
+      },
+    }),
+  };
+  const dispatch = createDispatcher(
+    createCatalog(
+      reportSourceActionRegistrations({ adapter: adapter as never, ownerPrincipalId: 'owner' })
+    )
+  );
+  const access: ActionContext['access'] = {
+    principalId: 'limited-reader',
+    agentId: 'agent',
+    actions: ['source.recent', 'schedule.upcoming'],
+    connectors: ['chat', 'calendar', 'ical'],
+    scopes: [],
+    channels: { chat: ['room-a'], calendar: ['main'], ical: ['lodging'] },
+  };
+  return { dispatch, access };
+}
+
+describe('report source reads', () => {
+  it('groups recent evidence, obeys channel grants, and exposes failed poll visibility', async () => {
+    const { dispatch, access } = setup();
+    const result = await dispatch(
+      { action: 'source.recent', input: { since: now - 60_000 } },
+      { access }
+    );
+    expect(result).toMatchObject({
+      status: 'completed',
+      data: {
+        channels: [
+          {
+            source: 'chat',
+            channel: 'Room A',
+            lines: [{ author: 'Writer', text: 'First update', observationRef: 'obs-one' }],
+          },
+        ],
+        failedConnectors: [{ connector: 'chat', channels: ['Room A'], error: 'poll failed' }],
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain('Hidden update');
+  });
+
+  it('fails loudly when recent activity exceeds the stated cap', async () => {
+    const { dispatch, access } = setup();
+    const result = await dispatch(
+      { action: 'source.recent', input: { since: now - 60_000, cap: 1 } },
+      { access }
+    );
+    expect(result).toMatchObject({
+      status: 'failed',
+      error: { message: expect.stringContaining('narrow since') },
+    });
+  });
+
+  it('reads collected calendar and iCal events in one bounded upcoming list', async () => {
+    const { dispatch, access } = setup();
+    const result = await dispatch({ action: 'schedule.upcoming', input: { days: 14 } }, { access });
+    expect(result).toMatchObject({
+      status: 'completed',
+      data: {
+        returned: 2,
+        events: [
+          { source: 'calendar', calendar: 'Owner calendar', title: 'Calendar event' },
+          { source: 'ical', calendar: 'Lodging feed', title: 'Booking' },
+        ],
+      },
+    });
+  });
+
+  it('applies source channel grants and fails loudly at the upcoming event cap', async () => {
+    const { dispatch, access } = setup();
+    const scoped = { ...access, channels: { ...access.channels, ical: [] } };
+    const visible = await dispatch({ action: 'schedule.upcoming', input: {} }, { access: scoped });
+    expect(visible).toMatchObject({
+      status: 'completed',
+      data: { returned: 1, events: [{ source: 'calendar' }] },
+    });
+    const capped = await dispatch({ action: 'schedule.upcoming', input: { cap: 1 } }, { access });
+    expect(capped).toMatchObject({
+      status: 'failed',
+      error: { message: expect.stringContaining('narrow days') },
+    });
+  });
+});

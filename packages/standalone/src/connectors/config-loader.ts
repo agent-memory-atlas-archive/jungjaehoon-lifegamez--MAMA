@@ -91,6 +91,8 @@ function channel(value: unknown, field: string, state: ValidationState): Channel
       'sheetRange',
       'dataRange',
       'vaultPath',
+      'calendarId',
+      'feedName',
     ],
     field,
     state
@@ -108,6 +110,8 @@ function channel(value: unknown, field: string, state: ValidationState): Channel
   if (raw.sheetRange !== undefined) result.sheetRange = text(raw.sheetRange, `${field}.sheetRange`);
   if (raw.dataRange !== undefined) result.dataRange = text(raw.dataRange, `${field}.dataRange`);
   if (raw.vaultPath !== undefined) result.vaultPath = text(raw.vaultPath, `${field}.vaultPath`);
+  if (raw.calendarId !== undefined) result.calendarId = text(raw.calendarId, `${field}.calendarId`);
+  if (raw.feedName !== undefined) result.feedName = text(raw.feedName, `${field}.feedName`);
   return result;
 }
 

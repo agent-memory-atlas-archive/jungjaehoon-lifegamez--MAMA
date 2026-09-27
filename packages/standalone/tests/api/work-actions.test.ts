@@ -8,7 +8,7 @@ import {
   createKnowledge,
   type ActionContext,
 } from '@jungjaehoon/mama-core';
-import { minimalWorkActionRegistrations } from '../../src/api/work-actions.js';
+import { minimalWorkActionRegistrations, runWorkListView } from '../../src/api/work-actions.js';
 import { openCoreDatabase } from '../../src/runtime/core-db.js';
 
 const access: ActionContext['access'] = {
@@ -19,6 +19,79 @@ const access: ActionContext['access'] = {
 };
 
 describe('minimal work actions', () => {
+  it('returns a capped, grouped open pipeline without a cursor and accepts a matching readVersion echo', async () => {
+    const items = [
+      {
+        rowId: 1,
+        commitmentId: 'item-open',
+        revision: 2,
+        latestJudgmentRef: null,
+        values: {
+          title: 'Open item',
+          status: 'blocked',
+          stage: 'Review',
+          assignee: 'Owner',
+          deadline: '2026-09-28',
+          nextAction: 'Review the draft',
+          waitingOn: 'Owner decision',
+        },
+        withdrawn: false,
+        createdAt: '2026-09-26T00:00:00Z',
+        updatedAt: '2026-09-27T01:00:00Z',
+      },
+      {
+        rowId: 2,
+        commitmentId: 'item-closed',
+        revision: 1,
+        latestJudgmentRef: null,
+        values: { title: 'Closed item', status: 'done', stage: 'Review' },
+        withdrawn: false,
+        createdAt: '2026-09-26T00:00:00Z',
+        updatedAt: '2026-09-27T01:00:00Z',
+      },
+    ];
+    const knowledge = {
+      readWork: vi.fn().mockReturnValue({ items, nextCursor: null, coverage: { reasons: [] } }),
+    };
+    const view = await runWorkListView(
+      { view: 'pipeline' },
+      { knowledge: knowledge as never, access, now: () => Date.parse('2026-09-27T00:00:00Z') }
+    );
+    expect(view).toMatchObject({
+      view: 'pipeline',
+      total: 1,
+      cap: 100,
+      stages: [
+        {
+          stage: 'Review',
+          count: 1,
+          tasks: [
+            {
+              title: 'Open item',
+              assignee: 'Owner',
+              waiting_on: 'Owner decision',
+              next_action: 'Review the draft',
+            },
+          ],
+        },
+      ],
+    });
+    const first = await runWorkListView(
+      { view: 'items', limit: 1 },
+      { knowledge: knowledge as never, access, now: () => Date.parse('2026-09-27T00:00:00Z') }
+    );
+    if (first.view !== 'items') throw new Error('expected items view');
+    await expect(
+      runWorkListView(
+        { view: 'items', readVersion: first.readVersion },
+        { knowledge: knowledge as never, access, now: () => Date.parse('2026-09-27T00:00:00Z') }
+      )
+    ).resolves.toMatchObject({ view: 'items' });
+    await expect(
+      runWorkListView({ view: 'items', cursor: '' }, { knowledge: knowledge as never, access })
+    ).rejects.toThrow('omit cursor');
+  });
+
   it('refuses sourceRefs that name no observation and names the ref', async () => {
     const knowledge = { createWork: vi.fn(), reviseWork: vi.fn() };
     const dispatch = createDispatcher(

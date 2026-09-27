@@ -88,9 +88,11 @@ describe('one owner native session', () => {
         'memory.search',
         'report.publish',
         'report.read',
+        'schedule.upcoming',
         'source.attachment.download',
         'source.attachment.list',
         'source.read',
+        'source.recent',
         'source.search',
         'work.create',
         'work.list',
@@ -108,6 +110,7 @@ describe('one owner native session', () => {
       vi.stubEnv('HOME', root);
       vi.stubEnv('MAMA_AUTH_TOKEN', 'synthetic');
       vi.stubEnv('CUSTOM_PASSWORD', 'synthetic');
+      vi.stubEnv('MAMA_ICAL_URL_STAYS', 'synthetic');
       let received: NativeDriverOptions | undefined;
       const session = createNativeSession({
         backend,
@@ -126,7 +129,7 @@ describe('one owner native session', () => {
       try {
         expect(
           Object.keys(received!.processEnv).some((key) =>
-            /(TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL)/i.test(key)
+            /(TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL|^MAMA_ICAL_URL_)/i.test(key)
           )
         ).toBe(false);
         expect(received!.processEnv.HOME).toBe(root);

@@ -31,29 +31,30 @@ export function buildScheduledReportPrompt(
   const { report } = scheduledReport(payload);
   const common = [
     `Current time: ${now.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })} (KST)`,
-    'Read current work with work.list and the current board with report.read.',
-    'Use source.search and source.read for recent conversations and source evidence as needed; check collection gaps separately from no change.',
+    'Checklist: call source.recent since the last full report (or 24h ago), work.list with view="pipeline", and schedule.upcoming with days=14.',
+    'Read originals with source.read when a recent line changes the report; distinguish an empty result from failed or stale collection.',
+    'Compare every open deadline with the event and holiday calendar; use event end times when deciding whether a booking overlaps.',
+    'Name work items under each stage. List every item waiting on an owner decision, with the decision requested.',
+    'Say plainly when there were no changes. Include the owner schedule section and list its upcoming events and holidays.',
   ];
   const instructions =
     report === 'full'
       ? [
           '[scheduled_full_report]',
           ...common,
-          'Read recent sources (start with the last 24 hours) together with current work before reporting.',
+          ...buildBoardPublishLines(),
           ...(options.wikiEnabled === false
             ? []
             : [
-                'Update the wiki page for each work item changed since the last wiki update with manage.wiki.update (or manage.wiki.publish for a new case), before or with the board publish; choose the pages yourself; when several pages change, split them across subagents inside this turn.',
+                'After publishing the board, update the wiki page for each work item changed since its last wiki update with manage.wiki.update (or manage.wiki.publish for a new case); split several page updates across subagents inside this turn.',
               ]),
-          ...buildBoardPublishLines(),
-          'Return the full report in Korean with five parts in this order: key situation today, needs a response, needs a decision, pipeline, next actions.',
+          'Write the Korean report in five parts, in order: key situation today; needs a response; needs a decision; pipeline with each stage and item; next actions. Put the owner schedule and holidays under key situation today.',
         ]
       : [
           '[scheduled_task_reminder]',
           ...common,
-          'Read open work, order by priority then deadline, and select the top 5–8 items.',
-          'Include what changed since the previous report that was not already notified, including gathered non-urgent updates. Judge urgency and relevance yourself.',
-          'Update action_required with report.publish({ slots: { action_required: "<html>" } }); describe the action for its board HTML vocabulary. Use the report tool, not a file or shell write, to publish the board.',
+          'Use the checklist evidence to select the 5–8 most urgent open items. Include every item waiting on an owner decision and any deadline affected by a calendar event or holiday.',
+          'Update action_required with report.publish({ slots: { action_required: "<html>" } }); the full reports and delta turns refresh the other slots and the wiki.',
           'Return only a concise Korean reminder of 3–6 lines, most urgent or nearest deadline first, under a short Korean title that names the top N priorities.',
         ];
   return [

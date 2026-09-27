@@ -1181,3 +1181,10 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Result: Fixed route-only notifications, messenger-scoped recovery and serialization, Telegram cursor paging, connector overlap/recursion, managed token names, prompt formats, and viewer card counts.
 - Evidence: Root build, typecheck, and changed-file ESLint pass. Standalone suite: 1,045 passed; 25 socket-listener tests in eight suites fail with sandbox `listen EPERM`.
 - Still open: live provider turns were not run; all code-level tests outside the sandbox socket failures pass.
+
+### W16 — scheduled report quality (2026-09-27)
+
+- Result: Added scoped recent-source and upcoming calendar/iCal reads, the open-work pipeline view, multi-calendar polling, secret-backed iCal collection, and short report checklists.
+- Evidence: report action, pipeline, calendar first-poll, iCal parser/connector, prompt and credential-boundary tests pass; `pnpm build`, `pnpm typecheck` and changed-file ESLint pass.
+- Standalone suite: 1,039 passed; 24 listener/socket `EPERM` failures across eight files, isolated to sandboxed binds.
+- Still open: no live provider poll or owner report was run; `~/.mama` and `~/.claude` were not accessed.

@@ -127,13 +127,42 @@ describe('CalendarConnector (ported from the pre-stub connector)', () => {
         calendarId: 'primary',
         timeMin: now.toISOString(),
         timeMax: '2024-04-14T00:00:00.000Z',
-        updatedMin: since.toISOString(),
         singleEvents: true,
         showDeleted: true,
         orderBy: 'startTime',
         maxResults: 250,
       }),
     ]);
+  });
+
+  it('collects the complete first calendar window and uses updatedMin after a cursor exists', async () => {
+    const connector = await initialized();
+    await connector.poll(since, { hasCursor: false });
+    const first = JSON.parse(gws.run.mock.calls[0]![0]!.at(-1)!) as Record<string, unknown>;
+    expect(first).not.toHaveProperty('updatedMin');
+    gws.run.mockClear();
+    await connector.poll(since, { hasCursor: true });
+    const later = JSON.parse(gws.run.mock.calls[0]![0]!.at(-1)!) as Record<string, unknown>;
+    expect(later.updatedMin).toBe(since.toISOString());
+  });
+
+  it('reads configured calendars with their keys as channels and display names', async () => {
+    const connector = await loadConnector('calendar', {
+      ...config,
+      channels: {
+        calendar: { role: 'reference', name: 'Owner calendar' },
+        holidays: { role: 'reference', calendarId: 'holiday-id', name: 'Public holidays' },
+      },
+    });
+    await connector.init();
+    gws.run.mockClear().mockReturnValue(list([event()]));
+    const items = await connector.poll(since, { hasCursor: false });
+    expect(gws.run).toHaveBeenCalledTimes(2);
+    expect(items.map((item) => item.channel)).toEqual(['calendar', 'holidays']);
+    expect(items[1]?.metadata).toMatchObject({
+      calendarName: 'Public holidays',
+      calendarId: 'holiday-id',
+    });
   });
 
   it('normalizes schedule fields and versions changes without changing event identity', async () => {

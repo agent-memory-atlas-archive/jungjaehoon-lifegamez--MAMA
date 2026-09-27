@@ -263,6 +263,7 @@ describe('progressive work.list views', () => {
       'overview',
       'items',
       'detail',
+      'pipeline',
     ]);
     expect(registration.contract.inputSchema.properties?.status).toMatchObject({
       oneOf: expect.arrayContaining([

@@ -6,6 +6,7 @@ import type {
   ConnectorHealth,
   IConnector,
   NormalizedItem,
+  ConnectorPollCursor,
 } from '../framework/types.js';
 import { execGwsAsync } from '../framework/gws-utils.js';
 
@@ -51,7 +52,21 @@ export class CalendarConnector implements IConnector {
 
   // The primary calendar uses the existing configured channel key "calendar".
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  constructor(_config: ConnectorConfig) {}
+  private readonly calendars: Array<{ key: string; id: string; label: string }>;
+
+  constructor(config: ConnectorConfig) {
+    const configured = Object.entries(config.channels).filter(
+      ([key, channel]) =>
+        channel.role !== 'ignore' && (channel.calendarId || key === 'calendar' || key === 'primary')
+    );
+    this.calendars = configured.some(([, channel]) => channel.calendarId)
+      ? configured.map(([key, channel]) => ({
+          key,
+          id: channel.calendarId ?? 'primary',
+          label: channel.name ?? key,
+        }))
+      : [{ key: 'calendar', id: 'primary', label: 'Primary calendar' }];
+  }
 
   private async verifyAccess(): Promise<void> {
     // auth status can succeed without Calendar scope. Exercise the read permission itself.
@@ -60,7 +75,7 @@ export class CalendarConnector implements IConnector {
       'events',
       'list',
       '--params',
-      JSON.stringify({ calendarId: 'primary', maxResults: 1 }),
+      JSON.stringify({ calendarId: this.calendars[0]?.id ?? 'primary', maxResults: 1 }),
     ]);
   }
 
@@ -109,98 +124,106 @@ export class CalendarConnector implements IConnector {
     }
   }
 
-  async poll(since: Date): Promise<NormalizedItem[]> {
+  async poll(since: Date, cursor?: ConnectorPollCursor): Promise<NormalizedItem[]> {
     const items: NormalizedItem[] = [];
     try {
       const windowStart = new Date();
       const timeMin = windowStart.toISOString();
       const timeMax = new Date(windowStart.getTime() + EVENT_LIST_HORIZON_MS).toISOString();
       const observedAt = new Date().toISOString();
-      let pageToken: string | undefined;
-      const visitedPageTokens = new Set<string>();
-      for (let page = 0; page < MAX_EVENT_LIST_PAGES; page += 1) {
-        const result = (await execGwsAsync([
-          'calendar',
-          'events',
-          'list',
-          '--params',
-          JSON.stringify({
-            calendarId: 'primary',
-            timeMin,
-            timeMax,
-            updatedMin: since.toISOString(),
-            singleEvents: true,
-            showDeleted: true,
-            orderBy: 'startTime',
-            maxResults: EVENT_LIST_PAGE_SIZE,
-            ...(pageToken ? { pageToken } : {}),
-          }),
-        ])) as CalendarEventList;
+      for (const calendar of this.calendars) {
+        let pageToken: string | undefined;
+        let pageComplete = false;
+        const visitedPageTokens = new Set<string>();
+        for (let page = 0; page < MAX_EVENT_LIST_PAGES; page += 1) {
+          const result = (await execGwsAsync([
+            'calendar',
+            'events',
+            'list',
+            '--params',
+            JSON.stringify({
+              calendarId: calendar.id,
+              timeMin,
+              timeMax,
+              ...(cursor?.hasCursor === true ? { updatedMin: since.toISOString() } : {}),
+              singleEvents: true,
+              showDeleted: true,
+              orderBy: 'startTime',
+              maxResults: EVENT_LIST_PAGE_SIZE,
+              ...(pageToken ? { pageToken } : {}),
+            }),
+          ])) as CalendarEventList;
 
-        for (const ev of result.items ?? []) {
-          const updatedAt = new Date(ev.updated);
-          if (!Number.isFinite(updatedAt.getTime())) {
-            throw new Error('Calendar event omitted a valid updated time');
+          for (const ev of result.items ?? []) {
+            const updatedAt = new Date(ev.updated);
+            if (!Number.isFinite(updatedAt.getTime())) {
+              throw new Error('Calendar event omitted a valid updated time');
+            }
+            const start = ev.start?.dateTime ?? ev.start?.date ?? '';
+            const end = ev.end?.dateTime ?? ev.end?.date ?? '';
+            const summary = ev.summary ?? '(No title)';
+            const description = ev.description ?? '';
+            const organizer = ev.organizer?.displayName ?? ev.organizer?.email ?? 'unknown';
+            const allDay = ev.start?.date !== undefined;
+            // Cancelled events can carry only an id; retain that cancellation observation.
+            const observation = {
+              eventId: ev.id,
+              calendarId: calendar.id,
+              calendarName: calendar.label,
+              updated: ev.updated,
+              summary,
+              description,
+              location: ev.location,
+              start,
+              end,
+              status: ev.status,
+              organizer: ev.organizer,
+              allDay,
+              endExclusive: allDay,
+              timeZone: ev.start?.timeZone ?? result.timeZone ?? 'UTC',
+            };
+            const version = createHash('sha256')
+              .update(JSON.stringify(observation))
+              .digest('hex')
+              .slice(0, 24);
+            items.push({
+              source: 'calendar',
+              sourceId: `${calendar.id === 'primary' && this.calendars.length === 1 ? '' : `${calendar.key}:`}${ev.id}:${version}`,
+              sourceEntityId: `${calendar.id === 'primary' && this.calendars.length === 1 ? '' : `${calendar.key}:`}${ev.id}`,
+              channel: calendar.key,
+              author: previewText(organizer),
+              content: [
+                `${previewText(summary)} | ${start} ~ ${end}`,
+                `Organizer: ${previewText(organizer)}`,
+                ...(ev.location ? [`Location: ${previewText(ev.location)}`] : []),
+                previewText(description),
+              ].join('\n'),
+              timestamp: updatedAt,
+              type: 'event',
+              sourceCursor: ev.updated,
+              metadata: { ...observation, observedAt },
+            });
           }
-          const start = ev.start?.dateTime ?? ev.start?.date ?? '';
-          const end = ev.end?.dateTime ?? ev.end?.date ?? '';
-          const summary = ev.summary ?? '(No title)';
-          const description = ev.description ?? '';
-          const organizer = ev.organizer?.displayName ?? ev.organizer?.email ?? 'unknown';
-          const allDay = ev.start?.date !== undefined;
-          // Cancelled events can carry only an id; retain that cancellation observation.
-          const observation = {
-            eventId: ev.id,
-            updated: ev.updated,
-            summary,
-            description,
-            location: ev.location,
-            start,
-            end,
-            status: ev.status,
-            organizer: ev.organizer,
-            allDay,
-            endExclusive: allDay,
-            timeZone: ev.start?.timeZone ?? result.timeZone ?? 'UTC',
-          };
-          const version = createHash('sha256')
-            .update(JSON.stringify(observation))
-            .digest('hex')
-            .slice(0, 24);
-          items.push({
-            source: 'calendar',
-            sourceId: `${ev.id}:${version}`,
-            sourceEntityId: ev.id,
-            channel: 'calendar',
-            author: previewText(organizer),
-            content: [
-              `${previewText(summary)} | ${start} ~ ${end}`,
-              `Organizer: ${previewText(organizer)}`,
-              ...(ev.location ? [`Location: ${previewText(ev.location)}`] : []),
-              previewText(description),
-            ].join('\n'),
-            timestamp: updatedAt,
-            type: 'event',
-            sourceCursor: ev.updated,
-            metadata: { ...observation, observedAt },
-          });
-        }
 
-        if (!result.nextPageToken) {
-          this.lastPollTime = new Date();
-          this.lastPollCount = items.length;
-          this.lastError = undefined;
-          return items;
+          if (!result.nextPageToken) {
+            pageComplete = true;
+            break;
+          }
+          if (visitedPageTokens.has(result.nextPageToken)) {
+            throw new Error('Calendar returned a repeated upstream page token');
+          }
+          visitedPageTokens.add(result.nextPageToken);
+          pageToken = result.nextPageToken;
         }
-        if (visitedPageTokens.has(result.nextPageToken)) {
-          throw new Error('Calendar returned a repeated upstream page token');
-        }
-        visitedPageTokens.add(result.nextPageToken);
-        pageToken = result.nextPageToken;
+        if (!pageComplete)
+          throw new Error(
+            `Calendar page cap (${MAX_EVENT_LIST_PAGES}) reached; upstream snapshot is incomplete`
+          );
       }
-      throw new Error(
-        `Calendar page cap (${MAX_EVENT_LIST_PAGES}) reached; upstream snapshot is incomplete`
-      );
+      this.lastPollTime = new Date();
+      this.lastPollCount = items.length;
+      this.lastError = undefined;
+      return items;
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
       this.lastPollTime = new Date();

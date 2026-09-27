@@ -63,10 +63,15 @@ describe('KST report scheduler', () => {
       { report: 'full', hourKey: '2026-01-01:08' },
       new Date('2026-01-01T00:00:00Z')
     );
-    expect(prompt).toContain('each work item changed since the last wiki update');
+    expect(prompt).toContain('each work item changed since its last wiki update');
+    expect(prompt).toContain('source.recent');
+    expect(prompt).toContain('view="pipeline"');
+    expect(prompt).toContain('schedule.upcoming');
+    expect(prompt).toContain('owner schedule and holidays');
+    expect(prompt).toContain('Say plainly when there were no changes');
     expect(prompt).toContain('manage.wiki.update');
     expect(prompt).toContain('manage.wiki.publish');
-    expect(prompt).toContain('before or with the board publish');
+    expect(prompt).toContain('After publishing the board');
   });
 
   it('uses one delivery identity across model attempts after the schedule write fails', async () => {

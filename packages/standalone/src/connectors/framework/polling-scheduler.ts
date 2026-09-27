@@ -202,12 +202,20 @@ export class PollingScheduler {
     try {
       connector.beginPollHandoff?.();
       const pollStartedAt = this.now();
-      const polled = await connector.poll(since);
+      const polled = await connector.poll(since, { hasCursor: this.lastPollTimes.has(name) });
       const observedAt = this.now();
       const canonicalItems = polled.flatMap((item) => {
         const channel = canonicalChannelKey(item, channelConfigs);
         if (channel === null) return [];
-        return [{ ...item, channel, observedAt }];
+        const label = channelConfigs[item.source]?.[channel]?.name;
+        return [
+          {
+            ...item,
+            channel,
+            observedAt,
+            ...(label ? { metadata: { ...(item.metadata ?? {}), channelName: label } } : {}),
+          },
+        ];
       });
       if (canonicalItems.length > 0) this.rawStore.save(name, canonicalItems);
 

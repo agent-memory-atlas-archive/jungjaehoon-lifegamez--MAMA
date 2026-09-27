@@ -8,7 +8,8 @@ export function backendEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS
     Object.entries(env).filter(
       // MAX_THINKING_TOKENS is a budget count the Claude CLI reads, not a credential.
       ([name]) =>
-        name === 'MAX_THINKING_TOKENS' || !/(TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL)/i.test(name)
+        name === 'MAX_THINKING_TOKENS' ||
+        !/(TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL|^MAMA_ICAL_URL_)/i.test(name)
     )
   );
 }
