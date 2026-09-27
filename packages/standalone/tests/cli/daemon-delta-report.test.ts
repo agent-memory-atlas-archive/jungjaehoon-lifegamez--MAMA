@@ -23,7 +23,7 @@ vi.mock('grammy', () => ({
 }));
 vi.mock('@jungjaehoon/mama-core', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@jungjaehoon/mama-core')>()),
-  recallMemory: async () => ({ memories: [] }),
+  readMemoryRecordsInScopes: async () => [],
 }));
 
 const roots: string[] = [];

@@ -22,7 +22,7 @@ vi.mock('grammy', () => ({
 }));
 vi.mock('@jungjaehoon/mama-core', async (original) => ({
   ...(await original<typeof import('@jungjaehoon/mama-core')>()),
-  recallMemory: async () => ({ memories: [] }),
+  readMemoryRecordsInScopes: async () => [],
 }));
 const ipc = createRequire(import.meta.url)('@jungjaehoon/mama-core/client/ipc');
 const roots: string[] = [];

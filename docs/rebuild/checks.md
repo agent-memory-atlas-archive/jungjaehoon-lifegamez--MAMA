@@ -1129,3 +1129,10 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Result: Startup requeues claims with no native dispatch; dispatched or uncertain rows reconcile and park uncertain with a log line. Telegram pending checks no longer treat an unowned claim as live.
 - Evidence: restart simulations redeliver unstarted `source_delta` and `native_event` rows once, and result-less dispatches invoke the uncertainty callback.
 - Still open: no live daemon restart was run; `~/.mama` and `~/.claude/mama-memory.db` were left untouched.
+
+### W14 — owner guidance index and agent-managed workflows (2026-09-27)
+
+- Result: stimulus-text recall is removed; the first owner turn receives the scoped index and later turns receive only added, revised, or retired entries. Workflows use a migrated core kind and structured content in `payload_json`.
+- Evidence: core guidance actions 5/5, migration data-preservation test 1/1, standalone index/session tests 4/4; root build and typecheck, changed-file ESLint, and changed-TypeScript Prettier check passed.
+- Full suites: core 889 passed / 44 failed across `native-input-delivery`, `intake-is-the-runtimes`, `runtime-lifecycle`, `replay-session-facts`, `experience-read-over-socket`, `ipc-actions`, and `principal-grants`; standalone 788 passed / 23 failed across `stimulus-delivery`, `daemon-boot`, `viewer-archive-routes`, `w1-owner-q1`, `viewer-server`, `action-mcp-server`, `owner-runtime`, and `viewer-records`. These failures are listener `EPERM` in the sandbox.
+- Still open: a live owner turn confirming a correction changes the next related answer was not run. No live data path was touched and no commit was made.

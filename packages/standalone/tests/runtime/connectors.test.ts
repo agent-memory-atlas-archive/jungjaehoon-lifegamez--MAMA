@@ -482,7 +482,7 @@ describe('connector runtime', () => {
       const row = mailbox.claimNext();
       expect(row).not.toBeNull();
       expect(row?.kind).toBe('source_delta');
-      const delivery = createStimulusDelivery({ lessonResolver: async () => [] });
+      const delivery = createStimulusDelivery({ guidanceResolver: async () => [] });
       const reads: string[] = [];
       const context: NativeDeliveryContext = {
         nativeInputId: 'native-input',

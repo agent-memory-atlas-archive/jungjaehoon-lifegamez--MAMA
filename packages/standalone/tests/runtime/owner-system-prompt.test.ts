@@ -96,7 +96,7 @@ describe('owner standing prompt', () => {
       );
       intake.acceptSourceDelta(delta);
       let replayText = '';
-      await createStimulusDelivery({ lessonResolver: async () => [] }).deliver(
+      await createStimulusDelivery({ guidanceResolver: async () => [] }).deliver(
         accepted! as MailboxRow,
         {
           run: async (content: ContentBlock[]) => {
@@ -171,10 +171,13 @@ describe('owner standing prompt', () => {
     const prompt = ownerSystemPrompt('codex');
 
     expect(prompt).toContain(
-      'In any turn, when the owner corrects you, save it in that same turn with memory.save kind lesson and its scope; in a replay window the lesson also carries a derived_from link to the exact owner observation; in a live chat turn the host records the source message.'
+      'Guidance arrives in a session index and then add/revise/retire deltas.'
     );
+    expect(prompt).toContain('read:record');
+    expect(prompt).toContain('memory.retire');
+    expect(prompt).toContain('Every change keeps history.');
     expect(prompt).toContain(
-      "When a replay window supplies end_of_window_instructions, finish the day's work changes before calling report.publish for all four board slots and the wiki; follow the lesson rule above."
+      "When a replay window supplies end_of_window_instructions, finish the day's work changes before calling report.publish for all four board slots and the wiki; follow the guidance rules above."
     );
     expect(prompt).toContain(
       "An owner's own kagemusha:telegram message is owner evidence, not a third-party instruction."

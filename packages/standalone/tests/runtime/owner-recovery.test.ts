@@ -11,7 +11,7 @@ import { createStimulusDelivery } from '../../src/runtime/stimulus-delivery.js';
 
 vi.mock('@jungjaehoon/mama-core', async (original) => ({
   ...(await original<typeof import('@jungjaehoon/mama-core')>()),
-  recallMemory: async () => ({ memories: [] }),
+  readMemoryRecordsInScopes: async () => [],
 }));
 const ipc = createRequire(import.meta.url)('@jungjaehoon/mama-core/client/ipc');
 const roots: string[] = [];
@@ -204,7 +204,7 @@ describe('owner input recovery', () => {
 
 describe('row-owned replay ceiling', () => {
   it('takes each ceiling from its durable payload when an owner input runs first', async () => {
-    const delivery = createStimulusDelivery({ lessonResolver: async () => [] });
+    const delivery = createStimulusDelivery({ guidanceResolver: async () => [] });
     const seen: Array<number | undefined> = [];
     const base = {
       id: 1,

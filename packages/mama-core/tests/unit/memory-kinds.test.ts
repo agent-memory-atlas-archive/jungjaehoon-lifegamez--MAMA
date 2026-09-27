@@ -9,11 +9,25 @@ describe('MEMORY_KINDS', () => {
     // and no row in the live database has one; they named an owner board, a cron and
     // a context packet, which are things one product has rather than things a memory
     // can be.
-    expect([...MEMORY_KINDS]).toEqual(['decision', 'preference', 'constraint', 'lesson', 'fact']);
+    expect([...MEMORY_KINDS]).toEqual([
+      'decision',
+      'preference',
+      'constraint',
+      'lesson',
+      'fact',
+      'workflow',
+    ]);
   });
 
   it('each one is a MemoryKind', () => {
-    const kinds: MemoryKind[] = ['decision', 'preference', 'constraint', 'lesson', 'fact'];
+    const kinds: MemoryKind[] = [
+      'decision',
+      'preference',
+      'constraint',
+      'lesson',
+      'fact',
+      'workflow',
+    ];
     expect(kinds).toHaveLength(MEMORY_KINDS.length);
   });
 });

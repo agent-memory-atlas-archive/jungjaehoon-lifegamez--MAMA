@@ -2,8 +2,8 @@ import { wrapUntrustedContent } from '../utils/untrusted-content.js';
 import { createHash } from 'node:crypto';
 
 import { canonicalizeJSON } from '@jungjaehoon/mama-core/canonicalize';
-import { sanitizeRecallText } from '@jungjaehoon/mama-core';
 import type { JsonValue } from '@jungjaehoon/mama-core/knowledge';
+import type { MemoryKind, MemoryStatus } from '@jungjaehoon/mama-core/memory/types';
 import type { ContentBlock } from '@jungjaehoon/mama-core/runtime/drivers/types';
 import type { MailboxRow, Stimulus } from '@jungjaehoon/mama-core/runtime/mailbox';
 import type {
@@ -54,7 +54,7 @@ export interface StimulusIntake {
 }
 
 export interface StimulusDeliveryOptions {
-  lessonResolver: LessonResolver;
+  guidanceResolver: GuidanceResolver;
   readResult?: (row: MailboxRow) => NativeTurnResultRecord | null;
   onUncertain?: StimulusDelivery['onUncertain'];
   recentOwnerExchanges?: (
@@ -68,11 +68,19 @@ export interface StimulusDeliveryOptions {
   onFailed?: (row: MailboxRow, reason: string, modelRunId: string | null) => void | Promise<void>;
 }
 
-export interface LessonHit {
+export interface GuidanceEntry {
+  id: string;
+  kind: Extract<MemoryKind, 'lesson' | 'preference' | 'constraint' | 'workflow'>;
+  topic: string;
   summary: string;
+  status: MemoryStatus;
+  updated_at: number | string;
+  applies_when?: string;
+  steps?: string[];
+  evidence_checks?: string[];
 }
 
-export type LessonResolver = (query: string) => Promise<readonly LessonHit[]>;
+export type GuidanceResolver = () => Promise<readonly GuidanceEntry[]>;
 
 export interface ReplayClockDelivery extends StimulusDelivery {
   getReplaySourceEndMs(): number | undefined;
@@ -416,51 +424,72 @@ function boundedStimulus(row: MailboxRow, liveSourceDelta: boolean): string {
   return lines.join('\n');
 }
 
-function payloadText(payload: JsonValue | undefined): string {
-  if (typeof payload === 'string') return payload;
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return '';
-  const text = payload.text;
-  if (typeof text === 'string') return text;
-  return JSON.stringify(payload);
+function oneLine(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
 }
 
-function lessonQuery(row: MailboxRow): string {
-  if (row.kind === 'scheduled')
-    return buildScheduledReportPrompt(row.payload, new Date(row.occurredAt));
-  if (row.kind === 'owner_message') return payloadText(row.payload);
-  // Collector deltas without per-ref contentPreview carry their text only in the row preview.
-  if (row.kind === 'source_delta')
-    return messageLines(row.payload)?.join('\n') ?? row.preview.join('\n');
-  return payloadText(row.payload);
+function guidanceLine(entry: GuidanceEntry): string {
+  const when = entry.applies_when
+    ? `applies when: ${oneLine(entry.applies_when)}`
+    : `summary: ${oneLine(entry.summary)}`;
+  return `${oneLine(entry.id)} | ${entry.kind} | ${oneLine(entry.topic)} | ${when}`;
 }
 
-const LESSONS_INSTRUCTION = 'Use these as lessons, not facts; verify current state with tools.';
-const STARTUP_LESSON_QUERY = 'startup operating lessons';
+function guidanceVersion(entry: GuidanceEntry): string {
+  return `${String(entry.updated_at)}\0${entry.kind}\0${entry.status}`;
+}
 
-function renderLessons(hits: readonly LessonHit[]): string {
-  const summaries = hits
-    .slice(0, 3)
-    .map((hit) => sanitizeRecallText(hit.summary.trim()))
-    .filter((summary): summary is string => Boolean(summary));
-  if (summaries.length === 0) return '';
+function activeGuidance(entries: readonly GuidanceEntry[]): GuidanceEntry[] {
+  return entries
+    .filter((entry) => entry.status === 'active')
+    .slice()
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function renderGuidanceIndex(entries: readonly GuidanceEntry[]): string {
   return [
-    '<lessons>',
-    LESSONS_INSTRUCTION,
-    ...summaries.map((summary) => `- ${summary}`),
-    '</lessons>',
+    '<guidance-index>',
+    ...activeGuidance(entries).map(guidanceLine),
+    '</guidance-index>',
   ].join('\n');
 }
 
-/** The turn carries only the stimulus and recalled lessons; standing text is the session prompt. */
+function renderGuidanceDelta(
+  entries: readonly GuidanceEntry[],
+  previous: ReadonlyMap<string, string>
+): string {
+  const changes: string[] = [];
+  for (const entry of entries) {
+    const before = previous.get(entry.id);
+    const after = guidanceVersion(entry);
+    if (before === after) continue;
+    if (entry.status === 'active') {
+      changes.push(`${before === undefined ? 'added' : 'revised'}: ${guidanceLine(entry)}`);
+    } else if (before?.endsWith('\0active')) {
+      changes.push(
+        `retired: ${oneLine(entry.id)} | ${entry.kind} | ${oneLine(entry.topic)} | status: ${entry.status}`
+      );
+    }
+  }
+  return changes.length === 0
+    ? ''
+    : [
+        '<guidance-delta>',
+        ...changes.sort((left, right) => left.localeCompare(right)),
+        '</guidance-delta>',
+      ].join('\n');
+}
+
+/** The turn carries the stimulus plus the session index or guidance changes. */
 function assembledContent(
   row: MailboxRow,
-  lessonBlocks: readonly string[],
+  sessionBlocks: readonly string[],
   liveSourceDelta: boolean
 ): ContentBlock[] {
   return [
     {
       type: 'text',
-      text: [...lessonBlocks, boundedStimulus(row, liveSourceDelta)].join('\n\n'),
+      text: [...sessionBlocks, boundedStimulus(row, liveSourceDelta)].join('\n\n'),
     },
   ];
 }
@@ -500,6 +529,7 @@ function replaySourceCeiling(row: MailboxRow): number | undefined {
 export function createStimulusDelivery(options: StimulusDeliveryOptions): ReplayClockDelivery {
   let serialTail = Promise.resolve();
   let activeReplaySourceEndMs: number | undefined;
+  const guidanceBySessionKey = new Map<string, Map<string, string>>();
 
   const deliverResult = async (
     row: MailboxRow,
@@ -522,6 +552,7 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
     });
     await previous;
     let modelRunId: string | null = null;
+    let pendingGuidanceState: Map<string, string> | undefined;
     try {
       const replaySourceEndMs = replaySourceCeiling(row);
       activeReplaySourceEndMs = replaySourceEndMs;
@@ -539,20 +570,26 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
           modelRunId = id;
         },
         prepareSessionContent: async ({ isNewSession }) => {
-          const lessonBlocks: string[] = [];
+          const sessionBlocks: string[] = [];
+          const entries = await options.guidanceResolver();
+          const sessionKey = OWNER_RUNTIME_SESSION_KEY;
+          const lastDelivered = guidanceBySessionKey.get(sessionKey);
           if (isNewSession) {
-            const startupLessons = renderLessons(
-              await options.lessonResolver(STARTUP_LESSON_QUERY)
-            );
-            if (startupLessons) lessonBlocks.push(startupLessons);
+            sessionBlocks.push(renderGuidanceIndex(entries));
             const exchanges = renderRecentOwnerExchanges(
               (await options.recentOwnerExchanges?.(row)) ?? []
             );
-            if (exchanges) lessonBlocks.push(exchanges);
+            if (exchanges) sessionBlocks.push(exchanges);
+          } else if (lastDelivered === undefined) {
+            sessionBlocks.push(renderGuidanceIndex(entries));
+          } else {
+            const delta = renderGuidanceDelta(entries, lastDelivered);
+            if (delta) sessionBlocks.push(delta);
           }
-          const currentLessons = renderLessons(await options.lessonResolver(lessonQuery(row)));
-          if (currentLessons) lessonBlocks.push(currentLessons);
-          return assembledContent(row, lessonBlocks, liveSourceDelta);
+          pendingGuidanceState = new Map(
+            entries.map((entry) => [entry.id, guidanceVersion(entry)])
+          );
+          return assembledContent(row, sessionBlocks, liveSourceDelta);
         },
         sessionKey: OWNER_RUNTIME_SESSION_KEY,
         source: row.kind,
@@ -560,6 +597,9 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
         sourceMessageRef: row.stimulusId,
         ...(replaySourceEndMs === undefined ? {} : { replaySourceEndMs }),
       });
+      if (pendingGuidanceState !== undefined) {
+        guidanceBySessionKey.set(OWNER_RUNTIME_SESSION_KEY, pendingGuidanceState);
+      }
       // A commit failure withholds result provenance, but the opened run still identifies this turn.
       modelRunId = result.modelRunId ?? modelRunId;
       await deliverResult(row, result, modelRunId);

@@ -58,6 +58,7 @@ export {
   createEmptyRecallBundle,
   type MemoryScopeKind,
   type MemoryKind,
+  type MemoryKindFilter,
   type MemoryStatus,
   type MemoryEdgeType,
   type MemoryScopeRef,
@@ -84,6 +85,9 @@ export {
   saveJudgmentRecord,
   saveLegacyMemory,
   promoteMemoryStatus,
+  readMemoryRecordById,
+  readMemoryRecordsInScopes,
+  retireMemoryRecord,
   recallMemory,
   buildProfile,
   ingestMemory,
@@ -94,6 +98,8 @@ export {
   ingestConversation,
   upsertChannelSummary,
   getChannelSummary,
+  type MemoryRetirementStatus,
+  type ReadMemoryRecordsOptions,
 } from './memory/api.js';
 export {
   createKnowledge,

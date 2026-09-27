@@ -3,13 +3,29 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createOwnerRuntime } from '../../src/runtime/owner-runtime.js';
-import { recallMemory } from '@jungjaehoon/mama-core';
+import { readMemoryRecordsInScopes } from '@jungjaehoon/mama-core';
 import { createStimulusDelivery } from '../../src/runtime/stimulus-delivery.js';
 
 vi.mock('@jungjaehoon/mama-core', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@jungjaehoon/mama-core')>()),
   startRuntime: vi.fn(async () => ({ stop: async () => {} })),
-  recallMemory: vi.fn(async () => ({ memories: [{ summary: 'Use the saved owner rule' }] })),
+  readMemoryRecordsInScopes: vi.fn(async () => [
+    {
+      id: 'guidance-record',
+      kind: 'workflow',
+      topic: 'release review',
+      summary: 'Check the release before sending it.',
+      details: 'Read the checklist, then confirm the build.',
+      applies_when: 'When preparing a release for review',
+      steps: ['Read the checklist', 'Confirm the build'],
+      confidence: 0.9,
+      status: 'active',
+      scopes: [{ kind: 'global', id: 'system' }],
+      source: { package: 'test', source_type: 'test' },
+      created_at: 1,
+      updated_at: 1,
+    },
+  ]),
 }));
 
 vi.mock('../../src/runtime/stimulus-delivery.js', async (importOriginal) => {
@@ -22,9 +38,9 @@ afterEach(() => {
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
 });
 
-describe('owner lesson resolver', () => {
-  it('recalls lessons, preferences and constraints for later owner turns', async () => {
-    const home = mkdtempSync(join(tmpdir(), 'owner-rule-recall-'));
+describe('owner guidance resolver', () => {
+  it('reads all guidance kinds under the owner scopes without stimulus-text search', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'owner-guidance-index-'));
     homes.push(home);
     const owner = await createOwnerRuntime({
       backend: 'codex',
@@ -44,21 +60,19 @@ describe('owner lesson resolver', () => {
     });
     try {
       const [deliveryOptions] = vi.mocked(createStimulusDelivery).mock.calls.at(-1)!;
-      expect(await deliveryOptions.lessonResolver('deadline reminder')).toEqual([
-        { summary: 'Use the saved owner rule' },
-      ]);
-      expect(recallMemory).toHaveBeenLastCalledWith(owner.database.adapter, 'deadline reminder', {
-        kind: ['lesson', 'preference', 'constraint'],
-        scopes: [
+      const records = await deliveryOptions.guidanceResolver();
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({ id: 'guidance-record', kind: 'workflow' });
+      expect(readMemoryRecordsInScopes).toHaveBeenLastCalledWith(
+        owner.database.adapter,
+        [
           { kind: 'global', id: 'system' },
           { kind: 'user', id: 'owner' },
           { kind: 'channel', id: 'chatwork' },
           { kind: 'project', id: 'chatwork' },
         ],
-        limit: 3,
-        includeRelated: false,
-        skipGraphExpansion: true,
-      });
+        { kind: ['lesson', 'preference', 'constraint', 'workflow'] }
+      );
     } finally {
       await owner.stop();
     }

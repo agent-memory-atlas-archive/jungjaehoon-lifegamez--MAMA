@@ -14,7 +14,13 @@ import type {
 import { JudgmentError, type JudgmentAccess } from '../knowledge/judgments.js';
 import type { TextCompletion } from '../runtime/text-completion.js';
 import type { DatabaseInstance } from '../db-manager.js';
-import { boundReadScopesFor, recallMemory, saveJudgmentRecord } from '../memory/api.js';
+import {
+  boundReadScopesFor,
+  readMemoryRecordById,
+  recallMemory,
+  retireMemoryRecord,
+  saveJudgmentRecord,
+} from '../memory/api.js';
 import { resolveMemoryProvenanceLive } from '../memory/provenance-live.js';
 import {
   readDecisionListing,
@@ -641,6 +647,23 @@ const memorySaveSchema: ActionSchemaObject = {
       minLength: 1,
       description: 'Supporting explanation, e.g. "Owner confirmed after review".',
     },
+    appliesWhen: {
+      type: 'string',
+      minLength: 1,
+      description: 'One line saying when this lesson, preference, constraint, or workflow applies.',
+    },
+    steps: {
+      type: 'array',
+      minItems: 1,
+      description:
+        'Ordered steps for a workflow memory, e.g. ["Read the checklist", "Confirm the result"].',
+      items: { type: 'string', minLength: 1 },
+    },
+    evidenceChecks: {
+      type: 'array',
+      description: 'Optional evidence a workflow must check, e.g. ["Read the current checklist"].',
+      items: { type: 'string', minLength: 1 },
+    },
     confidence: {
       type: 'number',
       minimum: 0,
@@ -965,6 +988,19 @@ export function coreActionRegistrations(
               source: { package: 'my-app', source_type: 'mama_save' },
               links: [{ relation: 'derived_from', target: { kind: 'observation', id: 'obs_123' } }],
               replaces: [{ id: 'judgment_old', reason: 'the original was read successfully' }],
+            },
+          },
+          {
+            title: 'Record an approved workflow',
+            input: {
+              topic: 'release_review',
+              kind: 'workflow',
+              summary: 'Review a release before sending it',
+              details: 'A short procedure the owner approved.',
+              appliesWhen: 'When preparing a release for review',
+              steps: ['Read the checklist', 'Confirm the build', 'Send the summary'],
+              evidenceChecks: ['Read the current checklist'],
+              source: { package: 'my-app', source_type: 'mama_save' },
             },
           },
         ],
@@ -1525,6 +1561,141 @@ export function coreActionRegistrations(
           principalId: context.access.principalId,
           redact: (text: string) => sanitizeRecallText(text) ?? '',
         });
+      },
+    },
+    {
+      contract: {
+        name: 'memory.read:record',
+        summary:
+          'Read one complete memory record by id within the admitted memory scopes. Returns the stored record content and structured workflow steps, without source excerpts or provenance material. An id is not a capability.',
+        inputSchema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            memory_id: {
+              type: 'string',
+              pattern: '\\S',
+              description: 'Memory id to read, e.g. "mem_123".',
+            },
+            scopes: {
+              type: 'array',
+              description: 'Admitted scope filter, e.g. [{"kind":"project","id":"project_123"}].',
+              items: scopeRefSchema,
+            },
+          },
+          required: ['memory_id'],
+        },
+        examples: [
+          { title: 'Read a guidance record from its index id', input: { memory_id: 'mem_123' } },
+        ],
+      },
+      exec: async (input, context) => {
+        const body = input as { memory_id?: string; scopes?: MemoryScopeRef[] };
+        const memoryId = typeof body.memory_id === 'string' ? body.memory_id.trim() : '';
+        if (!memoryId) {
+          throw new JudgmentError(
+            'INVALID_INPUT',
+            'memory.read:record requires a non-empty memory_id'
+          );
+        }
+        const scopes = boundReadScopesFor(context.access, body.scopes);
+        const record = await readMemoryRecordById(adapter, memoryId, scopes);
+        return {
+          record: record
+            ? {
+                id: record.id,
+                kind: record.kind,
+                topic: record.topic,
+                summary: record.summary,
+                details: record.details,
+                ...(record.applies_when === undefined ? {} : { appliesWhen: record.applies_when }),
+                ...(record.steps === undefined ? {} : { steps: record.steps }),
+                ...(record.evidence_checks === undefined
+                  ? {}
+                  : { evidenceChecks: record.evidence_checks }),
+                confidence: record.confidence,
+                status: record.status,
+                createdAt: record.created_at,
+                updatedAt: record.updated_at,
+              }
+            : null,
+        };
+      },
+    },
+    {
+      contract: {
+        name: 'memory.retire',
+        recallableWrite: true,
+        summary:
+          'Retire one visible memory record by appending a stale or superseded status amendment with its reason. The original record remains readable and the action returns the amendment receipt id.',
+        inputSchema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            memory_id: {
+              type: 'string',
+              pattern: '\\S',
+              description: 'Memory id to retire, e.g. "mem_123".',
+            },
+            status: {
+              type: 'string',
+              enum: ['stale', 'superseded'],
+              description: 'Why the record no longer applies, e.g. "stale".',
+            },
+            reason: {
+              type: 'string',
+              minLength: 1,
+              description:
+                'Why this guidance was withdrawn or replaced, e.g. "The process changed".',
+            },
+            scopes: {
+              type: 'array',
+              description: 'Admitted scope filter, e.g. [{"kind":"project","id":"project_123"}].',
+              items: scopeRefSchema,
+            },
+          },
+          required: ['memory_id', 'status', 'reason'],
+        },
+        examples: [
+          {
+            title: 'Retire a withdrawn preference',
+            input: {
+              memory_id: 'mem_123',
+              status: 'stale',
+              reason: 'The owner withdrew this preference.',
+            },
+          },
+        ],
+      },
+      exec: async (input, context) => {
+        const body = input as {
+          memory_id?: string;
+          status?: string;
+          reason?: string;
+          scopes?: MemoryScopeRef[];
+        };
+        // A read grant may expose a memory record, but it cannot authorize changing its status.
+        const writeAccess = { ...context.access, readScopes: [] };
+        const scopes = boundReadScopesFor(writeAccess, body.scopes);
+        const status = body.status;
+        if (status !== 'stale' && status !== 'superseded') {
+          throw new JudgmentError(
+            'INVALID_INPUT',
+            'memory.retire status must be stale or superseded'
+          );
+        }
+        const retired = await retireMemoryRecord(
+          adapter,
+          {
+            memoryId: typeof body.memory_id === 'string' ? body.memory_id : '',
+            status,
+            reason: typeof body.reason === 'string' ? body.reason : '',
+          },
+          { ...writeAccess, scopes },
+          requiredOperationId(context, 'memory.retire')
+        );
+        recordWriteReceipt(context, 'memory.retire', retired.id);
+        return retired;
       },
     },
     {

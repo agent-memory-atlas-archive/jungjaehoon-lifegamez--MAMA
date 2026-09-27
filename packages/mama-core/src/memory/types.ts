@@ -28,10 +28,17 @@ export type MemoryScopeKind = string;
  * `task`, `schedule` and `compiled` were here and are not any more. Nothing writes
  * them -- no call site in either package, no row in the live database -- and they name
  * one product's board, cron and context-packet vocabulary rather than anything a
- * memory is. The column's CHECK stays wider than this list, so removing them narrows
- * what the core accepts without needing to rebuild a table.
+ * memory is. The stored kind check still accepts the retired task and schedule values;
+ * adding a new kind needs a migration because that check constrains the column.
  */
-export const MEMORY_KINDS = ['decision', 'preference', 'constraint', 'lesson', 'fact'] as const;
+export const MEMORY_KINDS = [
+  'decision',
+  'preference',
+  'constraint',
+  'lesson',
+  'fact',
+  'workflow',
+] as const;
 export type MemoryKind = (typeof MEMORY_KINDS)[number];
 export type MemoryKindFilter = MemoryKind | [MemoryKind, ...MemoryKind[]];
 
@@ -96,6 +103,12 @@ export interface MemoryRecord {
   kind: MemoryKind;
   summary: string;
   details: string;
+  /** One-line context that tells an agent when this guidance applies. */
+  applies_when?: string;
+  /** Ordered procedure steps for workflow records. */
+  steps?: string[];
+  /** Evidence checks a workflow must complete, in order. */
+  evidence_checks?: string[];
   confidence: number;
   status: MemoryStatus;
   scopes: MemoryScopeRef[];
@@ -276,6 +289,9 @@ export interface PublicSaveMemoryInput {
   kind: MemoryKind;
   summary: string;
   details: string;
+  appliesWhen?: string;
+  steps?: string[];
+  evidenceChecks?: string[];
   confidence?: number;
   status?: MemoryStatus;
   scopes: MemoryScopeRef[];

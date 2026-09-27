@@ -42,6 +42,8 @@ const OWNER_ACTIONS = [
   'memory.save',
   'memory.search',
   'memory.read:provenance',
+  'memory.read:record',
+  'memory.retire',
   'report.read',
   'report.publish',
   'manage.wiki.publish',
@@ -110,6 +112,8 @@ export function createActionSurface(options: ActionSurfaceOptions): ActionSurfac
       // The cited source messages behind a memory, checked against the caller's source-read
       // authority: a fact found by memory.search is traced to its evidence in one call.
       'memory.read:provenance',
+      'memory.read:record',
+      'memory.retire',
       'memory.checkpoint.list',
       'work.show',
     ].includes(contract.name)

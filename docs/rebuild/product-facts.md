@@ -13,7 +13,7 @@ Every reader-facing document must agree with this page; if the code changes, thi
   (older name `MAMA_DATABASE_PATH` still read) else `~/.claude/mama-memory.db`, shared with the plugin
   hooks.
 - **Shared engine** (`packages/mama-core`): storage, records with revisions and evidence links, memory
-  kinds (decision, preference, constraint, lesson, fact), work items as commitments, search, embeddings
+  kinds (decision, preference, constraint, lesson, fact, workflow), work items as commitments, search, embeddings
   (`Xenova/multilingual-e5-large`, 1024 dimensions, fixed), runtime drivers for the Claude CLI and the
   Codex app-server, the action catalog and dispatch. Used by other projects through public exports.
 - Two data homes, never mixed: `~/.mama/` is MAMA OS state; `~/.claude/mama-memory.db` is development
@@ -50,12 +50,16 @@ reminder_start_hour 9, reminder_end_hour 21}`. Other keys are logged as ignored;
   (read-only local bridge); calendar, gmail, drive, and sheets (logged-in `gws` CLI); obsidian,
   imessage, and claude-code (selected local sources). Channel roles: truth, hub, deliverable, spoke,
   reference, ignore.
-- Owner actions (19): graph.query; source.search/read; source.attachment.list/download;
-  work.create/revise/list/show; memory.save/search/read:provenance; memory.checkpoint.list;
+- Owner actions (21): graph.query; source.search/read; source.attachment.list/download;
+  work.create/revise/list/show; memory.save; memory.search; memory.read:record;
+  memory.read:provenance; memory.retire; memory.checkpoint.list;
   report.read/publish; manage.wiki.publish/read/update; deliver.telegram.file.
-- Per turn: lessons, preferences and constraints recalled with the stimulus text (top 3); on a new
-  session a startup block and the recent owner exchanges. Third-party content (source, attachment, wiki,
-  board reads and delta text) arrives wrapped as untrusted. Answers carry no ids.
+- Per turn: a new owner session receives one scoped index line per active lesson, preference, constraint,
+  or workflow, plus recent owner exchanges; later turns in that session receive only added, revised, or
+  retired guidance. Scheduled, source-delta, and native-event turns use the same index and delta rule;
+  guidance is not recalled from stimulus text. Older entries without an applies-when line show their
+  summary. Third-party content (source, attachment, wiki, board reads and delta text) arrives wrapped as
+  untrusted. Answers carry no ids.
 - Reports: live source deltas end `[notify] <text>` (sent to the owner) or `[ack]` (logged), then a board
   turn republishes the four slots (briefing, action_required, decisions, pipeline); full report at
   8/13/18 KST; hourly reminder 9–21 including gathered non-urgent changes; an hour is recorded only after

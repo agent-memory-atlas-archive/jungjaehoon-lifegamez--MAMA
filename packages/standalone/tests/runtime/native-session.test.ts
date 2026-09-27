@@ -80,6 +80,8 @@ describe('one owner native session', () => {
         'manage.wiki.update',
         'memory.checkpoint.list',
         'memory.read:provenance',
+        'memory.read:record',
+        'memory.retire',
         'memory.save',
         'memory.search',
         'report.publish',

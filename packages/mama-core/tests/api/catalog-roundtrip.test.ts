@@ -89,6 +89,8 @@ describe('Story R2: action catalog and dispatch roundtrip', () => {
       'memory.read:stats',
       'memory.read:topic',
       'memory.read:provenance',
+      'memory.read:record',
+      'memory.retire',
       'memory.read:experience',
       'source.ingest',
       'work.list',

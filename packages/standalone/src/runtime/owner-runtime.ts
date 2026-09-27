@@ -4,12 +4,13 @@ import {
   createKnowledge,
   failModelRun,
   generateEmbedding,
-  recallMemory,
+  readMemoryRecordsInScopes,
   startRuntime,
   type Knowledge,
   type KnowledgeOptions,
   type RuntimeHandle,
   type JudgmentAccess,
+  type MemoryRecord,
   type MemoryScopeRef,
 } from '@jungjaehoon/mama-core';
 import { join, isAbsolute } from 'node:path';
@@ -34,6 +35,7 @@ import {
   createStimulusDelivery,
   createStimulusIntake,
   type ReplayClockDelivery,
+  type GuidanceEntry,
   type StimulusDeliveryOptions,
   type StimulusIntake,
 } from './stimulus-delivery.js';
@@ -139,6 +141,17 @@ function runtimeModelRun(
       failModelRun(adapter, modelRunId, summary, tokenCount);
     },
   };
+}
+
+function isOwnerGuidanceRecord(
+  record: MemoryRecord
+): record is MemoryRecord & { kind: GuidanceEntry['kind'] } {
+  return (
+    record.kind === 'lesson' ||
+    record.kind === 'preference' ||
+    record.kind === 'constraint' ||
+    record.kind === 'workflow'
+  );
 }
 
 /** Assemble the one owner database, catalog, native session and mailbox runtime. */
@@ -263,16 +276,12 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
           options.recentDeliveredOwnerMessages?.() ?? [],
           row
         ),
-      lessonResolver: async (query) => {
-        const bundle = await recallMemory(database.adapter, query, {
-          kind: ['lesson', 'preference', 'constraint'],
-          scopes: [...access.scopes],
-          limit: 3,
-          includeRelated: false,
-          skipGraphExpansion: true,
-        });
-        return bundle.memories;
-      },
+      guidanceResolver: async () =>
+        (
+          await readMemoryRecordsInScopes(database.adapter, [...access.scopes], {
+            kind: ['lesson', 'preference', 'constraint', 'workflow'],
+          })
+        ).filter(isOwnerGuidanceRecord),
       ...(options.onOwnerResult === undefined ? {} : { onOwnerResult: options.onOwnerResult }),
       ...(options.onSourceResult === undefined ? {} : { onSourceResult: options.onSourceResult }),
       ...(options.onScheduledResult === undefined

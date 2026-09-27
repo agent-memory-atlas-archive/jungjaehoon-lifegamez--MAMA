@@ -26,6 +26,52 @@ const TOOL_TRACES_ORIGIN_CHECK = `CHECK (
     )
   )`;
 const TOOL_TRACES_MODEL_FK = 'FOREIGN KEY (model_run_id) REFERENCES model_runs(model_run_id)';
+const WORKFLOW_KIND_MIGRATION_COLUMNS = [
+  'id',
+  'topic',
+  'decision',
+  'reasoning',
+  'outcome',
+  'failure_reason',
+  'limitation',
+  'user_involvement',
+  'session_id',
+  'supersedes',
+  'superseded_by',
+  'refined_from',
+  'confidence',
+  'created_at',
+  'updated_at',
+  'needs_validation',
+  'validation_attempts',
+  'last_validated_at',
+  'usage_count',
+  'trust_context',
+  'usage_success',
+  'usage_failure',
+  'time_saved',
+  'evidence',
+  'alternatives',
+  'risks',
+  'event_date',
+  'kind',
+  'status',
+  'summary',
+  'is_static',
+  'event_datetime',
+  'agent_id',
+  'model_run_id',
+  'envelope_hash',
+  'gateway_call_id',
+  'source_refs_json',
+  'provenance_json',
+  'item_id',
+  'record_kind',
+  'payload_json',
+  'applies_from',
+  'applies_until',
+  'duration_days',
+] as const;
 
 function normalizeSqlText(sql: string): string {
   return sql.replace(/\s+/g, '').toLowerCase();
@@ -786,6 +832,23 @@ export class NodeSQLiteAdapter implements DatabaseInstance {
 
       const version = parseInt(versionMatch[1], 10);
       if (version <= currentVersion) {
+        continue;
+      }
+
+      if (isCore && version === 98) {
+        const decisionColumns = this.tableColumns('decisions');
+        if (
+          !this.tableExists('decisions_fts') ||
+          !WORKFLOW_KIND_MIGRATION_COLUMNS.every((column) => decisionColumns.has(column))
+        ) {
+          warn(
+            `[node-sqlite-adapter] Migration ${file} deferred: the full decisions projection is not present`
+          );
+          continue;
+        }
+        this.rebuildWorkflowMemoryKind098(migrationsDir);
+        this.stampMigration(sourceName, version);
+        info(`[node-sqlite-adapter] Migration ${file} reconciled successfully`);
         continue;
       }
 
@@ -1664,6 +1727,29 @@ export class NodeSQLiteAdapter implements DatabaseInstance {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       throw new Error(`Repair migration ${fileName} failed: ${message}`);
+    }
+  }
+
+  private rebuildWorkflowMemoryKind098(migrationsDir: string): void {
+    const migrationPath = path.join(migrationsDir, '098-workflow-memory-kind.sql');
+    if (!fs.existsSync(migrationPath)) {
+      throw new Error('Migration 098 workflow-kind rebuild SQL is missing');
+    }
+    const previousForeignKeys = this.readForeignKeysEnabled();
+    this.exec('PRAGMA foreign_keys = OFF');
+    if (this.readForeignKeysEnabled()) {
+      throw new Error('Migration 098 could not disable foreign_keys before rebuilding decisions');
+    }
+    try {
+      this.transaction(() => {
+        this.exec(fs.readFileSync(migrationPath, 'utf8'));
+      });
+      const violations = this.prepare('PRAGMA foreign_key_check').all();
+      if (violations.length > 0) {
+        throw new Error('Migration 098 left foreign key violations');
+      }
+    } finally {
+      this.exec(`PRAGMA foreign_keys = ${previousForeignKeys ? 'ON' : 'OFF'}`);
     }
   }
 

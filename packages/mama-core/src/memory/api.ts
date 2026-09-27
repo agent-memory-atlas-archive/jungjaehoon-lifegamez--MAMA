@@ -44,6 +44,7 @@ import {
 } from '../knowledge/search-quality.js';
 import type {
   MemoryKind,
+  MemoryKindFilter,
   MemoryAgentBootstrap,
   MemoryAuditAck,
   MemoryEdge,
@@ -133,6 +134,27 @@ function toMemoryRecord(
     }
   }
   const savedSource = trustContext?.source;
+  let guidance: Record<string, unknown> = {};
+  if (typeof row.payload_json === 'string') {
+    try {
+      const payload = JSON.parse(row.payload_json) as { guidance?: unknown };
+      if (
+        payload.guidance &&
+        typeof payload.guidance === 'object' &&
+        !Array.isArray(payload.guidance)
+      ) {
+        guidance = payload.guidance as Record<string, unknown>;
+      }
+    } catch {
+      /* malformed payloads do not become guidance */
+    }
+  }
+  const steps = Array.isArray(guidance.steps)
+    ? guidance.steps.filter((step): step is string => typeof step === 'string')
+    : undefined;
+  const evidenceChecks = Array.isArray(guidance.evidence_checks)
+    ? guidance.evidence_checks.filter((check): check is string => typeof check === 'string')
+    : undefined;
 
   return {
     id: String(row.id),
@@ -140,6 +162,9 @@ function toMemoryRecord(
     kind: (row.kind as MemoryKind) ?? 'decision',
     summary: String(row.summary ?? row.decision ?? ''),
     details: String(row.reasoning ?? row.decision ?? ''),
+    ...(typeof guidance.applies_when === 'string' ? { applies_when: guidance.applies_when } : {}),
+    ...(steps === undefined ? {} : { steps }),
+    ...(evidenceChecks === undefined ? {} : { evidence_checks: evidenceChecks }),
     confidence: Number(row.confidence ?? 0.5),
     status: (row.status as MemoryStatus) ?? 'active',
     scopes,
@@ -153,6 +178,93 @@ function toMemoryRecord(
         : null,
     outcome: (row.outcome as string | null) ?? null,
   };
+}
+
+function scopeBoundRowsClause(scopes: readonly MemoryScopeRef[], alias = 'd') {
+  if (scopes.length === 0) return { sql: '0', params: [] as string[] };
+  const alternatives = scopes.map(() => '(s.kind = ? AND s.external_id = ?)').join(' OR ');
+  return {
+    sql: `EXISTS (
+      SELECT 1 FROM memory_scope_bindings b
+      JOIN memory_scopes s ON s.id = b.scope_id
+      WHERE b.memory_id = ${alias}.id AND (${alternatives})
+    )`,
+    params: scopes.flatMap((scope) => [scope.kind, scope.id]),
+  };
+}
+
+export interface ReadMemoryRecordsOptions {
+  kind?: MemoryKindFilter;
+  status?: MemoryStatus | readonly MemoryStatus[];
+}
+
+/** Read complete memory records whose stored scopes intersect the admitted scopes. */
+export async function readMemoryRecordsInScopes(
+  adapter: DatabaseInstance,
+  scopes: readonly MemoryScopeRef[],
+  options: ReadMemoryRecordsOptions = {}
+): Promise<MemoryRecord[]> {
+  const scopeClause = scopeBoundRowsClause(scopes);
+  const conditions = [scopeClause.sql];
+  const params: Array<string | number> = [...scopeClause.params];
+  const kinds =
+    options.kind === undefined ? [] : Array.isArray(options.kind) ? options.kind : [options.kind];
+  if (kinds.length > 0) {
+    conditions.push(`d.kind IN (${kinds.map(() => '?').join(', ')})`);
+    params.push(...kinds);
+  }
+  const statuses =
+    options.status === undefined
+      ? []
+      : Array.isArray(options.status)
+        ? options.status
+        : [options.status];
+  if (statuses.length > 0) {
+    conditions.push(`COALESCE(d.status, 'active') IN (${statuses.map(() => '?').join(', ')})`);
+    params.push(...statuses);
+  }
+  const rows = adapter
+    .prepare(
+      `SELECT d.id, d.topic, d.decision, d.reasoning, d.confidence, d.created_at, d.updated_at,
+              d.trust_context, d.kind, d.status, d.summary, d.event_date, d.event_datetime,
+              d.outcome, d.payload_json
+       FROM decisions d
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY d.created_at ASC, d.id ASC`
+    )
+    .all(...params) as Record<string, unknown>[];
+  const scopesById = batchLoadScopes(
+    adapter,
+    rows.map((row) => String(row.id))
+  );
+  const fallbackSource: SaveMemoryInput['source'] = { package: 'mama-core', source_type: 'db' };
+  return rows.map((row) =>
+    toMemoryRecord(row, scopesById.get(String(row.id)) ?? [], fallbackSource)
+  );
+}
+
+/** Read one complete record only when at least one stored scope is admitted. */
+export async function readMemoryRecordById(
+  adapter: DatabaseInstance,
+  memoryId: string,
+  scopes: readonly MemoryScopeRef[]
+): Promise<MemoryRecord | null> {
+  const id = memoryId.trim();
+  const scopeClause = scopeBoundRowsClause(scopes);
+  if (!id || scopes.length === 0) return null;
+  const row = adapter
+    .prepare(
+      `SELECT d.id, d.topic, d.decision, d.reasoning, d.confidence, d.created_at, d.updated_at,
+              d.trust_context, d.kind, d.status, d.summary, d.event_date, d.event_datetime,
+              d.outcome, d.payload_json
+       FROM decisions d
+       WHERE d.id = ? AND ${scopeClause.sql}
+       LIMIT 1`
+    )
+    .get(id, ...scopeClause.params) as Record<string, unknown> | undefined;
+  if (!row) return null;
+  const recordScopes = batchLoadScopes(adapter, [id]).get(id) ?? [];
+  return toMemoryRecord(row, recordScopes, { package: 'mama-core', source_type: 'db' });
 }
 
 function batchLoadScopes(
@@ -196,7 +308,7 @@ async function loadScopedMemories(
       .prepare(
         `
           SELECT id, topic, decision, reasoning, confidence, created_at, updated_at, trust_context,
-                 kind, status, summary, event_date, event_datetime, outcome
+                 kind, status, summary, event_date, event_datetime, outcome, payload_json
           FROM decisions
           ORDER BY COALESCE(event_datetime, created_at) DESC, created_at DESC
         `
@@ -212,7 +324,7 @@ async function loadScopedMemories(
         `
           SELECT DISTINCT d.id, d.topic, d.decision, d.reasoning, d.confidence, d.created_at,
                  d.updated_at, d.trust_context, d.kind, d.status, d.summary, d.event_date, d.event_datetime,
-                 d.outcome
+                 d.outcome, d.payload_json
           FROM decisions d
           JOIN memory_scope_bindings msb ON msb.memory_id = d.id
           WHERE msb.scope_id IN (${placeholders})
@@ -501,6 +613,55 @@ type SaveMemoryResult = {
   saved_decision_id?: string;
 };
 
+const GUIDANCE_MEMORY_KINDS = new Set<MemoryKind>([
+  'lesson',
+  'preference',
+  'constraint',
+  'workflow',
+]);
+
+function oneLineGuidanceText(value: string): string {
+  return value.trim().replace(/\s+/g, ' ');
+}
+
+function guidancePayloadFor(input: SaveMemoryInput): Record<string, JsonValue> | undefined {
+  if (!GUIDANCE_MEMORY_KINDS.has(input.kind)) return undefined;
+  const appliesWhen =
+    typeof input.appliesWhen === 'string' ? oneLineGuidanceText(input.appliesWhen) : '';
+  if (!appliesWhen) {
+    throw new JudgmentError(
+      'INVALID_INPUT',
+      `memory.save kind '${input.kind}' requires an appliesWhen line`
+    );
+  }
+
+  const guidance: Record<string, JsonValue> = { applies_when: appliesWhen };
+  if (input.kind === 'workflow') {
+    const steps = Array.isArray(input.steps) ? input.steps.map(oneLineGuidanceText) : [];
+    if (steps.length === 0 || steps.some((step) => step.length === 0)) {
+      throw new JudgmentError(
+        'INVALID_INPUT',
+        'memory.save kind workflow requires one or more ordered steps'
+      );
+    }
+    guidance.steps = steps;
+    if (input.evidenceChecks !== undefined) {
+      if (!Array.isArray(input.evidenceChecks)) {
+        throw new JudgmentError('INVALID_INPUT', 'memory.save evidenceChecks must be a list');
+      }
+      const checks = input.evidenceChecks.map(oneLineGuidanceText);
+      if (checks.some((check) => check.length === 0)) {
+        throw new JudgmentError(
+          'INVALID_INPUT',
+          'memory.save evidenceChecks cannot contain an empty line'
+        );
+      }
+      guidance.evidence_checks = checks;
+    }
+  }
+  return { guidance };
+}
+
 async function saveMemoryInternal(
   adapter: DatabaseInstance,
   input: SaveMemoryInput,
@@ -512,6 +673,7 @@ async function saveMemoryInternal(
 ): Promise<SaveMemoryResult> {
   const targetStatus = input.status ?? 'active';
   const requestedScopes = input.scopes ?? [];
+  const payload = guidancePayloadFor(input);
 
   const eventDateTime = typeof input.eventDateTime === 'number' ? input.eventDateTime : null;
 
@@ -582,6 +744,7 @@ async function saveMemoryInternal(
     limitation: legacy?.limitation ?? null,
     sourceRefs: provenance.source_refs,
     provenance: provenance.provenance as Record<string, JsonValue>,
+    ...(payload === undefined ? {} : { payload }),
     agentId: provenance.agent_id,
     modelRunId: provenance.model_run_id,
     envelopeHash: provenance.envelope_hash,
@@ -954,6 +1117,62 @@ export async function promoteMemoryStatus(
     event: { reason: `promote ${memoryId} to '${targetStatus}'` },
   };
   await appendJudgment(command, unsignedWriteAccess(scopes), { adapter });
+}
+
+export type MemoryRetirementStatus = Extract<MemoryStatus, 'stale' | 'superseded'>;
+
+/** Append an access-checked status amendment for one stored memory record. */
+export async function retireMemoryRecord(
+  adapter: DatabaseInstance,
+  input: {
+    memoryId: string;
+    status: MemoryRetirementStatus;
+    reason: string;
+  },
+  access: JudgmentAccess,
+  commandId: string
+): Promise<{
+  success: true;
+  id: string;
+  status: MemoryRetirementStatus;
+  reason: string;
+  receiptId: string;
+}> {
+  const id = input.memoryId.trim();
+  const reason = input.reason.trim();
+  if (!id) throw new JudgmentError('INVALID_INPUT', 'memory.retire requires memory_id');
+  if (!reason) throw new JudgmentError('INVALID_INPUT', 'memory.retire requires a reason');
+  if (input.status !== 'stale' && input.status !== 'superseded') {
+    throw new JudgmentError('INVALID_INPUT', 'memory.retire status must be stale or superseded');
+  }
+  const record = await readMemoryRecordById(adapter, id, access.scopes);
+  if (!record) {
+    throw new JudgmentError(
+      'REFERENCE_NOT_FOUND',
+      'Memory record is unavailable in the admitted scopes'
+    );
+  }
+  const admittedScopes = record.scopes.filter((recordScope) =>
+    access.scopes.some((scope) => scope.kind === recordScope.kind && scope.id === recordScope.id)
+  );
+  const summary = `Status '${input.status}' applied to ${id}: ${reason}`;
+  const receipt = await appendJudgment(
+    {
+      commandId,
+      topic: `judgment/${id}`,
+      summary,
+      recordKind: 'judgment',
+      payload: { amended: id, status: input.status, reason },
+      scopes: admittedScopes,
+      links: [{ relation: 'amends', target: { kind: 'memory', id } }],
+      amends: [{ target: { kind: 'memory', id }, status: input.status }],
+      record: { kind: 'fact', status: 'active', summary },
+      event: { reason: `Retired ${id} as ${input.status}: ${reason}` },
+    },
+    access,
+    { adapter }
+  );
+  return { success: true, id, status: input.status, reason, receiptId: receipt.recordId };
 }
 
 export async function buildProfile(

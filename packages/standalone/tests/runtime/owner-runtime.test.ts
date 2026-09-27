@@ -143,6 +143,7 @@ describe('owner runtime assembly', () => {
           kind: 'lesson',
           summary: 'The owner correction is durable',
           details: 'The correction was linked to the source evidence.',
+          appliesWhen: 'When the owner corrects this procedure',
           scopes: [
             { kind: 'user', id: 'owner' },
             { kind: 'channel', id: 'chatwork' },

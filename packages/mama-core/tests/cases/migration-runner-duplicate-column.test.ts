@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -1388,6 +1388,73 @@ describe('Story M2.4: Legacy high schema-version structural recovery', () => {
         adapter.disconnect();
       });
     });
+  });
+});
+
+describe('Migration 098 workflow memory kind', () => {
+  afterEach(cleanupTempDir);
+
+  it('adds workflow without changing earlier records or their full-text entries', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'mama-migration-workflow-'));
+    const dbPath = join(tempDir, 'workflow-kind.db');
+    const before098 = join(tempDir, 'migrations-through-097');
+    mkdirSync(before098);
+    for (const file of migrationFilesThrough(97)) {
+      writeFileSync(join(before098, file), readFileSync(join(MIGRATIONS_DIR, file)));
+    }
+
+    const adapter = new NodeSQLiteAdapter({ dbPath });
+    adapter.connect();
+    adapter.runMigrations(before098);
+    adapter
+      .prepare(
+        `INSERT INTO decisions (
+           id, topic, decision, reasoning, kind, status, summary, created_at, updated_at,
+           record_kind, payload_json
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        'legacy-guidance-record',
+        'legacy workflow topic',
+        'existing lesson decision',
+        'existing summary without applies when',
+        'lesson',
+        'active',
+        'existing lesson summary',
+        10,
+        11,
+        'judgment',
+        '{}'
+      );
+    adapter.runMigrations(MIGRATIONS_DIR);
+
+    expect(
+      adapter
+        .prepare(
+          'SELECT topic, decision, reasoning, kind, status, summary, payload_json FROM decisions WHERE id = ?'
+        )
+        .get('legacy-guidance-record')
+    ).toEqual({
+      topic: 'legacy workflow topic',
+      decision: 'existing lesson decision',
+      reasoning: 'existing summary without applies when',
+      kind: 'lesson',
+      status: 'active',
+      summary: 'existing lesson summary',
+      payload_json: '{}',
+    });
+    expect(
+      adapter
+        .prepare('SELECT rowid FROM decisions_fts WHERE decisions_fts MATCH ?')
+        .get('"existing lesson decision"')
+    ).toBeDefined();
+    adapter
+      .prepare(
+        `INSERT INTO decisions (id, topic, decision, kind, status, summary, created_at, updated_at)
+         VALUES ('workflow-after-migration', 'workflow topic', 'procedure', 'workflow', 'active', 'procedure', 12, 12)`
+      )
+      .run();
+    adapter.disconnect();
   });
 });
 
