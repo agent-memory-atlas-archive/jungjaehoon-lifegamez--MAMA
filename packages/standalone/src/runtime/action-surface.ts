@@ -134,9 +134,6 @@ export function createActionSurface(options: ActionSurfaceOptions): ActionSurfac
             for (const [name, slot] of Object.entries(options.reportStore!.getAll())) {
               slots[name] = {
                 html: slot.html,
-                basisRevision: slot.basisRevision,
-                currentBasisRevision: slot.currentBasisRevision,
-                freshness: slot.freshness,
                 publishable: options.reportStore!.isPublishable(name),
                 updatedAt: Number.isFinite(slot.updatedAt)
                   ? new Date(slot.updatedAt).toISOString()

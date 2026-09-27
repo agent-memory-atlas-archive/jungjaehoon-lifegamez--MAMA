@@ -29,7 +29,18 @@ describe('report.* action registrations', () => {
     const publish = catalog.describe('report.publish');
     expect(publish.inputSchema.required).toEqual(['slots']);
     expect(publish.summary).toContain('report-card');
+    expect(publish.summary).not.toContain('basis');
+    expect(publish.inputSchema.properties).not.toHaveProperty('basis_revision');
     expect(catalog.describe('report.read').summary).toContain('dated presentation snapshot');
+  });
+
+  it('rejects the removed basis_revision input', async () => {
+    const call = dispatch({ publisher: vi.fn() });
+    const result = await call(
+      { action: 'report.publish', input: { slots: { briefing: '<p>report</p>' }, basis_revision: 'unused' } },
+      { access }
+    );
+    expect(result).toMatchObject({ status: 'failed', error: { code: 'invalid_input' } });
   });
 
   it('report.read fails closed until routes init binds the reader port', async () => {
@@ -86,7 +97,7 @@ describe('report.* action registrations', () => {
     });
   });
 
-  it('publishes one slot without a basis and returns only changed slot ids', async () => {
+  it('treats identical slot HTML as unchanged and exposes no analysis basis', async () => {
     const html = '<div class="report-card">Changed</div>';
     const store = createReportStore({
       initialSlots: {
@@ -95,7 +106,6 @@ describe('report.* action registrations', () => {
           html,
           priority: 0,
           updatedAt: Date.now(),
-          basisRevision: 'previous-basis',
         },
       },
     });
@@ -106,13 +116,10 @@ describe('report.* action registrations', () => {
     );
     expect(result).toMatchObject({
       status: 'completed',
-      data: { acceptedSlotIds: ['decisions'], changedSlotIds: ['decisions'] },
+      data: { acceptedSlotIds: ['decisions'], changedSlotIds: [] },
     });
-    expect(store.get('decisions')).toMatchObject({
-      html,
-      basisRevision: null,
-      freshness: 'unknown',
-    });
+    expect(store.get('decisions')).toMatchObject({ html });
+    expect(store.get('decisions')).not.toHaveProperty('basisRevision');
   });
 
   it('report.publish rejects non-string slot values and keeps the code', async () => {

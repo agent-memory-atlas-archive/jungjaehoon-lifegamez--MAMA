@@ -333,7 +333,7 @@ function fail(
 }
 
 function failureKind(error: unknown): 'invalid_input' | 'denied' | 'failed' | 'internal' {
-  if (error instanceof TwinRefNotVisibleError) {
+  if (error instanceof TwinRefNotVisibleError || thrownCode(error) === 'denied') {
     return 'denied';
   }
   if (

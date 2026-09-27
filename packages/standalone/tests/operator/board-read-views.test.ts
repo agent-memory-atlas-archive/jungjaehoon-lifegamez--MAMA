@@ -36,31 +36,16 @@ describe('Task B: board_read descriptors (default)', () => {
     });
   });
 
-  it('TG-04/TG-06 retains analysis basis in both descriptors and selected reads', () => {
+  it('reports section time without a computed freshness state', () => {
     const slots: BoardSlots = {
       briefing: {
         html: '<p>analysis</p>',
         updatedAt: '2026-09-07T01:00:00Z',
-        basisRevision: 'older',
-        currentBasisRevision: 'current',
-        freshness: 'stale',
       },
     };
-    expect(readBoardView({}, slots)).toMatchObject({
-      slots: [
-        {
-          basisRevision: 'older',
-          currentBasisRevision: 'current',
-          freshness: 'stale',
-          updatedAt: '2026-09-07T01:00:00Z',
-        },
-      ],
-    });
-    expect(readBoardView({ slot: 'briefing' }, slots)).toMatchObject({
-      basisRevision: 'older',
-      currentBasisRevision: 'current',
-      freshness: 'stale',
-    });
+    expect(readBoardView({}, slots)).toMatchObject({ slots: [{ updatedAt: '2026-09-07T01:00:00Z' }] });
+    expect(JSON.stringify(readBoardView({}, slots))).not.toContain('freshness');
+    expect(JSON.stringify(readBoardView({ slot: 'briefing' }, slots))).not.toContain('basisRevision');
   });
   it('lists slot names, updatedAt and html length in code points, never the HTML', () => {
     const slots = makeSlots();

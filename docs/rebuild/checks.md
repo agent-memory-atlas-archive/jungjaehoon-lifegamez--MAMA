@@ -1207,3 +1207,9 @@ The implementation writes raw/index data during import only. Replay is the owner
   calls after it. The answer matched the reference operator's report except one missing extra-fee item.
 - Still open: a live source delta on the one-turn flow and the 08:00 scheduled report on the new
   structure have not run yet.
+
+### W17 verified review fixes — 2026-09-27
+
+- Result: repaired related-work reads, deterministic iCal revisions and cancellation, poll failure visibility, board/wiki guidance, and report basis removal; fixed the listed source, schedule, work-list, and revision contracts.
+- Evidence: `pnpm build`, `pnpm typecheck`, ESLint on changed TS/JS files, and 128 focused tests pass; the UI bundle was regenerated.
+- Still open: two existing native-session tests cannot bind Unix sockets in this sandbox; no live owner turn or provider poll was run, and `~/.mama` and `~/.claude` were not accessed.

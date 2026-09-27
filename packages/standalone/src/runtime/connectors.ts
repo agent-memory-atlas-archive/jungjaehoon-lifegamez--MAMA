@@ -27,7 +27,10 @@ import {
   type RawIndexProjection,
   type RawIndexSink,
 } from '../storage/source-archive.js';
-import { upsertConnectorEventIndex } from '../connectors/framework/event-index.js';
+import {
+  recordConnectorPollOutcome,
+  upsertConnectorEventIndex,
+} from '../connectors/framework/event-index.js';
 
 const ONE_DAY_MS = 86_400_000;
 
@@ -208,6 +211,12 @@ export async function startConnectorRuntime(
 
     const scheduler = new PollingScheduler(rawStore, options.statePath, {
       rawIndexSink: indexSink,
+      ...(options.coreAdapter === undefined
+        ? {}
+        : {
+            recordPollOutcome: (connectorName, outcome) =>
+              recordConnectorPollOutcome(options.coreAdapter!, connectorName, outcome),
+          }),
       initialLookbackMs: ONE_DAY_MS,
       now: clock,
       initialNow: bootstrapNow,

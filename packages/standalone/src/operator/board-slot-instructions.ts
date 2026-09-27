@@ -61,7 +61,6 @@ export function buildReportPublishToolContract(): string {
   return inline([
     'Publish dashboard analysis as HTML.',
     'pipeline is an agent-authored current workflow view; write it from the task ledger and conversations.',
-    'Supply the task basis actually used for analysis; omission means its basis is unknown.',
     'SLOT SHAPE:',
     ...buildBoardSlotShapeLines(),
     ...buildBoardHtmlVocabulary(),

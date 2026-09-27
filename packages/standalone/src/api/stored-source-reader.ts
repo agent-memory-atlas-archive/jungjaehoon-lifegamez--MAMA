@@ -43,7 +43,8 @@ export interface StoredSourceReader {
   readObservation(
     observationRef: string,
     access: Access,
-    allowance?: Pick<MemoryReadAllowance, 'maxSourceMs'>
+    allowance?: Pick<MemoryReadAllowance, 'maxSourceMs'>,
+    window?: Partial<Pick<Record<string, unknown>, 'content_offset' | 'content_limit'>>
   ): Record<string, unknown>;
 }
 
@@ -317,7 +318,7 @@ export function createStoredSourceReader(options: StoredSourceReaderOptions): St
         }),
       };
     },
-    readObservation(observationRef, access, allowance) {
+    readObservation(observationRef, access, allowance, window) {
       if (typeof observationRef !== 'string' || observationRef.trim() === '') {
         throw new Error('observationRef must be nonblank text');
       }
@@ -326,7 +327,7 @@ export function createStoredSourceReader(options: StoredSourceReaderOptions): St
         if (access.principalId === options.ownerPrincipalId()) throw missing();
         throw denied();
       }
-      return this.read(stored.source, { observationRef }, access, allowance);
+      return this.read(stored.source, { observationRef, ...window }, access, allowance);
     },
   };
 }

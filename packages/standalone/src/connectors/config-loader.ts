@@ -164,10 +164,27 @@ function connector(value: unknown, field: string, state: ValidationState): Conne
       `${field}.pollIntervalMinutes must be a finite number greater than zero`
     );
   }
+  const configuredChannels = channels(raw.channels, `${field}.channels`, state);
+  if (field.toLowerCase().endsWith('.ical')) {
+    const names = new Map<string, string>();
+    for (const key of Object.keys(configuredChannels)) {
+      const envName = `MAMA_ICAL_URL_${key.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
+      if (!isIcalSecret(envName)) {
+        throw new ConfigValidationError(`${field}.channels.${key} cannot form an iCal secret name`);
+      }
+      const previous = names.get(envName);
+      if (previous !== undefined) {
+        throw new ConfigValidationError(
+          `${field}.channels.${key} and ${previous} map to the same iCal secret name`
+        );
+      }
+      names.set(envName, key);
+    }
+  }
   return {
     enabled: raw.enabled,
     pollIntervalMinutes: raw.pollIntervalMinutes,
-    channels: channels(raw.channels, `${field}.channels`, state),
+    channels: configuredChannels,
     auth: auth(raw.auth, `${field}.auth`, state),
   };
 }

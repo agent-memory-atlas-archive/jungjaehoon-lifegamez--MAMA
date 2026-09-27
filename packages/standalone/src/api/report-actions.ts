@@ -86,7 +86,6 @@ export function reportActionRegistrations(ports: ReportPorts): ActionRegistratio
           type: 'object',
           properties: {
             slots: { type: 'object' },
-            basis_revision: { oneOf: [{ type: 'string', minLength: 1 }, { type: 'null' }] },
           },
           required: ['slots'],
           additionalProperties: false,
@@ -104,9 +103,8 @@ export function reportActionRegistrations(ports: ReportPorts): ActionRegistratio
         ],
       },
       exec: (input, context) => {
-        const { slots: slotsInput, basis_revision: basisRevision } = input as {
+        const { slots: slotsInput } = input as {
           slots: Record<string, unknown>;
-          basis_revision?: string | null;
         };
         if (
           Object.keys(slotsInput).length === 0 ||
@@ -118,26 +116,11 @@ export function reportActionRegistrations(ports: ReportPorts): ActionRegistratio
           );
         }
         const slots = slotsInput as Record<string, string>;
-        if (
-          basisRevision !== undefined &&
-          basisRevision !== null &&
-          (typeof basisRevision !== 'string' ||
-            !basisRevision.trim() ||
-            basisRevision !== basisRevision.trim())
-        ) {
-          throw reportFailure(
-            'invalid_basis_revision',
-            'report.publish basis_revision must be a canonical task basis from report.read'
-          );
-        }
         const publisher = ports.publisher;
         if (!publisher) {
           throw reportFailure('publisher_unavailable', 'Report publisher not configured');
         }
         const publication = publisher(slots, {
-          // An omitted basis means unknown freshness. Persist that state so a
-          // same-HTML publish also clears a previously asserted basis.
-          basisRevision: basisRevision ?? null,
           operationId: context.operationId ?? null,
           modelRunId: context.session?.modelRunId ?? null,
         });

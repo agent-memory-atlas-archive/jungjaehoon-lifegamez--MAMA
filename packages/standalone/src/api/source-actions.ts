@@ -23,6 +23,16 @@ function sourceName(input: unknown, action: string): string {
   return source.trim();
 }
 
+function readWindow(body: Record<string, unknown>): {
+  content_offset?: unknown;
+  content_limit?: unknown;
+} {
+  return {
+    ...(body.content_offset === undefined ? {} : { content_offset: body.content_offset }),
+    ...(body.content_limit === undefined ? {} : { content_limit: body.content_limit }),
+  };
+}
+
 function storedReader(ports: SourcePorts): StoredSourceReader {
   if (!ports.stored) {
     const error = new Error('Stored source reader is not configured');
@@ -37,7 +47,7 @@ function assertGrantedSource(source: string, access: ActionContext['access']): v
   const error = new Error(
     `principal ${access.principalId} may not read ${source}; readable connectors: ${(access.connectors ?? []).join(', ') || '(none)'}`
   );
-  error.name = 'connector_out_of_scope';
+  error.name = 'denied';
   throw error;
 }
 
@@ -172,8 +182,13 @@ export function sourceActionRegistrations(ports: SourcePorts): ActionRegistratio
                     typeof sourceAt === 'string' ? Date.parse(sourceAt) : Number.NaN;
                   const content =
                     typeof hit.content_preview === 'string' ? hit.content_preview : '';
+                  const metadata =
+                    hit.metadata && typeof hit.metadata === 'object' && !Array.isArray(hit.metadata)
+                      ? (hit.metadata as Record<string, unknown>)
+                      : {};
                   return {
                     author: hit.author_label ?? null,
+                    channel: hit.channel_name ?? hit.channelName ?? metadata.channelName ?? hit.channel ?? null,
                     time: Number.isFinite(timestamp)
                       ? new Date(timestamp).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
                       : null,
@@ -217,8 +232,8 @@ export function sourceActionRegistrations(ports: SourcePorts): ActionRegistratio
               try {
                 const data =
                   allowance === undefined
-                    ? reader.readObservation(String(ref), context.access)
-                    : reader.readObservation(String(ref), context.access, allowance);
+                    ? reader.readObservation(String(ref), context.access, undefined, readWindow(body))
+                    : reader.readObservation(String(ref), context.access, allowance, readWindow(body));
                 return { observationRef: ref, status: 'completed', data };
               } catch (error) {
                 return {
@@ -232,8 +247,8 @@ export function sourceActionRegistrations(ports: SourcePorts): ActionRegistratio
         }
         if (body.source === undefined && typeof body.observationRef === 'string') {
           return allowance === undefined
-            ? storedReader(ports).readObservation(body.observationRef, context.access)
-            : storedReader(ports).readObservation(body.observationRef, context.access, allowance);
+            ? storedReader(ports).readObservation(body.observationRef, context.access, undefined, readWindow(body))
+            : storedReader(ports).readObservation(body.observationRef, context.access, allowance, readWindow(body));
         }
         const source = sourceName(input, 'source.read');
         assertGrantedSource(source, context.access);

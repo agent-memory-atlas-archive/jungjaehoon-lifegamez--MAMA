@@ -58,6 +58,7 @@ export interface PollingSchedulerOptions {
   rawIndexSink?: RawIndexSink;
   now?: () => number;
   initialNow?: number;
+  recordPollOutcome?: (connectorName: string, outcome: { at: number; error?: string }) => void;
 }
 
 interface PollState {
@@ -124,6 +125,7 @@ export class PollingScheduler {
   private readonly stateFile: string;
   private readonly now: () => number;
   private readonly initialNow: number;
+  private readonly recordPollOutcome?: PollingSchedulerOptions['recordPollOutcome'];
   private readonly timers = new Map<string, ReturnType<typeof setInterval>>();
   private readonly lastPollTimes = new Map<string, Date>();
   private readonly inFlight = new Set<string>();
@@ -136,6 +138,7 @@ export class PollingScheduler {
     this.stateFile = join(basePath, 'poll-state.json');
     this.now = options.now ?? Date.now;
     this.initialNow = options.initialNow ?? this.now();
+    this.recordPollOutcome = options.recordPollOutcome;
     this.initialLookbackMs = options.initialLookbackMs ?? 86_400_000;
     this.restoreState();
   }
@@ -291,9 +294,14 @@ export class PollingScheduler {
       }
       await connector.commitPoll?.();
       this.lastPollTimes.set(name, new Date(pollStartedAt));
+      this.recordPollOutcome?.(name, { at: this.now() });
     } catch (error) {
       console.error(`[PollingScheduler] poll failed for connector ${name}`, error);
       connector.abortPollHandoff?.();
+      this.recordPollOutcome?.(name, {
+        at: this.now(),
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 

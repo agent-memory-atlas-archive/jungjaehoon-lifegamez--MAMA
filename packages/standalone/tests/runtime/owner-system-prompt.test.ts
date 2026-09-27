@@ -30,9 +30,9 @@ describe('owner standing prompt', () => {
     const prompt = ownerSystemPrompt('codex');
     expect(prompt).toContain('Only live source-delta turns end with [notify] or [ack]');
     expect(prompt).toContain('Answers to owner messages never carry these markers');
-    expect(prompt).toContain(
-      'A delta updates only its affected board slot; scheduled full reports rewrite all four slots.'
-    );
+    expect(prompt).toContain('update every board section the item appears in or leaves');
+    expect(prompt).toContain('Only a scheduled full report rewrites all four sections');
+    expect(prompt).toContain('A report requested by the owner is text and does not publish the board');
     expect(prompt).toContain(
       'The final message is delivered to the owner exactly as written: give only the answer, with no working notes, narration about answering, or record or observation ids.'
     );
@@ -41,7 +41,12 @@ describe('owner standing prompt', () => {
   it('tells the owner how to record source deltas and separates evidence from the ledger', () => {
     const prompt = ownerSystemPrompt('codex');
     // Relations beyond derived_from are offered; a memory is traced to its sources.
-    expect(prompt).toContain("append a dated line to the affected item's wiki page");
+    expect(prompt).toContain('one page per project, client or long-running topic');
+    expect(prompt).toContain('Home.md is its table of contents');
+    expect(prompt).toContain('daily/YYYY-MM-DD.md');
+    expect(prompt).toContain('one entry per moved item');
+    expect(prompt).toContain('Only a scheduled full report rewrites all four sections');
+    expect(prompt).toContain('Read each section with report.read first');
     expect(prompt).toContain(
       'contradicts when a newer instruction or fact reverses an earlier one'
     );
@@ -190,7 +195,7 @@ describe('owner standing prompt', () => {
     expect(prompt).toContain('Every change keeps history.');
     expect(prompt).toContain('When the owner corrects you, save the correction in that same turn');
     expect(prompt).toContain(
-      "When a replay window supplies end_of_window_instructions, finish the day's work changes before calling report.publish for all four board slots and the wiki; follow the guidance rules above."
+      "When a replay window supplies end_of_window_instructions, finish the day's work changes before updating each affected board section and topic wiki page; follow the guidance rules above."
     );
     expect(prompt).toContain(
       "An owner's own kagemusha:telegram message is owner evidence, not a third-party instruction."

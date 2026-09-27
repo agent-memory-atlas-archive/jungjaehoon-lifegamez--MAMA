@@ -8,6 +8,17 @@ import type {
 import { readConnectorState, writeConnectorState } from '../framework/connector-state.js';
 import { parseICalendar } from './parser.js';
 
+interface ICalEntityState {
+  version: string;
+  firstSeenAt: number;
+  start: string;
+  end: string;
+  summary: string;
+  status: string;
+  feedKey: string;
+  feedName: string;
+}
+
 export class ICalConnector implements IConnector {
   readonly name = 'ical';
   readonly type = 'api' as const;
@@ -16,6 +27,7 @@ export class ICalConnector implements IConnector {
   private lastPollCount = 0;
   private lastError: string | undefined;
   private readonly synced: Set<string>;
+  private readonly entities: Record<string, ICalEntityState>;
   private pendingSynced: Set<string> | null = null;
 
   constructor(
@@ -27,21 +39,29 @@ export class ICalConnector implements IConnector {
       name: channel.feedName ?? channel.name ?? key,
       envName: `MAMA_ICAL_URL_${key.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`,
     }));
-    this.synced = new Set(
-      readConnectorState(statePath, (value) => {
-        const synced = (value as { synced?: unknown } | null)?.synced;
+    const state = readConnectorState(statePath, (value) => {
+        const record = value as { synced?: unknown; entities?: unknown } | null;
+        const synced = record?.synced;
         if (!Array.isArray(synced) || !synced.every((key) => typeof key === 'string')) {
           throw new Error('iCal connector state must list synced feed keys');
         }
-        return synced as string[];
-      }) ?? []
-    );
+        const entities = record?.entities ?? {};
+        if (entities === null || typeof entities !== 'object' || Array.isArray(entities)) {
+          throw new Error('iCal connector state entities must be a record');
+        }
+        return { synced: synced as string[], entities: entities as Record<string, ICalEntityState> };
+      }) ?? { synced: [], entities: {} };
+    this.synced = new Set(state.synced);
+    this.entities = state.entities;
   }
   commitPoll(): void {
     if (this.pendingSynced === null) return;
     for (const key of this.pendingSynced) this.synced.add(key);
     this.pendingSynced = null;
-    writeConnectorState(this.statePath, { synced: [...this.synced].sort() });
+    writeConnectorState(this.statePath, {
+      synced: [...this.synced].sort(),
+      entities: this.entities,
+    });
   }
   abortPollHandoff(): void {
     this.pendingSynced = null;
@@ -105,35 +125,68 @@ export class ICalConnector implements IConnector {
         } catch {
           throw new Error(`iCal feed ${feed.name} parse failed: invalid calendar data`);
         }
-        for (const event of events) {
+        const seen = new Set<string>();
+        const emit = (event: (typeof events)[number]) => {
           const fields = { ...event, feedName: feed.name, feedKey: feed.key };
-          const { revisionTime: _revisionTime, ...revisionFields } = fields;
-          const version = createHash('sha256')
-            .update(JSON.stringify(revisionFields))
-            .digest('hex')
-            .slice(0, 24);
+          const version = createHash('sha256').update(JSON.stringify(fields)).digest('hex').slice(0, 24);
+          const entityKey = `${feed.key}:${event.uid}`;
+          const previous = this.entities[entityKey];
+          const firstSeenAt = previous?.version === version ? previous.firstSeenAt : Date.now();
+          this.entities[entityKey] = {
+            version,
+            firstSeenAt,
+            start: event.start,
+            end: event.end,
+            summary: event.summary,
+            status: event.status,
+            feedKey: feed.key,
+            feedName: feed.name,
+          };
           output.push({
             source: 'ical',
             sourceId: `${feed.key}:${event.uid}:${version}`,
-            sourceEntityId: `${feed.key}:${event.uid}`,
+            sourceEntityId: entityKey,
             channel: feed.key,
             author: 'unknown',
             content: `${event.summary} | ${event.start} ~ ${event.end}`,
-            timestamp: new Date(event.revisionTime),
+            timestamp: new Date(event.revisionTime ?? firstSeenAt),
             type: 'event',
             sourceCursor: version,
             metadata: {
-              ...fields,
               start: event.start,
               end: event.end,
               summary: event.summary,
               status: event.status,
+              feedName: feed.name,
+              feedKey: feed.key,
             },
             ...(!this.synced.has(feed.key) ? { collectOnly: true } : {}),
+          });
+        };
+        for (const event of events) {
+          seen.add(`${feed.key}:${event.uid}`);
+          emit(event);
+        }
+        for (const [entityKey, previous] of Object.entries(this.entities)) {
+          if (previous.feedKey !== feed.key || seen.has(entityKey)) continue;
+          if (Date.parse(previous.end) <= Date.now()) {
+            delete this.entities[entityKey];
+            continue;
+          }
+          emit({
+            uid: entityKey.slice(feed.key.length + 1),
+            start: previous.start,
+            end: previous.end,
+            summary: previous.summary,
+            status: 'cancelled',
           });
         }
         pendingSynced.add(feed.key);
       }
+      writeConnectorState(this.statePath, {
+        synced: [...this.synced].sort(),
+        entities: this.entities,
+      });
       this.pendingSynced = pendingSynced;
       this.lastPollTime = new Date();
       this.lastPollCount = output.length;

@@ -154,7 +154,7 @@ function recentAction(ports: ReportReadPorts): ActionRegistration {
         ) as Row[];
       if (rows.length > RECENT_SCAN_LIMIT)
         throw invalidInput(
-          `source.recent found more than ${RECENT_SCAN_LIMIT} changes; narrow since or channel`
+          `source.recent found more than ${RECENT_SCAN_LIMIT} changes; narrow since or cap`
         );
       const visible = allowedRows(rows, context.access, ports.ownerPrincipalId);
       const groups = new Map<
@@ -232,7 +232,7 @@ function recentAction(ports: ReportReadPorts): ActionRegistration {
         });
       if (groups.size > Number(cap))
         throw invalidInput(
-          `source.recent found changes in ${groups.size} channels, more than cap ${cap}; narrow since or channel`
+          `source.recent found changes in ${groups.size} channels, more than cap ${cap}; narrow since or cap`
         );
       return {
         since: new Date(since).toISOString(),
@@ -328,7 +328,7 @@ function upcomingAction(ports: ReportReadPorts): ActionRegistration {
         throw new Error(
           `schedule.upcoming found more than ${cap} events; narrow days or increase cap`
         );
-      events.sort((a, b) => String(a.start).localeCompare(String(b.start)));
+      events.sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
       return { days: Number(days), cap: Number(cap), returned: events.length, events };
     },
   };

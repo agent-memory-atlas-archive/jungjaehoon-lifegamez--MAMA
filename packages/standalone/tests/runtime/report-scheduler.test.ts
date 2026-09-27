@@ -58,12 +58,15 @@ function setup() {
 }
 
 describe('KST report scheduler', () => {
-  it('asks full reports to update wiki pages for work changed since the last wiki update', () => {
+  it('asks full reports to update topic pages and journal from the previous full report', () => {
     const prompt = buildScheduledReportPrompt(
       { report: 'full', hourKey: '2026-01-01:08' },
       new Date('2026-01-01T00:00:00Z')
     );
-    expect(prompt).toContain('each work item changed since its last wiki update');
+    expect(prompt).toContain('topic wiki page');
+    expect(prompt).toContain('daily/YYYY-MM-DD.md');
+    expect(prompt).toContain('lessons/');
+    expect(prompt).toContain('since="24h ago"');
     expect(prompt).toContain('source.recent');
     expect(prompt).toContain('view="pipeline"');
     expect(prompt).toContain('schedule.upcoming');
@@ -101,6 +104,30 @@ describe('KST report scheduler', () => {
     expect(keys.at(-1)).toBe('report:2026-01-01:13:reminder');
   });
 
+  it('carries the last successful full-report time into the next full report', () => {
+    const ctx = setup();
+    mkdirSync(join(root, 'runtime'), { recursive: true });
+    writeFileSync(
+      ctx.statePath,
+      JSON.stringify({ lastFullKey: '2026-01-01:08', lastReminderKey: null })
+    );
+    const scheduler = createReportScheduler(ctx.options);
+    scheduler.tick(new Date('2026-01-01T04:00:00Z'));
+    expect(ctx.queued[0]?.payload).toMatchObject({ previousFullReportAt: '2026-01-01:08' });
+    expect(
+      buildScheduledReportPrompt(
+        ctx.queued[0]?.payload,
+        new Date('2026-01-01T04:00:00Z')
+      )
+    ).toContain('changes since that time');
+    expect(
+      buildScheduledReportPrompt(
+        ctx.queued[0]?.payload,
+        new Date('2026-01-01T04:00:00Z')
+      )
+    ).toContain('since="2026-01-01T08:00:00+09:00"');
+  });
+
   it('sends no reminder in an hour whose full report already went out after the hour stops being a full-report hour', () => {
     const ctx = setup();
     mkdirSync(join(root, 'runtime'), { recursive: true });
@@ -116,7 +143,11 @@ describe('KST report scheduler', () => {
     const ctx = setup();
     const now = new Date('2026-01-01T23:05:00Z'); // next date, 08 KST
     ctx.scheduler.tick(now);
-    expect(ctx.queued[0]!.payload).toEqual({ report: 'full', hourKey: '2026-01-02:08' });
+    expect(ctx.queued[0]!.payload).toEqual({
+      report: 'full',
+      hourKey: '2026-01-02:08',
+      previousFullReportAt: null,
+    });
     expect(existsSync(ctx.statePath)).toBe(false);
     let release!: () => void;
     ctx.setSend(
@@ -172,7 +203,11 @@ describe('KST report scheduler', () => {
   ])('uses KST and excludes reminder at full hours: %s', async (iso, report, hourKey) => {
     const ctx = setup();
     ctx.scheduler.tick(new Date(iso));
-    expect(ctx.queued[0]!.payload).toEqual({ report, hourKey });
+    expect(ctx.queued[0]!.payload).toEqual({
+      report,
+      hourKey,
+      ...(report === 'full' ? { previousFullReportAt: null } : {}),
+    });
     await ctx.scheduler.onResult(ctx.result(), { response: 'report' });
     ctx.setPending(false);
     ctx.scheduler.tick(new Date(iso));

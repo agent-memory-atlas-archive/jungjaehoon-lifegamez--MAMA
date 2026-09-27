@@ -77,7 +77,11 @@ export function createReportScheduler(options: ReportSchedulerOptions) {
       id: `report:${hourKey}:${randomUUID()}`,
       channelKey: 'schedule',
       occurredAt: now.getTime(),
-      payload: { report: full ? 'full' : 'reminder', hourKey },
+      payload: {
+        report: full ? 'full' : 'reminder',
+        hourKey,
+        ...(full ? { previousFullReportAt: state.lastFullKey } : {}),
+      },
     });
   };
   return {

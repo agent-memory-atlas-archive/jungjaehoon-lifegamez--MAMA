@@ -476,6 +476,31 @@ function workListReadSnapshot(ctx: WorkListViewContext, filter: WorkListFilter):
   return { items: Object.freeze(items), readVersion: workListReadVersion(items), observedAt };
 }
 
+export function readOpenWorkCandidates(ctx: WorkListViewContext): Array<{
+  commitmentId: string;
+  title: string;
+  stage: string;
+  assignee: string;
+  sourceChannel: string;
+  updatedAt: number;
+}> {
+  const snapshot = workListReadSnapshot(ctx, {});
+  return snapshot.items.flatMap((item) => {
+    if (['done', 'cancelled'].includes(workListStatus(item))) return [];
+    const values = workListValueObject(item.values);
+    const title = workListText(values.title);
+    if (!title) return [];
+    return [{
+      commitmentId: item.commitmentId,
+      title,
+      stage: workListText(values.stage) ?? 'Unstaged',
+      assignee: workListText(values.assignee ?? values.assigneeText ?? values.assignee_text) ?? '',
+      sourceChannel: workListText(values.sourceChannel ?? values.source_channel ?? values.channel) ?? '',
+      updatedAt: typeof item.updatedAt === 'number' ? item.updatedAt : Date.parse(item.updatedAt),
+    }];
+  });
+}
+
 function encodeWorkListCursor(cursor: WorkListCursor): string {
   return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
 }
@@ -730,12 +755,6 @@ export async function runWorkListView(
     const open = snapshot.items.filter(
       (item) => !['done', 'cancelled'].includes(workListStatus(item))
     );
-    const cap = 100;
-    if (open.length > cap) {
-      throw new Error(
-        `work.list pipeline contains ${open.length} open items; cap is ${cap}, filter by stage or project`
-      );
-    }
     const groups = new Map<string, unknown[][]>();
     const fields = [
       'commitmentId',
@@ -846,7 +865,7 @@ export function workListActionRegistrations(ports: WorkListPorts): ActionRegistr
                 ],
               },
             },
-            limit: { type: 'integer', minimum: 1, maximum: 100 },
+            limit: { type: 'integer', minimum: 1, maximum: WORK_LIST_MAX_LIMIT },
             cursor: { type: 'string', minLength: 0 },
             readVersion: {
               type: 'string',
@@ -1192,22 +1211,11 @@ export function minimalWorkActionRegistrations(ports: WorkPorts): ActionRegistra
         assertReplayEventDatetime(body, context, 'work.revise');
         assertSourceRefsExist(body, ports);
         const commitmentId = body.commitmentId as string;
-        const latest =
-          body.expectedRevision === undefined
-            ? ports.knowledge.readWork({ commitmentId, history: 'current' }, context.access)
-                .items[0]?.revision
-            : body.expectedRevision;
-        if (latest === undefined) {
-          throw new JudgmentError(
-            'REFERENCE_NOT_FOUND',
-            `Commitment is unavailable: ${String(commitmentId)}`
-          );
-        }
         return ports.knowledge.reviseWork(
           {
             ...commandFieldsFrom(body),
             commitmentId,
-            expectedRevision: latest,
+            ...(body.expectedRevision === undefined ? {} : { expectedRevision: body.expectedRevision }),
             commandId: operationId(context, 'work.revise'),
             modelRunId: context.session?.modelRunId,
           } as unknown as ReviseWorkCommand,

@@ -49,6 +49,28 @@ describe('connector config loader', () => {
     expect(result.ok).toBe(true);
   });
 
+  it('rejects iCal feed keys that cannot form a secret name and colliding names', () => {
+    const invalid = loadConnectorConfig(
+      writeConfig({ ical: { ...valid, channels: { '7stay': { role: 'reference' } } } })
+    );
+    expect(invalid).toMatchObject({ ok: false, error: { message: expect.stringContaining('7stay') } });
+    const collision = loadConnectorConfig(
+      writeConfig({
+        ical: {
+          ...valid,
+          channels: {
+            'shared-feed': { role: 'reference' },
+            shared_feed: { role: 'reference' },
+          },
+        },
+      })
+    );
+    expect(collision).toMatchObject({
+      ok: false,
+      error: { message: expect.stringContaining('shared_feed') },
+    });
+  });
+
   it('registers every restored connector with a loadable factory', async () => {
     const root = mkdtempSync(join(tmpdir(), 'connector-factory-'));
     roots.push(root);

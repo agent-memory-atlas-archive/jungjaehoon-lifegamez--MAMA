@@ -9,17 +9,12 @@ export interface ReportSlot {
   html: string;
   priority: number;
   updatedAt: number;
-  /** Task-ledger basis of authored analysis, never inferred from publish time. */
-  basisRevision?: string | null;
   /** The action that last wrote this slot; absent on snapshots predating trace attribution. */
   operationId?: string | null;
   modelRunId?: string | null;
-  currentBasisRevision?: string;
-  freshness?: 'current' | 'stale' | 'unknown';
 }
 
 export interface ReportUpdateOptions {
-  basisRevision?: string | null;
   operationId?: string | null;
   modelRunId?: string | null;
 }
@@ -63,28 +58,17 @@ export function createReportStore(
   const sorted = (): ReportSlot[] =>
     Array.from(slots.values(), (slot) => ({ ...slot })).sort((a, b) => a.priority - b.priority);
   const changed = (): void => options.onChange?.(snapshot());
-  const assertBasis = (basis: string): void => {
-    if (typeof basis !== 'string' || !basis.trim() || basis !== basis.trim()) {
-      throw new Error('Report basisRevision must be a non-empty canonical string');
-    }
-  };
   const authoredSlot = (
     slotId: string,
     html: string,
     priority: number,
     updateOptions?: ReportUpdateOptions
   ): ReportSlot => {
-    if (updateOptions?.basisRevision !== null && updateOptions?.basisRevision !== undefined) {
-      assertBasis(updateOptions.basisRevision);
-    }
-    const basis = updateOptions?.basisRevision ?? null;
     return {
       slotId,
       html,
       priority,
       updatedAt: Date.now(),
-      ...(updateOptions?.basisRevision !== undefined ? { basisRevision: basis } : {}),
-      ...(basis === null ? { freshness: 'unknown' as const } : {}),
       ...(updateOptions?.operationId === undefined
         ? {}
         : { operationId: updateOptions.operationId }),
@@ -185,15 +169,6 @@ export function createReportPublisher(
       }
       return true;
     });
-    if (
-      options?.basisRevision !== null &&
-      options?.basisRevision !== undefined &&
-      (typeof options.basisRevision !== 'string' ||
-        !options.basisRevision.trim() ||
-        options.basisRevision !== options.basisRevision.trim())
-    ) {
-      throw new Error('Report basisRevision must be a non-empty canonical string');
-    }
     const accepted: string[] = [];
     const changed: string[] = [];
     const batch: Array<{
@@ -205,12 +180,7 @@ export function createReportPublisher(
     for (const [slotId, html] of publishableEntries) {
       accepted.push(slotId);
       const existing = store.get(slotId);
-      if (
-        existing?.html === html &&
-        (options?.basisRevision === undefined ||
-          existing.basisRevision === options.basisRevision) &&
-        (options?.basisRevision !== null || existing.freshness === 'unknown')
-      ) {
+      if (existing?.html === html) {
         continue;
       }
       batch.push({
@@ -262,11 +232,11 @@ export function createReportRouter(store: ReportStore, sseClients: Set<ServerRes
   // PUT / — bulk update
   router.put('/', (req: Request, res: Response) => {
     const body = req.body as {
-      slots?: Record<string, { html: string; priority?: number; basisRevision?: string | null }>;
+      slots?: Record<string, { html: string; priority?: number }>;
     };
     const incoming = body?.slots ?? {};
-    for (const [id, { html, priority = 0, basisRevision }] of Object.entries(incoming)) {
-      store.update(id, html, priority, { basisRevision });
+    for (const [id, { html, priority = 0 }] of Object.entries(incoming)) {
+      store.update(id, html, priority);
     }
     broadcastReportUpdate(sseClients, { slots: store.getAllSorted() });
     res.json({ ok: true });
@@ -275,12 +245,8 @@ export function createReportRouter(store: ReportStore, sseClients: Set<ServerRes
   // PUT /slots/:slotId — single update
   router.put('/slots/:slotId', (req: Request<{ slotId: string }>, res: Response) => {
     const slotId = req.params.slotId as string;
-    const {
-      html,
-      priority = 0,
-      basisRevision,
-    } = req.body as { html: string; priority?: number; basisRevision?: string | null };
-    store.update(slotId, html, priority, { basisRevision });
+    const { html, priority = 0 } = req.body as { html: string; priority?: number };
+    store.update(slotId, html, priority);
     broadcastReportUpdate(sseClients, { slots: store.getAllSorted() });
     res.json({ ok: true, slot: slotId });
   });

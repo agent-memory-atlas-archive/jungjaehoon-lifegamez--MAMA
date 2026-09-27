@@ -58,7 +58,7 @@ const rows = [
   },
 ];
 
-function setup() {
+function setup(sourceRows = rows) {
   const adapter = {
     prepare: (sql: string) => ({
       all: (..._params: unknown[]) => {
@@ -71,12 +71,12 @@ function setup() {
             },
           ];
         if (sql.includes('SELECT DISTINCT source_connector'))
-          return rows.filter((row) => row.source_connector === 'chat');
+          return sourceRows.filter((row) => row.source_connector === 'chat');
         if (sql.includes('ROW_NUMBER()'))
-          return rows.filter(
+          return sourceRows.filter(
             (row) => row.source_connector === 'calendar' || row.source_connector === 'ical'
           );
-        return rows.filter((row) => row.source_connector === 'chat');
+        return sourceRows.filter((row) => row.source_connector === 'chat');
       },
     }),
   };
@@ -132,7 +132,7 @@ describe('report source reads', () => {
       error: {
         kind: 'invalid_input',
         code: 'invalid_input',
-        message: expect.stringContaining('narrow since or channel'),
+        message: expect.stringContaining('narrow since or cap'),
       },
     });
   });
@@ -149,6 +149,50 @@ describe('report source reads', () => {
           { source: 'ical', calendar: 'Lodging feed', title: 'Booking' },
         ],
       },
+    });
+  });
+
+  it('sorts upcoming events by parsed time and omits a cancelled latest version', async () => {
+    const local = {
+      ...rows[2]!,
+      source_id: 'event-local',
+      source_entity_id: 'event-local',
+      metadata_json: JSON.stringify({
+        start: '2026-10-01T10:00:00+09:00',
+        end: '2026-10-01T11:00:00+09:00',
+        summary: 'Local time first',
+        status: 'confirmed',
+      }),
+    };
+    const utc = {
+      ...rows[3]!,
+      source_id: 'event-utc',
+      source_entity_id: 'event-utc',
+      metadata_json: JSON.stringify({
+        start: '2026-10-01T02:00:00Z',
+        end: '2026-10-01T03:00:00Z',
+        summary: 'UTC time second',
+        status: 'confirmed',
+      }),
+    };
+    const { dispatch, access } = setup([local, utc]);
+    const ordered = await dispatch({ action: 'schedule.upcoming', input: {} }, { access });
+    expect(ordered).toMatchObject({
+      status: 'completed',
+      data: { events: [{ title: 'Local time first' }, { title: 'UTC time second' }] },
+    });
+    const cancelled = {
+      ...utc,
+      metadata_json: JSON.stringify({ ...JSON.parse(utc.metadata_json), status: 'cancelled' }),
+    };
+    const canceledSetup = setup([cancelled]);
+    const canceledResult = await canceledSetup.dispatch(
+      { action: 'schedule.upcoming', input: {} },
+      { access }
+    );
+    expect(canceledResult).toMatchObject({
+      status: 'completed',
+      data: { returned: 0, events: [] },
     });
   });
 

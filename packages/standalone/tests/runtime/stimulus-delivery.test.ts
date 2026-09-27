@@ -12,6 +12,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { openCoreDatabase } from '../../src/runtime/core-db.js';
+import { createKnowledge } from '@jungjaehoon/mama-core';
+import { readOpenWorkCandidates } from '../../src/api/work-actions.js';
 import {
   createStimulusDelivery,
   createStimulusIntake,
@@ -67,28 +69,44 @@ async function boot(model: NativeSessionHandle['runTurn']) {
 }
 
 describe('one stimulus intake and delivery', () => {
-  it('attaches at most five recent channel or title candidates for the agent to judge', async () => {
-    const now = Date.parse('2026-09-27T00:00:00.000Z');
-    const tasks = Array.from({ length: 7 }, (_, index) => ({
-      commitmentId: `work-${index}`,
-      title: index === 0 ? 'Planning review' : `Planning work ${index}`,
-      stage: 'doing',
-      assignee: `person-${index}`,
-      latest_change: now - index * 1_000,
-      sourceChannel: index === 1 ? 'other-room' : 'room-a',
-    }));
-    tasks.push({
-      commitmentId: 'old-work',
-      title: 'Planning old',
-      stage: 'doing',
-      assignee: 'old',
-      latest_change: now - 15 * 24 * 60 * 60 * 1_000,
-      sourceChannel: 'room-a',
-    });
+  it('renders same-channel and overlapping candidates from the real work store, excluding old work', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'mama-work-candidates-'));
+    homes.push(home);
+    const database = await openCoreDatabase({ path: join(home, 'state.db') });
+    databases.push(database);
+    const knowledge = createKnowledge({ adapter: database.adapter });
+    const access = {
+      principalId: 'owner',
+      agentId: 'agent',
+      scopes: [{ kind: 'project' as const, id: 'workspace' }],
+      actions: [],
+    };
+    const now = Date.now();
+    const createWork = (commandId: string, title: string, sourceChannel: string, recordedAt: number) =>
+      knowledge.createWork(
+        {
+          commandId,
+          topic: `topic-${commandId}`,
+          summary: `record ${title}`,
+          scopes: access.scopes,
+          recordedAt,
+          set: { title, status: 'in_progress', stage: 'doing', sourceChannel },
+        },
+        access
+      );
+    const sameChannel = await createWork('same-channel', 'Unrelated estimate', 'synthetic-room', now - 1_000);
+    const overlapping = await createWork('title-overlap', 'Proposal progress review', 'other-room', now - 2_000);
+    const old = await createWork('old-item', 'Proposal progress archive', 'synthetic-room', now - 15 * 86_400_000);
+    for (let index = 0; index < 70; index += 1) {
+      await createWork(`unrelated-${index}`, `Unrelated archive ${index}`, 'other-room', now - 3_000);
+    }
+    const candidates = readOpenWorkCandidates({ knowledge, access, now: () => now });
+    expect(candidates).toHaveLength(73);
     const delivery = createStimulusDelivery({
       guidanceResolver: async () => [],
       wikiEnabled: true,
-      openWorkPipeline: async () => ({ stages: [{ stage: 'doing', tasks }] }),
+      openWorkPipeline: async () => ({ success: true, view: 'pipeline', stages: [] }),
+      openWorkCandidates: async () => candidates,
     });
     let prompt = '';
     await delivery.deliver(
@@ -97,7 +115,7 @@ describe('one stimulus intake and delivery', () => {
         stimulusId: 'delta-input',
         principalId: 'owner',
         kind: 'source_delta',
-        channelKey: 'collector:room-a',
+        channelKey: 'collector:synthetic-room',
         occurredAt: now,
         refs: [{ sourceAt: new Date(now).toISOString() }],
         preview: [],
@@ -108,8 +126,8 @@ describe('one stimulus intake and delivery', () => {
         payload: {
           refs: [
             {
-              channel: 'room-a',
-              contentPreview: 'planning review update',
+              channel: 'synthetic-room',
+              contentPreview: 'proposal progress update',
               sourceAt: new Date(now).toISOString(),
             },
           ],
@@ -134,13 +152,61 @@ describe('one stimulus intake and delivery', () => {
       } as never
     );
     const section = prompt.split('candidates (you decide):')[1] ?? '';
-    expect(section.match(/\| work-\d/g)).toHaveLength(5);
-    expect(section).toContain('Planning review');
-    expect(section).toContain('room-a');
-    expect(prompt).toContain('dated line to the item wiki page');
+    expect(section).toContain(sameChannel.commitmentId);
+    expect(section).toContain(overlapping.commitmentId);
     expect(prompt).toContain('manage.wiki.update');
-    expect(section).not.toContain('old-work');
-    expect(section).not.toContain('work-6');
+    expect(section).not.toContain(old.commitmentId);
+  });
+
+  it('omits the candidate heading when no open work is relevant', async () => {
+    const delivery = createStimulusDelivery({
+      guidanceResolver: async () => [],
+      openWorkPipeline: async () => ({ success: true, view: 'pipeline', stages: [] }),
+      openWorkCandidates: async () => [],
+    });
+    let prompt = '';
+    await delivery.deliver(
+      {
+        id: 'empty-candidate-delta',
+        stimulusId: 'empty-candidate-delta',
+        principalId: 'owner',
+        kind: 'source_delta',
+        channelKey: 'synthetic-source',
+        occurredAt: 1,
+        refs: [],
+        preview: [],
+        status: 'claimed',
+        attempts: 1,
+        createdAt: 1,
+        coalesceKey: null,
+        payload: {
+          refs: [
+            {
+              channel: 'synthetic-room',
+              contentPreview: 'new information',
+              sourceAt: new Date(1).toISOString(),
+            },
+          ],
+        },
+      } as never,
+      {
+        nativeInputId: 'empty-candidate-delta',
+        resultForReceipt: () => null,
+        run: async (content: Array<{ text?: string }>, request?: NativeInvocationOptions) => {
+          content = (await request?.prepareSessionContent?.({
+            sessionId: 'delta-session',
+            isNewSession: false,
+          })) ?? content;
+          prompt = content[0]?.text ?? '';
+          return {} as never;
+        },
+        steer: vi.fn(),
+        wasDispatched: () => false,
+        onInputDispatch: vi.fn(),
+        onAccepted: vi.fn(),
+      } as never
+    );
+    expect(prompt).not.toContain('candidates (you decide):');
   });
 
   it('renders owner attachment paths, names, sizes and errors from the intake payload', async () => {

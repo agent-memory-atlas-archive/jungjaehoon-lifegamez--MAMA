@@ -35,7 +35,6 @@ describe('createPersistentReportStore', () => {
       html: '<p>legacy</p>',
       priority: 2,
       updatedAt: 123,
-      basisRevision: 'basis:old',
     };
     writeFileSync(filePath, JSON.stringify({ briefing: legacy }));
     const store = createPersistentReportStore({ filePath });
@@ -58,7 +57,7 @@ describe('createPersistentReportStore', () => {
     const publish = (
       operationId: string,
       modelRunId?: string,
-      input = { slots, basis_revision: 'basis:new' }
+      input = { slots }
     ) =>
       dispatch(
         { action: 'report.publish', operationId, input },
@@ -70,13 +69,14 @@ describe('createPersistentReportStore', () => {
       expect(saved[slot]).toMatchObject({
         operationId: 'op:1',
         modelRunId: 'run:1',
-        basisRevision: 'basis:new',
       });
       expect(createPersistentReportStore({ filePath }).get(slot)).toEqual(saved[slot]);
+      expect(saved[slot]).not.toHaveProperty('basisRevision');
     }
     expect(await publish('op:no-op', 'run:2')).toMatchObject({ data: { changedSlotIds: [] } });
     expect(JSON.parse(readFileSync(filePath, 'utf8'))).toEqual(saved);
-    expect(await publish('op:2', 'run:2', { slots, basis_revision: 'basis:next' })).toMatchObject({
+    const revisedSlots = { ...slots, briefing: '<div class="report-card">revised</div>' };
+    expect(await publish('op:2', 'run:2', { slots: revisedSlots })).toMatchObject({
       status: 'completed',
     });
     expect(createPersistentReportStore({ filePath }).get('briefing')).toMatchObject({
@@ -84,7 +84,7 @@ describe('createPersistentReportStore', () => {
       modelRunId: 'run:2',
     });
     expect(
-      await publish('op:manual', undefined, { slots, basis_revision: 'basis:manual' })
+      await publish('op:manual', undefined, { slots: { ...revisedSlots, briefing: '<p>manual</p>' } })
     ).toMatchObject({ status: 'completed' });
     expect(createPersistentReportStore({ filePath }).get('briefing')).toMatchObject({
       operationId: 'op:manual',
@@ -198,7 +198,6 @@ describe('createPersistentReportStore', () => {
         html: '<p>original</p>',
         priority: 7,
         updatedAt: originalUpdatedAt,
-        freshness: 'unknown',
       });
       await flushDebounce();
       expect(createPersistentReportStore({ filePath }).get('briefing')).toEqual({
@@ -206,7 +205,6 @@ describe('createPersistentReportStore', () => {
         html: '<p>original</p>',
         priority: 7,
         updatedAt: originalUpdatedAt,
-        freshness: 'unknown',
       });
     }
   );

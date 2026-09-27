@@ -827,7 +827,7 @@ async function appendJudgmentOnAdapter(
             `Commitment is unavailable: ${work.commitmentId}`
           );
         }
-        if (current.current_revision !== work.expectedRevision) {
+        if (work.expectedRevision !== undefined && current.current_revision !== work.expectedRevision) {
           throw new JudgmentError('STALE_REVISION', 'Commitment revision is stale');
         }
         if (work.operation === 'revise' && current.withdrawn === 1) {

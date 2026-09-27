@@ -91,6 +91,7 @@ describe('minimal source actions', () => {
             content_preview: 'x'.repeat(240),
             source_id: 'message-a',
             channel_id: 'channel-a',
+            metadata: { channelName: 'Synthetic room' },
             score: 1,
           },
         ],
@@ -112,14 +113,32 @@ describe('minimal source actions', () => {
       status: 'completed',
       data: { source: 'connector-test', content: 'full original' },
     });
-    expect(stored.readObservation).toHaveBeenCalledWith('obs-a', access);
+    expect(stored.readObservation).toHaveBeenCalledWith(
+      'obs-a',
+      access,
+      undefined,
+      {}
+    );
+    await dispatch(
+      {
+        action: 'source.read',
+        input: { observationRef: 'obs-a', content_offset: 7, content_limit: 3 },
+      },
+      { access }
+    );
+    expect(stored.readObservation).toHaveBeenLastCalledWith(
+      'obs-a',
+      access,
+      undefined,
+      { content_offset: 7, content_limit: 3 }
+    );
     const search = await dispatch(
       { action: 'source.search', input: { source: 'connector-test', query: 'term' } },
       { access }
     );
     expect(search).toMatchObject({
       status: 'completed',
-      data: { hits: [{ author: 'Writer', text: 'x'.repeat(200), observationRef: 'obs-a' }] },
+      data: { hits: [{ author: 'Writer', channel: 'Synthetic room', text: 'x'.repeat(200), observationRef: 'obs-a' }] },
     });
     expect(JSON.stringify(search).length).toBeLessThan(1_000);
   });
@@ -150,6 +169,20 @@ describe('minimal source actions', () => {
         ],
       },
     });
+    const bounded = await dispatch(
+      {
+        action: 'source.read',
+        input: { observationRefs: ['obs-a'], content_offset: 4, content_limit: 2 },
+      },
+      { access }
+    );
+    expect(bounded).toMatchObject({ status: 'completed' });
+    expect(stored.readObservation).toHaveBeenLastCalledWith(
+      'obs-a',
+      access,
+      undefined,
+      { content_offset: 4, content_limit: 2 }
+    );
   });
 
   it('describes every source and work input field, including nested fields', () => {
@@ -234,14 +267,20 @@ describe('minimal source actions', () => {
     );
     expect(read).toMatchObject({ status: 'completed', data: { content: 'source-content' } });
 
-    for (const action of ['source.search', 'source.read']) {
+    const deniedSearch = await dispatch(
+      { action: 'source.search', input: { source: 'other-connector', query: 'term' } },
+      { access }
+    );
+    expect(deniedSearch).toMatchObject({ status: 'failed', error: { code: 'connector_out_of_scope' } });
+    {
+      const action = 'source.read';
       const denied = await dispatch(
         { action, input: { source: 'other-connector', observationRef: 'observation-test' } },
         { access }
       );
       expect(denied).toMatchObject({
         status: 'failed',
-        error: { code: 'connector_out_of_scope' },
+        error: { code: 'denied' },
       });
     }
     expect(stored.search).toHaveBeenCalledTimes(2);

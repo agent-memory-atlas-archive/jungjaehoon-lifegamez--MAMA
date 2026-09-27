@@ -438,7 +438,7 @@ export interface CreateWorkCommand extends WorkCommand {
 
 export interface ReviseWorkCommand extends WorkCommand {
   commitmentId: string;
-  expectedRevision: number;
+  expectedRevision?: number;
   set?: OwnerWorkPatch;
   clear?: Array<keyof OwnerWorkPatch>;
 }
@@ -578,7 +578,9 @@ export async function reviseWork(
       work: {
         operation: 'revise',
         commitmentId: command.commitmentId,
-        expectedRevision: command.expectedRevision,
+        ...(command.expectedRevision === undefined
+          ? {}
+          : { expectedRevision: command.expectedRevision }),
         ...(command.set === undefined ? {} : { set: command.set }),
         ...(command.clear === undefined ? {} : { clear: command.clear }),
       },

@@ -4,7 +4,7 @@ export interface ParsedICalEvent {
   end: string;
   summary: string;
   status: 'confirmed' | 'cancelled' | string;
-  revisionTime: number;
+  revisionTime?: number;
 }
 
 function unescapeText(value: string): string {
@@ -128,8 +128,15 @@ export function parseICalendar(source: string): ParsedICalEvent[] {
     if (end.ms < start.ms) throw new Error(`VEVENT ${uid} ends before it starts`);
     const summary = unescapeText(read('SUMMARY')?.value ?? '(Untitled event)');
     const status = read('STATUS')?.value.toLowerCase() === 'cancelled' ? 'cancelled' : 'confirmed';
-    const modified = read('LAST-MODIFIED') ?? read('DTSTAMP');
-    const revisionTime = modified ? parseDate(modified.value, modified.zone).ms : start.ms;
-    return { uid, start: start.display, end: end.display, summary, status, revisionTime };
+    const modified = read('LAST-MODIFIED');
+    const revisionTime = modified ? parseDate(modified.value, modified.zone).ms : undefined;
+    return {
+      uid,
+      start: start.display,
+      end: end.display,
+      summary,
+      status,
+      ...(revisionTime === undefined ? {} : { revisionTime }),
+    };
   });
 }

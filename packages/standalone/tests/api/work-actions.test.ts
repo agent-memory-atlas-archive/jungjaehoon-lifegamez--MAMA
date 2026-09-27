@@ -8,7 +8,11 @@ import {
   createKnowledge,
   type ActionContext,
 } from '@jungjaehoon/mama-core';
-import { minimalWorkActionRegistrations, runWorkListView } from '../../src/api/work-actions.js';
+import {
+  minimalWorkActionRegistrations,
+  runWorkListView,
+  workListActionRegistrations,
+} from '../../src/api/work-actions.js';
 import { openCoreDatabase } from '../../src/runtime/core-db.js';
 
 const access: ActionContext['access'] = {
@@ -150,6 +154,37 @@ describe('minimal work actions', () => {
       Math.trunc(Date.parse('2026-09-27T01:00:00Z') / 1_000),
       'A short update',
     ]);
+  });
+
+  it('keeps the whole baseline when more than one hundred items are open', async () => {
+    const items = Array.from({ length: 101 }, (_, index) => ({
+      rowId: index + 1,
+      commitmentId: `item-${index + 1}`,
+      revision: 1,
+      latestJudgmentRef: null,
+      values: { title: `Open item ${index + 1}`, status: 'in_progress', stage: 'Doing' },
+      withdrawn: false,
+      createdAt: '2026-09-26T00:00:00Z',
+      updatedAt: '2026-09-27T01:00:00Z',
+    }));
+    const view = await runWorkListView(
+      { view: 'pipeline' },
+      { knowledge: { readWork: () => ({ items, nextCursor: null, coverage: { reasons: [] } }) } as never, access }
+    );
+    expect(view.total).toBe(101);
+  });
+
+  it('advertises and validates the same fifty item limit enforced by the runtime', async () => {
+    const registration = workListActionRegistrations({ knowledge: { readWork: () => ({}) } as never })[0]!;
+    expect(registration.contract.inputSchema.properties?.limit).toMatchObject({ maximum: 50 });
+    const dispatch = createDispatcher(createCatalog(workListActionRegistrations({
+      knowledge: { readWork: vi.fn() } as never,
+    })));
+    const result = await dispatch(
+      { action: 'work.list', input: { view: 'items', limit: 51 } },
+      { access }
+    );
+    expect(result).toMatchObject({ status: 'failed', error: { code: 'invalid_input' } });
   });
 
   it('refuses sourceRefs that name no observation and names the ref', async () => {
@@ -340,6 +375,74 @@ describe('minimal work actions', () => {
       expect(stale).toMatchObject({ status: 'failed' });
       const second = await append('append-latest');
       expect(second).toMatchObject({ status: 'completed', data: { revision: 3 } });
+    } finally {
+      await handle.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves omitted revisions inside the write transaction when two writes overlap', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'mama-work-revise-race-'));
+    const handle = await openCoreDatabase({ path: join(root, 'memory.db') });
+    try {
+      let blocking = false;
+      let enteredCount = 0;
+      let release!: () => void;
+      let bothEntered!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const entered = new Promise<void>((resolve) => { bothEntered = resolve; });
+      const knowledge = createKnowledge({
+        adapter: handle.adapter,
+        embedder: {
+          async embed() {
+            if (blocking) {
+              enteredCount += 1;
+              if (enteredCount === 2) bothEntered();
+              await gate;
+            }
+            return null;
+          },
+        },
+      });
+      const dispatch = createDispatcher(
+        createCatalog(minimalWorkActionRegistrations({ observationExists: () => true, knowledge }))
+      );
+      const created = await dispatch(
+        {
+          action: 'work.create',
+          operationId: 'create-race-item',
+          input: {
+            topic: 'race topic',
+            summary: 'create one item',
+            scopes: access.scopes,
+            set: { title: 'Race item' },
+          },
+        },
+        { access }
+      );
+      const commitmentId = (created as { data: { commitmentId: string } }).data.commitmentId;
+      blocking = true;
+      const revise = (operationId: string) =>
+        dispatch(
+          {
+            action: 'work.revise',
+            operationId,
+            input: {
+              commitmentId,
+              topic: 'race topic',
+              summary: 'record concurrent change',
+              scopes: access.scopes,
+              set: { latestEvent: operationId },
+            },
+          },
+          { access }
+        );
+      const writes = [revise('race-left'), revise('race-right')];
+      await entered;
+      release();
+      const results = await Promise.all(writes);
+      expect(results.every((result) => result.status === 'completed')).toBe(true);
+      expect(results.map((result) => (result as { data: { revision: number } }).data.revision).sort()).toEqual([2, 3]);
     } finally {
       await handle.close();
       rmSync(root, { recursive: true, force: true });

@@ -80,7 +80,8 @@ export type WorkAssignment = {
        */
       imported?: { rowId: number; revision?: number; createdAt?: number };
     }
-  | { operation: 'revise' | 'withdraw'; commitmentId: string; expectedRevision: number }
+    | { operation: 'revise'; commitmentId: string; expectedRevision?: number }
+    | { operation: 'withdraw'; commitmentId: string; expectedRevision: number }
 );
 
 /**

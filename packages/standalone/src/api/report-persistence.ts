@@ -1,8 +1,8 @@
 /**
  * ReportStore implementation that survives daemon restarts.
  *
- * Seeds the shared store with saved slots so their original updatedAt and
- * analysis basis survive verbatim. Agent publications commit a whole snapshot
+ * Seeds the shared store with saved slots so their original updatedAt survives
+ * verbatim. Agent publications commit a whole snapshot
  * synchronously; other store changes are debounced for 250ms.
  *
  * filePath is injection-only: the production path is resolved solely at the

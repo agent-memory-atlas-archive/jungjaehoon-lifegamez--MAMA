@@ -22,7 +22,7 @@ describe('scheduled report prompts', () => {
     expect(prompt).toContain('view="pipeline"');
     expect(prompt).toContain('Update only action_required');
     expect(prompt).not.toContain('source.recent');
-    expect(prompt).not.toContain('schedule.upcoming');
+    expect(prompt).toContain('schedule.upcoming when this session has not read the calendar');
     expect(prompt).not.toContain('report.read');
   });
 });

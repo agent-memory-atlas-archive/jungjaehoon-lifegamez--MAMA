@@ -58,6 +58,7 @@ export interface StimulusDeliveryOptions {
   guidanceResolver: GuidanceResolver;
   backend?: OwnerRuntimeBackend;
   openWorkPipeline?: () => Promise<unknown>;
+  openWorkCandidates?: () => Promise<unknown>;
   wikiEnabled?: boolean;
   formattingRoutes?: { reports: string; notifications: string };
   readResult?: (row: MailboxRow) => NativeTurnResultRecord | null;
@@ -396,7 +397,7 @@ function boundedStimulus(
         `response_routing: ${liveDeltaRoutingInstruction(options.backend ?? 'codex', options.wikiEnabled)}`
       );
       lines.push(`formatting: ${options.formattingRoutes?.notifications ?? 'telegram'}`);
-      lines.push('candidates (you decide):', ...candidates);
+      if (candidates.length > 0) lines.push('candidates (you decide):', ...candidates);
     }
     lines.push(
       row.refs.length === 0
@@ -482,15 +483,8 @@ function pipelineTime(value: unknown): string {
   return Number.isFinite(time) ? new Date(time).toISOString() : '';
 }
 
-function relatedWorkCandidates(row: MailboxRow, pipeline: unknown): string[] {
-  const rows: unknown[] =
-    pipeline && typeof pipeline === 'object' && !Array.isArray(pipeline)
-      ? ((pipeline as { stages?: Array<{ tasks?: unknown[] }> }).stages?.flatMap(
-          (stage) => stage.tasks ?? []
-        ) ?? [])
-      : Array.isArray(pipeline)
-        ? pipeline
-        : [];
+function relatedWorkCandidates(row: MailboxRow, workItems: unknown): string[] {
+  const rows: unknown[] = Array.isArray(workItems) ? workItems : [];
   const channels = stimulusChannels(row);
   const query = stimulusText(row);
   const cutoff = row.occurredAt - 14 * 24 * 60 * 60 * 1000;
@@ -499,10 +493,7 @@ function relatedWorkCandidates(row: MailboxRow, pipeline: unknown): string[] {
     const item = raw as Record<string, unknown>;
     const title = pipelineText(item.title);
     const commitmentId = pipelineText(item.commitmentId);
-    const changedAt =
-      typeof item.latest_change === 'number'
-        ? item.latest_change
-        : Date.parse(pipelineText(item.latest_change));
+    const changedAt = typeof item.updatedAt === 'number' ? item.updatedAt : Number.NaN;
     if (!title || !commitmentId || !Number.isFinite(changedAt) || changedAt < cutoff) return [];
     const sameChannel = channels.has(pipelineText(item.sourceChannel));
     const overlap = workListTitleTextScore(query, title);
@@ -519,7 +510,7 @@ function relatedWorkCandidates(row: MailboxRow, pipeline: unknown): string[] {
     .slice(0, 5)
     .map(
       ({ item, title, commitmentId }) =>
-        `${title} | ${pipelineText(item.stage) || '-'} | ${pipelineText(item.assignee) || '-'} | ${pipelineTime(item.latest_change)} | ${commitmentId}`
+        `${title} | ${pipelineText(item.stage) || '-'} | ${pipelineText(item.assignee) || '-'} | ${pipelineTime(item.updatedAt)} | ${commitmentId}`
     );
 }
 
@@ -675,7 +666,7 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
         prepareSessionContent: async ({ isNewSession }) => {
           const sessionBlocks: string[] = [];
           const pipeline =
-            isNewSession || liveSourceDelta ? await options.openWorkPipeline?.() : undefined;
+            isNewSession ? await options.openWorkPipeline?.() : undefined;
           const entries = await options.guidanceResolver();
           const sessionKey = OWNER_RUNTIME_SESSION_KEY;
           const lastDelivered = guidanceBySessionKey.get(sessionKey);
@@ -704,7 +695,7 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
             sessionBlocks,
             liveSourceDelta,
             options,
-            relatedWorkCandidates(row, pipeline)
+            liveSourceDelta ? relatedWorkCandidates(row, await options.openWorkCandidates?.()) : []
           );
         },
         sessionKey: OWNER_RUNTIME_SESSION_KEY,

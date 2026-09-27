@@ -3,9 +3,6 @@ export interface ReportSlot {
   html: string;
   priority: number;
   updatedAt: number;
-  basisRevision?: string | null;
-  currentBasisRevision?: string;
-  freshness?: 'current' | 'stale' | 'unknown';
 }
 
 export const SLOT_ORDER = ['briefing', 'action_required', 'decisions', 'pipeline'] as const;

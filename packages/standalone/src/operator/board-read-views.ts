@@ -16,30 +16,29 @@
 import { createHash } from 'node:crypto';
 import { Parser } from 'htmlparser2';
 
-export interface BoardBasis {
-  basisRevision?: string | null;
-  currentBasisRevision?: string;
-  freshness?: 'current' | 'stale' | 'unknown';
-  /** Existing report.publish capability, supplied by the product's slot store. */
+export interface BoardSlot {
+  html: string;
+  updatedAt?: string | null;
   publishable?: boolean;
 }
-export type BoardSlots = Record<string, BoardBasis & { html: string; updatedAt?: string | null }>;
+export type BoardSlots = Record<string, BoardSlot>;
 
 const CONTENT_DEFAULT_LIMIT = 1000;
 const CONTENT_MAX_LIMIT = 4000;
 const FORMATS = ['text', 'html'] as const;
 type BoardFormat = (typeof FORMATS)[number];
 
-export interface BoardSlotDescriptor extends BoardBasis {
+export interface BoardSlotDescriptor {
   name: string;
   updatedAt: string | null;
   /** Stored HTML length in Unicode code points (NOT the extracted-text length). */
   htmlLength: number;
+  publishable?: boolean;
 }
 
 export type BoardReadResult =
   | { success: true; slots: BoardSlotDescriptor[] }
-  | (BoardBasis & {
+  | ({
       success: true;
       slot: string;
       format: BoardFormat;
@@ -101,7 +100,7 @@ export function readBoardView(rawInput: unknown, slots: BoardSlots): BoardReadRe
     nextOffset,
     complete: nextOffset === null,
     readVersion,
-    ...readBasis(entry),
+    ...(entry.publishable === undefined ? {} : { publishable: entry.publishable }),
   };
 }
 
@@ -110,19 +109,8 @@ function describeSlots(slots: BoardSlots): BoardSlotDescriptor[] {
     name,
     updatedAt: value.updatedAt ?? null,
     htmlLength: Array.from(value.html ?? '').length,
-    ...readBasis(value),
+    ...(value.publishable === undefined ? {} : { publishable: value.publishable }),
   }));
-}
-
-function readBasis(value: BoardBasis): BoardBasis {
-  return {
-    ...(value.basisRevision !== undefined ? { basisRevision: value.basisRevision } : {}),
-    ...(value.currentBasisRevision !== undefined
-      ? { currentBasisRevision: value.currentBasisRevision }
-      : {}),
-    ...(value.freshness !== undefined ? { freshness: value.freshness } : {}),
-    ...(value.publishable !== undefined ? { publishable: value.publishable } : {}),
-  };
 }
 
 function contentVersion(slot: string, format: BoardFormat, html: string): string {
