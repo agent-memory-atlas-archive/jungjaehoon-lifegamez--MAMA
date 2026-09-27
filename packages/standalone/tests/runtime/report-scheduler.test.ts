@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createReportScheduler } from '../../src/runtime/report-scheduler.js';
+import { buildScheduledReportPrompt } from '../../src/runtime/report-prompts.js';
 import type { ScheduledInput } from '../../src/runtime/stimulus-delivery.js';
 
 let root: string;
@@ -57,6 +58,17 @@ function setup() {
 }
 
 describe('KST report scheduler', () => {
+  it('asks full reports to update wiki pages for work changed since the last wiki update', () => {
+    const prompt = buildScheduledReportPrompt(
+      { report: 'full', hourKey: '2026-01-01:08' },
+      new Date('2026-01-01T00:00:00Z')
+    );
+    expect(prompt).toContain('each work item changed since the last wiki update');
+    expect(prompt).toContain('manage.wiki.update');
+    expect(prompt).toContain('manage.wiki.publish');
+    expect(prompt).toContain('before or with the board publish');
+  });
+
   it('uses one delivery identity across model attempts after the schedule write fails', async () => {
     const ctx = setup();
     const keys: string[] = [];

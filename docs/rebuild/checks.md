@@ -1136,3 +1136,12 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Evidence: core guidance actions 5/5, migration data-preservation test 1/1, standalone index/session tests 4/4; root build and typecheck, changed-file ESLint, and changed-TypeScript Prettier check passed.
 - Full suites: core 889 passed / 44 failed across `native-input-delivery`, `intake-is-the-runtimes`, `runtime-lifecycle`, `replay-session-facts`, `experience-read-over-socket`, `ipc-actions`, and `principal-grants`; standalone 788 passed / 23 failed across `stimulus-delivery`, `daemon-boot`, `viewer-archive-routes`, `w1-owner-q1`, `viewer-server`, `action-mcp-server`, `owner-runtime`, and `viewer-records`. These failures are listener `EPERM` in the sandbox.
 - Still open: a live owner turn confirming a correction changes the next related answer was not run. No live data path was touched and no commit was made.
+
+### W15 part 2 — wiki with reports, owner-turn hygiene (2026-09-27)
+
+- Result: delta-board and scheduled full-report turns update the wiki page of each changed work item,
+  splitting several pages across subagents inside the turn; owner answers carry no [notify]/[ack],
+  refresh the board only when asked, and contain only the answer (no working notes or ids).
+- Owner-first ordering already existed (stimulus-delivery prefer owner_message); the 15:02 wait was
+  the in-flight turn, whose cause (calendar repeats) W15 part 1 removed. No core change.
+- Still open: a live delta or 13:00/18:00 report writing wiki pages, and an owner answer without markers.

@@ -279,6 +279,10 @@ describe('live delta reports', () => {
       'decisions',
       'pipeline',
       '[ack]',
+      'each work item changed since the last wiki update',
+      'manage.wiki.update',
+      'manage.wiki.publish',
+      'before or with the board publish',
     ]) {
       expect(board).toContain(instruction);
     }

@@ -36,6 +36,7 @@ export function buildScheduledReportPrompt(payload: JsonValue | undefined, now: 
           '[scheduled_full_report]',
           ...common,
           'Read recent sources (start with the last 24 hours) together with current work before reporting.',
+          'Update the wiki page for each work item changed since the last wiki update with manage.wiki.update (or manage.wiki.publish for a new case), before or with the board publish; choose the pages yourself; when several pages change, split them across subagents inside this turn.',
           ...buildBoardPublishLines(),
           'Return the full report in Korean with five parts in this order: key situation today, needs a response, needs a decision, pipeline, next actions.',
         ]

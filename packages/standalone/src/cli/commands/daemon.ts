@@ -343,6 +343,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
           text: [
             'Reconcile the board after the source delta turn.',
             'Read current work with work.list and the current board with report.read; read source context as needed.',
+            'Update the wiki page for each work item changed since the last wiki update with manage.wiki.update (or manage.wiki.publish for a new case), before or with the board publish; choose the pages yourself; when several pages change, split them across subagents inside this turn.',
             'Write all four slots from current work so the board and the work ledger show the same state.',
             ...buildBoardPublishLines(),
             'Owner-facing text carries no commitment, observation, judgment or channel ids.',

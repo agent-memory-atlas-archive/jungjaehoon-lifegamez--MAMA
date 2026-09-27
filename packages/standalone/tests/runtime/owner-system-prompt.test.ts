@@ -24,6 +24,18 @@ describe('owner standing prompt', () => {
     expect(ownerSystemPrompt('codex')).toContain('Never write entity JSON');
   });
 
+  it('keeps delta routing and board refresh out of ordinary owner answers', () => {
+    const prompt = ownerSystemPrompt('codex');
+    expect(prompt).toContain('Only live source-delta turns end with [notify] or [ack]');
+    expect(prompt).toContain('Answers to owner messages never carry these markers');
+    expect(prompt).toContain(
+      'Refresh the board with report.publish in delta and report turns; in an owner answer, do so only when the owner asks.'
+    );
+    expect(prompt).toContain(
+      'The final message is delivered to the owner exactly as written: give only the answer, with no working notes, narration about answering, or record or observation ids.'
+    );
+  });
+
   it('tells the owner how to record source deltas and separates evidence from the ledger', () => {
     const prompt = ownerSystemPrompt('codex');
     // Wiki is organized from its table of contents with a daily journal; relations beyond
