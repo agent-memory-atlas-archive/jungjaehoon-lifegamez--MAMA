@@ -398,7 +398,11 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
           text: [
             'Reconcile the board after the source delta turn.',
             'Read current work with work.list and the current board with report.read; read source context as needed.',
-            'Update the wiki page for each work item changed since the last wiki update with manage.wiki.update (or manage.wiki.publish for a new case), before or with the board publish; choose the pages yourself; when several pages change, split them across subagents inside this turn.',
+            ...(config.wiki?.enabled
+              ? [
+                  'Update the wiki page for each work item changed since the last wiki update with manage.wiki.update (or manage.wiki.publish for a new case), before or with the board publish; choose the pages yourself; when several pages change, split them across subagents inside this turn.',
+                ]
+              : []),
             'Write all four slots from current work so the board and the work ledger show the same state.',
             ...buildBoardPublishLines(),
             'Owner-facing text carries no commitment, observation, judgment or channel ids.',
@@ -422,7 +426,6 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
       if (route !== 'notify') return;
       const content = routed.slice('[notify]'.length).trim();
       if (!content) return;
-      if (gateway === null) throw new Error('Telegram gateway is not available for a delta report');
       const selected = gateways.get(config.delivery?.notifications ?? 'telegram');
       if (!selected) throw new Error('Notification delivery messenger is not available');
       await selected.sendToOwner(content, row.stimulusId);
@@ -466,6 +469,10 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
             },
           }
         : {}),
+      formattingRoutes: {
+        reports: config.delivery?.reports ?? 'telegram',
+        notifications: config.delivery?.notifications ?? 'telegram',
+      },
       ownerPolicyProvider,
       deliveryReady: () => deliveryReady,
       recentDeliveredOwnerMessages: () =>
@@ -581,6 +588,9 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
     const connectorFactory = dependencies.startConnectorRuntime ?? startConnectorRuntime;
     connectors = await connectorFactory({
       configPath: paths.connectorsConfigPath,
+      ...(config.wiki?.enabled
+        ? { wikiRoot: resolve(config.wiki.vaultPath!, config.wiki.wikiDir!) }
+        : {}),
       rawPath: paths.connectorsRoot,
       statePath: paths.connectorsRoot,
       trelloStatePath: paths.trelloStatePath,

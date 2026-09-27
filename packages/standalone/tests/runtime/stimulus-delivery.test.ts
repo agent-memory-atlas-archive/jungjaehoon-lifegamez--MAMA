@@ -96,6 +96,7 @@ describe('one stimulus intake and delivery', () => {
       {
         ...accepted,
         id: 'file-input',
+        stimulusId: 'telegram:11:2',
         status: 'claimed',
         attempts: 1,
         createdAt: 1,
@@ -121,6 +122,7 @@ describe('one stimulus intake and delivery', () => {
     expect(prompt.split('\n')).toContain(
       'attachment: name="書式.xlsx" path="/downloads/telegram/11_書式.xlsx" size=128 bytes'
     );
+    expect(prompt).toContain('messenger: telegram');
     expect(prompt.split('\n')).toContain(
       'attachment: name="large.zip" error="Telegram Bot API download limit is 20 MB"'
     );

@@ -148,24 +148,76 @@ describe('NotionConnector', () => {
       expect(items).toEqual([]);
     });
 
-    it('filters pages by last_edited_time > since', async () => {
+    it('includes minute-rounded edits in the overlap and excludes older pages', async () => {
       const since = new Date('2024-01-01T00:00:00.000Z');
       const mockFetch = vi
         .fn()
         .mockResolvedValueOnce(
           makeSearchResponse([
-            makePage({ id: 'old-page', last_edited_time: '2023-12-31T23:59:59.000Z' }),
+            makePage({ id: 'old-page', last_edited_time: '2023-12-31T23:58:59.000Z' }),
+            makePage({ id: 'overlap-page', last_edited_time: '2023-12-31T23:59:30.000Z' }),
             makePage({ id: 'new-page', last_edited_time: '2024-01-01T00:00:01.000Z' }),
           ])
         )
-        // Block children fetch for new-page
+        // Block children fetch for overlap-page and new-page
+        .mockResolvedValueOnce(makeBlockChildrenResponse([]))
         .mockResolvedValueOnce(makeBlockChildrenResponse([]));
       vi.stubGlobal('fetch', mockFetch);
       const connector = new NotionConnector(makeConfig());
       await connector.init();
       const items = await connector.poll(since);
-      expect(items).toHaveLength(1);
-      expect(items[0]?.sourceId).toBe('new-page');
+      expect(items.map((item) => item.sourceId)).toEqual(['overlap-page', 'new-page']);
+    });
+
+    it('reads nested block children recursively', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi
+          .fn()
+          .mockResolvedValueOnce(makeSearchResponse([makePage()]))
+          .mockResolvedValueOnce(
+            makeBlockChildrenResponse([
+              { ...makeParagraphBlock('parent'), id: 'block-parent', has_children: true },
+            ])
+          )
+          .mockResolvedValueOnce(makeBlockChildrenResponse([makeParagraphBlock('nested')]))
+      );
+      const connector = new NotionConnector(makeConfig());
+      await connector.init();
+      const [item] = await connector.poll(new Date(0));
+      expect(item?.content).toContain('parent\nnested');
+    });
+
+    it('fails loudly when nested blocks exceed the supported depth', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: RequestInfo | URL) =>
+          String(input).includes('/search')
+            ? makeSearchResponse([makePage()])
+            : makeBlockChildrenResponse([
+                { ...makeParagraphBlock('nested'), id: 'nested-block', has_children: true },
+              ])
+        )
+      );
+      const connector = new NotionConnector(makeConfig());
+      await connector.init();
+      await expect(connector.poll(new Date(0))).rejects.toThrow(/depth cap/);
+    });
+
+    it('fails loudly when nested blocks exceed the supported depth', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: RequestInfo | URL) =>
+          String(input).includes('/search')
+            ? makeSearchResponse([makePage()])
+            : makeBlockChildrenResponse([
+                { ...makeParagraphBlock('nested'), id: 'nested-block', has_children: true },
+              ])
+        )
+      );
+      const connector = new NotionConnector(makeConfig());
+      await connector.init();
+      await expect(connector.poll(new Date(0))).rejects.toThrow(/depth cap/);
     });
 
     it('sets sourceId to page.id', async () => {

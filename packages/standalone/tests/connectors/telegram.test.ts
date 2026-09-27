@@ -145,7 +145,7 @@ describe('TelegramConnector', () => {
       expect(items).toEqual([]);
     });
 
-    it('filters messages by date > since', async () => {
+    it('uses update ids as the cursor instead of filtering by timestamp', async () => {
       const since = new Date('2024-01-01T00:00:00.000Z'); // epoch 1704067200
       vi.stubGlobal(
         'fetch',
@@ -165,8 +165,35 @@ describe('TelegramConnector', () => {
       const connector = makeConnector(makeConfig());
       await connector.init();
       const items = await connector.poll(since);
-      expect(items).toHaveLength(1);
-      expect(items[0]?.timestamp.getTime()).toBe(1704067201 * 1000);
+      expect(items).toHaveLength(2);
+      expect(items[1]?.timestamp.getTime()).toBe(1704067201 * 1000);
+    });
+
+    it('pages the update cursor and keeps messages in the since second', async () => {
+      const since = new Date('2024-01-01T00:00:00.000Z');
+      const first = Array.from({ length: 100 }, (_, index) =>
+        makeUpdate({
+          update_id: index + 1,
+          message: { ...makeUpdate().message, message_id: index + 1, date: 1704067200 },
+        })
+      );
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(makeGetUpdatesResponse(first))
+        .mockResolvedValueOnce(
+          makeGetUpdatesResponse([
+            makeUpdate({
+              update_id: 101,
+              message: { ...makeUpdate().message, message_id: 101, date: 1704067200 },
+            }),
+          ])
+        );
+      vi.stubGlobal('fetch', fetchMock);
+      const connector = makeConnector(makeConfig());
+      await connector.init();
+      expect(await connector.poll(since)).toHaveLength(101);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(new URL(String(fetchMock.mock.calls[1]?.[0])).searchParams.get('offset')).toBe('101');
     });
 
     it('sets sourceId as "chatId:messageId"', async () => {
@@ -245,7 +272,7 @@ describe('TelegramConnector', () => {
       expect(secondCallUrl).toContain('offset=1000');
     });
 
-    it('requests the next update page only after the prior handoff commits', async () => {
+    it('pages all update batches inside a handoff and commits the final cursor only once', async () => {
       const firstPageUpdates = Array.from({ length: 100 }, (_, index) =>
         makeUpdate({
           update_id: index + 1,
@@ -258,18 +285,20 @@ describe('TelegramConnector', () => {
       const mockFetch = vi
         .fn()
         .mockResolvedValueOnce(makeGetUpdatesResponse(firstPageUpdates))
-        .mockResolvedValueOnce(makeGetUpdatesResponse([makeUpdate({ update_id: 101 })]));
+        .mockResolvedValueOnce(makeGetUpdatesResponse([makeUpdate({ update_id: 101 })]))
+        .mockResolvedValueOnce(makeGetUpdatesResponse([]));
       vi.stubGlobal('fetch', mockFetch);
       const connector = makeConnector(makeConfig());
       await connector.init();
       connector.beginPollHandoff();
       const firstPage = await connector.poll(new Date(0));
-      expect(firstPage).toHaveLength(100);
-      expect(mockFetch).toHaveBeenCalledOnce();
+      expect(firstPage).toHaveLength(101);
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(String(mockFetch.mock.calls[1]?.[0])).toContain('offset=101');
       connector.commitPoll();
       const secondPage = await connector.poll(new Date(0));
-      expect(secondPage).toHaveLength(1);
-      expect(String(mockFetch.mock.calls[1]?.[0])).toContain('offset=101');
+      expect(secondPage).toHaveLength(0);
+      expect(String(mockFetch.mock.calls[2]?.[0])).toContain('offset=102');
     });
 
     it('does not commit the update offset when the handoff is aborted', async () => {
@@ -279,7 +308,12 @@ describe('TelegramConnector', () => {
           message: { ...makeUpdate().message, message_id: index + 1 },
         })
       );
-      const mockFetch = vi.fn().mockResolvedValue(makeGetUpdatesResponse(fullPage));
+      const mockFetch = vi
+        .fn()
+        .mockResolvedValueOnce(makeGetUpdatesResponse(fullPage))
+        .mockResolvedValueOnce(makeGetUpdatesResponse([]))
+        .mockResolvedValueOnce(makeGetUpdatesResponse(fullPage))
+        .mockResolvedValueOnce(makeGetUpdatesResponse([]));
       vi.stubGlobal('fetch', mockFetch);
       const connector = makeConnector(makeConfig());
       await connector.init();
@@ -289,7 +323,7 @@ describe('TelegramConnector', () => {
       const repeated = await connector.poll(new Date(0));
 
       expect(repeated).toHaveLength(100);
-      expect(String(mockFetch.mock.calls[1]?.[0])).toContain('offset=0');
+      expect(String(mockFetch.mock.calls[2]?.[0])).toContain('offset=0');
     });
 
     it('restores the committed update offset after connector restart', async () => {
@@ -316,7 +350,7 @@ describe('TelegramConnector', () => {
       await connector.init();
 
       await expect(connector.poll(new Date(0))).rejects.toThrow(
-        /Telegram poll failed for 1 update page; last error: getUpdates HTTP 503/
+        /Telegram poll failed while reading update pages; last error: getUpdates HTTP 503/
       );
       await expect(connector.healthCheck()).resolves.toMatchObject({ healthy: false });
     });

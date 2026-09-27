@@ -127,7 +127,8 @@ function makeRequest(
 
 async function withServer(
   implementation: (call: ActionCall, context: ActionContext) => Promise<ActionResult>,
-  callback: (server: ViewerServer, calls: ActionCall[]) => Promise<void>
+  callback: (server: ViewerServer, calls: ActionCall[]) => Promise<void>,
+  reportStore?: { getAllSorted(): Array<{ slotId: string; html: string; updatedAt: number }> }
 ): Promise<void> {
   const calls: ActionCall[] = [];
   const dispatch = vi.fn(async (call: ActionCall, context: ActionContext) => {
@@ -135,7 +136,12 @@ async function withServer(
     expect(context.access).toBe(ownerAccess);
     return implementation(call, context);
   }) as unknown as ActionDispatcher;
-  const server = createViewerServer({ dispatch, ownerAccess, port: 0 });
+  const server = createViewerServer({
+    dispatch,
+    ownerAccess,
+    port: 0,
+    reportStore: reportStore as never,
+  });
   await server.start();
   try {
     await callback(server, calls);
@@ -170,6 +176,32 @@ describe('viewer HTTP server', () => {
           ],
         });
         expect(calls).toHaveLength(1);
+      }
+    );
+  });
+
+  it('counts report-card class tokens despite quoting and additional classes', async () => {
+    await withServer(
+      async (call) =>
+        call.action === 'work.list'
+          ? completed(
+              call.input.view === 'overview'
+                ? { status: {}, due: { overdue: 0 } }
+                : { tasks: [], nextCursor: null }
+            )
+          : completed({}),
+      async (server) => {
+        const response = await makeRequest(server, '/api/operator/summary');
+        expect(JSON.parse(response.body).report.actionRequired).toBe(2);
+      },
+      {
+        getAllSorted: () => [
+          {
+            slotId: 'action_required',
+            html: "<div class='active report-card wide'></div><div class=report-card></div>",
+            updatedAt: 1,
+          },
+        ],
       }
     );
   });

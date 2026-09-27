@@ -64,12 +64,14 @@ async function boot(
   response: string,
   mode: 'live' | 'replay' = 'live',
   earlyDelta = false,
-  failTurn = false
+  failTurn = false,
+  messenger: 'telegram' | 'discord' = 'telegram'
 ) {
   const root = mkdtempSync(join(tmpdir(), 'delta-'));
   roots.push(root);
   vi.stubEnv('HOME', root);
   vi.stubEnv('MAMA_TELEGRAM_TOKEN', 'fixture-token');
+  vi.stubEnv('MAMA_DISCORD_TOKEN', 'fixture-token');
   vi.stubEnv('MAMA_DB_PATH', join(root, 'development-memory.db'));
   // This test exercises delivery, not the socket transport (listen is sandbox-restricted).
   vi.spyOn(ipc, 'createActionIpcServer').mockResolvedValue({
@@ -99,13 +101,26 @@ async function boot(
       },
       database: { path: join(root, 'memory.db') },
       logging: { level: 'info', file: join(root, 'daemon.log') },
+      delivery:
+        messenger === 'discord'
+          ? { reports: 'discord', notifications: 'discord', security_alerts: 'discord' }
+          : undefined,
       telegram: {
-        enabled: true,
+        enabled: messenger === 'telegram',
         allowed_chats: ['8', '7'],
         owner_chat_id: '7',
         owner_user_ids: ['9'],
         polling: false,
       },
+      discord:
+        messenger === 'discord'
+          ? {
+              enabled: true,
+              allowed_channels: ['channel_test'],
+              owner_channel_id: 'channel_test',
+              owner_user_ids: ['user_owner'],
+            }
+          : undefined,
     },
     logger: { info: (line) => logs.push(line), error: (line) => logs.push(line) },
     dependencies: {
@@ -163,6 +178,19 @@ async function boot(
         }
         return { stop: async () => {} } as never;
       },
+      ...(messenger === 'discord'
+        ? {
+            createDiscordGateway: () => ({
+              sendToOwner: telegram.sendMessage,
+              sendFile: async () => ({ sentAs: 'file', size: 0 }),
+              deliverResponse: async () => {},
+              recoverPendingResponses: async () => {},
+              recentDeliveredMessageRefs: () => [],
+              start: async () => {},
+              stop: async () => {},
+            }),
+          }
+        : {}),
     },
   });
   daemons.push(daemon);
@@ -170,6 +198,13 @@ async function boot(
 }
 
 describe('live delta reports', () => {
+  it('routes notifications through Discord when Telegram is disabled', async () => {
+    const { daemon } = await boot('[notify] Route this', 'live', false, false, 'discord');
+    daemon.owner.acceptSourceDelta(delta());
+    await vi.waitFor(() =>
+      expect(telegram.sendMessage).toHaveBeenCalledWith('Route this', expect.any(String))
+    );
+  });
   it('delivers the interrupted notice when an accepted owner turn fails without restarting', async () => {
     const { daemon } = await boot('[ack]', 'live', false, true);
     telegram.editMessageText.mockResolvedValue(true);
@@ -279,13 +314,10 @@ describe('live delta reports', () => {
       'decisions',
       'pipeline',
       '[ack]',
-      'each work item changed since the last wiki update',
-      'manage.wiki.update',
-      'manage.wiki.publish',
-      'before or with the board publish',
     ]) {
       expect(board).toContain(instruction);
     }
+    expect(board).not.toContain('manage.wiki.');
     expect(logs).toContain(`delta report route=${route} id=${id}`);
     expect(logs).toContain(`stimulus delivered kind=source_delta id=${id} model_run_id=run:1`);
     expect(logs).toContain(

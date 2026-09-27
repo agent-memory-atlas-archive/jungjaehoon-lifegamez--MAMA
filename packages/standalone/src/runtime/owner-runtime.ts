@@ -71,6 +71,7 @@ export interface OwnerRuntimeOptions {
     vaultPath: string;
     wikiDir: string;
   };
+  formattingRoutes?: { reports: string; notifications: string };
   ownerPolicyProvider?: OwnerPolicyProvider;
   onOwnerResult?: StimulusDeliveryOptions['onOwnerResult'];
   recentDeliveredOwnerMessages?: () => readonly string[];
@@ -233,7 +234,8 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
     const standingText = ownerSystemPrompt(
       options.backend,
       null,
-      storedSourceFamilies(database.adapter, access.connectors!)
+      storedSourceFamilies(database.adapter, access.connectors!),
+      options.wiki?.enabled ?? false
     );
     const ownerPolicyProvider =
       options.ownerPolicyProvider ?? createOwnerPolicyProvider(options.runtimeRoot);
@@ -263,6 +265,11 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       });
     }
     delivery = createStimulusDelivery({
+      wikiEnabled: options.wiki?.enabled ?? false,
+      formattingRoutes: options.formattingRoutes ?? {
+        reports: 'telegram',
+        notifications: 'telegram',
+      },
       readResult: (row) =>
         row.nativeDelivery?.receipt
           ? intakeRuntime.mailbox!.nativeInputs.resultForReceipt(

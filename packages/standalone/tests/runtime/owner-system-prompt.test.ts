@@ -20,9 +20,10 @@ describe('owner standing prompt', () => {
   });
 
   it('keeps message formatting at the messenger adapter', () => {
-    expect(ownerSystemPrompt('codex')).toContain(
-      'Format the final response for the current messenger'
-    );
+    const prompt = ownerSystemPrompt('codex');
+    expect(prompt).toContain('Telegram uses its supported HTML tags and no Markdown');
+    expect(prompt).toContain('Discord uses Markdown; Slack uses mrkdwn');
+    expect(ownerSystemPrompt('codex', null, [], false)).not.toContain('manage.wiki.');
   });
 
   it('keeps delta routing and board refresh out of ordinary owner answers', () => {
@@ -41,7 +42,7 @@ describe('owner standing prompt', () => {
     const prompt = ownerSystemPrompt('codex');
     // Wiki is organized from its table of contents with a daily journal; relations beyond
     // derived_from are offered; a memory is traced to its sources with provenance.
-    expect(prompt).toContain('Read its table of contents (Home.md)');
+    expect(prompt).toContain('Read Home.md');
     expect(prompt).toContain('daily/YYYY-MM-DD.md');
     expect(prompt).toContain('not per task');
     expect(prompt).toContain(
@@ -189,6 +190,7 @@ describe('owner standing prompt', () => {
     expect(prompt).toContain('read:record');
     expect(prompt).toContain('memory.retire');
     expect(prompt).toContain('Every change keeps history.');
+    expect(prompt).toContain('When the owner corrects you, save the correction in that same turn');
     expect(prompt).toContain(
       "When a replay window supplies end_of_window_instructions, finish the day's work changes before calling report.publish for all four board slots and the wiki; follow the guidance rules above."
     );

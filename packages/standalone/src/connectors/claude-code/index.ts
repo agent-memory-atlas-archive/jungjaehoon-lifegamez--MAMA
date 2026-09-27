@@ -201,7 +201,9 @@ export class ClaudeCodeConnector implements IConnector {
     }> = [];
     const raw = readFileSync(filePath, 'utf-8');
 
-    for (const [messageIndex, line] of raw.split('\n').entries()) {
+    const lines = raw.split('\n');
+    if (!raw.endsWith('\n')) lines.pop();
+    for (const [messageIndex, line] of lines.entries()) {
       if (!line.trim()) continue;
       let msg: JsonlMessage;
       try {

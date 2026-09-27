@@ -193,4 +193,160 @@ describe('Discord owner gateway', () => {
     });
     await gateway.stop();
   });
+
+  it('recovers an interrupted owner turn and logs client errors', async () => {
+    const ledgerPath = join(root, 'ledger.json');
+    const ledger = new OwnerMessageLedger(ledgerPath);
+    ledger.claim('discord:channel_test:interrupted', {
+      deliveryTarget: 'discord:channel_test',
+      payloadIdentity: 'a'.repeat(64),
+    });
+    ledger.claim('slack:channel_test:foreign', {
+      deliveryTarget: 'slack:channel_test',
+      payloadIdentity: 'b'.repeat(64),
+    });
+    ledger.markReady('slack:channel_test:foreign', 'foreign');
+    const logs: string[] = [];
+    const gateway = new DiscordGateway({
+      token: 'fixture-token',
+      intake: {
+        acceptOwnerMessage: () => ({ state: 'accepted' }) as never,
+        isPending: () => false,
+      },
+      config: {
+        enabled: true,
+        ownerChannelId: 'channel_test',
+        allowedChannels: ['channel_test'],
+        ownerUserIds: ['user_owner'],
+      },
+      messageLedgerPath: ledgerPath,
+      log: (line) => logs.push(line),
+    });
+    const client = mocks.clients[0] as MockClient;
+    client.channels.fetch.mockResolvedValue({
+      isSendable: () => true,
+      send: vi.fn(async () => ({ id: 'message_sent' })),
+    });
+    await gateway.start();
+    client.emit('error', new Error('provider event error'));
+    expect(logs.join('\n')).toContain('discord client error=provider event error');
+    expect(client.channels.fetch).toHaveBeenCalledOnce();
+    expect(new OwnerMessageLedger(ledgerPath).get('discord:channel_test:interrupted')?.state).toBe(
+      'delivered'
+    );
+    expect(new OwnerMessageLedger(ledgerPath).get('slack:channel_test:foreign')?.state).toBe(
+      'ready'
+    );
+    await gateway.stop();
+  });
+
+  it('marks a chunk uncertain while the provider request is in flight', async () => {
+    const ledgerPath = join(root, 'ledger.json');
+    const gateway = new DiscordGateway({
+      token: 'fixture-token',
+      intake: { acceptOwnerMessage: () => ({ state: 'accepted' }) as never },
+      config: {
+        enabled: true,
+        ownerChannelId: 'channel_test',
+        allowedChannels: ['channel_test'],
+        ownerUserIds: ['user_owner'],
+      },
+      messageLedgerPath: ledgerPath,
+    });
+    await gateway.start();
+    let release!: (value: { id: string }) => void;
+    const send = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        })
+    );
+    (mocks.clients[0] as MockClient).channels.fetch.mockResolvedValue({
+      isSendable: () => true,
+      send,
+    });
+    const pending = gateway.sendMessage('channel_test', 'outbound text', 'stable-key');
+    await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
+    expect(new OwnerMessageLedger(ledgerPath).listUndelivered()[0]?.deliveryUncertain).toBe(true);
+    release({ id: 'message_sent' });
+    await pending;
+    await expect(
+      gateway.sendMessage('channel_test', 'regenerated text', 'stable-key')
+    ).resolves.toBeUndefined();
+    expect(send).toHaveBeenCalledOnce();
+    await gateway.stop();
+  });
+
+  it('keeps same-named attachments from overwriting each other', async () => {
+    const accepted: Array<{ payload?: { attachments?: Array<{ path?: string }> } }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('file'))
+    );
+    const gateway = new DiscordGateway({
+      token: 'fixture-token',
+      intake: {
+        acceptOwnerMessage: (input) => {
+          accepted.push(input as never);
+          return { state: 'accepted' } as never;
+        },
+      },
+      config: {
+        enabled: true,
+        ownerChannelId: 'channel_test',
+        allowedChannels: ['channel_test'],
+        ownerUserIds: ['user_owner'],
+      },
+      messageLedgerPath: join(root, 'ledger.json'),
+      downloadsDir: join(root, 'downloads'),
+    });
+    await gateway.start();
+    (mocks.clients[0] as MockClient).emit(
+      Events.MessageCreate,
+      ownerMessage('message-files', 'user_owner', 'channel_test', [
+        {
+          id: 'file-a',
+          name: 'same.pdf',
+          url: 'https://example.test/a',
+          contentType: 'application/pdf',
+        },
+        {
+          id: 'file-b',
+          name: 'same.pdf',
+          url: 'https://example.test/b',
+          contentType: 'application/pdf',
+        },
+      ])
+    );
+    await vi.waitFor(() => expect(accepted).toHaveLength(1));
+    const paths = accepted[0]!.payload!.attachments!.map((item) => item.path);
+    expect(new Set(paths).size).toBe(2);
+    await gateway.stop();
+  });
+
+  it('does not send an interrupted notice for a live duplicate owner event', async () => {
+    const accepted = vi.fn(() => ({ state: 'accepted' }) as never);
+    const gateway = new DiscordGateway({
+      token: 'fixture-token',
+      intake: { acceptOwnerMessage: accepted, isPending: () => false },
+      config: {
+        enabled: true,
+        ownerChannelId: 'channel_test',
+        allowedChannels: ['channel_test'],
+        ownerUserIds: ['user_owner'],
+      },
+      messageLedgerPath: join(root, 'ledger.json'),
+    });
+    const client = mocks.clients[0] as MockClient;
+    const send = vi.fn(async () => ({ id: 'reply' }));
+    client.channels.fetch.mockResolvedValue({ isSendable: () => true, send });
+    await gateway.start();
+    client.emit(Events.MessageCreate, ownerMessage('duplicate', 'user_owner'));
+    await vi.waitFor(() => expect(accepted).toHaveBeenCalledOnce());
+    client.emit(Events.MessageCreate, ownerMessage('duplicate', 'user_owner'));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(accepted).toHaveBeenCalledOnce();
+    expect(send).not.toHaveBeenCalled();
+    await gateway.stop();
+  });
 });

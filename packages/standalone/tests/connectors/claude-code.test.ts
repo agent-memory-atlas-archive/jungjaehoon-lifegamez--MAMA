@@ -381,6 +381,20 @@ describe('ClaudeCodeConnector', () => {
       );
     });
 
+    it('leaves an incomplete trailing JSONL line for the next poll', async () => {
+      const projDir = join(projectsDir, DEFAULT_PROJECT_DIR);
+      const filePath = join(projDir, 'live-session.jsonl');
+      mkdirSync(projDir, { recursive: true });
+      writeFileSync(
+        filePath,
+        `${JSON.stringify({ type: 'user', timestamp: '2024-06-01T12:00:00.000Z', message: { content: 'complete' } })}\n{"type":"assistant"`,
+        'utf8'
+      );
+      const connector = makeConnector();
+      await connector.init();
+      expect(await connector.poll(new Date(0))).toHaveLength(1);
+    });
+
     it('reads only explicitly configured project directories', async () => {
       const proj1 = join(projectsDir, 'fixture-project-a');
       const proj2 = join(projectsDir, 'fixture-project-b');

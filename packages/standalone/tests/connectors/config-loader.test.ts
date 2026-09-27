@@ -25,10 +25,17 @@ const valid = {
   enabled: true,
   pollIntervalMinutes: 5,
   channels: { 'channel-key': { role: 'hub', name: 'display-name', boardId: 'board-key' } },
-  auth: { type: 'token', tokenName: 'TEST_CONNECTOR_TOKEN' },
+  auth: { type: 'token', tokenName: 'MAMA_AUTH_TOKEN' },
 };
 
 describe('connector config loader', () => {
+  it('rejects ambient auth token names outside the managed MAMA secret list', () => {
+    const result = loadConnectorConfig(
+      writeConfig({ slack: { ...valid, auth: { type: 'token', tokenName: 'SLACK_BOT_TOKEN' } } })
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain('managed MAMA secret');
+  });
   it('registers every restored connector with a loadable factory', async () => {
     const root = mkdtempSync(join(tmpdir(), 'connector-factory-'));
     roots.push(root);

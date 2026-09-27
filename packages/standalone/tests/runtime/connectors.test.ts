@@ -49,6 +49,34 @@ function fake(name: string, items: NormalizedItem[]): IConnector {
 }
 
 describe('connector runtime', () => {
+  it('rejects an Obsidian vault that contains the configured wiki root', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'connector-wiki-feedback-'));
+    roots.push(root);
+    const vault = join(root, 'vault');
+    await expect(
+      startConnectorRuntime({
+        configPath: join(root, 'unused.json'),
+        rawPath: join(root, 'raw'),
+        statePath: join(root, 'state'),
+        wikiRoot: join(vault, 'wiki'),
+        configResult: {
+          ok: true,
+          config: {
+            obsidian: {
+              enabled: true,
+              pollIntervalMinutes: 5,
+              channels: { notes: { role: 'reference', vaultPath: vault } },
+              auth: { type: 'none' },
+            },
+          },
+          enabledNames: ['obsidian'],
+        },
+        rawIndexSink: () => [],
+        acceptSourceDelta: async () => {},
+        loadConnector: async (name) => fake(name, []),
+      })
+    ).rejects.toThrow(/contains the configured wiki root/);
+  });
   it('validates all enabled intervals before creating timers', async () => {
     const root = mkdtempSync(join(tmpdir(), 'connector-runtime-interval-'));
     roots.push(root);
@@ -128,19 +156,19 @@ describe('connector runtime', () => {
           enabled: true,
           pollIntervalMinutes: 5,
           channels: { 'channel-key': { role: 'hub' } },
-          auth: { type: 'token', tokenName: 'SLACK_BOT_TOKEN' },
+          auth: { type: 'token', tokenName: 'MAMA_SLACK_TOKEN' },
         },
         chatwork: {
           enabled: false,
           pollIntervalMinutes: 5,
           channels: {},
-          auth: { type: 'token', tokenName: 'CHATWORK_API_TOKEN' },
+          auth: { type: 'token', tokenName: 'MAMA_CHATWORK_TOKEN' },
         },
         trello: {
           enabled: true,
           pollIntervalMinutes: 10,
           channels: { 'board-key': { role: 'truth', boardId: 'board-key' } },
-          auth: { type: 'token', tokenName: 'TRELLO_TOKEN' },
+          auth: { type: 'token', tokenName: 'MAMA_TRELLO_TOKEN' },
         },
         kagemusha: {
           enabled: true,
@@ -217,7 +245,7 @@ describe('connector runtime', () => {
           enabled: true,
           pollIntervalMinutes: 5,
           channels: { 'channel-key': { role: 'hub' } },
-          auth: { type: 'token', tokenName: 'SLACK_BOT_TOKEN' },
+          auth: { type: 'token', tokenName: 'MAMA_SLACK_TOKEN' },
         },
       }),
       'utf8'

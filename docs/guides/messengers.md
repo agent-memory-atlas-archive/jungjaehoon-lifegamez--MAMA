@@ -33,8 +33,10 @@ delivery:
 
 Every delivery route must name an enabled gateway with an allowlisted owner destination. A bad route stops daemon startup instead of sending through another gateway.
 
+The owner turn names the output format for its destination: Telegram uses the supported HTML tag subset and no Markdown, Discord uses Markdown, and Slack uses mrkdwn. Direct replies use the messenger that received the message; scheduled reports and `[notify]` results use their configured route.
+
 ## Attachments and replies
 
 Owner attachments are saved to the daemon-owned `~/.mama/downloads/<messenger>/` directory. The owner agent can read those files but cannot write there. Copy a file into `~/.mama/workspace/files/` before modifying or sending it. Use the matching `deliver.telegram.file`, `deliver.discord.file`, or `deliver.slack.file` action; its receipt prevents a completed operation from being sent again.
 
-The daemon records accepted input, response state, chunk progress, destinations, and send uncertainty in one durable owner-message ledger. On restart, known-unsent replies resume; an ambiguous send remains marked uncertain for reconciliation.
+The daemon records accepted input, response state, chunk progress, destinations, and send uncertainty in one durable owner-message ledger. Slack acknowledges a Socket Mode event only after the owner input is accepted durably. On restart, each gateway recovers only its own ledger entries: known-unsent replies resume, abandoned owner turns receive an interruption notice, and ambiguous sends remain marked uncertain for reconciliation. One failed recovery entry is logged without stopping recovery of later entries or gateway startup.

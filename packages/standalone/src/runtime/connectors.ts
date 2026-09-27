@@ -9,7 +9,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { DatabaseInstance } from '@jungjaehoon/mama-core/db-manager';
 import { loadConnector, LOADABLE_CONNECTORS } from '../connectors/index.js';
 import {
@@ -33,6 +33,7 @@ const ONE_DAY_MS = 86_400_000;
 
 export interface ConnectorRuntimeOptions {
   configPath: string;
+  wikiRoot?: string;
   rawPath: string;
   statePath: string;
   trelloStatePath?: string;
@@ -140,6 +141,23 @@ export async function startConnectorRuntime(
   );
   const supported = new Set<string>(LOADABLE_CONNECTORS);
   const enabledConnectorNames = config.enabledNames.filter((name) => supported.has(name));
+  if (options.wikiRoot && enabledConnectorNames.includes('obsidian')) {
+    const inside = (parent: string, child: string): boolean => {
+      const path = relative(resolve(parent), resolve(child));
+      return path === '' || (path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path));
+    };
+    for (const [channel, setting] of Object.entries(config.config.obsidian?.channels ?? {})) {
+      if (
+        setting.role !== 'ignore' &&
+        setting.vaultPath &&
+        inside(setting.vaultPath, options.wikiRoot)
+      ) {
+        throw new Error(
+          `Obsidian vault channel ${channel} contains the configured wiki root; MAMA wiki writes would feed back as source deltas`
+        );
+      }
+    }
+  }
   const pollIntervals = new Map<string, number>();
   for (const name of enabledConnectorNames) {
     const interval = config.config[name]?.pollIntervalMinutes;

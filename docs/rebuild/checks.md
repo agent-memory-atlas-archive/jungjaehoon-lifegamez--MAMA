@@ -1175,3 +1175,9 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Result: Replaced singleton delivery wiring with an enabled-messenger registry; direct replies follow their source messenger, while notifications, reports, and security alerts follow their configured route.
 - Evidence: daemon notification/report tests pass; root build, root typecheck, and changed-file lint pass. Standalone suite: 1,025 passed; 24 listener `EPERM` failures.
 - Still open: live scheduled reports, notifications, and security-alert routing were not exercised against providers.
+
+### W12 verified review findings — 2026-09-27
+
+- Result: Fixed route-only notifications, messenger-scoped recovery and serialization, Telegram cursor paging, connector overlap/recursion, managed token names, prompt formats, and viewer card counts.
+- Evidence: Root build, typecheck, and changed-file ESLint pass. Standalone suite: 1,045 passed; 25 socket-listener tests in eight suites fail with sandbox `listen EPERM`.
+- Still open: live provider turns were not run; all code-level tests outside the sandbox socket failures pass.

@@ -23,7 +23,11 @@ export function scheduledReport(payload: JsonValue | undefined): ScheduledReport
 }
 
 /** Port the report instructions using the product's current actions and board slots. */
-export function buildScheduledReportPrompt(payload: JsonValue | undefined, now: Date): string {
+export function buildScheduledReportPrompt(
+  payload: JsonValue | undefined,
+  now: Date,
+  options: { wikiEnabled?: boolean; messenger?: string } = {}
+): string {
   const { report } = scheduledReport(payload);
   const common = [
     `Current time: ${now.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })} (KST)`,
@@ -36,7 +40,11 @@ export function buildScheduledReportPrompt(payload: JsonValue | undefined, now: 
           '[scheduled_full_report]',
           ...common,
           'Read recent sources (start with the last 24 hours) together with current work before reporting.',
-          'Update the wiki page for each work item changed since the last wiki update with manage.wiki.update (or manage.wiki.publish for a new case), before or with the board publish; choose the pages yourself; when several pages change, split them across subagents inside this turn.',
+          ...(options.wikiEnabled === false
+            ? []
+            : [
+                'Update the wiki page for each work item changed since the last wiki update with manage.wiki.update (or manage.wiki.publish for a new case), before or with the board publish; choose the pages yourself; when several pages change, split them across subagents inside this turn.',
+              ]),
           ...buildBoardPublishLines(),
           'Return the full report in Korean with five parts in this order: key situation today, needs a response, needs a decision, pipeline, next actions.',
         ]
@@ -51,6 +59,6 @@ export function buildScheduledReportPrompt(payload: JsonValue | undefined, now: 
   return [
     ...instructions,
     'Owner-facing text carries no commitment, observation, judgment or channel ids; use readable work titles and sentences.',
-    'Format the final output for the selected owner messenger. Board div/span/CSS belongs only in report.publish. No code-block wrapper, working notes or [notify]/[ack] tags.',
+    `Messenger: ${options.messenger ?? 'telegram'}. Format the final output for this messenger: Telegram HTML subset with no Markdown; Discord Markdown; Slack mrkdwn. Board div/span/CSS belongs only in report.publish. No code-block wrapper, working notes or [notify]/[ack] tags.`,
   ].join('\n');
 }

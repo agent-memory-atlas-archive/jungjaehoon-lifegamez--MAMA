@@ -55,6 +55,8 @@ export interface StimulusIntake {
 
 export interface StimulusDeliveryOptions {
   guidanceResolver: GuidanceResolver;
+  wikiEnabled?: boolean;
+  formattingRoutes?: { reports: string; notifications: string };
   readResult?: (row: MailboxRow) => NativeTurnResultRecord | null;
   onUncertain?: StimulusDelivery['onUncertain'];
   recentOwnerExchanges?: (
@@ -342,9 +344,16 @@ export function renderWindowQueue(queue: WindowQueue): string {
   return wrapUntrustedContent('source_delta', lines.join('\n'));
 }
 
-function boundedStimulus(row: MailboxRow, liveSourceDelta: boolean): string {
+function boundedStimulus(
+  row: MailboxRow,
+  liveSourceDelta: boolean,
+  options: Pick<StimulusDeliveryOptions, 'wikiEnabled' | 'formattingRoutes'>
+): string {
   if (row.kind === 'scheduled')
-    return buildScheduledReportPrompt(row.payload, new Date(row.occurredAt));
+    return buildScheduledReportPrompt(row.payload, new Date(row.occurredAt), {
+      wikiEnabled: options.wikiEnabled,
+      messenger: options.formattingRoutes?.reports,
+    });
   const lines = [
     '## Bounded stimulus',
     `kind: ${row.kind ?? 'unknown'}`,
@@ -354,6 +363,8 @@ function boundedStimulus(row: MailboxRow, liveSourceDelta: boolean): string {
     `preview: ${row.kind === 'source_delta' ? wrapUntrustedContent('source_delta', JSON.stringify(row.preview)) : JSON.stringify(row.preview)}`,
   ];
   if (row.kind === 'owner_message') {
+    const messenger = row.stimulusId.split(':', 1)[0];
+    lines.push(`messenger: ${messenger}`);
     const payload = row.payload;
     const input =
       payload && typeof payload === 'object' && !Array.isArray(payload) ? payload.input : undefined;
@@ -376,7 +387,10 @@ function boundedStimulus(row: MailboxRow, liveSourceDelta: boolean): string {
   const messages = row.kind === 'source_delta' ? messageLines(row.payload) : null;
   if (messages === null) lines.push(`refs: ${JSON.stringify(row.refs)}`);
   if (row.kind === 'source_delta') {
-    if (liveSourceDelta) lines.push(`response_routing: ${LIVE_DELTA_ROUTING_INSTRUCTION}`);
+    if (liveSourceDelta) {
+      lines.push(`response_routing: ${LIVE_DELTA_ROUTING_INSTRUCTION}`);
+      lines.push(`formatting: ${options.formattingRoutes?.notifications ?? 'telegram'}`);
+    }
     lines.push(
       row.refs.length === 0
         ? 'source_read: this replay window has no source messages.'
@@ -484,12 +498,13 @@ function renderGuidanceDelta(
 function assembledContent(
   row: MailboxRow,
   sessionBlocks: readonly string[],
-  liveSourceDelta: boolean
+  liveSourceDelta: boolean,
+  options: Pick<StimulusDeliveryOptions, 'wikiEnabled' | 'formattingRoutes'>
 ): ContentBlock[] {
   return [
     {
       type: 'text',
-      text: [...sessionBlocks, boundedStimulus(row, liveSourceDelta)].join('\n\n'),
+      text: [...sessionBlocks, boundedStimulus(row, liveSourceDelta, options)].join('\n\n'),
     },
   ];
 }
@@ -565,7 +580,7 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
       ) {
         throw new Error('Stimulus kind is missing; no owner turn can be assembled');
       }
-      const result = await context.run(assembledContent(row, [], liveSourceDelta), {
+      const result = await context.run(assembledContent(row, [], liveSourceDelta, options), {
         onModelRunStarted: (id: string) => {
           modelRunId = id;
         },
@@ -589,7 +604,7 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
           pendingGuidanceState = new Map(
             entries.map((entry) => [entry.id, guidanceVersion(entry)])
           );
-          return assembledContent(row, sessionBlocks, liveSourceDelta);
+          return assembledContent(row, sessionBlocks, liveSourceDelta, options);
         },
         sessionKey: OWNER_RUNTIME_SESSION_KEY,
         source: row.kind,

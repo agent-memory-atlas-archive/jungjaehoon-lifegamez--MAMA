@@ -107,12 +107,12 @@ export class IMessageConnector implements IConnector {
       // iMessage date is nanoseconds since 2001-01-01 (Core Data epoch).
       // Values exceed Number.MAX_SAFE_INTEGER, so we convert in SQL instead.
       // Unix seconds = date / 1_000_000_000 + 978_307_200
-      const sinceUnixSec = Math.floor(since.getTime() / 1000);
+      const sinceUnixMs = since.getTime();
 
       const rows = this.db
         .prepare(
           `SELECT m.ROWID,
-                  (m.date / 1000000000 + 978307200) as date,
+                  (m.date / 1000000 + 978307200000) as date,
                   m.text, m.is_from_me,
                   h.id as sender,
                   c.chat_identifier as chat_id,
@@ -121,16 +121,16 @@ export class IMessageConnector implements IConnector {
            LEFT JOIN handle h ON m.handle_id = h.ROWID
            LEFT JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
            LEFT JOIN chat c ON c.ROWID = cmj.chat_id
-           WHERE (m.date / 1000000000 + 978307200) > ?
+           WHERE (m.date / 1000000 + 978307200000) >= ?
              AND m.text IS NOT NULL AND m.text != ''
              AND c.chat_identifier IN (${chatIds.map(() => '?').join(', ')})
            ORDER BY m.date ASC`
         )
-        .all(sinceUnixSec, ...chatIds) as MessageRow[];
+        .all(sinceUnixMs, ...chatIds) as MessageRow[];
 
       for (const row of rows) {
-        // date is already Unix seconds (converted in SQL)
-        const unixMs = row.date * 1000;
+        // date is Unix milliseconds (converted in SQL), preserving the poll cursor precision.
+        const unixMs = row.date;
         const author = row.is_from_me ? 'me' : (row.sender ?? 'unknown');
         if (row.chat_id === null || !chatIds.includes(row.chat_id)) continue;
 

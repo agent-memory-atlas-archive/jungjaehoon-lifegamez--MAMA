@@ -88,19 +88,19 @@ describe('W1 real owner configuration shape', () => {
           pollIntervalMinutes: 5,
           historicalBackfill: true,
           channels: { room: { role: 'hub' } },
-          auth: { type: 'token', tokenName: 'CHATWORK_TOKEN' },
+          auth: { type: 'token', tokenName: 'MAMA_CHATWORK_TOKEN' },
         },
         slack: {
           enabled: true,
           pollIntervalMinutes: 5,
           channels: { channel: { role: 'hub' } },
-          auth: { type: 'token', tokenName: 'SLACK_TOKEN' },
+          auth: { type: 'token', tokenName: 'MAMA_SLACK_TOKEN' },
         },
         telegram: {
           enabled: false,
           pollIntervalMinutes: 5,
           channels: {},
-          auth: { type: 'token', tokenName: 'TELEGRAM_TOKEN' },
+          auth: { type: 'token', tokenName: 'MAMA_TELEGRAM_SOURCE_TOKEN' },
         },
         kagemusha: {
           enabled: true,
@@ -136,7 +136,7 @@ describe('W1 real owner configuration shape', () => {
           enabled: true,
           pollIntervalMinutes: 5,
           channels: { board: { role: 'hub' } },
-          auth: { type: 'token', tokenName: 'TRELLO_TOKEN' },
+          auth: { type: 'token', tokenName: 'MAMA_TRELLO_TOKEN' },
         },
       }),
       'utf8'

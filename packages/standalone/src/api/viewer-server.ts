@@ -654,7 +654,11 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
     return {
       report: {
         actionRequired: actionSlot
-          ? (actionSlot.html.match(/class="report-card"/g) ?? []).length
+          ? [
+              ...actionSlot.html.matchAll(/\bclass\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g),
+            ].filter((match) =>
+              (match[1] ?? match[2] ?? match[3] ?? '').split(/\s+/).includes('report-card')
+            ).length
           : 0,
         updatedAt: slots.length === 0 ? null : Math.max(...slots.map((slot) => slot.updatedAt)),
       },

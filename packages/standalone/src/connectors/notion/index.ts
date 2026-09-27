@@ -32,6 +32,8 @@ interface NotionSearchResponse {
 }
 
 interface NotionBlock {
+  id: string;
+  has_children?: boolean;
   type: string;
   [key: string]: unknown;
 }
@@ -44,6 +46,7 @@ interface NotionBlockChildrenResponse {
 
 const MAX_SEARCH_PAGES = 100;
 const MAX_BLOCK_PAGES = 100;
+const MAX_BLOCK_DEPTH = 8;
 
 export class NotionConnector implements IConnector {
   readonly name = 'notion';
@@ -135,7 +138,9 @@ export class NotionConnector implements IConnector {
     return richText.map((t) => t.plain_text).join('');
   }
 
-  private async fetchBlockChildren(pageId: string): Promise<string> {
+  private async fetchBlockChildren(pageId: string, depth = 0): Promise<string> {
+    if (depth > MAX_BLOCK_DEPTH)
+      throw new Error(`block children depth cap (${MAX_BLOCK_DEPTH}) reached`);
     const texts: string[] = [];
     let startCursor: string | undefined;
     const visitedCursors = new Set<string>();
@@ -156,6 +161,11 @@ export class NotionConnector implements IConnector {
         for (const block of data.results ?? []) {
           const text = this.extractBlockText(block);
           if (text) texts.push(text);
+          if (block.has_children) {
+            if (depth === MAX_BLOCK_DEPTH)
+              throw new Error(`block children depth cap (${MAX_BLOCK_DEPTH}) reached`);
+            texts.push(await this.fetchBlockChildren(block.id, depth + 1));
+          }
         }
 
         if (!data.has_more) return texts.join('\n');
@@ -220,7 +230,7 @@ export class NotionConnector implements IConnector {
 
         for (const page of data.results) {
           const lastEdited = new Date(page.last_edited_time);
-          if (lastEdited <= since) continue;
+          if (lastEdited.getTime() <= since.getTime() - 60_000) continue;
 
           const title = this.extractTitle(page);
           let blockText: string;

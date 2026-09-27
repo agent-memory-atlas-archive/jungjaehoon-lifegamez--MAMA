@@ -35,6 +35,7 @@ export class DiscordGateway extends BaseGateway {
   private readonly ledger: OwnerMessageLedger;
   private readonly log: (line: string) => void;
   private readonly activeInputs = new Set<string>();
+  private readonly deliveryTails = new Map<string, Promise<void>>();
 
   constructor(private readonly options: DiscordGatewayOptions) {
     super({ intake: options.intake });
@@ -60,6 +61,7 @@ export class DiscordGateway extends BaseGateway {
         })
       );
     });
+    this.client.on('error', (error) => this.log(`discord client error=${error.message}`));
   }
 
   async start(): Promise<void> {
@@ -85,11 +87,37 @@ export class DiscordGateway extends BaseGateway {
   }
   async recoverPendingResponses(): Promise<void> {
     for (const entry of this.ledger.listUndelivered()) {
-      if (entry.deliveryUncertain) {
-        this.log(`discord delivery requires reconciliation key=${entry.key}`);
-        continue;
+      try {
+        const channel = entry.deliveryTarget?.startsWith('discord:')
+          ? entry.deliveryTarget.slice('discord:'.length)
+          : '';
+        const source = entry.key.startsWith('discord:');
+        const outbound = entry.key.startsWith('outbound:') || entry.key.startsWith('file:');
+        if (
+          (!source && !outbound) ||
+          !channel ||
+          !this.options.config.allowedChannels.includes(channel)
+        )
+          continue;
+        if (entry.deliveryUncertain) {
+          this.log(`discord delivery requires reconciliation key=${entry.key}`);
+          continue;
+        }
+        if (source && entry.state === 'processing' && !this.intake.isPending?.(entry.key)) {
+          this.ledger.markReady(entry.key, INTERRUPTED_RESPONSE);
+          await this.deliverResponse(entry.key, INTERRUPTED_RESPONSE);
+        } else if (entry.state === 'ready' && entry.response !== undefined) {
+          if (source) await this.deliverResponse(entry.key, entry.response);
+          else
+            await this.runInDestination(channel, () =>
+              this.sendChunks(channel, entry.key, entry.response!)
+            );
+        }
+      } catch (error) {
+        this.log(
+          `discord recovery failed key=${entry.key} error=${error instanceof Error ? error.message : String(error)}`
+        );
       }
-      if (entry.state === 'ready') await this.deliverResponse(entry.key, entry.response ?? '');
     }
   }
 
@@ -102,7 +130,7 @@ export class DiscordGateway extends BaseGateway {
       throw new Error('Discord response destination conflicts with its accepted message');
     if (entry.state === 'delivered') return;
     if (entry.state === 'processing') this.ledger.markReady(sourceRef, response);
-    await this.sendChunks(channelId, sourceRef, response);
+    await this.runInDestination(channelId, () => this.sendChunks(channelId, sourceRef, response));
   }
 
   async sendMessage(channelId: string, text: string, idempotencyKey?: string): Promise<void> {
@@ -114,6 +142,7 @@ export class DiscordGateway extends BaseGateway {
     const claim = this.ledger.claim(key, {
       deliveryTarget: `discord:${channelId}`,
       payloadIdentity: createHash('sha256').update(text).digest('hex'),
+      keepDeliveredOnPayloadChange: true,
       ...(idempotencyKey ? { idempotencyKey } : {}),
     });
     if (!claim.claimed) {
@@ -121,7 +150,7 @@ export class DiscordGateway extends BaseGateway {
       throw new Error('Discord message delivery is already in progress or uncertain');
     }
     this.ledger.markReady(key, text);
-    await this.sendChunks(channelId, key, text);
+    await this.runInDestination(channelId, () => this.sendChunks(channelId, key, text));
   }
 
   async sendToOwner(text: string, idempotencyKey: string): Promise<void> {
@@ -157,10 +186,14 @@ export class DiscordGateway extends BaseGateway {
       }
       const target = await this.client.channels.fetch(channel);
       if (!target?.isSendable()) throw new Error('Discord target channel cannot receive messages');
-      const sent = await target.send({
-        content: caption,
-        files: [new AttachmentBuilder(readFileSync(file.fd), { name: basename(file.path) })],
-      });
+      const sent = await this.runInDestination<
+        import('discord.js').Message<false> | import('discord.js').Message<true>
+      >(channel, () =>
+        target.send({
+          content: caption,
+          files: [new AttachmentBuilder(readFileSync(file.fd), { name: basename(file.path) })],
+        })
+      );
       this.ledger.markDelivered(key);
       return { messageId: sent.id, sentAs: file.sentAs, size: file.size };
     } catch (error) {
@@ -190,13 +223,6 @@ export class DiscordGateway extends BaseGateway {
     const existing = this.ledger.get(ref);
     if (existing) {
       if (existing.state === 'ready') await this.deliverResponse(ref, existing.response ?? '');
-      else if (existing.state === 'processing' && !this.intake.isPending?.(ref)) {
-        this.ledger.markReady(
-          ref,
-          'The previous processing attempt was interrupted. It was not rerun because its external side effects could not be proven safe to repeat. Please send a new message if you want to retry it.'
-        );
-        await this.deliverResponse(ref, this.ledger.get(ref)?.response ?? '');
-      }
       return;
     }
     if (!message.content.trim() && !message.attachments.size) return;
@@ -221,7 +247,11 @@ export class DiscordGateway extends BaseGateway {
             const response = await fetch(attachment.url, { signal: AbortSignal.timeout(60_000) });
             if (!response.ok)
               throw new Error(`Discord attachment download failed (HTTP ${response.status})`);
-            const path = join(this.options.downloadsDir, 'discord', `${message.id}_${name}`);
+            const path = join(
+              this.options.downloadsDir,
+              'discord',
+              `${message.id}_${attachment.id}_${name}`
+            );
             const size = await saveResponseBody(response, path);
             return {
               name,
@@ -261,6 +291,7 @@ export class DiscordGateway extends BaseGateway {
     if (!channel?.isSendable()) throw new Error('Discord target channel cannot receive messages');
     const chunks = splitForDiscord(text);
     for (let i = entry.nextChunkIndex ?? 0; i < chunks.length; i++) {
+      this.ledger.markDeliveryProgress(key, i, true);
       try {
         const sent = await channel.send(chunks[i]!);
         this.ledger.markDeliveryProgress(key, i + 1, false, sent.id);
@@ -278,6 +309,23 @@ export class DiscordGateway extends BaseGateway {
     });
   }
 
+  private async runInDestination<T>(destination: string, work: () => Promise<T>): Promise<T> {
+    const previous = this.deliveryTails.get(destination) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => gate);
+    this.deliveryTails.set(destination, tail);
+    await previous;
+    try {
+      return await work();
+    } finally {
+      release();
+      if (this.deliveryTails.get(destination) === tail) this.deliveryTails.delete(destination);
+    }
+  }
+
   private requireAllowed(channel: string): void {
     if (!this.options.config.allowedChannels.includes(channel))
       throw new Error('Discord destination is not allowlisted');
@@ -286,6 +334,8 @@ export class DiscordGateway extends BaseGateway {
     if (!this.connected) throw new Error('Discord gateway not connected');
   }
 }
+const INTERRUPTED_RESPONSE =
+  'The previous processing attempt was interrupted. It was not rerun because its external side effects could not be proven safe to repeat. Please send a new message if you want to retry it.';
 function hash(kind: string, value: string): string {
   return createHash('sha256').update(`${kind}\0${value}`).digest('hex');
 }

@@ -101,6 +101,14 @@ describe('IMessageConnector', () => {
     await connector.dispose();
   });
 
+  it('includes a message at the cursor millisecond instead of skipping its cursor second', async () => {
+    const connector = new IMessageConnector(makeConfig(), databasePath);
+    await connector.init();
+    const items = await connector.poll(new Date('2024-01-01T00:00:01.000Z'));
+    expect(items.map((item) => item.sourceId)).toContain('imessage:1');
+    await connector.dispose();
+  });
+
   it('surfaces a failed SQLite query instead of returning a partial poll', async () => {
     const connector = new IMessageConnector(makeConfig(), databasePath);
     await connector.init();

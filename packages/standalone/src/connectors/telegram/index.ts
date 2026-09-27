@@ -112,7 +112,7 @@ export class TelegramConnector implements IConnector {
     }
   }
 
-  async poll(since: Date): Promise<NormalizedItem[]> {
+  async poll(_since: Date): Promise<NormalizedItem[]> {
     if (!this.token) throw new Error('TelegramConnector not initialized');
     if (this.pendingOffset !== null) throw new Error('Telegram poll handoff is already active');
     this.pendingOffset = this.offset;
@@ -126,49 +126,47 @@ export class TelegramConnector implements IConnector {
       throw new Error('Telegram requires explicitly configured source chat identifiers');
     }
     const items: NormalizedItem[] = [];
-    const sinceEpoch = Math.floor(since.getTime() / 1000);
-
     try {
-      const offset = this.pendingOffset;
-      if (offset === null) throw new Error('Telegram poll offset is unavailable');
-      const url = new URL(`${this.baseUrl}/bot${this.token}/getUpdates`);
-      url.searchParams.set('offset', String(offset));
-      url.searchParams.set('limit', '100');
-      url.searchParams.set('timeout', '0');
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 30_000);
-      let res: Response;
-      try {
-        res = await fetch(url.toString(), { signal: controller.signal });
-      } finally {
-        clearTimeout(timeout);
-      }
-
-      if (!res.ok) throw new Error(`getUpdates HTTP ${res.status}`);
-      const data = (await res.json()) as TelegramGetUpdatesResponse;
-      if (!data.ok) throw new Error('Telegram API returned ok=false');
-      let nextOffset: number = offset;
-      for (const update of data.result) {
-        if (update.update_id < offset) continue;
-        if (update.update_id >= nextOffset) nextOffset = update.update_id + 1;
-        const msg = update.message;
-        if (!msg?.text || msg.date <= sinceEpoch) continue;
-        const chatId = String(msg.chat.id);
-        if (!configuredChats.has(chatId)) continue;
-        items.push({
-          source: 'telegram',
-          sourceId: `${chatId}:${msg.message_id}`,
-          channel: chatId,
-          author: msg.from?.first_name ?? 'unknown',
-          content: msg.text,
-          timestamp: new Date(msg.date * 1000),
-          type: 'message',
-          metadata: {
-            chatId,
-            messageId: msg.message_id,
-            updateId: update.update_id,
-          },
-        });
+      let nextOffset = this.pendingOffset;
+      if (nextOffset === null) throw new Error('Telegram poll offset is unavailable');
+      for (;;) {
+        const pageOffset = nextOffset;
+        const url = new URL(`${this.baseUrl}/bot${this.token}/getUpdates`);
+        url.searchParams.set('offset', String(nextOffset));
+        url.searchParams.set('limit', '100');
+        url.searchParams.set('timeout', '0');
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 30_000);
+        let res: Response;
+        try {
+          res = await fetch(url.toString(), { signal: controller.signal });
+        } finally {
+          clearTimeout(timeout);
+        }
+        if (!res.ok) throw new Error(`getUpdates HTTP ${res.status}`);
+        const data = (await res.json()) as TelegramGetUpdatesResponse;
+        if (!data.ok) throw new Error('Telegram API returned ok=false');
+        for (const update of data.result) {
+          if (update.update_id < nextOffset) continue;
+          nextOffset = Math.max(nextOffset, update.update_id + 1);
+          const msg = update.message;
+          if (!msg?.text) continue;
+          const chatId = String(msg.chat.id);
+          if (!configuredChats.has(chatId)) continue;
+          items.push({
+            source: 'telegram',
+            sourceId: `${chatId}:${msg.message_id}`,
+            channel: chatId,
+            author: msg.from?.first_name ?? 'unknown',
+            content: msg.text,
+            timestamp: new Date(msg.date * 1000),
+            type: 'message',
+            metadata: { chatId, messageId: msg.message_id, updateId: update.update_id },
+          });
+        }
+        if (data.result.length < 100) break;
+        if (nextOffset === pageOffset)
+          throw new Error('getUpdates full page did not advance its update cursor');
       }
       this.pendingOffset = nextOffset;
       items.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
@@ -178,7 +176,7 @@ export class TelegramConnector implements IConnector {
       if (!this.pollCommitDeferred) this.commitPoll();
       return items;
     } catch (error) {
-      this.lastError = `Telegram poll failed for 1 update page; last error: ${error instanceof Error ? error.message : String(error)}`;
+      this.lastError = `Telegram poll failed while reading update pages; last error: ${error instanceof Error ? error.message : String(error)}`;
       this.lastPollTime = new Date();
       this.lastPollCount = items.length;
       if (!this.pollCommitDeferred) this.abortPollHandoff();

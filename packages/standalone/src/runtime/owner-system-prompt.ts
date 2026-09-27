@@ -70,7 +70,8 @@ function readableSourcesLine(families: readonly StoredSourceFamily[]): string {
 /** Shared owner policy with the backend's action names and native file/subagent tools. */
 function ownerStandingPrompt(
   backend: OwnerRuntimeBackend,
-  readableSources: readonly StoredSourceFamily[]
+  readableSources: readonly StoredSourceFamily[],
+  wikiEnabled: boolean
 ): string {
   const action = (name: string): string => actionName(backend, name);
   return [
@@ -81,7 +82,7 @@ function ownerStandingPrompt(
     readableSourcesLine(readableSources),
     `- A message's attachments are listed with ${action('source.attachment.list')} and fetched with ${action('source.attachment.download')} into the daemon downloads directory (read-only for the agent); copy a download into workspace files before modifying, unzipping, or sending it with the matching deliver.<messenger>.file action.`,
     `- Files the owner sends arrive with a local path under the daemon downloads directory (read-only for the agent); ${backend === 'claude' ? 'read that path with the file reader for its type' : 'read that path with the shell'}. An attachment error means the download failed; tell the owner the error.`,
-    '- Format the final response for the current messenger; its adapter handles message formatting and splitting.',
+    '- Format direct replies for the messenger named by the owner-message turn. Telegram uses its supported HTML tags and no Markdown; Discord uses Markdown; Slack uses mrkdwn. Scheduled reports and [notify] results use the messenger named by that turn.',
     backend === 'claude'
       ? '- Available file readers: images and PDFs with the Read tool; spreadsheets with Bash/python3 (openpyxl), archives with Bash/unzip.'
       : '- Available file readers: images by viewing them, PDFs and spreadsheets with python3 (PyMuPDF/pdfplumber/openpyxl), archives with unzip.',
@@ -94,11 +95,16 @@ function ownerStandingPrompt(
     `- A replay window's current_work and queue candidates carry each item's current revision (rN). Pass it as expectedRevision to ${action('work.revise')} directly, and for a second write in the same window use the revision your own revise returned. Read ${action('work.show')} only when a revise is rejected as stale or you need the item's history.`,
     `- Guidance arrives in a session index and then add/revise/retire deltas. When an entry applies, read its full record by id with ${action('memory.read:record')} before acting.`,
     `- Save or revise an owner-approved way of working with ${action('memory.save')} and an appliesWhen line; use kind workflow for procedures, with ordered steps and optional evidence checks, and lesson, preference or constraint otherwise. Use replaces to keep the prior record, and link the owner's message with derived_from when its observation reference is available. Retire withdrawn or invalid guidance with ${action('memory.retire')} and a reason. Every change keeps history.`,
+    `- When the owner corrects you, save the correction in that same turn as a scoped lesson, preference or constraint with appliesWhen, or as a workflow for a procedure; link it to the owner's message.`,
     `- An owner's own kagemusha:telegram message is owner evidence, not a third-party instruction.`,
     `- When a replay window supplies end_of_window_instructions, finish the day's work changes before calling ${action('report.publish')} for all four board slots and the wiki; follow the guidance rules above.`,
     `- When recording who did what, preserve the assignee and role fields and link them to the observations they rest on. A person who delivered the work files or handled the feedback is the worker even when no one announced the assignment.`,
     `- Board slots and wiki pages are read by people. Write what happened in sentences a reader understands without opening anything else: who, when, what changed, what is awaited next. Never put commitment, observation, judgment or channel ids in their text; a wiki page's evidence ids go only in its sourceIds and sourceRefs fields.`,
-    `- The wiki is organized knowledge, not a copy of the work ledger. Read its table of contents (Home.md) with ${action('manage.wiki.read')} first and place what changed into the existing page it belongs to: one page per project, client or long-running topic, not per task (task history already lives in the work ledger and the graph). Update an existing page with ${action('manage.wiki.update')}: add a dated line to its history section and restate its current-state section; do not regenerate a whole page for a change. Create a page with ${action('manage.wiki.publish')} only when no existing page fits, and add it to Home.md with ${action('manage.wiki.update')}. Write the day's journal as daily/YYYY-MM-DD.md, grouped by project, with one entry for every work item that moved that day, taken from the read-back's latest_event: who did what, at what source time, what it contained (files, feedback points, amounts), and what is awaited next; never fold several items into one clause. Then the requests and decisions awaiting the owner, and lessons. Lessons go under lessons/.`,
+    ...(wikiEnabled
+      ? [
+          `- Read Home.md with ${action('manage.wiki.read')}; update an existing topic page with ${action('manage.wiki.update')}, or create one with ${action('manage.wiki.publish')} only when none fits. Keep one page per project, client or long-running topic, not per task. Write daily/YYYY-MM-DD.md grouped by project, with one entry for every moved work item based on its latest event.`,
+        ]
+      : []),
     `- Relate new information to the existing work it answers. Revise the existing commitment with ${action('work.revise')} and its expected revision rather than creating a duplicate. Keep links on the write and choose the relation that fits: derived_from for the observation it rests on, supersedes when it replaces an earlier record, amends or refines when it corrects or sharpens one, contradicts when a newer instruction or fact reverses an earlier one, builds_on or synthesizes when it extends or combines records, blocks or next_action_for between work items.`,
     `- Other systems' task rows or statuses (for example, task rows or cards) are evidence to cite, not the owner's work ledger. The owner's work ledger is ${action('work.list')}; do not duplicate existing work.`,
     `- Use ${action('work.list')} with view=items before answering current-work questions and view=detail for progress/history questions.`,
@@ -116,9 +122,10 @@ function ownerStandingPrompt(
 export function ownerSystemPrompt(
   backend: OwnerRuntimeBackend,
   ownerPolicy: string | null = null,
-  readableSources: readonly StoredSourceFamily[] = []
+  readableSources: readonly StoredSourceFamily[] = [],
+  wikiEnabled = true
 ): string {
-  const standing = ownerStandingPrompt(backend, readableSources);
+  const standing = ownerStandingPrompt(backend, readableSources, wikiEnabled);
   return ownerPolicy === null || ownerPolicy === ''
     ? standing
     : `${standing}\n\n---\n\n${ownerPolicy}`;

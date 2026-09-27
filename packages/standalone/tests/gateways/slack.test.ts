@@ -46,6 +46,7 @@ afterEach(() => {
 describe('Slack owner gateway', () => {
   it('acks events, drops non-owners with hashed ids, and accepts duplicate owner messages once', async () => {
     const accepted: unknown[] = [];
+    const order: string[] = [];
     const logs: string[] = [];
     const gateway = new SlackGateway({
       token: 'fixture-bot-token',
@@ -53,6 +54,7 @@ describe('Slack owner gateway', () => {
       intake: {
         acceptOwnerMessage: (input) => {
           accepted.push(input);
+          order.push('accepted');
           return { state: 'accepted' } as never;
         },
         isPending: () => true,
@@ -69,7 +71,9 @@ describe('Slack owner gateway', () => {
     });
     await gateway.start();
     const socket = mocks.sockets[0] as EventEmitter;
-    const ack = vi.fn(async () => undefined);
+    const ack = vi.fn(async () => {
+      order.push('ack');
+    });
     socket.emit('message', {
       ack,
       event: { channel: 'channel_test', user: 'user_stranger', ts: '1.0', text: 'private' },
@@ -85,6 +89,7 @@ describe('Slack owner gateway', () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(ack).toHaveBeenCalledTimes(3);
     expect(accepted).toHaveLength(1);
+    expect(order.lastIndexOf('ack')).toBeGreaterThan(order.indexOf('accepted'));
     expect(accepted[0]).toMatchObject({ id: 'slack:channel_test:2.0', channelKey: 'channel_test' });
     expect(logs.join('\n')).toContain('sender_hash=');
     expect(logs.join('\n')).not.toContain('user_stranger');
@@ -115,6 +120,158 @@ describe('Slack owner gateway', () => {
     expect(accepted[1]).toMatchObject({
       payload: { attachments: [{ name: 'result.pdf', error: 'download unavailable' }] },
     });
+    await gateway.stop();
+  });
+
+  it('recovers only Slack entries, sends a startup interruption notice, and continues after a failed entry', async () => {
+    const ledgerPath = join(root, 'ledger.json');
+    const ledger = new OwnerMessageLedger(ledgerPath);
+    ledger.claim('slack:channel_test:failed', {
+      deliveryTarget: 'slack:channel_test',
+      payloadIdentity: 'b'.repeat(64),
+    });
+    ledger.markReady('slack:channel_test:failed', 'first attempt');
+    ledger.claim('slack:channel_test:interrupted', {
+      deliveryTarget: 'slack:channel_test',
+      payloadIdentity: 'a'.repeat(64),
+    });
+    ledger.claim('discord:channel_test:foreign', {
+      deliveryTarget: 'discord:channel_test',
+      payloadIdentity: 'c'.repeat(64),
+    });
+    ledger.markReady('discord:channel_test:foreign', 'foreign');
+    const logs: string[] = [];
+    const gateway = new SlackGateway({
+      token: 'fixture-bot',
+      appToken: 'fixture-app',
+      intake: {
+        acceptOwnerMessage: () => ({ state: 'accepted' }) as never,
+        isPending: () => false,
+      },
+      config: {
+        enabled: true,
+        ownerChannelId: 'channel_test',
+        allowedChannels: ['channel_test'],
+        ownerUserIds: ['user_owner'],
+      },
+      messageLedgerPath: ledgerPath,
+      log: (line) => logs.push(line),
+    });
+    const send = (mocks.webClients[0] as MockWebClient).chat.postMessage;
+    send.mockRejectedValueOnce(new Error('provider unavailable'));
+    await gateway.start();
+    await gateway.recoverPendingResponses();
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1]?.[0].text).toContain('interrupted');
+    expect(logs.join('\n')).toContain('slack recovery failed key=slack:channel_test:failed');
+    expect(new OwnerMessageLedger(ledgerPath).get('discord:channel_test:foreign')?.state).toBe(
+      'ready'
+    );
+    await gateway.stop();
+  });
+
+  it('treats a live processing duplicate as in flight even when the mailbox callback says false', async () => {
+    const accepted = vi.fn(() => ({ state: 'accepted' }) as never);
+    const gateway = new SlackGateway({
+      token: 'fixture-bot',
+      appToken: 'fixture-app',
+      intake: { acceptOwnerMessage: accepted, isPending: () => false },
+      config: {
+        enabled: true,
+        ownerChannelId: 'channel_test',
+        allowedChannels: ['channel_test'],
+        ownerUserIds: ['user_owner'],
+      },
+      messageLedgerPath: join(root, 'ledger.json'),
+    });
+    await gateway.start();
+    const socket = mocks.sockets[0] as EventEmitter;
+    const event = { channel: 'channel_test', user: 'user_owner', ts: '7.0', text: 'one message' };
+    socket.emit('message', { event, ack: vi.fn() });
+    await vi.waitFor(() => expect(accepted).toHaveBeenCalledOnce());
+    socket.emit('app_mention', { event, ack: vi.fn() });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(accepted).toHaveBeenCalledOnce();
+    expect((mocks.webClients[0] as MockWebClient).chat.postMessage).not.toHaveBeenCalled();
+    await gateway.stop();
+  });
+
+  it('marks a chunk uncertain before sending and keeps a delivered idempotency key after regenerated text', async () => {
+    const ledgerPath = join(root, 'ledger.json');
+    const gateway = new SlackGateway({
+      token: 'fixture-bot',
+      appToken: 'fixture-app',
+      intake: { acceptOwnerMessage: () => ({ state: 'accepted' }) as never },
+      config: {
+        enabled: true,
+        ownerChannelId: 'channel_test',
+        allowedChannels: ['channel_test'],
+        ownerUserIds: ['user_owner'],
+      },
+      messageLedgerPath: ledgerPath,
+    });
+    await gateway.start();
+    const send = (mocks.webClients[0] as MockWebClient).chat.postMessage;
+    let release!: (value: { ok: boolean; ts: string }) => void;
+    send.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }) as never
+    );
+    const pending = gateway.sendMessage('channel_test', 'report v1', 'report-key');
+    await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
+    expect(new OwnerMessageLedger(ledgerPath).listUndelivered()[0]?.deliveryUncertain).toBe(true);
+    release({ ok: true, ts: '3.0' });
+    await pending;
+    await expect(
+      gateway.sendMessage('channel_test', 'report v2', 'report-key')
+    ).resolves.toBeUndefined();
+    expect(send).toHaveBeenCalledOnce();
+    await gateway.stop();
+  });
+
+  it('keeps same-named attachments from overwriting each other', async () => {
+    const accepted: Array<{ payload?: { attachments?: Array<{ path?: string }> } }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('file'))
+    );
+    const gateway = new SlackGateway({
+      token: 'fixture-bot',
+      appToken: 'fixture-app',
+      intake: {
+        acceptOwnerMessage: (input) => {
+          accepted.push(input as never);
+          return { state: 'accepted' } as never;
+        },
+      },
+      config: {
+        enabled: true,
+        ownerChannelId: 'channel_test',
+        allowedChannels: ['channel_test'],
+        ownerUserIds: ['user_owner'],
+      },
+      messageLedgerPath: join(root, 'ledger.json'),
+      downloadsDir: join(root, 'downloads'),
+    });
+    await gateway.start();
+    (mocks.sockets[0] as EventEmitter).emit('message', {
+      ack: vi.fn(),
+      event: {
+        channel: 'channel_test',
+        user: 'user_owner',
+        ts: '42.0',
+        text: '',
+        files: [
+          { id: 'file-a', name: 'same.pdf', url_private_download: 'https://example.test/a' },
+          { id: 'file-b', name: 'same.pdf', url_private_download: 'https://example.test/b' },
+        ],
+      },
+    });
+    await vi.waitFor(() => expect(accepted).toHaveLength(1));
+    const paths = accepted[0]!.payload!.attachments!.map((item) => item.path);
+    expect(new Set(paths).size).toBe(2);
     await gateway.stop();
   });
 

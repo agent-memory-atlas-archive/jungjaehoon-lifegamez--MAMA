@@ -56,6 +56,7 @@ export class SlackGateway extends BaseGateway {
   private readonly ledger: OwnerMessageLedger;
   private readonly log: (line: string) => void;
   private readonly activeInputs = new Set<string>();
+  private readonly deliveryTails = new Map<string, Promise<void>>();
 
   constructor(private readonly options: SlackGatewayOptions) {
     super({ intake: options.intake });
@@ -73,9 +74,9 @@ export class SlackGateway extends BaseGateway {
       this.emitEvent({ type: 'disconnected', source: this.source, timestamp: new Date() });
     });
     this.socket.on('message', async ({ event, ack }) => {
-      await ack();
       try {
         await this.accept(event as SlackMessageEvent);
+        await ack();
       } catch (error) {
         this.emitEvent({
           type: 'error',
@@ -86,9 +87,9 @@ export class SlackGateway extends BaseGateway {
       }
     });
     this.socket.on('app_mention', async ({ event, ack }) => {
-      await ack();
       try {
         await this.accept(event as SlackMessageEvent);
+        await ack();
       } catch (error) {
         this.emitEvent({
           type: 'error',
@@ -121,11 +122,37 @@ export class SlackGateway extends BaseGateway {
   }
   async recoverPendingResponses(): Promise<void> {
     for (const entry of this.ledger.listUndelivered()) {
-      if (entry.deliveryUncertain) {
-        this.log(`slack delivery requires reconciliation key=${entry.key}`);
-        continue;
+      try {
+        const channel = entry.deliveryTarget?.startsWith('slack:')
+          ? entry.deliveryTarget.slice('slack:'.length)
+          : '';
+        const source = entry.key.startsWith('slack:');
+        const outbound = entry.key.startsWith('outbound:') || entry.key.startsWith('file:');
+        if (
+          (!source && !outbound) ||
+          !channel ||
+          !this.options.config.allowedChannels.includes(channel)
+        )
+          continue;
+        if (entry.deliveryUncertain) {
+          this.log(`slack delivery requires reconciliation key=${entry.key}`);
+          continue;
+        }
+        if (source && entry.state === 'processing' && !this.intake.isPending?.(entry.key)) {
+          this.ledger.markReady(entry.key, INTERRUPTED_RESPONSE);
+          await this.deliverResponse(entry.key, INTERRUPTED_RESPONSE);
+        } else if (entry.state === 'ready' && entry.response !== undefined) {
+          if (source) await this.deliverResponse(entry.key, entry.response);
+          else
+            await this.runInDestination(channel, () =>
+              this.sendChunks(channel, entry.key, entry.response!)
+            );
+        }
+      } catch (error) {
+        this.log(
+          `slack recovery failed key=${entry.key} error=${error instanceof Error ? error.message : String(error)}`
+        );
       }
-      if (entry.state === 'ready') await this.deliverResponse(entry.key, entry.response ?? '');
     }
   }
   async deliverResponse(sourceRef: string, response: string): Promise<void> {
@@ -137,7 +164,7 @@ export class SlackGateway extends BaseGateway {
       throw new Error('Slack response destination conflicts with its accepted message');
     if (entry.state === 'delivered') return;
     if (entry.state === 'processing') this.ledger.markReady(sourceRef, response);
-    await this.sendChunks(channel, sourceRef, response);
+    await this.runInDestination(channel, () => this.sendChunks(channel, sourceRef, response));
   }
   async sendMessage(channel: string, text: string, idempotencyKey?: string): Promise<void> {
     this.requireConnected();
@@ -148,6 +175,7 @@ export class SlackGateway extends BaseGateway {
     const claim = this.ledger.claim(key, {
       deliveryTarget: `slack:${channel}`,
       payloadIdentity: createHash('sha256').update(text).digest('hex'),
+      keepDeliveredOnPayloadChange: true,
       ...(idempotencyKey ? { idempotencyKey } : {}),
     });
     if (!claim.claimed) {
@@ -155,7 +183,7 @@ export class SlackGateway extends BaseGateway {
       throw new Error('Slack message delivery is already in progress or uncertain');
     }
     this.ledger.markReady(key, text);
-    await this.sendChunks(channel, key, text);
+    await this.runInDestination(channel, () => this.sendChunks(channel, key, text));
   }
   async sendToOwner(text: string, key: string): Promise<void> {
     const channel = this.options.config.ownerChannelId;
@@ -187,12 +215,14 @@ export class SlackGateway extends BaseGateway {
           return { sentAs: file.sentAs, size: file.size, idempotent: true };
         throw new Error('Slack file delivery is already in progress or uncertain');
       }
-      const result = (await this.api.files.uploadV2({
-        channel_id: channel,
-        file: readFileSync(file.fd),
-        filename: basename(file.path),
-        ...(caption === undefined ? {} : { initial_comment: caption }),
-      })) as { files?: Array<{ id?: string }> };
+      const result = (await this.runInDestination(channel, () =>
+        this.api.files.uploadV2({
+          channel_id: channel,
+          file: readFileSync(file.fd),
+          filename: basename(file.path),
+          ...(caption === undefined ? {} : { initial_comment: caption }),
+        })
+      )) as { files?: Array<{ id?: string }> };
       const id = result.files?.[0]?.id;
       this.ledger.markDelivered(key);
       return { ...(id ? { messageId: id } : {}), sentAs: file.sentAs, size: file.size };
@@ -229,13 +259,6 @@ export class SlackGateway extends BaseGateway {
     const existing = this.ledger.get(ref);
     if (existing) {
       if (existing.state === 'ready') await this.deliverResponse(ref, existing.response ?? '');
-      else if (existing.state === 'processing' && !this.intake.isPending?.(ref)) {
-        this.ledger.markReady(
-          ref,
-          'The previous processing attempt was interrupted. It was not rerun because its external side effects could not be proven safe to repeat. Please send a new message if you want to retry it.'
-        );
-        await this.deliverResponse(ref, this.ledger.get(ref)?.response ?? '');
-      }
       return;
     }
     const files = event.files ?? [];
@@ -268,7 +291,7 @@ export class SlackGateway extends BaseGateway {
             const path = join(
               this.options.downloadsDir,
               'slack',
-              `${safeFileName(event.ts!)}_${name}`
+              `${safeFileName(event.ts!)}_${safeFileName(file.id)}_${name}`
             );
             const size = await saveResponseBody(response, path);
             return { name, path, size, ...(file.mimetype ? { mimeType: file.mimetype } : {}) };
@@ -301,6 +324,7 @@ export class SlackGateway extends BaseGateway {
     if (entry.deliveryUncertain) throw new Error('Slack response delivery is uncertain');
     const chunks = splitForSlack(text);
     for (let i = entry.nextChunkIndex ?? 0; i < chunks.length; i++) {
+      this.ledger.markDeliveryProgress(key, i, true);
       try {
         const sent = await this.api.chat.postMessage({ channel, text: chunks[i]! });
         this.ledger.markDeliveryProgress(key, i + 1, false, sent.ts);
@@ -317,6 +341,22 @@ export class SlackGateway extends BaseGateway {
       data: { sourceMessageRef: key },
     });
   }
+  private async runInDestination<T>(destination: string, work: () => Promise<T>): Promise<T> {
+    const previous = this.deliveryTails.get(destination) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => gate);
+    this.deliveryTails.set(destination, tail);
+    await previous;
+    try {
+      return await work();
+    } finally {
+      release();
+      if (this.deliveryTails.get(destination) === tail) this.deliveryTails.delete(destination);
+    }
+  }
   private requireAllowed(channel: string): void {
     if (!this.options.config.allowedChannels.includes(channel))
       throw new Error('Slack destination is not allowlisted');
@@ -325,6 +365,8 @@ export class SlackGateway extends BaseGateway {
     if (!this.connected) throw new Error('Slack gateway not connected');
   }
 }
+const INTERRUPTED_RESPONSE =
+  'The previous processing attempt was interrupted. It was not rerun because its external side effects could not be proven safe to repeat. Please send a new message if you want to retry it.';
 function sourceRefChannel(value: string): string {
   if (!value.startsWith('slack:')) throw new Error('Slack source message reference is invalid');
   const parts = value.split(':');
