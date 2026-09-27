@@ -102,7 +102,7 @@ export function createReportScheduler(options: ReportSchedulerOptions) {
       const { report, hourKey } = scheduledReport(row.payload);
       const text = result.response.trim();
       if (!text) throw new Error('Scheduled report returned empty output');
-      await options.sendToOwner(text, row.stimulusId);
+      await options.sendToOwner(text, `report:${hourKey}:${report}`);
       const next = { ...state, [report === 'full' ? 'lastFullKey' : 'lastReminderKey']: hourKey };
       mkdirSync(dirname(options.statePath), { recursive: true });
       const temporary = `${options.statePath}.tmp`;

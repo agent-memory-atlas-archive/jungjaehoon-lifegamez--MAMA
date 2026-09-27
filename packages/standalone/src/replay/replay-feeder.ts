@@ -31,7 +31,6 @@ export interface ReplayFeederOptions {
   untilMs: number;
   cursorPath: string;
   ledgerPath: string;
-  setReplaySourceEndMs: (value: number | undefined) => void;
   readLedgerDigest?: (asOfMs?: number) => readonly ReplayLedgerDigestItem[];
   buildQueue?: (
     window: ReplayWindow,
@@ -180,9 +179,6 @@ export class ReplayFeeder {
     const status = cursor.currentWindow.deltas[stimulusId];
     if (status === 'settled') return cursor;
     const source = deltaLedgerFields(delta);
-    const ceiling = window.endMs - 1;
-    if (ceiling < 0) throw new Error('Replay window has no inclusive source ceiling');
-    this.options.setReplaySourceEndMs(ceiling);
     try {
       if (status === undefined) {
         const existing = this.options.mailbox.readInput(stimulusId, this.options.principalId);
@@ -233,8 +229,6 @@ export class ReplayFeeder {
         });
       }
       throw error;
-    } finally {
-      this.options.setReplaySourceEndMs(undefined);
     }
   }
 

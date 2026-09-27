@@ -1,5 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+  symlinkSync,
+  lstatSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { saveResponseBody } from '../../src/connectors/framework/attachment-io.js';
@@ -10,9 +19,25 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'attachment-limit-'));
   target = join(root, 'attachment.bin');
 });
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(() => {
+  vi.restoreAllMocks();
+  rmSync(root, { recursive: true, force: true });
+});
 
 describe('attachment response storage', () => {
+  it('does not follow or remove an existing temporary symlink', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(123);
+    const outside = join(root, 'outside');
+    writeFileSync(outside, 'untouched');
+    const temporary = `${target}.${process.pid}.123.part`;
+    symlinkSync(outside, temporary);
+    await expect(saveResponseBody(new Response('replacement'), target)).rejects.toThrow(
+      /saving body/
+    );
+    expect(readFileSync(outside, 'utf8')).toBe('untouched');
+    expect(lstatSync(temporary).isSymbolicLink()).toBe(true);
+  });
+
   it('saves exactly 50 MiB without a content-length header', async () => {
     const response = new Response(new Uint8Array(50 * 1024 * 1024));
     expect(await saveResponseBody(response, target)).toBe(52_428_800);

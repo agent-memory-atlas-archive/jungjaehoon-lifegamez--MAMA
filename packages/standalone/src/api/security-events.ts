@@ -34,14 +34,26 @@ const ALERT_WINDOW_MS = 10 * 60 * 1000;
 
 export function createSecurityEventRecorder(options: SecurityEventOptions = {}) {
   const path = options.path ?? join(homedir(), '.mama', 'logs', 'security-events.jsonl');
-  const lastAlert = new Map<string, number>();
+  const lastAlert = new Map<SecurityEventClass, { time: number; suppressed: number }>();
 
   return {
     path,
     record(observed: SecurityEvent): void {
       // The event id is the alert's idempotency key too, so a Telegram alert in the message ledger
       // leads back to its line here.
-      const event = { eventId: randomUUID(), ...observed };
+      const shouldAlert =
+        observed.class !== 'owner_access' && observed.class !== 'public_asset' && !options.replay;
+      const now = Date.now();
+      const previous = lastAlert.get(observed.class);
+      const suppressed =
+        shouldAlert && previous !== undefined && now - previous.time < ALERT_WINDOW_MS;
+      if (suppressed) previous.suppressed++;
+      const suppressedSinceLastAlert = previous?.suppressed ?? 0;
+      if (shouldAlert && !suppressed) {
+        // Reserve before asynchronous delivery, including failures; this is one alert per class.
+        lastAlert.set(observed.class, { time: now, suppressed: 0 });
+      }
+      const event = { eventId: randomUUID(), ...observed, suppressedSinceLastAlert };
       try {
         mkdirSync(dirname(path), { recursive: true });
         const fd = openSync(path, 'a', 0o600);
@@ -56,16 +68,7 @@ export function createSecurityEventRecorder(options: SecurityEventOptions = {}) 
         console.error('[viewer] security_event_write_failed');
       }
 
-      if (event.class === 'owner_access' || event.class === 'public_asset' || options.replay)
-        return;
-      const now = Date.now();
-      for (const [key, time] of lastAlert) {
-        if (now - time >= ALERT_WINDOW_MS) lastAlert.delete(key);
-      }
-      const key = `${event.class}:${event.path}`;
-      if (lastAlert.has(key)) return;
-      // Reserve before the asynchronous send, including failures. There is no retry worker.
-      lastAlert.set(key, now);
+      if (!shouldAlert || suppressed) return;
       const kst = new Date(Date.parse(event.time) + 9 * 60 * 60 * 1000)
         .toISOString()
         .slice(0, 19)
@@ -75,6 +78,7 @@ export function createSecurityEventRecorder(options: SecurityEventOptions = {}) 
         `Class: ${event.class}`,
         `Path: ${event.path}`,
         `Status: ${event.status}`,
+        `Suppressed since previous alert: ${suppressedSinceLastAlert}`,
         `Time: ${kst} KST`,
         `Country: ${event.country ?? 'unknown'}`,
       ].join('\n');

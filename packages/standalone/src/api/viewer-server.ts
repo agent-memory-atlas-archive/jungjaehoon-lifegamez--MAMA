@@ -856,12 +856,6 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
     const url = new URL(req.url ?? '/', 'http://localhost');
     if (isTunnelRequest(req) || apiPath(url.pathname))
       audit.identity = await authenticateViewerRequest(req, audit);
-    const origin = req.headers.origin;
-    if (typeof origin === 'string' && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
-      res.setHeader('Access-Control-Allow-Origin', origin);
-    }
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
 

@@ -628,6 +628,7 @@ describe('one stimulus intake and delivery', () => {
       expect(results).toEqual(['Owner report']);
       expect(prompt).toContain('Gather non-urgent updates hourly.');
       expect(queries[0]).toContain('report.publish');
+      expect(prompt).not.toMatch(/lodging|check-ins|check-outs/i);
       expect(prompt).toContain('work.list');
       expect(prompt).toContain('report.publish');
       expect(prompt).toContain('no commitment, observation, judgment or channel ids');
@@ -742,7 +743,6 @@ describe('one stimulus intake and delivery', () => {
 
   it('passes a replay ceiling to one turn and clears it after delivery', async () => {
     const delivery = createStimulusDelivery({ lessonResolver: async () => [] });
-    delivery.setReplaySourceEndMs(1_500);
     const context = {
       nativeInputId: 'input',
       resultForReceipt: () => null,
@@ -768,7 +768,7 @@ describe('one stimulus intake and delivery', () => {
         status: 'claimed',
         attempts: 1,
         createdAt: 1,
-        payload: undefined,
+        payload: { replay: { windowEndMs: 1_501 } },
         coalesceKey: null,
       },
       context as never

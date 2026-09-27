@@ -12,6 +12,7 @@ import type {
   StimulusReceipt,
 } from '@jungjaehoon/mama-core/runtime/runtime';
 import type { NativeTurnResult } from '@jungjaehoon/mama-core/runtime/native-turn';
+import type { NativeTurnResultRecord } from '@jungjaehoon/mama-core/runtime/native-input-journal';
 import type { SourceDelta } from '../connectors/framework/polling-scheduler.js';
 import type { QueueCandidateScore, QueueLine, WindowQueue } from '../replay/window-queue.js';
 import { renderRecentOwnerExchanges, type OwnerExchange } from './recent-owner-exchanges.js';
@@ -54,6 +55,8 @@ export interface StimulusIntake {
 
 export interface StimulusDeliveryOptions {
   lessonResolver: LessonResolver;
+  readResult?: (row: MailboxRow) => NativeTurnResultRecord | null;
+  onUncertain?: StimulusDelivery['onUncertain'];
   recentOwnerExchanges?: (
     row: MailboxRow
   ) => readonly OwnerExchange[] | Promise<readonly OwnerExchange[]>;
@@ -72,7 +75,6 @@ export interface LessonHit {
 export type LessonResolver = (query: string) => Promise<readonly LessonHit[]>;
 
 export interface ReplayClockDelivery extends StimulusDelivery {
-  setReplaySourceEndMs(value: number | undefined): void;
   getReplaySourceEndMs(): number | undefined;
 }
 
@@ -154,6 +156,14 @@ export function createStimulusIntake(
     accept: (stimulus) => runtime.accept({ ...stimulus, principalId }),
     isPending: (sourceMessageRef) => {
       const row = runtime.mailbox?.readInput(sourceMessageRef, principalId);
+      // A failed accepted turn will never run again. Keep a recorded answer pending only
+      // until reconciliation delivers it, so recovery cannot replace it with an interruption.
+      if (row?.nativeDelivery?.state === 'uncertain') {
+        const receipt = row.nativeDelivery.receipt;
+        return Boolean(
+          receipt && runtime.mailbox!.nativeInputs.resultForReceipt(receipt, principalId)
+        );
+      }
       return row?.status === 'pending' || row?.status === 'claimed';
     },
     acceptOwnerMessage: (input) =>
@@ -462,10 +472,47 @@ export function stimulusFailureReason(error: unknown): string {
     .slice(0, 500);
 }
 
+function replaySourceCeiling(row: MailboxRow): number | undefined {
+  const payload = row.payload;
+  if (
+    row.kind !== 'source_delta' ||
+    !payload ||
+    typeof payload !== 'object' ||
+    Array.isArray(payload) ||
+    payload.replay === undefined
+  )
+    return undefined;
+  const replay = payload.replay;
+  // Replay windows are half-open; malformed bounds must never permit unbounded source reads.
+  if (
+    !replay ||
+    typeof replay !== 'object' ||
+    Array.isArray(replay) ||
+    !Number.isSafeInteger(replay.windowEndMs) ||
+    Number(replay.windowEndMs) <= 0
+  ) {
+    throw new Error('Replay windowEndMs must provide a nonnegative inclusive source ceiling');
+  }
+  return Number(replay.windowEndMs) - 1;
+}
+
 /** Deliver every model-bearing kind through one serialized owner session. */
 export function createStimulusDelivery(options: StimulusDeliveryOptions): ReplayClockDelivery {
   let serialTail = Promise.resolve();
   let activeReplaySourceEndMs: number | undefined;
+
+  const deliverResult = async (
+    row: MailboxRow,
+    result: NativeTurnResult,
+    modelRunId = result.modelRunId
+  ): Promise<void> => {
+    if (row.kind === 'owner_message') await options.onOwnerResult?.(row, result);
+    if (row.kind === 'source_delta' && replaySourceCeiling(row) === undefined)
+      await options.onSourceResult?.(row, result);
+    if (row.kind === 'scheduled') await options.onScheduledResult?.(row, result);
+    if (row.kind === 'native_event') await options.onNativeEventResult?.(row, result);
+    await options.onDelivered?.(row, modelRunId);
+  };
 
   const deliver: StimulusDelivery['deliver'] = async (row, context) => {
     let release!: () => void;
@@ -474,17 +521,11 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
       release = resolve;
     });
     await previous;
-    const replaySourceEndMs = activeReplaySourceEndMs;
-    const payload = row.payload;
-    const hasReplayPayload =
-      payload !== null &&
-      typeof payload === 'object' &&
-      !Array.isArray(payload) &&
-      payload.replay !== undefined;
-    const liveSourceDelta =
-      row.kind === 'source_delta' && replaySourceEndMs === undefined && !hasReplayPayload;
     let modelRunId: string | null = null;
     try {
+      const replaySourceEndMs = replaySourceCeiling(row);
+      activeReplaySourceEndMs = replaySourceEndMs;
+      const liveSourceDelta = row.kind === 'source_delta' && replaySourceEndMs === undefined;
       if (
         row.kind !== 'owner_message' &&
         row.kind !== 'source_delta' &&
@@ -521,16 +562,12 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
       });
       // A commit failure withholds result provenance, but the opened run still identifies this turn.
       modelRunId = result.modelRunId ?? modelRunId;
-      if (row.kind === 'owner_message') await options.onOwnerResult?.(row, result);
-      if (liveSourceDelta) await options.onSourceResult?.(row, result);
-      if (row.kind === 'scheduled') await options.onScheduledResult?.(row, result);
-      if (row.kind === 'native_event') await options.onNativeEventResult?.(row, result);
-      await options.onDelivered?.(row, modelRunId);
+      await deliverResult(row, result, modelRunId);
     } catch (error) {
       await options.onFailed?.(row, stimulusFailureReason(error), modelRunId);
       throw error;
     } finally {
-      if (activeReplaySourceEndMs === replaySourceEndMs) activeReplaySourceEndMs = undefined;
+      activeReplaySourceEndMs = undefined;
       release();
     }
   };
@@ -538,26 +575,25 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
   return {
     deliver,
     prefer: ['owner_message'],
+    ...(options.onUncertain === undefined ? {} : { onUncertain: options.onUncertain }),
     reconcile: async (row) => {
+      const result = options.readResult?.(row);
+      if (result) {
+        await deliverResult(row, { ...result, history: [] });
+        return 'settled';
+      }
       // Core invokes reconciliation only when no delivery in this process owns
-      // the input. A crash after dispatch must not block every future report.
-      if (
-        row.kind === 'scheduled' &&
-        (row.nativeDelivery?.state === 'dispatching' || row.nativeDelivery?.state === 'accepted')
-      ) {
+      // the input. Never rerun an orphan dispatched to a model without its final result.
+      if (row.nativeDelivery?.state === 'dispatching' || row.nativeDelivery?.state === 'accepted') {
         const reason =
-          'Scheduled report interrupted before completion; retry on the next report tick';
+          row.kind === 'scheduled'
+            ? 'Scheduled report interrupted before completion; retry on the next report tick'
+            : `${row.kind} interrupted before completion; no stored result`;
         await options.onFailed?.(row, reason, null);
         // Core parks the orphan uncertain, preserving its receipt and any result.
         throw new Error(reason);
       }
       return 'unresolved';
-    },
-    setReplaySourceEndMs: (value) => {
-      if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
-        throw new Error('Replay source ceiling must be a nonnegative epoch millisecond integer');
-      }
-      activeReplaySourceEndMs = value;
     },
     getReplaySourceEndMs: () => activeReplaySourceEndMs,
   };

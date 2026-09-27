@@ -36,7 +36,6 @@ export function buildScheduledReportPrompt(payload: JsonValue | undefined, now: 
           '[scheduled_full_report]',
           ...common,
           'Read recent sources (start with the last 24 hours) together with current work before reporting.',
-          "If a schedule source is readable, check the next 14 days, compare deadlines with it, and state this week's lodging check-ins and check-outs in at least one line (or that none are coming); never expose phone numbers or other personal details.",
           ...buildBoardPublishLines(),
           'Return the full report in Korean with five parts in this order: key situation today, needs a response, needs a decision, pipeline, next actions.',
         ]

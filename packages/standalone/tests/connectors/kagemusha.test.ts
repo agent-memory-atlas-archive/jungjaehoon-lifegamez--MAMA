@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 import Database from '../../src/sqlite.js';
 import { KagemushaConnector } from '../../src/connectors/kagemusha/index.js';
+import { canonicalChannelKey } from '../../src/connectors/framework/polling-scheduler.js';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -88,6 +89,32 @@ describe('KagemushaConnector', () => {
     });
     await connector.dispose();
   });
+
+  it.each(['room-key', 'chatwork:room-key', 'kagemusha:chatwork:room-key'])(
+    'admits the same configured key in the connector and scheduler: %s',
+    async (key) => {
+      const root = mkdtempSync(join(tmpdir(), 'kagemusha-channel-'));
+      roots.push(root);
+      const dbPath = join(root, 'source.db');
+      const db = createDb(dbPath);
+      db.prepare(
+        'INSERT INTO channel_messages (channel, channel_id, user_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+      ).run('chatwork', 'room-key', 'actor', 'user', 'source-content', 1_000);
+      db.close();
+      const configured = config({ [key]: { role: 'hub' } });
+      const connector = new KagemushaConnector(configured, dbPath);
+      await connector.init();
+      try {
+        const items = await connector.poll(new Date(0));
+        expect(items).toHaveLength(1);
+        expect(canonicalChannelKey(items[0]!, { kagemusha: configured.channels })).toBe(
+          'kagemusha:chatwork:room-key'
+        );
+      } finally {
+        await connector.dispose();
+      }
+    }
+  );
 
   it('does not read an origin channel that is absent from configuration', async () => {
     const root = mkdtempSync(join(tmpdir(), 'kagemusha-scope-'));

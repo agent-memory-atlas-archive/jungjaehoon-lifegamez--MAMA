@@ -1,3 +1,4 @@
+import { canonicalChannelKey } from '../framework/polling-scheduler.js';
 import Database from '../../sqlite.js';
 import type { SQLiteDatabase } from '../../sqlite.js';
 import type {
@@ -96,8 +97,12 @@ export class KagemushaConnector implements IConnector {
 
   private accepts(origin: string, channelId: string): boolean {
     const canonical = this.channelKey(origin, channelId);
-    const configured = this.config.channels[canonical] ?? this.config.channels[channelId];
-    return configured?.role !== undefined && configured.role !== 'ignore';
+    return (
+      canonicalChannelKey(
+        { source: this.name, channel: canonical },
+        { [this.name]: this.config.channels }
+      ) !== null
+    );
   }
 
   private messageItem(row: ChannelMessage): NormalizedItem | null {

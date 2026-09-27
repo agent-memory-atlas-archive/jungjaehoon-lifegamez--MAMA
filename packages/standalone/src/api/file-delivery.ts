@@ -1,7 +1,8 @@
-import { lstatSync, realpathSync, statSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, openSync, read, realpathSync } from 'node:fs';
 import { extname, resolve, sep } from 'node:path';
 
 export const TELEGRAM_MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+export const TELEGRAM_MAX_PHOTO_BYTES = 10 * 1024 * 1024;
 export const TELEGRAM_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
 
 export interface TelegramFileDeliveryResult {
@@ -29,6 +30,16 @@ export function validateWorkspaceFile(
   filesRoot: string,
   inputPath: string
 ): ValidatedWorkspaceFile {
+  const { fd, ...validated } = openWorkspaceFile(filesRoot, inputPath);
+  closeSync(fd);
+  return validated;
+}
+
+/** Keep this descriptor open through upload so a later path replacement cannot change its bytes. */
+export function openWorkspaceFile(
+  filesRoot: string,
+  inputPath: string
+): ValidatedWorkspaceFile & { fd: number } {
   const root = realpathSync(resolve(filesRoot));
   const resolved = resolve(inputPath);
   const metadata = lstatSync(resolved);
@@ -39,13 +50,40 @@ export function validateWorkspaceFile(
   if (real === root || !real.startsWith(`${root}${sep}`)) {
     throw new Error('path must stay under the workspace files directory');
   }
-  const size = statSync(real).size;
-  if (size > TELEGRAM_MAX_UPLOAD_BYTES) {
-    throw new Error(`file exceeds Telegram upload limit of ${TELEGRAM_MAX_UPLOAD_BYTES} bytes`);
+  const fd = openSync(real, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const opened = fstatSync(fd);
+    if (!opened.isFile()) throw new Error('path must be a regular file');
+    const size = opened.size;
+    if (size > TELEGRAM_MAX_UPLOAD_BYTES) {
+      throw new Error(`file exceeds Telegram upload limit of ${TELEGRAM_MAX_UPLOAD_BYTES} bytes`);
+    }
+    return {
+      fd,
+      path: real,
+      size,
+      sentAs:
+        size <= TELEGRAM_MAX_PHOTO_BYTES &&
+        TELEGRAM_IMAGE_EXTENSIONS.has(extname(real).toLowerCase())
+          ? 'photo'
+          : 'document',
+    };
+  } catch (error) {
+    closeSync(fd);
+    throw error;
   }
-  return {
-    path: real,
-    size,
-    sentAs: TELEGRAM_IMAGE_EXTENSIONS.has(extname(real).toLowerCase()) ? 'photo' : 'document',
-  };
+}
+
+/** Read the validated descriptor without reopening its mutable pathname. The caller closes it. */
+export async function* readWorkspaceFile(fd: number): AsyncGenerator<Buffer> {
+  while (true) {
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    const bytesRead = await new Promise<number>((resolve, reject) => {
+      read(fd, buffer, 0, buffer.length, null, (error, size) =>
+        error ? reject(error) : resolve(size)
+      );
+    });
+    if (bytesRead === 0) return;
+    yield buffer.subarray(0, bytesRead);
+  }
 }

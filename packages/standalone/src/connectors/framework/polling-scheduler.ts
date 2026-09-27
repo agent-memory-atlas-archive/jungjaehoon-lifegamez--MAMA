@@ -75,7 +75,10 @@ export function canonicalChannelKey(
   if (direct) return direct.role === 'ignore' ? null : item.channel;
   if (item.source === 'kagemusha' && item.channel.startsWith('kagemusha:')) {
     const configuredKey = item.channel.slice('kagemusha:'.length);
-    const configured = sourceConfigs[configuredKey];
+    const originSeparator = configuredKey.indexOf(':');
+    const sourceKey =
+      originSeparator < 0 ? configuredKey : configuredKey.slice(originSeparator + 1);
+    const configured = sourceConfigs[configuredKey] ?? sourceConfigs[sourceKey];
     if (configured) return configured.role === 'ignore' ? null : item.channel;
   }
   const matched = Object.entries(sourceConfigs).find(([, config]) => config.name === item.channel);
@@ -196,8 +199,8 @@ export class PollingScheduler {
   ): Promise<void> {
     const since =
       this.lastPollTimes.get(name) ?? new Date(this.initialNow - this.initialLookbackMs);
-    connector.beginPollHandoff?.();
     try {
+      connector.beginPollHandoff?.();
       const polled = await connector.poll(since);
       const observedAt = this.now();
       const canonicalItems = polled.flatMap((item) => {
@@ -212,7 +215,7 @@ export class PollingScheduler {
       let page: PendingProjection[] = [];
       do {
         page = this.rawStore.listPendingProjections(name, 1000, afterSequence);
-        pending.push(...page);
+        pending.push(...page.filter((item) => !item.collectOnly));
         if (page.length === 1000) {
           afterSequence = page[page.length - 1]!.pendingProjectionId;
         }
@@ -274,7 +277,8 @@ export class PollingScheduler {
       }
       await connector.commitPoll?.();
       this.lastPollTimes.set(name, new Date(observedAt));
-    } catch {
+    } catch (error) {
+      console.error(`[PollingScheduler] poll failed for connector ${name}`, error);
       connector.abortPollHandoff?.();
     }
   }
@@ -286,12 +290,14 @@ export class PollingScheduler {
     onRawBatchCommitted: RawBatchCommittedCallback
   ): Promise<void> {
     if (this.inFlight.has(name)) return;
-    const connector = registry.get(name);
-    if (!connector) throw new Error(`Connector is not registered: ${name}`);
     this.inFlight.add(name);
     try {
+      const connector = registry.get(name);
+      if (!connector) throw new Error(`Connector is not registered: ${name}`);
       await this.pollOne(name, connector, channelConfigs, onRawBatchCommitted);
       this.persistState();
+    } catch (error) {
+      console.error(`[PollingScheduler] poll failed for connector ${name}`, error);
     } finally {
       this.inFlight.delete(name);
     }
@@ -315,6 +321,8 @@ export class PollingScheduler {
         }
       }
       this.persistState();
+    } catch (error) {
+      console.error('[PollingScheduler] batch poll failed', error);
     } finally {
       this.polling = false;
     }

@@ -7,6 +7,7 @@
 
 export function isUntrustedExternalEvidenceTool(toolName: string): boolean {
   return (
+    toolName === 'memory.read:provenance' ||
     toolName === 'source.search' ||
     toolName === 'source.read' ||
     toolName === 'source.attachment.list' ||

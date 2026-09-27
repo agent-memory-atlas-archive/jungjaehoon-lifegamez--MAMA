@@ -1,6 +1,20 @@
-import { createWriteStream, renameSync, rmSync } from 'node:fs';
+import { mkdirSync, realpathSync, renameSync, rmSync } from 'node:fs';
+import { open } from 'node:fs/promises';
+import { isAbsolute, relative, sep } from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+
+/** Resolve the actual destination before a daemon writes an owner attachment. */
+export function resolveAttachmentDirectory(workspace: string, directory: string): string {
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const workspacePath = realpathSync(workspace);
+  const directoryPath = realpathSync(directory);
+  const local = relative(workspacePath, directoryPath);
+  if (local === '..' || local.startsWith(`..${sep}`) || isAbsolute(local)) {
+    throw new Error('Attachment directory is outside the owner workspace');
+  }
+  return directoryPath;
+}
 
 export function requireHttpsUrl(value: unknown, field: string): string {
   if (typeof value !== 'string' || value.trim() === '') {
@@ -30,6 +44,7 @@ export async function saveResponseBody(response: Response, targetPath: string): 
   const temporaryPath = `${targetPath}.${process.pid}.${Date.now()}.part`;
   let size = 0;
   try {
+    const handle = await open(temporaryPath, 'wx', 0o600);
     try {
       await pipeline(
         Readable.fromWeb(response.body as ReadableStream),
@@ -40,11 +55,12 @@ export async function saveResponseBody(response: Response, targetPath: string): 
             else callback(null, chunk);
           },
         }),
-        createWriteStream(temporaryPath)
+        handle.createWriteStream()
       );
       renameSync(temporaryPath, targetPath);
       return size;
     } finally {
+      await handle.close();
       rmSync(temporaryPath, { force: true });
     }
   } catch (error) {

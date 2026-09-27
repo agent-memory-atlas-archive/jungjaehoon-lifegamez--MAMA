@@ -1,13 +1,6 @@
-import {
-  closeSync,
-  existsSync,
-  fchmodSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  writeFileSync,
-} from 'node:fs';
+import { closeSync, existsSync, fchmodSync, mkdirSync, openSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import type { MailboxRow } from '@jungjaehoon/mama-core/runtime/mailbox';
 import type { NativeTurnResult } from '@jungjaehoon/mama-core/runtime/native-turn';
@@ -34,7 +27,6 @@ import { defaultConfigPath, loadConfig, type W1Config } from '../../runtime/conf
 import { declareModelCache } from '../../runtime/model-cache.js';
 import { sessionCredentialPath } from '../../runtime/session-credential.js';
 import { ensureMamaMcpConfig, resolveActionServerPath } from '../runtime/action-mcp-config.js';
-import { ensureClaudeCallerHook } from '../runtime/claude-caller-config.js';
 import type { SourceDelta } from '../../connectors/framework/polling-scheduler.js';
 import { LOADABLE_CONNECTORS as OWNER_CONNECTORS } from '../../connectors/index.js';
 import { createOwnerPolicyProvider } from '../../runtime/owner-policy.js';
@@ -61,6 +53,7 @@ export interface DaemonLogger {
 
 export interface DaemonGateway {
   recentDeliveredMessageRefs(): string[];
+  recoverPendingResponses(): Promise<void>;
   start(): Promise<void>;
   stop(): Promise<void>;
   deliverResponse(sourceRef: string, response: string): Promise<void>;
@@ -215,7 +208,6 @@ export function ensureDaemonIsolation(options: DaemonIsolationOptions): void {
 
   if (config.agent.backend === 'claude') {
     mkdirSync(paths.pluginDir, { recursive: true });
-    ensureClaudeCallerHook(paths.workspaceDir);
     ensureMamaMcpConfig({
       mcpConfigPath: paths.mcpConfigPath,
       serverPath: options.mcpServerPath ?? resolveActionServerPath(),
@@ -368,6 +360,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
       socketPath: paths.socketPath,
       credentialPath: paths.credentialPath,
       runtimeRoot: paths.mamaRoot,
+      replayKeyFile: config.jev?.keyFile,
       workspaceDir: paths.workspaceDir,
       ownerPrincipalId: OWNER_PRINCIPAL_ID,
       agentId: OWNER_AGENT_ID,
@@ -402,6 +395,14 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
         ? {}
         : {
             onOwnerResult: deliverOwnerResponse,
+            onStimulusUncertain: async (row) => {
+              if (row.kind !== 'owner_message') return;
+              if (!gateway)
+                throw new Error(
+                  'Telegram gateway is not available for an interrupted owner response'
+                );
+              await gateway.recoverPendingResponses();
+            },
             onSourceResult: deliverSourceResponse,
             onScheduledResult: async (row, result) => {
               if (!reportScheduler)
@@ -528,6 +529,10 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
         },
         messageLedgerPath: paths.telegramLedgerPath,
         log: (line) => logger.info(line),
+        onFatalError: (error) => {
+          logger.error(`telegram fatal polling error=${stimulusFailureReason(error)}`);
+          process.exit(1);
+        },
         filesRoot: join(paths.workspaceDir, 'files'),
         workspaceDir: paths.workspaceDir,
       });
@@ -613,37 +618,27 @@ export async function runDaemon(options: DaemonBootOptions = {}): Promise<void> 
   });
 }
 
-export interface MinimalPidRecord {
-  pid: number;
-}
-
-function pidPath(home = homedir()): string {
-  return process.env.MAMA_PID_FILE ?? join(home, '.mama', 'mama.pid');
-}
-
-export function readDaemonPid(home = homedir()): number | null {
-  try {
-    const value = JSON.parse(readFileSync(pidPath(home), 'utf8')) as MinimalPidRecord;
-    if (!Number.isSafeInteger(value.pid) || value.pid <= 0) return null;
-    return value.pid;
-  } catch {
-    return null;
+function launchdService(command: 'print' | 'bootout') {
+  const result = spawnSync('launchctl', [command, `gui/${process.getuid!()}/com.mama.server`], {
+    encoding: 'utf8',
+  });
+  if (result.error) throw result.error;
+  // launchctl print exits 113 when this user's service is not registered.
+  if (result.status !== 0 && !(command === 'print' && result.status === 113)) {
+    throw Object.assign(new Error(`launchctl ${command} failed`), {
+      code: `LAUNCHCTL_${result.status ?? result.signal ?? 'UNKNOWN'}`,
+    });
   }
+  return result;
 }
 
-export function daemonStatus(home = homedir()): 'running' | 'stopped' {
-  const pid = readDaemonPid(home);
-  if (pid === null) return 'stopped';
-  try {
-    process.kill(pid, 0);
-    return 'running';
-  } catch {
-    return 'stopped';
-  }
+export function daemonStatus(): 'running' | 'stopped' {
+  const result = launchdService('print');
+  return result.status === 0 && /^\s*state = running\s*$/m.test(result.stdout)
+    ? 'running'
+    : 'stopped';
 }
 
-export function requestDaemonStop(home = homedir()): void {
-  const pid = readDaemonPid(home);
-  if (pid === null) return;
-  process.kill(pid, 'SIGTERM');
+export function requestDaemonStop(): void {
+  launchdService('bootout');
 }

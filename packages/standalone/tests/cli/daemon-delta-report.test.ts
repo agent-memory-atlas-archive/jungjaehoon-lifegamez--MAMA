@@ -9,7 +9,7 @@ import { bootDaemon, type DaemonHandle } from '../../src/cli/commands/daemon.js'
 import { createOwnerRuntime, type OwnerRuntimeOptions } from '../../src/runtime/owner-runtime.js';
 import { sourceDeltaStimulusId } from '../../src/runtime/stimulus-delivery.js';
 
-const telegram = vi.hoisted(() => ({ sendMessage: vi.fn() }));
+const telegram = vi.hoisted(() => ({ sendMessage: vi.fn(), editMessageText: vi.fn() }));
 vi.mock('grammy', () => ({
   Bot: vi.fn(() => ({
     on: vi.fn(),
@@ -170,6 +170,31 @@ async function boot(
 }
 
 describe('live delta reports', () => {
+  it('delivers the interrupted notice when an accepted owner turn fails without restarting', async () => {
+    const { daemon } = await boot('[ack]', 'live', false, true);
+    telegram.editMessageText.mockResolvedValue(true);
+    const { Bot } = await import('grammy');
+    const bot = vi.mocked(Bot).mock.results.at(-1)!.value;
+    const handler = bot.on.mock.calls.find(([name]: [string]) => name === 'message')![1];
+    await handler({
+      message: {
+        message_id: 99,
+        date: 1,
+        chat: { id: 7, type: 'private' },
+        from: { id: 9, is_bot: false, first_name: 'Fixture' },
+        text: 'Owner request',
+      },
+    });
+    await vi.waitFor(() =>
+      expect(telegram.editMessageText).toHaveBeenCalledWith(
+        7,
+        101,
+        expect.stringContaining('was interrupted')
+      )
+    );
+    expect(daemon.owner.intake.isPending!('telegram:7:99')).toBe(false);
+  });
+
   it('logs the run id even when the native turn throws before producing a result', async () => {
     const { daemon, logs } = await boot('[notify] unused', 'live', false, true);
     const id = sourceDeltaStimulusId(delta());
@@ -332,7 +357,7 @@ describe('live delta reports', () => {
     expect(telegram.sendMessage).not.toHaveBeenCalled();
   });
 
-  it.each(['replay daemon', 'replay payload', 'replay clock'])(
+  it.each(['replay daemon', 'replay payload'])(
     'does not route or enqueue a live board pass for %s',
     async (replayCase) => {
       const { daemon, prompts, logs } = await boot(
@@ -340,14 +365,12 @@ describe('live delta reports', () => {
         replayCase === 'replay daemon' ? 'replay' : 'live'
       );
       const input = delta();
-      if (replayCase !== 'replay clock')
-        input.replay = {
-          runId: 'fixture-run',
-          windowId: 'fixture-window',
-          windowStartMs: 0,
-          windowEndMs: 1000,
-        };
-      else daemon.owner.setReplaySourceEndMs(1000);
+      input.replay = {
+        runId: 'fixture-run',
+        windowId: 'fixture-window',
+        windowStartMs: 0,
+        windowEndMs: 1000,
+      };
       const id = sourceDeltaStimulusId(input);
       daemon.owner.acceptSourceDelta(input);
       await vi.waitFor(() =>

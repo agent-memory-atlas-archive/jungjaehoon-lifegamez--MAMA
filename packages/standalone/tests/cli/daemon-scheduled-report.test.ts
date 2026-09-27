@@ -229,7 +229,7 @@ describe('daemon scheduled reports', () => {
       `stimulus delivered kind=scheduled id=${id} model_run_id=run:scheduled:1`
     );
     expect(ctx.logs).toContain(
-      `telegram outbound delivered idempotency_key="${id}" message_ids=[101]`
+      `telegram outbound delivered idempotency_key="report:2026-01-01:13:full" message_ids=[101]`
     );
     expect(ctx.prompts[0]).toContain('report.publish');
     expect(JSON.parse(readFileSync(ctx.statePath, 'utf8')).lastFullKey).toBe('2026-01-01:13');
@@ -239,21 +239,20 @@ describe('daemon scheduled reports', () => {
     expect(telegram.sendMessage).toHaveBeenCalledOnce();
   });
 
-  it('retries an uncertain failed send at the next tick with a fresh model attempt', async () => {
+  it('recovers a definitely rejected report send from the stored result without another model attempt', async () => {
     const ctx = await boot();
-    expect(ctx.scheduler).toBeDefined();
-    telegram.sendMessage.mockRejectedValueOnce(new Error('send failed'));
+    telegram.sendMessage.mockRejectedValueOnce(
+      Object.assign(new Error('send rejected'), { error_code: 429 })
+    );
     ctx.scheduler!.tick(new Date('2026-01-01T00:00:00Z'));
-    await vi.waitFor(() => expect(ctx.status(0)?.nativeDelivery?.state).toBe('uncertain'));
-    expect(existsSync(ctx.statePath)).toBe(false);
-    ctx.setResponse('A reminder with new changes.');
+    await vi.waitFor(() => expect(ctx.status(0)?.nativeDelivery?.state).toBe('settled'));
+    expect(ctx.prompts).toHaveLength(1);
+    expect(telegram.sendMessage).toHaveBeenCalledTimes(2);
+    expect(telegram.sendMessage).toHaveBeenLastCalledWith(7, 'Some work needs a check.');
     ctx.scheduler!.tick(new Date('2026-01-01T00:01:00Z'));
-    await vi.waitFor(() => expect(ctx.status(1)?.status).toBe('acked'));
-    expect(ctx.prompts).toHaveLength(2);
-    expect(ctx.prompts[1]).toContain('not already notified');
-    expect(telegram.sendMessage).toHaveBeenLastCalledWith(7, 'A reminder with new changes.');
+    expect(ctx.rows()).toHaveLength(1);
     expect(JSON.parse(readFileSync(ctx.statePath, 'utf8')).lastReminderKey).toBe('2026-01-01:09');
-    expect(ctx.logs.some((line) => line.includes('reason=send failed'))).toBe(true);
+    expect(ctx.logs.some((line) => line.includes('reason=send rejected'))).toBe(true);
   });
 
   it('holds one pending report through an hour change and drains its send before Telegram stops', async () => {

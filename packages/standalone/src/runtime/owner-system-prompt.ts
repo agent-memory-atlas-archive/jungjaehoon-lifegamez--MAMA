@@ -20,16 +20,12 @@ const SUBAGENT_RUNTIME_RULES: Readonly<Record<string, string>> = {
     'Spawn with the direct spawn_agent tool call (the native tool), never by putting spawn_agent inside exec. Do not pass fork_turns: "none": a child spawned without ' +
     'the history fork has no host tools (measured on codex-cli 0.153.4), so it cannot write ' +
     'anything durable. Call wait_agent when your answer needs the result before the turn ends.',
-  claude:
-    'Spawn with the Agent tool; run_in_background is for work that outlives the turn, and the ' +
-    'completion notification is the result arriving - continue from it and answer.',
+  claude: 'Spawn with the Agent tool and wait for its result before completing the turn.',
 };
 
 export const OWNER_SUBAGENT_INSTRUCTIONS =
   'Delegate when it helps: one native subagent with one clear objective, the evidence it needs ' +
-  'and a completion condition. For a replay window queue you orchestrate: assign each child a disjoint set of work items (with their full source lines, history and current revisions) and the wiki pages it owns; the child writes those items and pages itself and returns a receipt (each commitmentId with revision before and after, created commitmentIds, wiki pages updated, anything it could not do). You then read back what changed and reconcile it. Answer in this turn when you can; if your answer comes after ' +
-  'the turn ended, it is still delivered to the channel that asked, so never leave the owner ' +
-  'with only "started" when the result is already in hand. When the subagent finishes you ' +
+  'and a completion condition. For a replay window queue you orchestrate: assign each child a disjoint set of work items (with their full source lines, history and current revisions) and the wiki pages it owns; the child writes those items and pages itself and returns a receipt (each commitmentId with revision before and after, created commitmentIds, wiki pages updated, anything it could not do). You then read back what changed and reconcile it. Answer in this turn; never leave the owner with only "started" when the result is already in hand. When the subagent finishes you ' +
   'verify and integrate its result, and you do NOT spawn another subagent for the same ' +
   'objective; you retain responsibility for completion.';
 

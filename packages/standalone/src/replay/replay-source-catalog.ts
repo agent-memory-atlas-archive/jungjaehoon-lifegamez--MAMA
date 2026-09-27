@@ -205,7 +205,10 @@ function rowToEvent(
   }
   if (row.observed_at_ms !== null) assertEpochMs(row.observed_at_ms, 'observedAtMs');
   const metadata = parseMetadata(row.metadata_json);
-  const trello = row.connector === 'trello' ? trelloActionLine(row.content) : null;
+  const trello =
+    row.connector === 'trello' && typeof metadata?.actionType === 'string'
+      ? trelloActionLine(row.content)
+      : null;
   const author = trello?.actor || row.author;
   const channelName = channelNameFor(row.connector, row.channel_key, channelNames);
   const event: ReplaySourceEvent = {

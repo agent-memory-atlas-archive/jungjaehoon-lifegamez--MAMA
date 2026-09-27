@@ -58,6 +58,7 @@ export interface OwnerRuntimeOptions {
   timeout: number;
   runTokenBudget?: number;
   codexHome?: string;
+  replayKeyFile?: string;
   codexSandbox?: RuntimeSandbox;
   mcpConfigPath?: string;
   mcpServerPath?: string;
@@ -76,6 +77,7 @@ export interface OwnerRuntimeOptions {
   onNativeEventResult?: StimulusDeliveryOptions['onNativeEventResult'];
   onStimulusDelivered?: StimulusDeliveryOptions['onDelivered'];
   onStimulusFailed?: StimulusDeliveryOptions['onFailed'];
+  onStimulusUncertain?: StimulusDeliveryOptions['onUncertain'];
   /** Keep accepted inputs queued while product delivery ports are starting. */
   deliveryReady?: () => boolean;
   maxTurns: number;
@@ -92,8 +94,6 @@ export interface OwnerRuntime {
   readonly wikiRoot: string | null;
   readonly intake: StimulusIntake;
   readonly acceptSourceDelta: StimulusIntake['acceptSourceDelta'];
-  /** Set the ceiling for the next serialized replay turn; delivery clears it when done. */
-  readonly setReplaySourceEndMs: (value: number | undefined) => void;
   stop(): Promise<void>;
 }
 
@@ -227,6 +227,7 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
         model: options.model,
         workspaceDir: options.workspaceDir,
         runtimeRoot: options.runtimeRoot,
+        replayKeyFile: options.replayKeyFile,
         actionSurface: surface,
         // The standing text is the session's system prompt: sent on a new thread and
         // re-supplied when a durable thread resumes after a restart.
@@ -246,6 +247,16 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       });
     }
     delivery = createStimulusDelivery({
+      readResult: (row) =>
+        row.nativeDelivery?.receipt
+          ? intakeRuntime.mailbox!.nativeInputs.resultForReceipt(
+              row.nativeDelivery.receipt,
+              row.principalId
+            )
+          : null,
+      ...(options.onStimulusUncertain === undefined
+        ? {}
+        : { onUncertain: options.onStimulusUncertain }),
       recentOwnerExchanges: (row) =>
         readRecentOwnerExchanges(
           intakeRuntime.mailbox!,
@@ -255,7 +266,7 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       lessonResolver: async (query) => {
         const bundle = await recallMemory(database.adapter, query, {
           kind: ['lesson', 'preference', 'constraint'],
-          scopes: [...options.scopes],
+          scopes: [...access.scopes],
           limit: 3,
           includeRelated: false,
           skipGraphExpansion: true,
@@ -326,9 +337,6 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       wikiRoot,
       intake,
       acceptSourceDelta: intake.acceptSourceDelta,
-      setReplaySourceEndMs: (value) => {
-        delivery!.setReplaySourceEndMs(value);
-      },
       stop: async () => {
         if (stopped) return;
         stopped = true;

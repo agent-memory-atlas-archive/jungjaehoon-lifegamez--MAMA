@@ -43,6 +43,38 @@ function fake(name: string, items: NormalizedItem[]): IConnector {
 }
 
 describe('connector runtime', () => {
+  it('validates all enabled intervals before creating timers', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'connector-runtime-interval-'));
+    roots.push(root);
+    const timers: Array<ReturnType<typeof setInterval>> = [];
+    const startup = startConnectorRuntime({
+      configPath: join(root, 'unused.json'),
+      rawPath: join(root, 'raw'),
+      statePath: join(root, 'state'),
+      configResult: {
+        ok: true,
+        config: {
+          slack: { enabled: true, pollIntervalMinutes: 5, channels: {}, auth: { type: 'none' } },
+        },
+        enabledNames: ['slack', 'chatwork'],
+      },
+      rawIndexSink: () => [],
+      acceptSourceDelta: async () => {},
+      loadConnector: async (name) => fake(name, []),
+      setInterval: (handler, timeout) => {
+        const timer = setInterval(handler, timeout);
+        timers.push(timer);
+        return timer;
+      },
+    });
+    try {
+      await expect(startup).rejects.toThrow(/poll interval.*chatwork/i);
+      expect(timers).toHaveLength(0);
+    } finally {
+      for (const timer of timers) clearInterval(timer);
+    }
+  });
+
   it('sets the poll fence only for the currently enabled live connector set', async () => {
     const root = mkdtempSync(join(tmpdir(), 'connector-runtime-fence-'));
     roots.push(root);

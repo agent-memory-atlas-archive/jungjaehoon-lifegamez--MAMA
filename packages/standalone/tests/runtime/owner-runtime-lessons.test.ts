@@ -37,6 +37,7 @@ describe('owner lesson resolver', () => {
       ownerPrincipalId: 'owner',
       agentId: 'agent',
       scopes: [{ kind: 'global', id: 'system' }],
+      connectors: ['chatwork'],
       nativeSession: { stop: async () => {} },
       maxTurns: 10,
       timeout: 1_000,
@@ -48,7 +49,12 @@ describe('owner lesson resolver', () => {
       ]);
       expect(recallMemory).toHaveBeenLastCalledWith(owner.database.adapter, 'deadline reminder', {
         kind: ['lesson', 'preference', 'constraint'],
-        scopes: [{ kind: 'global', id: 'system' }],
+        scopes: [
+          { kind: 'global', id: 'system' },
+          { kind: 'user', id: 'owner' },
+          { kind: 'channel', id: 'chatwork' },
+          { kind: 'project', id: 'chatwork' },
+        ],
         limit: 3,
         includeRelated: false,
         skipGraphExpansion: true,

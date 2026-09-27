@@ -548,7 +548,8 @@ export async function importKagemushaRows(
         countUp(importedByOrigin, origin);
         addOriginDay(countsByOriginDay, origin, item.timestamp.getTime());
       }
-      for (const [connector, items] of batches) options.rawStore.save(connector, items);
+      for (const [connector, items] of batches)
+        options.rawStore.save(connector, items, { collectOnly: true });
       const last = rows[rows.length - 1]!;
       afterCreatedAt = epochMs(last.created_at, 'created_at');
       afterId = Number(last.id);
@@ -593,7 +594,7 @@ export async function importKagemushaRows(
         countUp(importedByOrigin, 'feedback');
         addOriginDay(countsByOriginDay, 'feedback', item.timestamp.getTime());
       }
-      if (items.length > 0) options.rawStore.save('kagemusha', items);
+      if (items.length > 0) options.rawStore.save('kagemusha', items, { collectOnly: true });
       const last = rows[rows.length - 1]!;
       afterFeedbackCreatedAt = epochMs(last.created_at, 'feedback.created_at');
       afterFeedbackId = Number(last.id);

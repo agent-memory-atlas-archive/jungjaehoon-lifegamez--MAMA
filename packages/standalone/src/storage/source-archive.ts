@@ -55,6 +55,8 @@ export interface NormalizedItem {
 
 export interface PendingProjection extends NormalizedItem {
   pendingProjectionId: number;
+  /** Historical imports may be indexed, but never admitted as live changes. */
+  collectOnly?: boolean;
 }
 
 export interface RawIndexProjection {
@@ -251,7 +253,11 @@ function normalizeContentHash(item: NormalizedItem): string {
   return createHash('sha256').update(canonicalizeRawContent(item), 'utf8').digest('hex');
 }
 
-function projectionSnapshot(item: NormalizedItem, observedAt: number): string {
+function projectionSnapshot(
+  item: NormalizedItem,
+  observedAt: number,
+  collectOnly: boolean
+): string {
   return canonicalizeJSON({
     source: item.source,
     sourceId: item.sourceId,
@@ -269,6 +275,7 @@ function projectionSnapshot(item: NormalizedItem, observedAt: number): string {
     memoryScopeKind: item.memoryScopeKind ?? null,
     memoryScopeId: item.memoryScopeId ?? null,
     observedAt,
+    collectOnly,
   });
 }
 
@@ -360,6 +367,7 @@ function parseProjectionSnapshot(payload: string, sequence: number): PendingProj
     memoryScopeId: optionalString('memoryScopeId'),
     observedAt: row.observedAt,
     pendingProjectionId: sequence,
+    collectOnly: row.collectOnly === true,
   };
 }
 
@@ -469,7 +477,11 @@ export class RawStore {
    * the corrected sourceId/sourceEntityId so the store and the index share one locator; an unchanged
    * re-poll or a re-listed immutable version returns the existing row instead of forging a new one.
    */
-  save(connectorName: string, items: NormalizedItem[]): NormalizedItem[] {
+  save(
+    connectorName: string,
+    items: NormalizedItem[],
+    options: { collectOnly?: boolean } = {}
+  ): NormalizedItem[] {
     if (items.length === 0) return [];
     for (const item of items) {
       if (item.observedAt !== undefined && !Number.isFinite(item.observedAt)) {
@@ -565,7 +577,7 @@ export class RawStore {
             enqueue.run(
               refreshed.source_id,
               payloadHash,
-              projectionSnapshot(persistedItem, observedAt),
+              projectionSnapshot(persistedItem, observedAt, options.collectOnly === true),
               observedAt
             );
             const insertedPending = findPending.get(refreshed.source_id, payloadHash) as
@@ -667,7 +679,7 @@ export class RawStore {
           enqueue.run(
             sourceId,
             payloadHash,
-            projectionSnapshot(persistedItem, observedAt),
+            projectionSnapshot(persistedItem, observedAt, options.collectOnly === true),
             observedAt
           );
           const insertedPending = findPending.get(sourceId, payloadHash) as

@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
-import { claudeOwnerAllowedTools } from '../../src/agent/claude-native-tool-policy.js';
+import {
+  claudeOwnerAllowedTools,
+  claudeOwnerDisallowedTools,
+} from '../../src/agent/claude-native-tool-policy.js';
 import { ensureClaudeCallerHook } from '../../src/cli/runtime/claude-caller-config.js';
 
 const roots: string[] = [];
@@ -34,11 +37,11 @@ describe('owner Claude workspace settings', () => {
     const local = JSON.parse(readFileSync(localPath, 'utf8'));
     expect(project.permissions).toBeUndefined();
     expect(local.permissions).toBeUndefined();
-    expect(local.sandbox).toEqual(project.sandbox);
-    expect(local.model).toBe('test-model');
+    expect(local).toEqual({});
+    expect(local.model).toBeUndefined();
   });
 
-  it('replaces broad permissions with a required sandbox while preserving the caller hook and other settings', () => {
+  it('replaces broad permissions with a required sandbox and discards every non-host setting', () => {
     const { workspace, path } = fixture();
     const otherHook = { matcher: 'Read', hooks: [{ type: 'command', command: 'true' }] };
     writeFileSync(
@@ -55,26 +58,38 @@ describe('owner Claude workspace settings', () => {
     ensureClaudeCallerHook(workspace);
     expect(readFileSync(path, 'utf8')).toBe(first);
     const settings = JSON.parse(first);
-    expect(settings.model).toBe('test-model');
+    expect(settings.model).toBeUndefined();
     expect(settings.hooks.PreToolUse).toEqual([
-      otherHook,
       {
         matcher: 'mcp__mama__.*',
         hooks: [{ type: 'command', command: expect.stringContaining('claude-caller-hook.js') }],
       },
     ]);
-    expect(settings.hooks.Stop).toEqual([]);
+    expect(settings.hooks.Stop).toBeUndefined();
     expect(settings.sandbox).toEqual({
       enabled: true,
       failIfUnavailable: true,
       autoAllowBashIfSandboxed: true,
       allowUnsandboxedCommands: false,
       excludedCommands: [],
-      filesystem: { allowWrite: [workspace], denyRead: [] },
+      filesystem: {
+        allowWrite: [workspace],
+        denyRead: [],
+        denyWrite: [join(workspace, '.claude')],
+      },
     });
     expect(settings.permissions).toBeUndefined();
     expect(settings.env.CLAUDE_CODE_TMPDIR).toBe(join(workspace, '.tmp'));
     expect(settings.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe('1');
+  });
+
+  it('denies native edits of host settings while allowing other workspace files', () => {
+    const { workspace } = fixture();
+    const rules = claudeOwnerDisallowedTools([], workspace);
+    for (const tool of ['Edit', 'Write', 'NotebookEdit']) {
+      expect(rules).toContain(`${tool}(/${workspace}/.claude)`);
+      expect(rules).toContain(`${tool}(/${workspace}/.claude/**)`);
+    }
   });
 
   it('allows writes only under the workspace by one absolute Edit rule, plus web and MAMA tools', () => {

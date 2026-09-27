@@ -62,38 +62,43 @@ function request(
   method = 'GET',
   rawHeaders?: string[]
 ) {
-  return new Promise<{ status: number; body: string }>((resolve) => {
-    const response = Object.assign(new EventEmitter(), {
-      statusCode: 200,
-      headersSent: false,
-      setHeader: () => {},
-      writeHead(status: number) {
-        this.statusCode = status;
-        this.headersSent = true;
-        return this;
-      },
-      end(body = '') {
-        this.emit('finish');
-        this.emit('close');
-        resolve({ status: this.statusCode, body });
-      },
-    });
-    transport.handler!(
-      {
-        url: path,
-        method,
-        headers: { host: 'localhost', ...headers },
-        rawHeaders:
-          rawHeaders ??
-          Object.entries({ host: 'localhost', ...headers }).flatMap(([name, value]) => [
-            name,
-            String(value),
-          ]),
-        socket: { remoteAddress },
-      } as IncomingMessage,
-      response as unknown as ServerResponse
-    );
-  });
+  return new Promise<{ status: number; body: string; headers: Record<string, string> }>(
+    (resolve) => {
+      const response = Object.assign(new EventEmitter(), {
+        statusCode: 200,
+        headersSent: false,
+        headers: {} as Record<string, string>,
+        setHeader(name: string, value: string) {
+          this.headers[name.toLowerCase()] = value;
+        },
+        writeHead(status: number) {
+          this.statusCode = status;
+          this.headersSent = true;
+          return this;
+        },
+        end(body = '') {
+          this.emit('finish');
+          this.emit('close');
+          resolve({ status: this.statusCode, body, headers: this.headers });
+        },
+      });
+      transport.handler!(
+        {
+          url: path,
+          method,
+          headers: { host: 'localhost', ...headers },
+          rawHeaders:
+            rawHeaders ??
+            Object.entries({ host: 'localhost', ...headers }).flatMap(([name, value]) => [
+              name,
+              String(value),
+            ]),
+          socket: { remoteAddress },
+        } as IncomingMessage,
+        response as unknown as ServerResponse
+      );
+    }
+  );
 }
 function auditRow() {
   expect(audit).toHaveBeenCalledTimes(1);
@@ -101,6 +106,15 @@ function auditRow() {
 }
 
 describe('viewer request security', () => {
+  it('does not grant cross-origin browser reads to a different loopback port', async () => {
+    await serve({ getRuntimeStatus: () => ({ running: true }) as never });
+    for (const origin of ['http://localhost:9876', 'http://127.0.0.1:9876']) {
+      const response = await request('/api/runtime/status', { origin });
+      expect(response.status).toBe(200);
+      expect(response.headers['access-control-allow-origin']).toBeUndefined();
+    }
+  });
+
   it.each([
     'attacker.invalid',
     'localhost.attacker.invalid',
@@ -485,6 +499,12 @@ describe('security events and owner alerts', () => {
     expect(sendToOwner).not.toHaveBeenCalled();
   });
 
+  it('classifies an anonymous tunnel 404 as request failure, not failed authentication', async () => {
+    await serve();
+    const result = await request('/missing-static-resource', tunnel);
+    expect(result.status).toBe(404);
+    expect(securityRows()[0].class).toBe('request_failed');
+  });
   it('records token owner access and forged headers even with a valid token', async () => {
     const token = randomBytes(24).toString('hex');
     vi.stubEnv('MAMA_AUTH_TOKEN', token);
@@ -506,13 +526,14 @@ describe('security events and owner alerts', () => {
       'forged_access_header',
       'forged_access_header',
     ]);
-    expect(sendToOwner).toHaveBeenCalledTimes(2);
+    expect(sendToOwner).toHaveBeenCalledTimes(1);
     // Each alert's idempotency key names the security event it reports.
     const alertKeys = sendToOwner.mock.calls.map(([, key]) => key);
     const rows = securityRows() as Array<{ class: string; eventId?: string }>;
     expect(alertKeys).toEqual(
       rows
         .filter((row) => row.class !== 'owner_access')
+        .slice(0, 1)
         .map((row) => `viewer-security:${row.eventId}`)
     );
     expect(fs.readFileSync(securityPath(), 'utf8')).not.toContain(token);
@@ -545,7 +566,7 @@ describe('security events and owner alerts', () => {
       expect(contents).not.toContain(assertion);
     }
   );
-  it('alerts once per class and path per ten minutes, with KST and no identifiers', async () => {
+  it('alerts once per class per ten minutes and reports suppressed paths', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-09-27T00:00:00Z'));
     const sendToOwner = vi.fn(async (_text: string, _key: string) => {});
@@ -554,18 +575,20 @@ describe('security events and owner alerts', () => {
     await request('/api/report', tunnel);
     await request('/health', { ...tunnel, 'cf-access-jwt-assertion': 'invalid' });
     await request('/api/runtime/status', tunnel);
-    expect(sendToOwner).toHaveBeenCalledTimes(3);
+    expect(sendToOwner).toHaveBeenCalledTimes(2);
     vi.setSystemTime(new Date('2026-09-27T00:09:59Z'));
     await request('/api/runtime/status', tunnel);
-    expect(sendToOwner).toHaveBeenCalledTimes(3);
+    expect(sendToOwner).toHaveBeenCalledTimes(2);
     vi.setSystemTime(new Date('2026-09-27T00:10:00Z'));
     await request('/api/runtime/status', tunnel);
-    expect(sendToOwner).toHaveBeenCalledTimes(4);
+    expect(sendToOwner).toHaveBeenCalledTimes(3);
     const text = sendToOwner.mock.calls[0]![0];
     for (const value of ['auth_failed', '/api/report', '401', '09:00:00 KST', 'KR'])
       expect(text).toContain(value);
     expect(text).not.toContain(tunnel['cf-ray']);
+    expect(sendToOwner.mock.calls[2]![0]).toContain('Suppressed since previous alert: 3');
     expect(securityRows()).toHaveLength(6);
+    expect(securityRows().map((row) => row.suppressedSinceLastAlert)).toEqual([0, 1, 0, 2, 3, 3]);
   });
   it('logs one failed send and never schedules a retry', async () => {
     const secret = randomBytes(24).toString('hex');
@@ -611,7 +634,7 @@ describe('security events and owner alerts', () => {
       'request_failed',
       'request_failed',
     ]);
-    expect(sendToOwner).toHaveBeenCalledTimes(3);
+    expect(sendToOwner).toHaveBeenCalledTimes(1);
   });
   it('keeps recording while a send is pending and does not launch duplicate sends', async () => {
     let finish!: () => void;

@@ -98,7 +98,7 @@ describe('one owner native session', () => {
   );
 
   it.each(['codex', 'claude'] as const)(
-    'passes a filtered environment and credential paths to %s',
+    'passes a filtered environment and configured replay credential paths to %s',
     async (backend) => {
       const root = mkdtempSync(join(tmpdir(), 'native-security-'));
       vi.stubEnv('HOME', root);
@@ -110,6 +110,7 @@ describe('one owner native session', () => {
         model: 'test-model',
         workspaceDir: join(root, 'workspace'),
         runtimeRoot: root,
+        replayKeyFile: join(root, 'custom-key'),
         actionSurface: surface(),
         maxTurns: 10,
         timeout: 1000,
@@ -126,6 +127,13 @@ describe('one owner native session', () => {
         ).toBe(false);
         expect(received!.processEnv.HOME).toBe(root);
         expect(received!.deniedReadPaths).toContain(join(root, 'runtime'));
+        expect(received!.deniedReadPaths).toContain(join(root, 'custom-key'));
+        if (backend === 'claude') {
+          const settings = JSON.parse(
+            readFileSync(join(root, 'workspace/.claude/settings.json'), 'utf8')
+          );
+          expect(settings.sandbox.filesystem.denyRead).toContain(join(root, 'custom-key'));
+        }
       } finally {
         await session.stop();
         vi.unstubAllEnvs();
@@ -142,6 +150,7 @@ describe('one owner native session', () => {
     (model.prompt as ReturnType<typeof vi.fn>).mockImplementation(
       async (_content, _callbacks, options) => {
         for (const name of [
+          'memory.read:provenance',
           'source.read',
           'source.search',
           'source.attachment.list',

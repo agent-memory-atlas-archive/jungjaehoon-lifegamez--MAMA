@@ -11,7 +11,7 @@ import {
 import { dirname } from 'node:path';
 import type { TelegramChunkFormat } from './telegram-format.js';
 
-export type TelegramMessageState = 'processing' | 'ready' | 'delivered';
+export type TelegramMessageState = 'processing' | 'ready' | 'delivered' | 'failed';
 
 export interface TelegramMessageLedgerEntry {
   key: string;
@@ -188,6 +188,20 @@ export class TelegramMessageLedger {
         ...(messageId === undefined
           ? {}
           : { messageIds: [...(entry.messageIds ?? []), messageId] }),
+        updatedAt: this.now(),
+        ownerId: this.ownerId,
+      });
+    });
+  }
+
+  /** A transport failure can leave remote delivery unknown; never keep it as active work. */
+  markFailed(key: string): void {
+    const entry = this.requireEntry(key);
+    this.commit(() => {
+      this.entries.set(key, {
+        ...entry,
+        state: 'failed',
+        deliveryUncertain: true,
         updatedAt: this.now(),
         ownerId: this.ownerId,
       });
@@ -389,7 +403,10 @@ function isLedgerEntry(value: unknown): value is TelegramMessageLedgerEntry {
   const item = value as Record<string, unknown>;
   return (
     isKey(item.key) &&
-    (item.state === 'processing' || item.state === 'ready' || item.state === 'delivered') &&
+    (item.state === 'processing' ||
+      item.state === 'ready' ||
+      item.state === 'delivered' ||
+      item.state === 'failed') &&
     isTimestamp(item.updatedAt) &&
     typeof item.ownerId === 'string' &&
     item.ownerId.length > 0 &&

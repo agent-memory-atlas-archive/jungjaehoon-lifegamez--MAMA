@@ -61,6 +61,66 @@ describe('ChatworkConnector', () => {
     });
   });
 
+  it('retries earlier room messages when a later room fails', async () => {
+    let failSecondRoom = true;
+    const connector = new ChatworkConnector(
+      {
+        ...config,
+        channels: {
+          first: { role: 'hub' },
+          second: { role: 'hub' },
+        },
+      },
+      {
+        fetch: async (url) => {
+          if (String(url).includes('/second/'))
+            return new Response('[]', { status: failSecondRoom ? 503 : 200 });
+          return new Response(
+            JSON.stringify([
+              {
+                message_id: '101',
+                account: { account_id: 1, name: 'actor', avatar_image_url: '' },
+                body: 'retained',
+                send_time: 20,
+                update_time: 20,
+              },
+            ])
+          );
+        },
+      }
+    );
+    await connector.init();
+    await expect(connector.poll(new Date(0))).rejects.toThrow(/poll failed/);
+    failSecondRoom = false;
+    expect((await connector.poll(new Date(0))).map((item) => item.sourceId)).toEqual(['first:101']);
+    await connector.dispose();
+  });
+
+  it('retries messages when the scheduler aborts the source handoff', async () => {
+    const connector = new ChatworkConnector(config, {
+      fetch: async () =>
+        new Response(
+          JSON.stringify([
+            {
+              message_id: '101',
+              account: { account_id: 1, name: 'actor', avatar_image_url: '' },
+              body: 'retained',
+              send_time: 20,
+              update_time: 20,
+            },
+          ])
+        ),
+    });
+    await connector.init();
+    const handoff = connector as import('../../src/connectors/framework/types.js').IConnector;
+    handoff.beginPollHandoff?.();
+    expect(await connector.poll(new Date(0))).toHaveLength(1);
+    handoff.abortPollHandoff?.();
+    expect(await connector.poll(new Date(0))).toHaveLength(1);
+    expect(await connector.poll(new Date(0))).toHaveLength(0);
+    await connector.dispose();
+  });
+
   it('keeps Chatwork download ids in live observation metadata', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

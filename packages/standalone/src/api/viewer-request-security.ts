@@ -141,7 +141,8 @@ function securityClass(
   if (audit.identity === null || audit.identity === 'local') {
     // Unauthenticated assets served on purpose (the web manifest, static viewer files) are fetched by
     // browsers without cookies; only a refused request is a failed authentication.
-    return status < 400 ? 'public_asset' : 'auth_failed';
+    if (status === 401 || status === 403) return 'auth_failed';
+    return status < 400 ? 'public_asset' : 'request_failed';
   }
   if (status >= 200 && status < 400) return 'owner_access';
   return 'request_failed';

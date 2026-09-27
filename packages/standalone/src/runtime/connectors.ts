@@ -140,6 +140,16 @@ export async function startConnectorRuntime(
   );
   const supported = new Set<string>(LOADABLE_CONNECTORS);
   const enabledConnectorNames = config.enabledNames.filter((name) => supported.has(name));
+  const pollIntervals = new Map<string, number>();
+  for (const name of enabledConnectorNames) {
+    const interval = config.config[name]?.pollIntervalMinutes;
+    if (typeof interval !== 'number' || !Number.isFinite(interval) || interval <= 0) {
+      throw new Error(
+        `Invalid poll interval for connector ${name}: expected a finite positive number`
+      );
+    }
+    pollIntervals.set(name, interval * 60_000);
+  }
   const channelConfigs = Object.fromEntries(
     enabledConnectorNames.map((name) => [name, config.config[name]?.channels ?? {}])
   );
@@ -182,12 +192,9 @@ export async function startConnectorRuntime(
       [ReturnType<typeof setInterval>, (timer: ReturnType<typeof setInterval>) => void]
     > = [];
     for (const name of enabledConnectorNames) {
-      const intervalMinutes = config.config[name]?.pollIntervalMinutes;
-      if (intervalMinutes === undefined)
-        throw new Error(`Missing poll interval for connector ${name}`);
       const timer = setIntervalFn(
         () => void scheduler.pollConnector(name, registry, channelConfigs, accept),
-        intervalMinutes * 60_000
+        pollIntervals.get(name)!
       );
       timers.push([timer, clearIntervalFn]);
     }

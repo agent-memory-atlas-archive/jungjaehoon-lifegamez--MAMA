@@ -187,7 +187,7 @@ export async function importTrelloActions(
         items.push(actionItem(board, action, observedAtMs));
         importedByBoard[board.key] = (importedByBoard[board.key] ?? 0) + 1;
       }
-      if (items.length > 0) options.rawStore.save('trello', items);
+      if (items.length > 0) options.rawStore.save('trello', items, { collectOnly: true });
       if (
         actions.length < ACTION_PAGE_SIZE ||
         oldest === undefined ||

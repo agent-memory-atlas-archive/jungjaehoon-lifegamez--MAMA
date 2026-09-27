@@ -118,7 +118,6 @@ export async function runReplay(options: ReplayCommandOptions = {}): Promise<Rep
         untilMs: manifest.untilMs,
         cursorPath,
         ledgerPath,
-        setReplaySourceEndMs: context.owner.setReplaySourceEndMs,
         readLedgerDigest: (asOfMs) => replayLedgerDigest(context, asOfMs),
         buildQueue: async (window, ledgerDigest) => {
           const jev = createJevClient({

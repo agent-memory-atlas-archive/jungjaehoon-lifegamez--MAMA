@@ -1,5 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  truncateSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -11,18 +20,19 @@ const seams = vi.hoisted(() => ({
     editMessageText: vi.fn().mockResolvedValue(undefined),
     deleteMessage: vi.fn().mockResolvedValue(undefined),
   },
+  start: vi.fn().mockImplementation(() => new Promise(() => {})),
   handlers: new Map<string, (ctx: unknown) => Promise<void>>(),
 }));
 
-vi.mock('grammy', () => ({
-  InputFile: vi.fn().mockImplementation((path: string) => ({ path })),
+vi.mock('grammy', async (importOriginal) => ({
+  InputFile: (await importOriginal<typeof import('grammy')>()).InputFile,
   Bot: vi.fn().mockImplementation(() => ({
     on: vi.fn((event: string, handler: (ctx: unknown) => Promise<void>) => {
       seams.handlers.set(event, handler);
     }),
     catch: vi.fn(),
     init: vi.fn().mockResolvedValue(undefined),
-    start: vi.fn(),
+    start: seams.start,
     stop: vi.fn().mockResolvedValue(undefined),
     botInfo: { id: 101, username: 'fixture_bot' },
     api: seams.api,
@@ -37,6 +47,7 @@ const temporaryRoots: string[] = [];
 
 afterEach(() => {
   seams.handlers.clear();
+  seams.start.mockReset().mockImplementation(() => new Promise(() => {}));
   seams.api.sendMessage.mockClear();
   seams.api.sendPhoto.mockClear();
   seams.api.sendDocument.mockClear();
@@ -92,6 +103,30 @@ async function gatewayFor(
 }
 
 describe('TelegramGateway', () => {
+  it.each(['chunkFormat', 'nextChunkIndex'])(
+    'fails loud when outbound recovery lacks %s',
+    async (field) => {
+      const root = mkdtempSync(join(tmpdir(), 'outbound-incomplete-'));
+      temporaryRoots.push(root);
+      const ledgerPath = join(root, 'ledger.json');
+      const gateway = await gatewayFor(intakeFor([]), ledgerPath);
+      seams.api.sendMessage.mockRejectedValueOnce(
+        Object.assign(new Error('rejected'), { error_code: 429 })
+      );
+      await expect(gateway.sendToOwner('stored response', 'incomplete')).rejects.toThrow(
+        'rejected'
+      );
+      await gateway.stop();
+      const stored = JSON.parse(readFileSync(ledgerPath, 'utf8'));
+      delete stored.entries[0][field];
+      writeFileSync(ledgerPath, JSON.stringify(stored));
+      await expect(gatewayFor(intakeFor([]), ledgerPath)).rejects.toThrow(
+        'incomplete delivery metadata'
+      );
+      expect(seams.api.sendMessage).toHaveBeenCalledOnce();
+    }
+  );
+
   it('persists outbound keys and every chunk receipt, logs once, and suppresses sends after restart', async () => {
     const root = mkdtempSync(join(tmpdir(), 'outbound-receipts-'));
     temporaryRoots.push(root);
@@ -155,7 +190,169 @@ describe('TelegramGateway', () => {
     await gateway.stop();
     const restarted = await gatewayFor(intakeFor([]), ledgerPath);
     expect(seams.api.sendMessage).toHaveBeenCalledTimes(2);
+    await expect(restarted.sendToOwner('x'.repeat(5000), 'scheduled:fixture')).rejects.toThrow(
+      /uncertain/
+    );
+    expect(seams.api.sendMessage).toHaveBeenCalledTimes(2);
     await restarted.stop();
+  });
+
+  it('recovers ready outbound chunks after a definitive Telegram API rejection', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'outbound-rejected-'));
+    temporaryRoots.push(root);
+    const ledgerPath = join(root, 'ledger.json');
+    const gateway = await gatewayFor(intakeFor([]), ledgerPath);
+    seams.api.sendMessage
+      .mockResolvedValueOnce({ message_id: 301 })
+      .mockRejectedValueOnce(Object.assign(new Error('rate limited'), { error_code: 429 }));
+    await expect(gateway.sendToOwner('x'.repeat(5000), 'scheduled:rejected')).rejects.toThrow(
+      'rate limited'
+    );
+    const entry = JSON.parse(readFileSync(ledgerPath, 'utf8')).entries[0];
+    expect(entry).toMatchObject({ state: 'ready', nextChunkIndex: 1, deliveryUncertain: false });
+    await gateway.stop();
+    const restarted = await gatewayFor(intakeFor([]), ledgerPath);
+    expect(seams.api.sendMessage).toHaveBeenCalledTimes(3);
+    expect(seams.api.sendMessage.mock.calls[2]?.[1]).toBe('x'.repeat(904));
+    expect(new TelegramMessageLedger(ledgerPath).get(entry.key)).toMatchObject({
+      state: 'delivered',
+      messageIds: [301, 101],
+    });
+    await restarted.stop();
+  });
+
+  it('does not resend an outbound entry when concurrent recovery scans see it ready', async () => {
+    const gateway = await gatewayFor(intakeFor([]));
+    seams.api.sendMessage.mockRejectedValueOnce(
+      Object.assign(new Error('send failed'), { error_code: 429 })
+    );
+    await expect(gateway.sendToOwner('recover once', 'concurrent-recovery')).rejects.toThrow(
+      'send failed'
+    );
+    let completeSend!: () => void;
+    const sent = new Promise<void>((resolve) => {
+      completeSend = resolve;
+    });
+    seams.api.sendMessage.mockImplementationOnce(async () => {
+      await sent;
+      return { message_id: 301 };
+    });
+    const first = gateway.recoverPendingResponses();
+    const second = gateway.recoverPendingResponses();
+    completeSend();
+    await Promise.all([first, second]);
+    expect(seams.api.sendMessage).toHaveBeenCalledTimes(2);
+    await gateway.stop();
+  });
+
+  it('reports fatal polling rejection to the process owner', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'telegram-poll-fatal-'));
+    temporaryRoots.push(root);
+    const fatal = vi.fn();
+    const error = new Error('polling token rejected');
+    seams.start.mockRejectedValueOnce(error);
+    const gateway = new TelegramGateway({
+      token: 'fixture-token',
+      intake: intakeFor([]),
+      messageLedgerPath: join(root, 'ledger.json'),
+      config: { allowedChats: ['7'] },
+      onFatalError: fatal,
+    });
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await gateway.start();
+      await vi.waitFor(() => expect(fatal).toHaveBeenCalledWith(error));
+      expect(gateway.getLastError()).toBe('polling token rejected');
+    } finally {
+      logged.mockRestore();
+      await gateway.stop();
+    }
+  });
+
+  it('resumes at the confirmed chunk after presenter finalization fails', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'telegram-finalize-failed-'));
+    temporaryRoots.push(root);
+    const ledgerPath = join(root, 'ledger.json');
+    const gateway = await gatewayFor(intakeFor([]), ledgerPath);
+    await seams.handlers.get('message')!({ message: message() });
+    seams.api.sendMessage.mockRejectedValueOnce(
+      Object.assign(new Error('final chunk failed'), { error_code: 400 })
+    );
+    await expect(gateway.deliverResponse('telegram:7:11', 'x'.repeat(5000))).rejects.toThrow(
+      'final chunk failed'
+    );
+    expect(new TelegramMessageLedger(ledgerPath).get('telegram:7:11')).toMatchObject({
+      state: 'ready',
+      nextChunkIndex: 1,
+    });
+    await gateway.deliverResponse('telegram:7:11', 'x'.repeat(5000));
+    expect(seams.api.sendMessage.mock.calls.map(([, body]) => body)).toEqual([
+      '⏳',
+      'x'.repeat(904),
+      'x'.repeat(904),
+    ]);
+    expect(new TelegramMessageLedger(ledgerPath).get('telegram:7:11')?.state).toBe('delivered');
+    await gateway.stop();
+  });
+
+  it('retains uncertain response progress and refuses to resend it', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'telegram-response-uncertain-'));
+    temporaryRoots.push(root);
+    const ledgerPath = join(root, 'ledger.json');
+    const gateway = await gatewayFor(intakeFor([]), ledgerPath);
+    await seams.handlers.get('message')!({ message: message() });
+    seams.api.sendMessage.mockRejectedValueOnce(new Error('response disconnected'));
+    await expect(gateway.deliverResponse('telegram:7:11', 'x'.repeat(5000))).rejects.toThrow(
+      'response disconnected'
+    );
+    await expect(gateway.deliverResponse('telegram:7:11', 'x'.repeat(5000))).rejects.toThrow(
+      /uncertain/
+    );
+    await gateway.recoverPendingResponses();
+    expect(seams.api.sendMessage).toHaveBeenCalledTimes(2);
+    expect(new TelegramMessageLedger(ledgerPath).get('telegram:7:11')).toMatchObject({
+      state: 'ready',
+      nextChunkIndex: 1,
+      deliveryUncertain: true,
+    });
+    await gateway.stop();
+  });
+
+  it('uploads an image above the photo limit as a document', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'telegram-large-photo-'));
+    temporaryRoots.push(root);
+    const filesRoot = join(root, 'files');
+    mkdirSync(filesRoot);
+    const path = join(filesRoot, 'large.png');
+    writeFileSync(path, '');
+    truncateSync(path, 10 * 1024 * 1024 + 1);
+    const gateway = await gatewayFor(intakeFor([]), join(root, 'ledger.json'), filesRoot);
+    const result = await gateway.sendFile(path, undefined, 'large-photo');
+    expect(result).toMatchObject({ sentAs: 'document', messageId: 103 });
+    expect(seams.api.sendPhoto).not.toHaveBeenCalled();
+    await gateway.stop();
+  });
+
+  it('persists a failed file claim instead of leaving it processing', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'telegram-file-failed-'));
+    temporaryRoots.push(root);
+    const filesRoot = join(root, 'files');
+    mkdirSync(filesRoot);
+    const path = join(filesRoot, 'result.txt');
+    writeFileSync(path, 'result');
+    const ledgerPath = join(root, 'ledger.json');
+    const gateway = await gatewayFor(intakeFor([]), ledgerPath, filesRoot);
+    seams.api.sendDocument.mockRejectedValueOnce(new Error('upload disconnected'));
+    await expect(gateway.sendFile(path, undefined, 'failed-file')).rejects.toThrow(
+      'upload disconnected'
+    );
+    expect(new TelegramMessageLedger(ledgerPath).get('file:failed-file')).toMatchObject({
+      state: 'failed',
+      deliveryUncertain: true,
+    });
+    await expect(gateway.sendFile(path, undefined, 'failed-file')).rejects.toThrow(/uncertain/);
+    expect(seams.api.sendDocument).toHaveBeenCalledTimes(1);
+    await gateway.stop();
   });
 
   it('rejects messages outside the configured owner allowlist', async () => {
@@ -277,6 +474,30 @@ describe('TelegramGateway', () => {
     expect(seams.api.sendPhoto).toHaveBeenCalledTimes(1);
     expect(seams.api.sendPhoto.mock.calls[0]?.[0]).toBe('7');
     expect(seams.api.sendPhoto.mock.calls[0]?.[2]).toEqual({ caption: 'caption-test' });
+    await gateway.stop();
+  });
+
+  it('uploads the opened file even when its path is replaced before the API consumes it', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'telegram-file-swap-'));
+    temporaryRoots.push(root);
+    const filesRoot = join(root, 'files');
+    mkdirSync(filesRoot);
+    const path = join(filesRoot, 'result.txt');
+    const outside = join(root, 'outside.txt');
+    writeFileSync(path, 'intended file');
+    writeFileSync(outside, 'outside secret');
+    let uploaded = '';
+    seams.api.sendDocument.mockImplementationOnce(async (_chatId, upload) => {
+      renameSync(path, join(filesRoot, 'original.txt'));
+      symlinkSync(outside, path);
+      const chunks = [];
+      for await (const chunk of await upload.toRaw()) chunks.push(Buffer.from(chunk));
+      uploaded = Buffer.concat(chunks).toString();
+      return { message_id: 103 };
+    });
+    const gateway = await gatewayFor(intakeFor([]), join(root, 'ledger.json'), filesRoot);
+    await gateway.sendFile(path, undefined, 'swap-file');
+    expect(uploaded).toBe('intended file');
     await gateway.stop();
   });
 

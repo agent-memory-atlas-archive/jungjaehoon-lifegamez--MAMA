@@ -201,7 +201,11 @@ describe('attachment actions', () => {
       throw new Error(`Unexpected URL: ${url}`);
     });
     const download = action(
-      portsFor(workspace, observation('chatwork', { roomId: '501' }), await chatwork(http)),
+      portsFor(
+        workspace,
+        observation('chatwork', { roomId: '501', chatworkFileIds: ['901'] }),
+        await chatwork(http)
+      ),
       'source.attachment.download'
     );
 
@@ -210,7 +214,13 @@ describe('attachment actions', () => {
       { access, operationId: 'op-download' }
     );
 
-    const expectedPath = join(workspace, 'files', 'chatwork', '501', '901_fixture.pdf');
+    const expectedPath = join(
+      realpathSync(workspace),
+      'files',
+      'chatwork',
+      '501',
+      '901_fixture.pdf'
+    );
     expect(result).toMatchObject({ path: expectedPath, size: 5 });
     expect(readFileSync(expectedPath, 'utf8')).toBe('bytes');
     expect(http).toHaveBeenCalledTimes(3);
@@ -220,7 +230,11 @@ describe('attachment actions', () => {
     const workspace = root();
     const http = vi.fn().mockResolvedValue(new Response(null, { status: 404 }));
     const download = action(
-      portsFor(workspace, observation('chatwork', { roomId: '502' }), await chatwork(http)),
+      portsFor(
+        workspace,
+        observation('chatwork', { roomId: '502', chatworkFileIds: ['901'] }),
+        await chatwork(http)
+      ),
       'source.attachment.download'
     );
 
@@ -294,6 +308,78 @@ describe('attachment actions', () => {
     });
   });
 
+  it.each(['metadata', 'message'])(
+    'refuses a same-room file unrelated to the observation (%s)',
+    async (matching) => {
+      const workspace = root();
+      const http = vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        const file = { ...chatworkFile, message_id: 'other-message' };
+        if (url.endsWith('/files?account_id=3')) return Response.json([file]);
+        if (url.endsWith('/files/901')) return Response.json(file);
+        if (url.endsWith('/files/902')) return Response.json({ ...file, file_id: 902 });
+        if (url.endsWith('/files/901?create_download_url=1'))
+          return Response.json({ ...file, download_url: 'https://download.example.test/901' });
+        if (url === 'https://download.example.test/901') return new Response('bytes');
+        throw new Error(`Unexpected fixture URL: ${url}`);
+      });
+      const stored = observation('chatwork', {
+        roomId: '501',
+        accountId: 3,
+        messageId: 'cited-message',
+        ...(matching === 'metadata' ? { chatworkFileIds: ['902'] } : {}),
+      });
+      const download = action(
+        portsFor(workspace, stored, await chatwork(http)),
+        'source.attachment.download'
+      );
+      await expect(
+        download(
+          { observationRef: 'obs-test', fileId: '901' },
+          { access, operationId: 'wrong-observation' }
+        )
+      ).rejects.toThrow(/does not belong to observation/);
+      expect(existsSync(join(workspace, 'files'))).toBe(false);
+    }
+  );
+
+  it('rejects a connector download directory symlinked outside the workspace', async () => {
+    const workspace = root();
+    const outside = root();
+    mkdirSync(join(workspace, 'files'));
+    symlinkSync(outside, join(workspace, 'files', 'chatwork'));
+    const connector = {
+      listAttachments: async () => [
+        {
+          fileId: '901',
+          name: 'file.txt',
+          size: 5,
+          uploadTime: 600_000,
+          matchedBy: 'metadata_file_id',
+        },
+      ],
+      downloadAttachment: async ({ targetPath }: { targetPath: string }) => {
+        writeFileSync(targetPath, 'bytes');
+        return { size: 5 };
+      },
+    };
+    const download = action(
+      portsFor(
+        workspace,
+        observation('chatwork', { roomId: '501', chatworkFileIds: ['901'] }),
+        connector
+      ),
+      'source.attachment.download'
+    );
+    await expect(
+      download(
+        { observationRef: 'obs-test', fileId: '901' },
+        { access, operationId: 'outside-directory' }
+      )
+    ).rejects.toThrow(/outside.*workspace/i);
+    expect(existsSync(join(outside, '501', '901_file.txt'))).toBe(false);
+  });
+
   it('downloads into the workspace connector room directory and returns its size', async () => {
     const workspace = root();
     mkdirSync(join(workspace, 'files'), { recursive: true });
@@ -331,7 +417,13 @@ describe('attachment actions', () => {
       { access, operationId: 'op-download' }
     );
 
-    const expected = join(workspace, 'files', 'chatwork', '501', '901_feedback bad.pdf');
+    const expected = join(
+      realpathSync(workspace),
+      'files',
+      'chatwork',
+      '501',
+      '901_feedback bad.pdf'
+    );
     expect(connector.downloadAttachment).toHaveBeenCalledWith({
       roomId: '501',
       fileId: '901',

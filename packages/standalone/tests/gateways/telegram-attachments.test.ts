@@ -1,5 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -28,7 +37,7 @@ let gateway: TelegramGateway;
 let received: OwnerMessageInput[];
 let download: ReturnType<typeof vi.fn>;
 beforeEach(async () => {
-  root = mkdtempSync(join(tmpdir(), 'telegram-attachment-'));
+  root = realpathSync(mkdtempSync(join(tmpdir(), 'telegram-attachment-')));
   received = [];
   bot.getFile.mockReset().mockResolvedValue({ file_path: 'documents/file.bin', file_size: 4 });
   download = vi.fn(async () => new Response(new Uint8Array([1, 2, 3, 4])));
@@ -99,6 +108,39 @@ describe('owner Telegram attachments', () => {
       'https://api.telegram.org/file/botfixture-token/documents/file.bin',
       expect.anything()
     );
+  });
+
+  it('downloads the animation only when Telegram also supplies its document alias', async () => {
+    await send({
+      animation: { ...file, file_name: 'clip.gif', mime_type: 'image/gif' },
+      document: { ...file, file_name: 'clip.gif', mime_type: 'image/gif' },
+    });
+    expect(received[0]?.payload).toHaveProperty('attachments', [attachment()]);
+    expect(download).toHaveBeenCalledTimes(1);
+    expect(readFileSync(join(root, 'files/telegram/11_clip.gif'))).toHaveLength(4);
+  });
+
+  it('refuses an attachment directory symlink escaping the workspace', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'telegram-outside-'));
+    mkdirSync(join(root, 'files'));
+    symlinkSync(outside, join(root, 'files', 'telegram'));
+    try {
+      await send({ document: { ...file, file_name: 'sample.bin' } });
+      expect(attachment()).toMatchObject({ error: expect.stringMatching(/workspace/) });
+      expect(readdirSync(outside)).toEqual([]);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('replaces a target symlink without writing through it', async () => {
+    const outside = join(root, 'outside.bin');
+    writeFileSync(outside, 'unchanged');
+    mkdirSync(join(root, 'files', 'telegram'), { recursive: true });
+    symlinkSync(outside, join(root, 'files', 'telegram', '11_sample.bin'));
+    await send({ document: { ...file, file_name: 'sample.bin' } });
+    expect(readFileSync(outside, 'utf8')).toBe('unchanged');
+    expect(readFileSync(join(root, 'files', 'telegram', '11_sample.bin'))).toHaveLength(4);
   });
 
   it('selects the largest photo even when sizes arrive out of order', async () => {

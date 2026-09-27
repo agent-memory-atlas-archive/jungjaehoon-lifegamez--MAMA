@@ -48,6 +48,7 @@ function config(root: string, backend: 'codex' | 'claude' = 'codex'): W1Config {
       run_token_budget: 100,
       ...(backend === 'claude' ? { tools: { mcp_config: join(root, 'runtime', 'mcp.json') } } : {}),
     },
+    jev: { keyFile: join(root, 'custom-replay-key'), vocabFile: join(root, 'vocab.json') },
     database: { path: join(root, 'memory.db') },
     logging: { level: 'info', file: join(root, 'daemon.log') },
     telegram: {
@@ -94,6 +95,38 @@ function viewerDouble(order: string[]) {
 }
 
 describe('daemon bootstrap', () => {
+  it('exits loudly when Telegram reports fatal polling failure so launchd can restart', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'daemon-fatal-'));
+    roots.push(root);
+    const logs: string[] = [];
+    const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+    let fatal: ((error: unknown) => void) | undefined;
+    const daemon = await bootDaemon({
+      config: config(root),
+      home: root,
+      configPath: join(root, 'config.yaml'),
+      logger: { info: () => {}, error: (line) => logs.push(line) },
+      dependencies: {
+        ensureIsolation: () => {},
+        createOwnerRuntime: async () => ownerDouble([]) as never,
+        createViewerServer: () => viewerDouble([]) as never,
+        startConnectorRuntime: async () => ({ stop: async () => {} }) as never,
+        createTelegramGateway: (options) => {
+          fatal = options.onFatalError;
+          return { start: async () => {}, stop: async () => {} } as never;
+        },
+      },
+    });
+    try {
+      fatal?.(new Error('polling fixture failed'));
+      expect(exit).toHaveBeenCalledWith(1);
+      expect(logs.join(' ')).toMatch(/telegram.*fatal.*polling fixture failed/);
+    } finally {
+      await daemon.stop();
+      exit.mockRestore();
+    }
+  });
+
   it('refuses enabled Telegram without its environment token and never logs an injected config token', async () => {
     const root = mkdtempSync(join(tmpdir(), 'daemon-token-'));
     roots.push(root);
@@ -279,6 +312,7 @@ describe('daemon bootstrap', () => {
       dependencies: {
         createOwnerRuntime: vi.fn(async (options) => {
           expect(options.connectors).toContain('calendar');
+          expect(options.replayKeyFile).toBe(join(mamaRoot, 'custom-replay-key'));
           order.push('owner:start');
           return owner as never;
         }),
@@ -488,15 +522,8 @@ describe('daemon bootstrap', () => {
     expect(existsSync(join(mamaRoot, 'workspace', '.git', 'HEAD'))).toBe(true);
     expect(existsSync(join(mamaRoot, '.empty-plugins'))).toBe(true);
     expect(existsSync(join(mamaRoot, 'runtime', 'mcp.json'))).toBe(true);
-    const settings = JSON.parse(
-      readFileSync(join(mamaRoot, 'workspace', '.claude', 'settings.json'), 'utf8')
-    );
-    expect(settings.hooks.PreToolUse).toEqual([
-      {
-        matcher: 'mcp__mama__.*',
-        hooks: [{ type: 'command', command: expect.stringContaining('claude-caller-hook.js') }],
-      },
-    ]);
+    // The native session is the sole settings writer; this owner factory is a test double.
+    expect(existsSync(join(mamaRoot, 'workspace', '.claude', 'settings.json'))).toBe(false);
     expect(readFileSync(preservedBrief, 'utf8')).toBe('preserved');
     expect(readFileSync(preservedSkill, 'utf8')).toBe('preserved');
 

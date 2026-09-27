@@ -92,6 +92,7 @@ export interface NativeSessionOptions {
   maxTurns: number;
   runTokenBudget?: number;
   codexHome?: string;
+  replayKeyFile?: string;
   pluginDir?: string;
   codexSandbox?: RuntimeSandbox;
   mcpConfigPath?: string;
@@ -175,7 +176,11 @@ function driverOptions(
   return {
     backend: options.backend,
     processEnv: backendEnvironment(),
-    deniedReadPaths: credentialReadPaths(options.runtimeRoot, options.codexHome),
+    deniedReadPaths: credentialReadPaths(
+      options.runtimeRoot,
+      options.codexHome,
+      options.replayKeyFile
+    ),
     model: options.model,
     workspaceDir: options.workspaceDir,
     cwd: options.workspaceDir,
@@ -238,7 +243,10 @@ function createDriver(
     mcpConfigPath,
     permissionMode: nativeOptions.permissionMode,
     allowedTools: claudeOwnerAllowedTools(options.workspaceDir),
-    disallowedTools: claudeOwnerDisallowedTools(nativeOptions.deniedReadPaths),
+    disallowedTools: claudeOwnerDisallowedTools(
+      nativeOptions.deniedReadPaths,
+      options.workspaceDir
+    ),
     processEnv: nativeOptions.processEnv,
     env: { CLAUDE_CODE_TMPDIR: join(options.workspaceDir, '.tmp') },
     pluginDir: nativeOptions.pluginDir,
@@ -263,7 +271,7 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
   if (options.backend === 'claude')
     ensureClaudeCallerHook(
       options.workspaceDir,
-      credentialReadPaths(options.runtimeRoot, options.codexHome)
+      credentialReadPaths(options.runtimeRoot, options.codexHome, options.replayKeyFile)
     );
   const tools = actionToolDefinitions(options.actionSurface);
   const runnerRef: { current?: NativeSessionRunner<HostExecutionContext> } = {};

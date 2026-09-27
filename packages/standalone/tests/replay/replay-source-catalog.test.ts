@@ -212,17 +212,28 @@ describe('ReplaySourceCatalog', () => {
             channel_key: 'board-1',
             author: 'trello',
             content: trelloAction,
+            metadata_json: JSON.stringify({ actionType: 'updateCard' }),
+          }),
+          row({
+            connector: 'trello',
+            source_id: 'snapshot-1',
+            observation_ref: 'obs-3',
+            channel_key: 'board-1',
+            author: 'trello',
+            content: '[Card] asset-card | list: submitted',
+            metadata_json: JSON.stringify({ cardId: 'card-1', listName: 'submitted' }),
           }),
         ],
       }),
     };
-    const [message, action] = readReplaySourceEvents(adapter, start, start + 12 * HOUR, {
+    const [message, action, snapshot] = readReplaySourceEvents(adapter, start, start + 12 * HOUR, {
       channelNames: new Map([
         ['chatwork\0room-1', 'client room'],
         ['trello\0board-1', 'client board'],
       ]),
     });
     expect(message).toMatchObject({ channelName: 'client room', contentPreview: longText });
+    expect(snapshot).toMatchObject({ contentPreview: '[Card] asset-card | list: submitted' });
     expect(action).toMatchObject({
       channelName: 'client board',
       author: 'board member',

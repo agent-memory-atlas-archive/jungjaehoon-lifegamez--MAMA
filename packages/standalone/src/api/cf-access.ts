@@ -3,6 +3,11 @@ import type { IncomingHttpHeaders } from 'node:http';
 
 const CACHE_MS = 10 * 60 * 1000;
 const SKEW_SECONDS = 60;
+const UNKNOWN_KID_REFRESH_MS = 60_000;
+const unknownKidRefreshes = new Map<
+  string,
+  { at: number; keys: Promise<Record<string, unknown>[]> }
+>();
 const cache = new Map<string, { expires: number; keys: Record<string, unknown>[] }>();
 let loggedDisabled = false;
 
@@ -41,9 +46,9 @@ export function logCfAccessConfiguration(): void {
   }
 }
 
-async function jwks(issuer: string): Promise<Record<string, unknown>[]> {
+async function jwks(issuer: string, force = false): Promise<Record<string, unknown>[]> {
   const existing = cache.get(issuer);
-  if (existing && existing.expires > Date.now()) return existing.keys;
+  if (!force && existing && existing.expires > Date.now()) return existing.keys;
   // Never follow a redirect away from the configured issuer. Bound auth request latency.
   const response = await fetch(`${issuer}/cdn-cgi/access/certs`, {
     redirect: 'error',
@@ -54,6 +59,16 @@ async function jwks(issuer: string): Promise<Record<string, unknown>[]> {
   if (!record(payload) || !Array.isArray(payload.keys)) throw new Error('Invalid Access keys');
   const keys = payload.keys.filter(record);
   cache.set(issuer, { expires: Date.now() + CACHE_MS, keys });
+  return keys;
+}
+
+/** One shared rotation lookup per issuer per minute, including failed fetches. */
+function refreshUnknownKid(issuer: string): Promise<Record<string, unknown>[]> {
+  const previous = unknownKidRefreshes.get(issuer);
+  const now = Date.now();
+  if (previous && now - previous.at < UNKNOWN_KID_REFRESH_MS) return previous.keys;
+  const keys = jwks(issuer, true);
+  unknownKidRefreshes.set(issuer, { at: now, keys });
   return keys;
 }
 
@@ -95,13 +110,13 @@ export async function verifiedCfAccessEmail(headers: IncomingHttpHeaders): Promi
         return null;
     }
     if (typeof claims.email !== 'string' || !/^[^\s@]+@[^\s@]+$/.test(claims.email)) return null;
-    const key = (await jwks(settings.issuer)).find(
-      (item) =>
-        item.kid === header.kid &&
-        item.kty === 'RSA' &&
-        (item.alg === undefined || item.alg === 'RS256') &&
-        (item.use === undefined || item.use === 'sig')
-    );
+    const matches = (item: Record<string, unknown>): boolean =>
+      item.kid === header.kid &&
+      item.kty === 'RSA' &&
+      (item.alg === undefined || item.alg === 'RS256') &&
+      (item.use === undefined || item.use === 'sig');
+    let key = (await jwks(settings.issuer)).find(matches);
+    if (!key) key = (await refreshUnknownKid(settings.issuer)).find(matches);
     if (!key) return null;
     const valid = verify(
       'RSA-SHA256',

@@ -92,6 +92,8 @@ export class ChatworkConnector implements IConnector {
    * messages in that batch will be missed — this is a Chatwork API constraint.
    */
   private lastMessageIds: Map<string, string> = new Map();
+  private pendingMessageIds: Map<string, string> | null = null;
+  private pollCommitDeferred = false;
 
   constructor(config: ConnectorConfig, options: ChatworkConnectorOptions = {}) {
     this.config = config;
@@ -146,6 +148,7 @@ export class ChatworkConnector implements IConnector {
     if (!this.token) throw new Error('ChatworkConnector not initialized');
 
     const items: NormalizedItem[] = [];
+    const pendingMessageIds = new Map(this.lastMessageIds);
     let hadError = false;
     const sinceEpoch = Math.floor(since.getTime() / 1000);
 
@@ -197,7 +200,7 @@ export class ChatworkConnector implements IConnector {
           });
         }
 
-        if (maxMsgId) this.lastMessageIds.set(roomId, maxMsgId);
+        if (maxMsgId) pendingMessageIds.set(roomId, maxMsgId);
       } catch (err) {
         hadError = true;
         this.lastError = err instanceof Error ? err.message : String(err);
@@ -207,10 +210,36 @@ export class ChatworkConnector implements IConnector {
     this.lastPollTime = new Date();
     this.lastPollCount = items.length;
     // lastError was set in catch blocks; clear only if no error occurred this pass
-    if (hadError) throw new Error('Chatwork poll failed for one or more configured rooms');
+    if (hadError) {
+      this.abortPollHandoff();
+      throw new Error('Chatwork poll failed for one or more configured rooms');
+    }
+    this.pendingMessageIds = pendingMessageIds;
+    if (!this.pollCommitDeferred) this.commitPoll();
     this.lastError = undefined;
 
     return items;
+  }
+
+  beginPollHandoff(): void {
+    if (this.pollCommitDeferred || this.pendingMessageIds !== null) {
+      throw new Error('Chatwork poll handoff is already active');
+    }
+    this.pollCommitDeferred = true;
+  }
+
+  commitPoll(): void {
+    if (this.pendingMessageIds === null) {
+      throw new Error('Chatwork poll state is unavailable to commit');
+    }
+    this.lastMessageIds = this.pendingMessageIds;
+    this.pendingMessageIds = null;
+    this.pollCommitDeferred = false;
+  }
+
+  abortPollHandoff(): void {
+    this.pendingMessageIds = null;
+    this.pollCommitDeferred = false;
   }
 
   async listAttachments(request: AttachmentListRequest): Promise<AttachmentDescriptor[]> {

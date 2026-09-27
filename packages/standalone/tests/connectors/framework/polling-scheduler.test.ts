@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ConnectorRegistry } from '../../../src/connectors/framework/connector-registry.js';
@@ -11,6 +11,7 @@ const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 function fakeConnector(
@@ -29,6 +30,53 @@ function fakeConnector(
 }
 
 describe('PollingScheduler', () => {
+  it('logs poll failures while leaving the source cursor unchanged', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'poll-error-'));
+    roots.push(root);
+    const raw = new RawStore(root);
+    const scheduler = new PollingScheduler(raw, root, { rawIndexSink: () => [] });
+    const registry = new ConnectorRegistry();
+    const failed = fakeConnector([]);
+    const failure = new Error('source unavailable');
+    failed.poll = async () => {
+      throw failure;
+    };
+    registry.register('slack', failed);
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await scheduler.pollAll(registry, {}, async () => {});
+      expect(logged).toHaveBeenCalledWith(expect.stringContaining('slack'), failure);
+      expect(scheduler.getLastPollTime('slack')).toBeUndefined();
+    } finally {
+      raw.close();
+    }
+  });
+
+  it.each(['pollConnector', 'pollAll'] as const)(
+    'logs state persistence errors from %s without an unhandled rejection',
+    async (method) => {
+      const root = mkdtempSync(join(tmpdir(), 'poll-state-error-'));
+      roots.push(root);
+      const blocked = join(root, 'blocked');
+      writeFileSync(blocked, 'not a directory');
+      const raw = new RawStore(join(root, 'raw'));
+      const scheduler = new PollingScheduler(raw, blocked, { rawIndexSink: () => [] });
+      const registry = new ConnectorRegistry();
+      registry.register('slack', fakeConnector([]));
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const poll =
+          method === 'pollAll'
+            ? scheduler.pollAll(registry, {}, async () => {})
+            : scheduler.pollConnector('slack', registry, {}, async () => {});
+        await expect(poll).resolves.toBeUndefined();
+        expect(logged).toHaveBeenCalledWith(expect.stringContaining('poll'), expect.any(Error));
+      } finally {
+        raw.close();
+      }
+    }
+  );
+
   it('runs raw save, index projection, and source-delta handoff in order', async () => {
     const root = mkdtempSync(join(tmpdir(), 'poll-scheduler-'));
     roots.push(root);

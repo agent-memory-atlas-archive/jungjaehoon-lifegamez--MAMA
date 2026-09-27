@@ -79,6 +79,7 @@ function harness(
       const id = sourceDeltaStimulusId(delta);
       const acceptedRow = row(id, 'acked', 'settled');
       accepted.set(id, acceptedRow);
+      ceilings.push(delta.replay!.windowEndMs - 1);
       overrides.onAccept?.(id, delta);
       // Like the core runtime: inputId is the mailbox row number, not the stimulus id.
       return { inputId: String(accepted.size), state: 'accepted' } satisfies StimulusReceipt;
@@ -98,7 +99,6 @@ function harness(
     untilMs: start + 12 * HOUR,
     cursorPath: join(root, 'cursor.json'),
     ledgerPath: join(root, 'ledger.jsonl'),
-    setReplaySourceEndMs: (value) => ceilings.push(value),
     settlePollMs: 0,
     sleep: async () => {},
     ...(overrides.buildQueue === undefined ? {} : { buildQueue: overrides.buildQueue }),

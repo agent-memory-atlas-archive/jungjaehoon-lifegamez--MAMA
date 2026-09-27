@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createReportScheduler } from '../../src/runtime/report-scheduler.js';
@@ -57,6 +57,33 @@ function setup() {
 }
 
 describe('KST report scheduler', () => {
+  it('uses one delivery identity across model attempts after the schedule write fails', async () => {
+    const ctx = setup();
+    const keys: string[] = [];
+    const scheduler = createReportScheduler({
+      ...ctx.options,
+      sendToOwner: async (_text, key) => {
+        keys.push(key);
+      },
+    });
+    const now = new Date('2026-01-01T04:00:00Z');
+    scheduler.tick(now);
+    mkdirSync(join(root, 'runtime'), { recursive: true });
+    mkdirSync(`${ctx.statePath}.tmp`);
+    await expect(scheduler.onResult(ctx.result(), { response: 'first' })).rejects.toThrow();
+    rmSync(`${ctx.statePath}.tmp`, { recursive: true });
+    ctx.setPending(false);
+    scheduler.tick(now);
+    await scheduler.onResult(ctx.result(), { response: 'second' });
+    expect(ctx.queued[0]!.id).not.toBe(ctx.queued[1]!.id);
+    expect(keys).toEqual(['report:2026-01-01:13:full', 'report:2026-01-01:13:full']);
+    await scheduler.onResult(
+      { stimulusId: 'reminder-attempt', payload: { report: 'reminder', hourKey: '2026-01-01:13' } },
+      { response: 'reminder' }
+    );
+    expect(keys.at(-1)).toBe('report:2026-01-01:13:reminder');
+  });
+
   it('writes the full hour only after sending finishes and suppresses it after restart', async () => {
     const ctx = setup();
     const now = new Date('2026-01-01T23:05:00Z'); // next date, 08 KST

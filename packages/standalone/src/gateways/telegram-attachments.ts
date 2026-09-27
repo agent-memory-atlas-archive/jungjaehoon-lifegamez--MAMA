@@ -1,7 +1,9 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { open, rename, rm } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { Bot, Context } from 'grammy';
 import { safeFileName } from '../api/attachment-actions.js';
+import { resolveAttachmentDirectory } from '../connectors/framework/attachment-io.js';
 
 type TelegramMessage = NonNullable<Context['message']>;
 const DOWNLOAD_LIMIT = 20 * 1024 * 1024;
@@ -55,6 +57,7 @@ export function telegramFiles(
     files.push({ file: photo, name: `photo_${photo.file_unique_id}.jpg`, mimeType: 'image/jpeg' });
   }
   for (const kind of Object.keys(MEDIA_MIME_TYPES) as Array<keyof typeof MEDIA_MIME_TYPES>) {
+    if (kind === 'document' && message.animation) continue;
     const file: TelegramFile | undefined = message[kind];
     if (!file) continue;
     const mimeType = file.mime_type ?? MEDIA_MIME_TYPES[kind];
@@ -113,10 +116,21 @@ export async function downloadTelegramFiles(
           if (size > DOWNLOAD_LIMIT) throw new Error(LIMIT_ERROR);
           chunks.push(chunk);
         }
-        const directory = join(options.workspaceDir, 'files', 'telegram');
-        await mkdir(directory, { recursive: true });
+        const directory = resolveAttachmentDirectory(
+          options.workspaceDir,
+          join(options.workspaceDir, 'files', 'telegram')
+        );
         const path = join(directory, `${options.messageId}_${name}`);
-        await writeFile(path, Buffer.concat(chunks), { mode: 0o600 });
+        const temporaryPath = `${path}.${randomUUID()}.part`;
+        const temporary = await open(temporaryPath, 'wx', 0o600);
+        try {
+          await temporary.writeFile(Buffer.concat(chunks));
+          await temporary.close();
+          await rename(temporaryPath, path);
+        } finally {
+          await temporary.close();
+          await rm(temporaryPath, { force: true });
+        }
         return { path, name, mimeType, size };
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);

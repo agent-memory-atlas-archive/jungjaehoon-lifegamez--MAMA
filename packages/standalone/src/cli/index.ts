@@ -42,10 +42,21 @@ async function main(): Promise<void> {
 }
 
 void main().catch((error: unknown) => {
-  console.error(
-    error instanceof CliInputError || error instanceof ConfigError
-      ? error.message
-      : 'mama command failed'
-  );
+  if (error instanceof CliInputError || error instanceof ConfigError) {
+    console.error(error.message);
+  } else {
+    // Unexpected error metadata can contain credentials; print only bounded diagnostic identifiers.
+    const name =
+      error instanceof Error && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(error.name)
+        ? error.name
+        : 'Error';
+    const rawCode =
+      error !== null && typeof error === 'object' && 'code' in error ? error.code : undefined;
+    const code =
+      typeof rawCode === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(rawCode)
+        ? rawCode
+        : 'UNEXPECTED';
+    console.error(`mama command failed (${name}, ${code})`);
+  }
   process.exitCode = 1;
 });

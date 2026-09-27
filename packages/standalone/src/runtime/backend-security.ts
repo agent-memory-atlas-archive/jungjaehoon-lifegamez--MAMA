@@ -14,13 +14,18 @@ export function backendEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS
 }
 
 /** Paths are supplied by the product, never discovered by the shared engine. */
-export function credentialReadPaths(runtimeRoot: string, codexHome?: string): string[] {
+export function credentialReadPaths(
+  runtimeRoot: string,
+  codexHome?: string,
+  replayKeyFile?: string
+): string[] {
   return [
     ...new Set([
       resolve(runtimeRoot, 'auth.env'),
       resolve(runtimeRoot, 'config.yaml'),
       resolve(runtimeRoot, 'runtime'),
       resolve(runtimeRoot, '.codex'),
+      resolve(replayKeyFile ?? resolve(runtimeRoot, 'jev-key')),
       ...(codexHome ? [resolve(codexHome)] : []),
     ]),
   ];

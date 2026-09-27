@@ -1,5 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
+import { closeSync } from 'node:fs';
+import { basename } from 'node:path';
 
 import { Bot, InputFile } from 'grammy';
 import type { Context } from 'grammy';
@@ -20,7 +22,12 @@ import {
   type TelegramMessageLedgerEntry,
 } from './telegram-message-ledger.js';
 import { TelegramResponsePresenter } from './telegram-response-presenter.js';
-import { validateWorkspaceFile, type TelegramFileDeliveryResult } from '../api/file-delivery.js';
+import {
+  openWorkspaceFile,
+  readWorkspaceFile,
+  type TelegramFileDeliveryResult,
+} from '../api/file-delivery.js';
+import { isDefinitiveTelegramRejection } from './telegram-errors.js';
 import { downloadTelegramFiles, telegramFiles } from './telegram-attachments.js';
 
 const TELEGRAM_MAX_LENGTH = 4096;
@@ -51,6 +58,7 @@ export interface TelegramGatewayOptions {
   filesRoot?: string;
   workspaceDir?: string;
   log?: (line: string) => void;
+  onFatalError?: (error: unknown) => void;
 }
 
 function entityOptions<T>(entities: TelegramFormattedText['entities']): T {
@@ -134,6 +142,7 @@ export class TelegramGateway extends BaseGateway {
   private readonly filesRoot?: string;
   private readonly workspaceDir?: string;
   private readonly log: (line: string) => void;
+  private readonly onFatalError: (error: unknown) => void;
   private readonly messageLedger: TelegramMessageLedger;
   private readonly chatTails = new Map<string, Promise<void>>();
   private readonly activePresenters = new Map<string, TelegramResponsePresenter>();
@@ -163,6 +172,13 @@ export class TelegramGateway extends BaseGateway {
     };
     this.filesRoot = options.filesRoot;
     this.workspaceDir = options.workspaceDir;
+    this.onFatalError =
+      options.onFatalError ??
+      ((error) => {
+        queueMicrotask(() => {
+          throw error;
+        });
+      });
     this.log = options.log ?? ((line) => console.log(line));
     const ledgerPath = options.messageLedgerPath ?? process.env.MAMA_TELEGRAM_MESSAGE_LEDGER_PATH;
     if (!ledgerPath?.trim()) {
@@ -201,6 +217,7 @@ export class TelegramGateway extends BaseGateway {
           this.lastError = telegramErrorMessage(error);
           this.connected = false;
           console.error(`telegram polling stopped error=${this.lastError}`);
+          this.onFatalError(error);
         });
         console.log(`telegram polling started polling=${this.config.polling ?? 'default'}`);
       } else {
@@ -270,44 +287,53 @@ export class TelegramGateway extends BaseGateway {
     this.requireAllowedChat(ownerChatId);
     if (!this.filesRoot) throw new Error('Telegram workspace files root is not configured');
 
-    const validated = validateWorkspaceFile(this.filesRoot, path);
-    const payloadIdentity = createHash('sha256')
-      .update(`${validated.path}\0${validated.size}\0${caption ?? ''}`)
-      .digest('hex');
-    const claim = this.messageLedger.claim(`file:${operationId}`, {
-      deliveryTarget: ownerChatId,
-      payloadIdentity,
-    });
-    if (!claim.claimed) {
-      if (claim.entry.state === 'delivered') {
+    const validated = openWorkspaceFile(this.filesRoot, path);
+    try {
+      const payloadIdentity = createHash('sha256')
+        .update(`${validated.path}\0${validated.size}\0${caption ?? ''}`)
+        .digest('hex');
+      const claim = this.messageLedger.claim(`file:${operationId}`, {
+        deliveryTarget: ownerChatId,
+        payloadIdentity,
+      });
+      if (!claim.claimed) {
+        if (claim.entry.state === 'delivered') {
+          return {
+            sentAs: validated.sentAs,
+            size: validated.size,
+            idempotent: true,
+          };
+        }
+        throw new Error('Telegram file delivery operation is already in progress or uncertain');
+      }
+
+      const upload = new InputFile(readWorkspaceFile(validated.fd), basename(validated.path));
+      try {
+        const sent =
+          validated.sentAs === 'photo'
+            ? await this.bot.api.sendPhoto(
+                ownerChatId,
+                upload,
+                caption === undefined ? undefined : { caption }
+              )
+            : await this.bot.api.sendDocument(
+                ownerChatId,
+                upload,
+                caption === undefined ? undefined : { caption }
+              );
+        this.messageLedger.markDelivered(`file:${operationId}`);
         return {
+          messageId: sent.message_id,
           sentAs: validated.sentAs,
           size: validated.size,
-          idempotent: true,
         };
+      } catch (error) {
+        this.messageLedger.markFailed(`file:${operationId}`);
+        throw error;
       }
-      throw new Error('Telegram file delivery operation is already in progress or uncertain');
+    } finally {
+      closeSync(validated.fd);
     }
-
-    const upload = new InputFile(validated.path);
-    const sent =
-      validated.sentAs === 'photo'
-        ? await this.bot.api.sendPhoto(
-            ownerChatId,
-            upload,
-            caption === undefined ? undefined : { caption }
-          )
-        : await this.bot.api.sendDocument(
-            ownerChatId,
-            upload,
-            caption === undefined ? undefined : { caption }
-          );
-    this.messageLedger.markDelivered(`file:${operationId}`);
-    return {
-      messageId: sent.message_id,
-      sentAs: validated.sentAs,
-      size: validated.size,
-    };
   }
 
   getLastError(): string | null {
@@ -450,11 +476,15 @@ export class TelegramGateway extends BaseGateway {
     await this.runInChatQueue(String(chatId), async () => {
       const current = this.messageLedger.get(sourceRef);
       if (!current || current.state === 'delivered') return;
+      if (current.deliveryUncertain) throw new Error('Telegram response delivery is uncertain');
       const presenter =
         this.activePresenters.get(sourceRef) ?? this.createResponsePresenter(sourceRef, chatId);
-      await presenter.finalize(current.response!);
+      try {
+        await presenter.finalize(current.response!);
+      } finally {
+        this.activePresenters.delete(sourceRef);
+      }
       this.messageLedger.markDelivered(sourceRef);
-      this.activePresenters.delete(sourceRef);
       this.lastMessageAt = Date.now();
       this.emitEvent({
         type: 'message_sent',
@@ -465,8 +495,23 @@ export class TelegramGateway extends BaseGateway {
     });
   }
 
-  private async recoverPendingResponses(): Promise<void> {
+  async recoverPendingResponses(): Promise<void> {
     for (const entry of this.messageLedger.listUndelivered()) {
+      if (entry.deliveryUncertain) {
+        this.log(
+          `telegram delivery requires reconciliation key=${entry.key} state=${entry.state} next_chunk_index=${entry.nextChunkIndex ?? 0}`
+        );
+        continue;
+      }
+      if (entry.key.startsWith('outbound:') && entry.state === 'ready') {
+        const chatId = entry.deliveryTarget?.slice('telegram:'.length);
+        if (!entry.deliveryTarget?.startsWith('telegram:') || !chatId) {
+          throw new Error('Telegram outbound entry has no valid destination');
+        }
+        if (!this.config.allowedChats?.includes(chatId)) continue;
+        await this.runInChatQueue(chatId, () => this.deliverOutboundEntry(entry.key, chatId));
+        continue;
+      }
       if (!entry.key.startsWith('telegram:')) continue;
       const chatId = chatIdFromSourceMessageRef(entry.key);
       if (!this.config.allowedChats?.includes(chatId)) continue;
@@ -501,16 +546,38 @@ export class TelegramGateway extends BaseGateway {
     };
     const existing = this.messageLedger.claim(key, binding).entry;
     if (existing.state === 'delivered') return;
-    const start = existing.state === 'ready' ? (existing.nextChunkIndex ?? 0) : 0;
     if (existing.state !== 'ready') this.messageLedger.markReady(key, text, 'html-v1');
+    await this.deliverOutboundEntry(key, chatId);
+  }
+
+  private async deliverOutboundEntry(key: string, chatId: string): Promise<void> {
+    const entry = this.messageLedger.get(key);
+    if (!entry) throw new Error(`Telegram outbound entry is missing: ${key}`);
+    if (entry.state === 'delivered') return;
+    if (entry.deliveryUncertain) throw new Error('Telegram outbound delivery is uncertain');
+    if (!this.bot) throw new Error('Telegram gateway not connected');
+    if (entry.response === undefined) throw new Error('Telegram outbound entry has no response');
+    // markReady persists both fields; inventing them could resend chunks or change their formatting.
+    if (entry.chunkFormat === undefined || entry.nextChunkIndex === undefined) {
+      throw new Error('Telegram outbound entry has incomplete delivery metadata');
+    }
+    const chunks = formatTelegramMessage(entry.response, TELEGRAM_MAX_LENGTH, entry.chunkFormat);
+    const start = entry.nextChunkIndex;
     for (let index = start; index < chunks.length; index += 1) {
       this.messageLedger.markDeliveryProgress(key, index, true);
-      const sent = await sendFormattedMessage(this.bot.api, Number(chatId), chunks[index]!);
-      this.messageLedger.markDeliveryProgress(key, index + 1, false, sent.message_id);
+      try {
+        const sent = await sendFormattedMessage(this.bot.api, Number(chatId), chunks[index]!);
+        this.messageLedger.markDeliveryProgress(key, index + 1, false, sent.message_id);
+      } catch (error) {
+        if (isDefinitiveTelegramRejection(error)) {
+          this.messageLedger.markDeliveryProgress(key, index, false);
+        }
+        throw error;
+      }
     }
     this.messageLedger.markDelivered(key);
     this.log(
-      `telegram outbound delivered idempotency_key=${JSON.stringify(idempotencyKey)} message_ids=${JSON.stringify(this.messageLedger.get(key)!.messageIds ?? [])}`
+      `telegram outbound delivered idempotency_key=${JSON.stringify(entry.idempotencyKey)} message_ids=${JSON.stringify(this.messageLedger.get(key)!.messageIds ?? [])}`
     );
   }
 

@@ -1,4 +1,4 @@
-import { mkdirSync, statSync } from 'node:fs';
+import { statSync } from 'node:fs';
 import { join } from 'node:path';
 import type {
   ActionContext,
@@ -10,7 +10,9 @@ import type { ConnectorRegistry } from '../connectors/framework/connector-regist
 import {
   attachmentConnector,
   type AttachmentMatchRule,
+  type AttachmentListRequest,
 } from '../connectors/framework/attachments.js';
+import { resolveAttachmentDirectory } from '../connectors/framework/attachment-io.js';
 import { extractChatworkFileIds } from '../connectors/chatwork/index.js';
 import { extractSlackFileIds } from '../connectors/slack/index.js';
 import type { StoredSourceReader } from './stored-source-reader.js';
@@ -196,6 +198,23 @@ export function safeFileName(name: string): string {
   return safe;
 }
 
+function attachmentRequest(observation: StoredAttachmentObservation): AttachmentListRequest {
+  const { ids, fileIdRule } = idsFor(observation);
+  return {
+    roomId: roomIdFor(observation),
+    sourceAtMs: observation.sourceAt ?? null,
+    ...(observation.metadata?.accountId === undefined
+      ? {}
+      : { accountId: String(observation.metadata.accountId) }),
+    ...(typeof observation.author === 'string' ? { author: observation.author } : {}),
+    ...(observation.metadata?.messageId === undefined
+      ? {}
+      : { messageId: String(observation.metadata.messageId) }),
+    ...(ids.length === 0 ? {} : { fileIds: ids }),
+    ...(fileIdRule === undefined ? {} : { fileIdRule }),
+  };
+}
+
 function workspaceFilesRoot(ports: AttachmentActionPorts): string {
   if (!ports.workspaceDir?.trim())
     throw new Error('Attachment workspace directory is not configured');
@@ -216,22 +235,8 @@ export function createAttachmentActionRegistrations(
       },
       exec: async (input, context) => {
         const observation = await readObservation(ports, input as Record<string, unknown>, context);
-        const roomId = roomIdFor(observation);
         const provider = providerFor(ports, observation.source);
-        const { ids, fileIdRule } = idsFor(observation);
-        const files = await provider.listAttachments({
-          roomId,
-          sourceAtMs: observation.sourceAt ?? null,
-          ...(observation.metadata?.accountId === undefined
-            ? {}
-            : { accountId: String(observation.metadata.accountId) }),
-          ...(typeof observation.author === 'string' ? { author: observation.author } : {}),
-          ...(observation.metadata?.messageId === undefined
-            ? {}
-            : { messageId: String(observation.metadata.messageId) }),
-          ...(ids.length === 0 ? {} : { fileIds: ids }),
-          ...(fileIdRule === undefined ? {} : { fileIdRule }),
-        });
+        const files = await provider.listAttachments(attachmentRequest(observation));
         return {
           observationRef: observation.observationRef,
           connector: observation.source,
@@ -260,20 +265,17 @@ export function createAttachmentActionRegistrations(
         const observation = await readObservation(ports, values, context);
         const roomId = roomIdFor(observation);
         const provider = providerFor(ports, observation.source);
-        const listed = await provider.listAttachments({
-          roomId,
-          fileIds: [fileId],
-          sourceAtMs: observation.sourceAt ?? null,
-          fileIdRule: 'metadata_file_id',
-        });
+        const listed = await provider.listAttachments(attachmentRequest(observation));
         const descriptor = listed.find((file) => file.fileId === fileId);
         if (!descriptor) {
           throw new Error(
             `File ${fileId} does not belong to observation ${observation.observationRef} room ${roomId}`
           );
         }
-        const targetDir = join(workspaceFilesRoot(ports), observation.source, safeFileName(roomId));
-        mkdirSync(targetDir, { recursive: true, mode: 0o700 });
+        const targetDir = resolveAttachmentDirectory(
+          ports.workspaceDir!,
+          join(workspaceFilesRoot(ports), observation.source, safeFileName(roomId))
+        );
         const targetPath = join(
           targetDir,
           `${safeFileName(fileId)}_${safeFileName(descriptor.name)}`

@@ -58,7 +58,7 @@ describe('owner credential boundary', () => {
       ensureClaudeCallerHook(workspace, paths);
       const settings = JSON.parse(readFileSync(join(workspace, '.claude/settings.json'), 'utf8'));
       expect(settings.sandbox.filesystem.denyRead).toEqual(paths);
-      const rules = claudeOwnerDisallowedTools(paths);
+      const rules = claudeOwnerDisallowedTools(paths, workspace);
       for (const path of paths) {
         expect(rules).toContain(`Read(/${path})`);
         expect(rules).toContain(`Read(/${path}/**)`);
@@ -71,6 +71,7 @@ describe('owner credential boundary', () => {
 
 describe('external evidence MCP boundary', () => {
   it.each([
+    'memory.read:provenance',
     'source.read',
     'source.search',
     'source.attachment.list',

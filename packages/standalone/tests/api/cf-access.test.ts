@@ -88,6 +88,37 @@ describe('signed viewer Access authentication', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('refreshes once for key rotation and bounds repeated unknown-key requests', async () => {
+    expect(await isAuthenticated(tunnel(jwt()))).toBe(true);
+    const rotated = { ...publicJwk, kid: 'rotated' };
+    fetchMock.mockImplementation(async () => ({
+      ok: true,
+      json: async () => ({ keys: [rotated] }),
+    }));
+    expect(await isAuthenticated(tunnel(jwt({}, { kid: 'rotated' })))).toBe(true);
+    for (let index = 0; index < 8; index++) {
+      expect(await isAuthenticated(tunnel(jwt({}, { kid: `missing-${index}` })))).toBe(false);
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    vi.setSystemTime((now + 61) * 1000);
+    fetchMock.mockImplementation(async () => ({
+      ok: true,
+      json: async () => ({ keys: [publicJwk] }),
+    }));
+    expect(await isAuthenticated(tunnel(jwt()))).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('rate-limits failed unknown-key refreshes and retains valid cached keys', async () => {
+    expect(await isAuthenticated(tunnel(jwt()))).toBe(true);
+    fetchMock.mockRejectedValue(new Error('fixture unavailable'));
+    for (const kid of ['missing-a', 'missing-b', 'missing-c']) {
+      expect(await isAuthenticated(tunnel(jwt({}, { kid })))).toBe(false);
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(await isAuthenticated(tunnel(jwt()))).toBe(true);
+  });
+
   it.each([
     { exp: now - 60 },
     { exp: null },
