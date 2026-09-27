@@ -25,6 +25,7 @@ import { storedSourceFamilies } from '../../src/connectors/framework/stored-inde
 import { ownerSystemPrompt } from '../../src/runtime/owner-system-prompt.js';
 import { sourceActionRegistrations } from '../../src/api/source-actions.js';
 import { createStoredSourceReader } from '../../src/api/stored-source-reader.js';
+import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 import {
   createStimulusDelivery,
   createStimulusIntake,
@@ -55,6 +56,7 @@ describe('connector runtime', () => {
     const vault = join(root, 'vault');
     await expect(
       startConnectorRuntime({
+        timeZone: createTimeZoneSetting('UTC'),
         configPath: join(root, 'unused.json'),
         rawPath: join(root, 'raw'),
         statePath: join(root, 'state'),
@@ -82,6 +84,7 @@ describe('connector runtime', () => {
     roots.push(root);
     const timers: Array<ReturnType<typeof setInterval>> = [];
     const startup = startConnectorRuntime({
+      timeZone: createTimeZoneSetting('UTC'),
       configPath: join(root, 'unused.json'),
       rawPath: join(root, 'raw'),
       statePath: join(root, 'state'),
@@ -191,6 +194,7 @@ describe('connector runtime', () => {
     const deltas: unknown[] = [];
     const setIntervalMock = vi.fn(() => 1 as unknown as ReturnType<typeof setInterval>);
     const runtime = await startConnectorRuntime({
+      timeZone: createTimeZoneSetting('UTC'),
       configPath,
       rawPath,
       statePath,
@@ -221,8 +225,13 @@ describe('connector runtime', () => {
       clearInterval: vi.fn(),
     });
     expect([...calls.keys()]).toEqual(['slack', 'trello', 'kagemusha']);
-    expect(connectorPaths.get('trello')).toEqual({ trelloStatePath, kagemushaDbPath });
-    expect(connectorPaths.get('kagemusha')).toEqual({ trelloStatePath, kagemushaDbPath });
+    const expectedPaths = {
+      trelloStatePath,
+      kagemushaDbPath,
+      timeZone: { get: expect.any(Function), set: expect.any(Function) },
+    };
+    expect(connectorPaths.get('trello')).toEqual(expectedPaths);
+    expect(connectorPaths.get('kagemusha')).toEqual(expectedPaths);
     for (const value of calls.values()) {
       expect(value.poll).toHaveBeenCalledWith(new Date(now - 86_400_000), { hasCursor: false });
     }
@@ -252,6 +261,7 @@ describe('connector runtime', () => {
     );
     const now = Date.parse('2024-01-02T00:00:00.000Z');
     const runtime = await startConnectorRuntime({
+      timeZone: createTimeZoneSetting('UTC'),
       configPath,
       rawPath,
       statePath,
@@ -313,6 +323,7 @@ describe('connector runtime', () => {
     connector.commitPoll = vi.fn();
     connector.abortPollHandoff = vi.fn();
     const runtime = await startConnectorRuntime({
+      timeZone: createTimeZoneSetting('UTC'),
       configPath: join(root, 'connectors.json'),
       rawPath: join(root, 'raw'),
       statePath: join(root, 'state'),
@@ -378,6 +389,7 @@ describe('connector runtime', () => {
     const commits = new Map<string, ReturnType<typeof vi.fn>>();
     const connectorPaths = new Map<string, unknown>();
     const runtime = await startConnectorRuntime({
+      timeZone: createTimeZoneSetting('UTC'),
       configPath: join(root, 'connectors.json'),
       rawPath: join(root, 'raw'),
       statePath: join(root, 'state'),
@@ -411,7 +423,7 @@ describe('connector runtime', () => {
     try {
       await runtime.stop();
       const families = storedSourceFamilies(database.adapter, names);
-      const prompt = ownerSystemPrompt('codex', null, families);
+      const prompt = ownerSystemPrompt('codex', null, families, true, 'UTC');
       for (const name of names) {
         expect(prompt).toContain(`${name} (1; fixture-family 1)`);
         expect(commits.get(name)).toHaveBeenCalledOnce();
@@ -440,7 +452,9 @@ describe('connector runtime', () => {
       ownerPrincipalId: () => 'owner',
       rawStore: () => rawStore,
     });
-    const catalog = createCatalog(sourceActionRegistrations({ stored }));
+    const catalog = createCatalog(
+      sourceActionRegistrations({ stored, timeZone: createTimeZoneSetting('UTC') })
+    );
     const dispatch = createDispatcher(catalog);
     const access: ActionContext['access'] = {
       principalId: 'owner',
@@ -494,6 +508,7 @@ describe('connector runtime', () => {
       },
     ];
     const connectorRuntime = await startConnectorRuntime({
+      timeZone: createTimeZoneSetting('UTC'),
       configPath,
       rawPath,
       statePath,
@@ -510,7 +525,10 @@ describe('connector runtime', () => {
       const row = mailbox.claimNext();
       expect(row).not.toBeNull();
       expect(row?.kind).toBe('source_delta');
-      const delivery = createStimulusDelivery({ guidanceResolver: async () => [] });
+      const delivery = createStimulusDelivery({
+        guidanceResolver: async () => [],
+        timeZone: createTimeZoneSetting('UTC'),
+      });
       const reads: string[] = [];
       const context: NativeDeliveryContext = {
         nativeInputId: 'native-input',

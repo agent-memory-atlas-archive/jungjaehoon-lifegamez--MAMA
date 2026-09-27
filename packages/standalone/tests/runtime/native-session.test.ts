@@ -10,10 +10,14 @@ import type {
 } from '@jungjaehoon/mama-core/runtime/drivers/types';
 import { SessionPool } from '@jungjaehoon/mama-core/runtime/session-pool';
 import { createActionSurface } from '../../src/runtime/action-surface.js';
+import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 import { createNativeSession, type NativeDriverOptions } from '../../src/runtime/native-session.js';
 
 function surface() {
   return createActionSurface({
+    timeZone: createTimeZoneSetting('UTC'),
+    configPath: '/tmp/mama-test-config.yaml',
+    isOwnerMessageTurn: () => true,
     adapter: {} as DatabaseInstance,
     knowledge: {} as Knowledge,
     ownerPrincipalId: 'owner',

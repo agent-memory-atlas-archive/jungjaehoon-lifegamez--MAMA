@@ -8,6 +8,7 @@ import type { NativeTurnResult } from '@jungjaehoon/mama-core/runtime/native-tur
 import type { NativeSessionHandle } from '@jungjaehoon/mama-core/runtime/runtime';
 import type { MailboxRow } from '@jungjaehoon/mama-core/runtime/mailbox';
 import { createStimulusDelivery } from '../../src/runtime/stimulus-delivery.js';
+import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 
 vi.mock('@jungjaehoon/mama-core', async (original) => ({
   ...(await original<typeof import('@jungjaehoon/mama-core')>()),
@@ -62,6 +63,7 @@ async function setup() {
     socketPath: join(root, 'runtime.sock'),
     credentialPath: join(root, 'credential'),
     runtimeRoot: root,
+    timeZone: createTimeZoneSetting('UTC'),
     workspaceDir: join(root, 'workspace'),
     ownerPrincipalId: 'owner',
     agentId: 'agent',
@@ -204,7 +206,10 @@ describe('owner input recovery', () => {
 
 describe('row-owned replay ceiling', () => {
   it('takes each ceiling from its durable payload when an owner input runs first', async () => {
-    const delivery = createStimulusDelivery({ guidanceResolver: async () => [] });
+    const delivery = createStimulusDelivery({
+      guidanceResolver: async () => [],
+      timeZone: createTimeZoneSetting('UTC'),
+    });
     const seen: Array<number | undefined> = [];
     const base = {
       id: 1,

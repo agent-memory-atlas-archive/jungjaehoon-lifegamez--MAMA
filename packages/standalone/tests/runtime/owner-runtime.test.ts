@@ -6,6 +6,7 @@ import type { NativeSessionHandle } from '@jungjaehoon/mama-core/runtime/runtime
 import { createOwnerRuntime } from '../../src/runtime/owner-runtime.js';
 import { createOwnerPolicyProvider } from '../../src/runtime/owner-policy.js';
 import { createClient } from '@jungjaehoon/mama-core/client/client';
+import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 
 const homes: string[] = [];
 
@@ -25,6 +26,7 @@ describe('owner runtime assembly', () => {
       socketPath: join(home, 'runtime.sock'),
       credentialPath: join(home, 'credential'),
       runtimeRoot: home,
+      timeZone: createTimeZoneSetting('UTC'),
       workspaceDir: join(home, 'workspace'),
       ownerPrincipalId: 'owner',
       agentId: 'agent',
@@ -85,6 +87,7 @@ describe('owner runtime assembly', () => {
       socketPath: join(home, 'runtime.sock'),
       credentialPath: join(home, 'credential'),
       runtimeRoot: home,
+      timeZone: createTimeZoneSetting('UTC'),
       workspaceDir: join(home, 'workspace'),
       ownerPrincipalId: 'owner',
       agentId: 'agent',
@@ -126,6 +129,7 @@ describe('owner runtime assembly', () => {
       socketPath: join(home, 'runtime.sock'),
       credentialPath: join(home, 'credential'),
       runtimeRoot: home,
+      timeZone: createTimeZoneSetting('UTC'),
       workspaceDir: join(home, 'workspace'),
       ownerPrincipalId: 'owner',
       agentId: 'agent',

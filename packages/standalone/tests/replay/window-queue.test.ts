@@ -7,8 +7,12 @@ import {
   type QueueJev,
   type ReplayQueueEvent,
 } from '../../src/replay/window-queue.js';
+import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 
 const startMs = Date.parse('2026-09-02T00:00:00.000+09:00');
+
+const buildQueue = (input: Omit<Parameters<typeof buildWindowQueue>[0], 'timeZone'>) =>
+  buildWindowQueue({ ...input, timeZone: createTimeZoneSetting('Asia/Seoul') });
 
 function event(index: number, overrides: Partial<ReplayQueueEvent> = {}): ReplayQueueEvent {
   return {
@@ -70,7 +74,7 @@ const embedder: QueueEmbedder = {
 
 describe('day-window queue', () => {
   it('keeps every source line and emits A, B, C, unresolved, and duplicate material', async () => {
-    const queue = await buildWindowQueue({
+    const queue = await buildQueue({
       startMs,
       endMs: startMs + 24 * 60 * 60 * 1_000,
       events: [event(0), event(1), event(2), event(3)],
@@ -109,7 +113,7 @@ describe('day-window queue', () => {
   });
 
   it('uses source identity for deduplication and never drops a short line', async () => {
-    const queue = await buildWindowQueue({
+    const queue = await buildQueue({
       startMs,
       endMs: startMs + 24 * 60 * 60 * 1_000,
       events: [event(0, { contentPreview: 'x' }), event(0, { contentPreview: 'different text' })],
@@ -133,7 +137,7 @@ describe('day-window queue', () => {
       return answers;
     });
 
-    const queue = await buildWindowQueue({
+    const queue = await buildQueue({
       startMs,
       endMs: startMs + 24 * 60 * 60 * 1_000,
       events: [
@@ -159,7 +163,7 @@ describe('day-window queue', () => {
     };
 
     await expect(
-      buildWindowQueue({
+      buildQueue({
         startMs,
         endMs: startMs + 24 * 60 * 60 * 1_000,
         events: [event(0)],
@@ -177,7 +181,7 @@ describe('day-window queue', () => {
 
   it('names the candidate in each candidate question and carries the owner notes as context', async () => {
     const jev = injectedJev();
-    await buildWindowQueue({
+    await buildQueue({
       startMs,
       endMs: startMs + 24 * 60 * 60 * 1_000,
       events: [event(0, { metadata: undefined })],
@@ -249,7 +253,7 @@ describe('day-window queue', () => {
         return answers;
       }),
     };
-    const queue = await buildWindowQueue({
+    const queue = await buildQueue({
       startMs,
       endMs: startMs + 24 * 60 * 60 * 1_000,
       events: [event(0, { metadata: undefined })],

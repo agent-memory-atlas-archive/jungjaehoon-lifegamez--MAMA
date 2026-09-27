@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createViewerServer, type ViewerServerOptions } from '../../src/api/viewer-server.js';
+import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 
 const transport = vi.hoisted(() => ({
   handler: undefined as undefined | ((req: IncomingMessage, res: ServerResponse) => void),
@@ -52,7 +53,12 @@ afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 async function serve(options: Partial<ViewerServerOptions> = {}) {
-  const server = createViewerServer({ dispatch, ownerAccess: {} as never, ...options });
+  const server = createViewerServer({
+    timeZone: createTimeZoneSetting('Asia/Seoul'),
+    dispatch,
+    ownerAccess: {} as never,
+    ...options,
+  });
   await server.start();
 }
 function request(
@@ -583,7 +589,7 @@ describe('security events and owner alerts', () => {
     await request('/api/runtime/status', tunnel);
     expect(sendToOwner).toHaveBeenCalledTimes(3);
     const text = sendToOwner.mock.calls[0]![0];
-    for (const value of ['auth_failed', '/api/report', '401', '09:00:00 KST', 'KR'])
+    for (const value of ['auth_failed', '/api/report', '401', 'AM 9:00:00', '(Asia/Seoul)', 'KR'])
       expect(text).toContain(value);
     expect(text).not.toContain(tunnel['cf-ray']);
     expect(sendToOwner.mock.calls[2]![0]).toContain('Suppressed since previous alert: 3');

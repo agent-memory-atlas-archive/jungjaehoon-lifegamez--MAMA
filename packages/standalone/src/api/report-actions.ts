@@ -15,6 +15,7 @@ import {
   htmlUsesBoardVocabulary,
 } from '../operator/board-slot-instructions.js';
 import type { ReportPublishResult, ReportUpdateOptions } from './report-handler.js';
+import type { TimeZoneSetting } from '../runtime/timezone.js';
 
 export type ReportPublisher = (
   slots: Record<string, string>,
@@ -24,6 +25,7 @@ export type ReportPublisher = (
 export interface ReportPorts {
   publisher?: ReportPublisher | null;
   reader?: (() => BoardSlots) | null;
+  timeZone: TimeZoneSetting;
 }
 
 function isReportPublishResult(
@@ -81,7 +83,7 @@ export function reportActionRegistrations(ports: ReportPorts): ActionRegistratio
       contract: {
         name: 'report.publish',
         recallableWrite: true,
-        summary: buildReportPublishToolContract(),
+        summary: buildReportPublishToolContract(ports.timeZone.get()),
         inputSchema: {
           type: 'object',
           properties: {
@@ -150,7 +152,7 @@ export function reportActionRegistrations(ports: ReportPorts): ActionRegistratio
         for (const slotId of acceptedSlotIds) {
           const html = slots[slotId];
           if (typeof html !== 'string' || !html.trim()) continue;
-          if (htmlUsesBoardVocabulary(html)) continue;
+          if (htmlUsesBoardVocabulary(html, ports.timeZone.get())) continue;
           vocabularyWarnings.push(
             `slot ${slotId} uses none of the board structural classes (report-summary / report-card / report-section-title / report-table) and will render as plain text; republish using the report.publish contract (tool_describe report.publish)`
           );
@@ -169,7 +171,7 @@ export function reportActionRegistrations(ports: ReportPorts): ActionRegistratio
                 warnings: vocabularyWarnings,
                 // The shape and classes in hand once, not per slot, so the
                 // republish needs no second lookup.
-                contract: buildReportPublishToolContract(),
+                contract: buildReportPublishToolContract(ports.timeZone.get()),
               }
             : {}),
         };

@@ -19,6 +19,7 @@ afterEach(() => {
 function validConfig(): W1Config {
   return {
     version: 1,
+    timezone: 'Asia/Seoul',
     agent: {
       backend: 'codex',
       model: 'model-under-test',
@@ -97,6 +98,17 @@ describe('W1 runtime configuration', () => {
       ...reports,
       full_report_hours: [],
     });
+  });
+
+  it('defaults timezone to the machine zone and validates an explicit IANA zone', () => {
+    const { timezone: _timezone, ...base } = validConfig();
+    expect(parseConfig(base).timezone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
+    expect(parseConfig({ ...base, timezone: 'America/Los_Angeles' }).timezone).toBe(
+      'America/Los_Angeles'
+    );
+    expect(() => parseConfig({ ...base, timezone: 'Invalid/Zone' })).toThrow(
+      'timezone "Invalid/Zone" is not a valid IANA time zone'
+    );
   });
 
   it.each([

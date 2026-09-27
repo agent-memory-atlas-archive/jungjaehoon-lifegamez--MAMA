@@ -11,6 +11,7 @@ import { createPersistentReportStore } from '../../src/api/report-persistence.js
 import { createReportPublisher } from '../../src/api/report-handler.js';
 import { createCatalog, createDispatcher } from '@jungjaehoon/mama-core';
 import { reportActionRegistrations } from '../../src/api/report-actions.js';
+import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 
 const flushDebounce = () => new Promise((resolve) => setTimeout(resolve, 350));
 
@@ -41,7 +42,10 @@ describe('createPersistentReportStore', () => {
     expect(store.get('briefing')).toEqual(legacy);
     const dispatch = createDispatcher(
       createCatalog(
-        reportActionRegistrations({ publisher: createReportPublisher(store, new Set()) })
+        reportActionRegistrations({
+          publisher: createReportPublisher(store, new Set()),
+          timeZone: createTimeZoneSetting('UTC'),
+        })
       )
     );
     const access = {
@@ -54,11 +58,7 @@ describe('createPersistentReportStore', () => {
       briefing: '<div class="report-card">current</div>',
       pipeline: '<div class="report-table">current</div>',
     };
-    const publish = (
-      operationId: string,
-      modelRunId?: string,
-      input = { slots }
-    ) =>
+    const publish = (operationId: string, modelRunId?: string, input = { slots }) =>
       dispatch(
         { action: 'report.publish', operationId, input },
         { access, ...(modelRunId ? { session: { modelRunId } } : {}) }
@@ -84,7 +84,9 @@ describe('createPersistentReportStore', () => {
       modelRunId: 'run:2',
     });
     expect(
-      await publish('op:manual', undefined, { slots: { ...revisedSlots, briefing: '<p>manual</p>' } })
+      await publish('op:manual', undefined, {
+        slots: { ...revisedSlots, briefing: '<p>manual</p>' },
+      })
     ).toMatchObject({ status: 'completed' });
     expect(createPersistentReportStore({ filePath }).get('briefing')).toMatchObject({
       operationId: 'op:manual',

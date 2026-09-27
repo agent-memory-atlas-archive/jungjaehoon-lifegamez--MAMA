@@ -1213,3 +1213,15 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Result: repaired related-work reads, deterministic iCal revisions and cancellation, poll failure visibility, board/wiki guidance, and report basis removal; fixed the listed source, schedule, work-list, and revision contracts.
 - Evidence: `pnpm build`, `pnpm typecheck`, ESLint on changed TS/JS files, and 128 focused tests pass; the UI bundle was regenerated.
 - Still open: two existing native-session tests cannot bind Unix sockets in this sandbox; no live owner turn or provider poll was run, and `~/.mama` and `~/.claude` were not accessed.
+
+### Owner timezone and calendar review fixes — 2026-09-27
+
+- Result: config/onboarding now set one mutable owner timezone; interactive owner corrections update it live, all report/source/viewer/replay consumers use it, iCal storage retains raw date kinds, and schedule.upcoming sorts/filter by interpreted epoch. Duration, default iCal ends, and invalid source.recent `since` are handled.
+- Evidence: standalone build and typecheck pass; ESLint passes on changed TypeScript; 200 focused tests pass, including timezone changes across scheduling and iCal raw saves.
+- Still open: the wider owner-runtime/socket test slice has four `listen EPERM` failures in this sandbox; fixed historical import-start dates remain `+09:00` as scoped, and no live owner turn or home-state access was performed.
+
+### Required timezone propagation follow-up — 2026-09-28
+
+- Result: removed machine-zone defaults from timezone consumers; production call sites now pass the daemon setting, and calendar epochs require their stored kind.
+- Evidence: standalone build/typecheck, ESLint, Prettier, and 154 focused tests pass; grep leaves only config loading and onboarding machine-zone resolution.
+- Still open: socket-backed viewer and owner-runtime tests still fail to bind with `listen EPERM` in this sandbox; no home-state directories were accessed.

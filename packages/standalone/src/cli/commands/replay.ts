@@ -105,6 +105,7 @@ export async function runReplay(options: ReplayCommandOptions = {}): Promise<Rep
         {
           rawRoot: context.paths.connectorsRoot,
           channelNames: configuredChannelNames(context.paths.connectorsConfigPath),
+          timeZone: context.timeZone,
         }
       );
       const feeder = new ReplayFeeder({
@@ -127,6 +128,7 @@ export async function runReplay(options: ReplayCommandOptions = {}): Promise<Rep
           return buildWindowQueue({
             startMs: window.startMs,
             endMs: window.endMs,
+            timeZone: context.timeZone,
             events: catalog.eventsForWindow(window.startMs, window.endMs),
             workItems: (ledgerDigest ?? []).map((item) => ({
               commitmentId: item.commitmentId,

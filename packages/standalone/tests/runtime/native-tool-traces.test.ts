@@ -7,6 +7,7 @@ import { beginModelRun, type DatabaseInstance, type Knowledge } from '@jungjaeho
 import { NativeEffectReplayBoundary } from '@jungjaehoon/mama-core/runtime/native-session';
 import { CodexAppServerProcess } from '@jungjaehoon/mama-core/runtime/drivers/codex-app-server-process';
 import { createActionSurface } from '../../src/runtime/action-surface.js';
+import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 import { createNativeSession } from '../../src/runtime/native-session.js';
 import type { IModelRunner, PromptCallbacks } from '@jungjaehoon/mama-core/runtime/drivers/types';
 function fixture() {
@@ -18,6 +19,9 @@ function fixture() {
     .sort())
     db.exec(readFileSync(join(migrations, file), 'utf8'));
   const surface = createActionSurface({
+    timeZone: createTimeZoneSetting('UTC'),
+    configPath: '/tmp/mama-test-config.yaml',
+    isOwnerMessageTurn: () => true,
     adapter: db as unknown as DatabaseInstance,
     knowledge: {} as Knowledge,
     ownerPrincipalId: 'owner',

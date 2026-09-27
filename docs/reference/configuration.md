@@ -2,7 +2,8 @@
 
 Use `mama init` to create a configuration, then change non-secret settings in `~/.mama/config.yaml`
 and `~/.mama/connectors.json`. Rotate credentials with `mama secret set <NAME>` in a terminal.
-Restart the daemon to apply changes. Development-memory settings are [separate](mcp-tools.md).
+Restart the daemon to apply config edits. The owner can change `timezone` live in chat with
+`owner.timezone.set`; development-memory settings are [separate](mcp-tools.md).
 
 ## config.yaml
 
@@ -13,6 +14,7 @@ Move that value using `mama secret set MAMA_TELEGRAM_TOKEN`, then remove the YAM
 | Key                                                   | Meaning and default                                                                                                                                                  |
 | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `version`                                             | Required; must be `1`.                                                                                                                                               |
+| `timezone`                                            | IANA time zone for reports, schedules and displayed times; defaults to the machine's time zone. Owner changes through `owner.timezone.set` apply without restart.    |
 | `agent.backend`                                       | Required; `claude` or `codex`.                                                                                                                                       |
 | `agent.model`                                         | Required, nonblank backend model identifier.                                                                                                                         |
 | `agent.effort`                                        | `low`, `medium`, `high`, `max`, or `xhigh`; default `medium`. Backend support determines the useful values.                                                          |
@@ -43,9 +45,9 @@ Move that value using `mama secret set MAMA_TELEGRAM_TOKEN`, then remove the YAM
 | `wiki.enabled`                                        | Boolean; default `false` when the wiki block is present.                                                                                                             |
 | `wiki.vaultPath`                                      | Required when wiki is enabled; vault root.                                                                                                                           |
 | `wiki.wikiDir`                                        | Required when wiki is enabled; wiki directory within the vault, or an absolute path.                                                                                 |
-| `reports.full_report_hours`                           | Array of hours `0`–`23`; default `[8, 13, 18]`. An empty array schedules no full reports.                                                                            |
-| `reports.reminder_start_hour`                         | Hour `0`–`23`; default `9`.                                                                                                                                          |
-| `reports.reminder_end_hour`                           | Hour `0`–`23`; default `21`; must be at least the start hour.                                                                                                        |
+| `reports.full_report_hours`                           | Array of hours `0`–`23` in the configured owner time zone; default `[8, 13, 18]`. An empty array schedules no full reports.                                          |
+| `reports.reminder_start_hour`                         | Hour `0`–`23` in the configured owner time zone; default `9`.                                                                                                        |
+| `reports.reminder_end_hour`                           | Hour `0`–`23` in the configured owner time zone; default `21`; must be at least the start hour.                                                                      |
 
 Report hours use Korea Standard Time. File paths accept `~` and `${HOME}`. Most relative paths
 resolve against the user's home; a relative `wiki.wikiDir` stays relative to its vault.

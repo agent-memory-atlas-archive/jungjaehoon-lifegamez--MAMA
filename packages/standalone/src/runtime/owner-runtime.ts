@@ -28,6 +28,8 @@ import { openCoreDatabase, type CoreDatabase } from './core-db.js';
 import { createActionSurface, type ActionSurface } from './action-surface.js';
 import { createNativeSession, type NativeSession } from './native-session.js';
 import type { ActionDispatcher } from '@jungjaehoon/mama-core/api/dispatch';
+import type { Mailbox } from '@jungjaehoon/mama-core/runtime/mailbox';
+import type { TimeZoneSetting } from './timezone.js';
 import { ownerSystemPrompt } from './owner-system-prompt.js';
 import { storedSourceFamilies } from '../connectors/framework/stored-index-read.js';
 import { createOwnerPolicyProvider, type OwnerPolicyProvider } from './owner-policy.js';
@@ -48,6 +50,7 @@ export interface OwnerRuntimeOptions {
   socketPath: string;
   credentialPath: string;
   runtimeRoot: string;
+  timeZone: TimeZoneSetting;
   workspaceDir: string;
   ownerPrincipalId: string;
   agentId: string;
@@ -165,6 +168,7 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
   let rawStore: RawStore | undefined;
   let nativeSession: OwnerRuntimeOptions['nativeSession'] = options.nativeSession;
   let delivery: ReplayClockDelivery | undefined;
+  let ownerMailbox: Mailbox | undefined;
   const reportStore = createPersistentReportStore({
     filePath: options.reportPath ?? join(options.runtimeRoot, 'report-slots.json'),
   });
@@ -222,6 +226,11 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       scopes: options.scopes,
       connectors: options.connectors,
       storedSourceReader,
+      timeZone: options.timeZone,
+      configPath: join(options.runtimeRoot, 'config.yaml'),
+      isOwnerMessageTurn: (sourceMessageRef) =>
+        ownerMailbox?.readInput(sourceMessageRef, options.ownerPrincipalId)?.kind ===
+        'owner_message',
       reportStore,
       reportSseClients,
       wikiPorts,
@@ -236,7 +245,8 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       options.backend,
       null,
       storedSourceFamilies(database.adapter, access.connectors!),
-      options.wiki?.enabled ?? false
+      options.wiki?.enabled ?? false,
+      options.timeZone.get()
     );
     const ownerPolicyProvider =
       options.ownerPolicyProvider ?? createOwnerPolicyProvider(options.runtimeRoot);
@@ -267,6 +277,7 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
     }
     delivery = createStimulusDelivery({
       backend: options.backend,
+      timeZone: options.timeZone,
       wikiEnabled: options.wiki?.enabled ?? false,
       formattingRoutes: options.formattingRoutes ?? {
         reports: 'telegram',
@@ -294,8 +305,13 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
             kind: ['lesson', 'preference', 'constraint', 'workflow'],
           })
         ).filter(isOwnerGuidanceRecord),
-      openWorkPipeline: async () => runWorkListView({ view: 'pipeline' }, { knowledge, access }),
-      openWorkCandidates: async () => readOpenWorkCandidates({ knowledge, access }),
+      openWorkPipeline: async () =>
+        runWorkListView(
+          { view: 'pipeline' },
+          { knowledge, access, timeZone: options.timeZone.get() }
+        ),
+      openWorkCandidates: async () =>
+        readOpenWorkCandidates({ knowledge, access, timeZone: options.timeZone.get() }),
       ...(options.onOwnerResult === undefined ? {} : { onOwnerResult: options.onOwnerResult }),
       ...(options.onSourceResult === undefined ? {} : { onSourceResult: options.onSourceResult }),
       ...(options.onScheduledResult === undefined
@@ -348,6 +364,7 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       },
       reclaimStaleSocket: true,
     });
+    ownerMailbox = intakeRuntime.mailbox;
     const intake = createStimulusIntake(intakeRuntime, options.ownerPrincipalId);
     let stopped = false;
     return {

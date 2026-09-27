@@ -25,6 +25,7 @@ import {
 } from './auth-middleware.js';
 import { logCfAccessConfiguration } from './cf-access.js';
 import { createSecurityEventRecorder, type SecurityEventOptions } from './security-events.js';
+import type { TimeZoneSetting } from '../runtime/timezone.js';
 import {
   isAllowedViewerHost,
   logViewerInternalError,
@@ -109,6 +110,7 @@ export interface ViewerServerOptions {
   getMemoryStats?: () => ViewerMemoryStats | Promise<ViewerMemoryStats>;
   logPath?: string;
   securityEvents?: SecurityEventOptions;
+  timeZone: TimeZoneSetting;
 }
 
 export interface ViewerServer {
@@ -335,15 +337,13 @@ function archiveGraphPage(pages: WorkGraphPage[], nextCursor: string | null): Wo
   };
 }
 
-const KST_OFFSET_MS = 9 * 60 * 60 * 1_000;
-
-function kstStamp(ms: number): string {
-  return `${new Date(ms + KST_OFFSET_MS).toISOString().slice(0, 16).replace('T', ' ')} KST`;
+function localStamp(ms: number, timeZone: string): string {
+  return `${new Date(ms).toLocaleString('ko-KR', { timeZone })} (${timeZone})`;
 }
 
-function edgeLabelSummary(node: WorkGraphPage['nodes'][number]): string {
+function edgeLabelSummary(node: WorkGraphPage['nodes'][number], timeZone: string): string {
   if (node.data.kind !== 'memory') return node.label;
-  const at = node.data.recordedAt ? kstStamp(node.data.recordedAt) : '';
+  const at = node.data.recordedAt ? localStamp(node.data.recordedAt, timeZone) : '';
   return `${at} ${node.data.topic}: ${node.data.summary}`;
 }
 
@@ -479,7 +479,10 @@ function readLogTail(
 
 export function createViewerServer(options: ViewerServerOptions): ViewerServer {
   logCfAccessConfiguration();
-  const securityEvents = createSecurityEventRecorder(options.securityEvents);
+  const securityEvents = createSecurityEventRecorder({
+    ...options.securityEvents,
+    timeZone: options.timeZone,
+  });
   const port = options.port ?? resolveApiPort(process.env.MAMA_API_PORT);
   const host = options.host ?? process.env.MAMA_API_HOST ?? '127.0.0.1';
   const root = options.viewerDirectory ?? viewerDirectory();
@@ -695,7 +698,8 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
     return shapeArchiveGraph(
       archiveGraphPage(pages, cursor),
       Date.now() - started,
-      parseKinds(params)
+      parseKinds(params),
+      options.timeZone.get()
     );
   };
 
@@ -711,7 +715,8 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
     })) as WorkGraphPage;
     const node = page.nodes.find((candidate) => graphNodeKey(candidate) === id);
     if (!node) throw new ViewerHttpError(404, 'NOT_FOUND', 'Decision not found');
-    const mapped = mapArchiveGraphNode(node);
+    const timeZone = options.timeZone.get();
+    const mapped = mapArchiveGraphNode(node, timeZone);
     // The graph carries references only; the detail reads what they point at through the
     // same owner actions the agent uses, so a fact's history is readable, not just its ids.
     if (node.data.kind === 'observation') {
@@ -719,7 +724,7 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
         source: node.data.connector,
         observationRef: node.ref.id,
       })) as { channel?: string; author?: string; sourceAt?: number; content?: string };
-      const when = typeof read.sourceAt === 'number' ? kstStamp(read.sourceAt) : '';
+      const when = typeof read.sourceAt === 'number' ? localStamp(read.sourceAt, timeZone) : '';
       return {
         node: {
           ...mapped,
@@ -747,7 +752,7 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
           )
         )
         .filter((candidate) => candidate !== undefined && candidate.data.kind === 'memory')
-        .map((candidate) => `- ${edgeLabelSummary(candidate!)}`);
+        .map((candidate) => `- ${edgeLabelSummary(candidate!, options.timeZone.get())}`);
       const evidence = (provenance.events ?? []).map(
         (event) => `- ${event.observedAt ?? ''} ${event.channel ?? ''}: ${event.excerpt}`
       );

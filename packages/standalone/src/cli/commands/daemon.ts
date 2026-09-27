@@ -48,6 +48,7 @@ import { resolvePackageVersion } from '../../package-version.js';
 import { readViewerMemoryStats } from '../../api/viewer-data.js';
 import type { OwnerFileDeliveryResult } from '../../api/file-delivery.js';
 import { createReportScheduler, type ReportScheduler } from '../../runtime/report-scheduler.js';
+import { createTimeZoneSetting } from '../../runtime/timezone.js';
 
 const OWNER_PRINCIPAL_ID = 'owner';
 const OWNER_AGENT_ID = 'owner-agent';
@@ -121,6 +122,7 @@ export interface DaemonReplayContext {
   paths: DaemonPaths;
   owner: OwnerRuntime;
   logger: DaemonLogger;
+  timeZone: ReturnType<typeof createTimeZoneSetting>;
 }
 
 export interface DaemonHandle {
@@ -350,6 +352,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
     currentStage = 'config';
     stage(logger, 'config');
     config = options.config ?? loadConfig({ path: configPath, home: options.home });
+    const timeZone = createTimeZoneSetting(config.timezone);
     validateDeliveryRoutes(config);
     // launchd may have created the redirected log already; preserve its contents and tighten it.
     mkdirSync(dirname(config.logging.file), { recursive: true });
@@ -411,6 +414,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
       socketPath: paths.socketPath,
       credentialPath: paths.credentialPath,
       runtimeRoot: paths.mamaRoot,
+      timeZone,
       replayKeyFile: config.jev?.keyFile,
       workspaceDir: paths.workspaceDir,
       ownerPrincipalId: OWNER_PRINCIPAL_ID,
@@ -482,6 +486,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
     viewer = viewerFactory({
       dispatch: owner.surface.dispatch,
       ownerAccess: owner.surface.ownerAccess,
+      timeZone,
       reportStore: owner.reportStore,
       reportSseClients: owner.reportSseClients,
       wikiRoot: owner.wikiRoot,
@@ -489,6 +494,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
       securityEvents: {
         path: join(paths.mamaRoot, 'logs', 'security-events.jsonl'),
         replay: options.mode === 'replay',
+        timeZone,
         sendToOwner: async (text, key) => {
           const selected = gateways.get(config.delivery?.security_alerts ?? 'telegram');
           if (!selected) throw new Error('Security alert delivery messenger is not available');
@@ -533,7 +539,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
       logger.info('replay collectors: disabled');
       currentStage = 'replay';
       if (!options.replay) throw new Error('Replay mode requires a replay feeder');
-      await options.replay({ config, paths, owner, logger });
+      await options.replay({ config, paths, owner, logger, timeZone });
       stage(logger, 'replay');
       return {
         config,
@@ -561,6 +567,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
     const connectorFactory = dependencies.startConnectorRuntime ?? startConnectorRuntime;
     connectors = await connectorFactory({
       configPath: paths.connectorsConfigPath,
+      timeZone,
       ...(config.wiki?.enabled
         ? { wikiRoot: resolve(config.wiki.vaultPath!, config.wiki.wikiDir!) }
         : {}),
@@ -663,6 +670,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
       const schedulerFactory = dependencies.createReportScheduler ?? createReportScheduler;
       reportScheduler = schedulerFactory({
         config: config.reports,
+        timeZone,
         statePath: join(paths.runtimeRoot, 'report-schedule-state.json'),
         intake: {
           acceptScheduled: (input) => {

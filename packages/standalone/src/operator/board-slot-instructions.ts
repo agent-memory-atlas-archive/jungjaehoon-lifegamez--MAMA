@@ -13,7 +13,7 @@
 export const BOARD_SLOT_ORDER = ['briefing', 'action_required', 'decisions', 'pipeline'] as const;
 
 /** The exact HTML shapes the board stylesheet understands. */
-export function buildBoardHtmlVocabulary(): string[] {
+export function buildBoardHtmlVocabulary(timeZone: string): string[] {
   return [
     'Slot HTML must use ONLY this class vocabulary (the board styles it; inline styles are unnecessary):',
     '- Summary header: <div class="report-summary"><div class="summary-title">TITLE</div>',
@@ -25,7 +25,7 @@ export function buildBoardHtmlVocabulary(): string[] {
     '  <div class="card-meta">WHEN</div>',
     '  <div class="card-action">CONCRETE NEXT ACTION</div></div>',
     '- card-meta is required on every card: the source time of the latest change the card reports,',
-    '  in KST as month/day and HH:mm (for example 9/26 17:54), plus the due date when one exists.',
+    `  in ${timeZone} as month/day and HH:mm (for example 9/26 17:54), plus the due date when one exists.`,
     '- Workflow badge classes: badge-danger (blocked), badge-warning (waiting/needs confirmation),',
     '  badge-info (in progress), badge-success (done/quiet).',
     '- Temporal badges are separate facts: badge-danger (overdue), badge-warning (due today),',
@@ -56,14 +56,14 @@ export function buildBoardSlotShapeLines(): string[] {
  * with the tool that publishes it, not in per-turn prompt text: an agent that
  * describes report.publish before calling it learns the shape the board styles.
  */
-export function buildReportPublishToolContract(): string {
+export function buildReportPublishToolContract(timeZone: string): string {
   const inline = (lines: string[]): string => lines.join(' ').replace(/\s+/g, ' ').trim();
   return inline([
     'Publish dashboard analysis as HTML.',
     'pipeline is an agent-authored current workflow view; write it from the task ledger and conversations.',
     'SLOT SHAPE:',
     ...buildBoardSlotShapeLines(),
-    ...buildBoardHtmlVocabulary(),
+    ...buildBoardHtmlVocabulary(timeZone),
     "Write slot CONTENT in the owner's language; keep each slot under 6KB.",
     'A slot that contains none of report-summary / report-card / report-section-title / report-table',
     'is still published, but the result reports it back as a',
@@ -72,13 +72,13 @@ export function buildReportPublishToolContract(): string {
 }
 
 /** Instruction block that makes a report run also publish the board slots. */
-export function buildBoardPublishLines(): string[] {
+export function buildBoardPublishLines(timeZone: string): string[] {
   return [
     'BEFORE writing your text report, update the operator board: call the report.publish',
     'gateway tool EXACTLY once with all FOUR board slots:',
     '  report.publish({ slots: { briefing: "<html>", action_required: "<html>", decisions: "<html>", pipeline: "<html>" } })',
     ...buildBoardSlotShapeLines(),
-    ...buildBoardHtmlVocabulary(),
+    ...buildBoardHtmlVocabulary(timeZone),
     "Write all slot CONTENT in the owner's language (match the channels); keep each slot under 6KB.",
     'The plain-text report you write afterwards is a separate output: no HTML in it.',
   ];
@@ -105,9 +105,11 @@ const BOARD_STRUCTURAL_CLASSES = [
  * a class is added to buildBoardHtmlVocabulary() it becomes recognised here.
  * `structural` marks the subset that makes a slot count as board HTML.
  */
-export function boardHtmlClassVocabulary(): Set<string> & { structural: Set<string> } {
+export function boardHtmlClassVocabulary(
+  timeZone: string
+): Set<string> & { structural: Set<string> } {
   const classes = new Set<string>();
-  for (const line of buildBoardHtmlVocabulary()) {
+  for (const line of buildBoardHtmlVocabulary(timeZone)) {
     for (const match of line.matchAll(/class="([^"]*)"/g)) {
       for (const token of match[1].split(/\s+/)) {
         if (token) classes.add(token);
@@ -141,9 +143,9 @@ export function boardStructuralClasses(): readonly string[] {
  * built out of sub-element classes alone (badge-*, tag-*, summary-*, card-*)
  * does NOT pass -- the board renders it as plain text.
  */
-export function htmlUsesBoardVocabulary(html: string): boolean {
+export function htmlUsesBoardVocabulary(html: string, timeZone: string): boolean {
   if (typeof html !== 'string' || html.length === 0) return false;
-  const { structural } = boardHtmlClassVocabulary();
+  const { structural } = boardHtmlClassVocabulary(timeZone);
   for (const match of html.matchAll(/class\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) {
     const value = match[1] ?? match[2] ?? '';
     for (const token of value.split(/\s+/)) {

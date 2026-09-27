@@ -6,6 +6,7 @@ import { openCoreDatabase } from '../../src/runtime/core-db.js';
 import { upsertConnectorEventIndex } from '../../src/connectors/framework/event-index.js';
 import { createOwnerRuntime } from '../../src/runtime/owner-runtime.js';
 import { createNativeSession } from '../../src/runtime/native-session.js';
+import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 
 // Stop at the native-driver boundary: exercise the real database, grant and prompt assembly
 // without starting a model process or the runtime's IPC server.
@@ -62,6 +63,7 @@ async function assembledPrompt(backend: 'codex' | 'claude', connectors: string[]
       socketPath: join(home, 'runtime.sock'),
       credentialPath: join(home, 'credential'),
       runtimeRoot: home,
+      timeZone: createTimeZoneSetting('UTC'),
       workspaceDir: join(home, 'workspace'),
       ownerPrincipalId: 'fixture-owner',
       agentId: 'fixture-agent',

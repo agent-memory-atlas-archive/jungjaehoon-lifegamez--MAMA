@@ -3,6 +3,7 @@ import type { IModelRunner } from '@jungjaehoon/mama-core/runtime/drivers/types'
 import { SessionPool } from '@jungjaehoon/mama-core/runtime/session-pool';
 import { createNativeSession } from '../../src/runtime/native-session.js';
 import { createActionSurface } from '../../src/runtime/action-surface.js';
+import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 import { runReplay } from '../../src/cli/commands/replay.js';
 
 const state = vi.hoisted(() => ({
@@ -90,6 +91,9 @@ describe('replay finalization', () => {
         workspaceDir: '/tmp/replay-session-test',
         runtimeRoot: '/tmp/replay-session-test',
         actionSurface: createActionSurface({
+          timeZone: createTimeZoneSetting('UTC'),
+          configPath: '/tmp/mama-test-config.yaml',
+          isOwnerMessageTurn: () => true,
           adapter: {} as never,
           knowledge: {} as never,
           ownerPrincipalId: 'owner',

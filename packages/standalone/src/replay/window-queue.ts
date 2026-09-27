@@ -2,6 +2,7 @@ import { cosineSimilarity, generateEmbedding } from '@jungjaehoon/mama-core';
 import type { JevAnswers, JevBatchRequest, JevQuestion } from './jev-client.js';
 import { pool } from './jev-client.js';
 import { declareModelCache } from '../runtime/model-cache.js';
+import type { TimeZoneSetting } from '../runtime/timezone.js';
 
 export interface ReplayQueueEvent {
   readonly connector: string;
@@ -37,7 +38,7 @@ export interface QueueLine {
   readonly connector: string;
   readonly channelName: string;
   readonly author: string | null;
-  readonly kstTime: string;
+  readonly localTime: string;
   readonly sourceAtMs: number;
   readonly observationRef: string;
   readonly text: string;
@@ -118,6 +119,7 @@ export interface WindowQueueInput {
   readonly jev: QueueJev;
   readonly embedder?: QueueEmbedder;
   readonly topK?: number;
+  readonly timeZone: TimeZoneSetting;
 }
 
 export class WindowQueueIncompleteError extends Error {
@@ -149,7 +151,6 @@ interface RankedChunk {
   readonly ranked: readonly QueueCandidateScore[];
 }
 
-const KST_OFFSET_MS = 9 * 60 * 60 * 1_000;
 const MAX_ADJACENT_GAP_MS = 6 * 60 * 60 * 1_000;
 const CARD_ACTIVITY_RADIUS_MS = 24 * 60 * 60 * 1_000;
 const HIGH_CONFIDENCE = 0.8;
@@ -211,11 +212,24 @@ function assertWindow(startMs: number, endMs: number): void {
     throw new Error('Window queue endMs is invalid');
 }
 
-function kstTime(ms: number): string {
-  return new Date(ms + KST_OFFSET_MS).toISOString().slice(0, 16).replace('T', ' ');
+function localTime(ms: number, timeZone: string): string {
+  const values = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    })
+      .formatToParts(new Date(ms))
+      .map((part) => [part.type, part.value])
+  );
+  return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}`;
 }
 
-function toLine(event: ReplayQueueEvent): QueueLine {
+function toLine(event: ReplayQueueEvent, timeZone: string): QueueLine {
   if (event.contentPreview === undefined) {
     throw new Error(`Window queue source ${event.connector}:${event.sourceId} has no full text`);
   }
@@ -223,7 +237,7 @@ function toLine(event: ReplayQueueEvent): QueueLine {
     connector: event.connector,
     channelName: event.channelName ?? event.channelKey,
     author: event.author ?? null,
-    kstTime: kstTime(event.sourceAtMs),
+    localTime: localTime(event.sourceAtMs, timeZone),
     sourceAtMs: event.sourceAtMs,
     observationRef: event.observationRef,
     text: event.contentPreview,
@@ -288,7 +302,8 @@ function score(answers: JevAnswers, key: string, refs: readonly string[]): numbe
 async function buildChunks(
   events: readonly ReplayQueueEvent[],
   jev: QueueJev,
-  vocabulary: unknown
+  vocabulary: unknown,
+  timeZone: string
 ): Promise<QueueChunk[]> {
   const byThread = new Map<string, ReplayQueueEvent[]>();
   const unthreaded = new Map<string, ReplayQueueEvent[]>();
@@ -329,8 +344,8 @@ async function buildChunks(
             gap_minutes: Math.round(
               (ordered[pair.index]!.sourceAtMs - ordered[pair.index - 1]!.sourceAtMs) / 60_000
             ),
-            A: toLine(ordered[pair.index - 1]!).text,
-            B: toLine(ordered[pair.index]!).text,
+            A: toLine(ordered[pair.index - 1]!, timeZone).text,
+            B: toLine(ordered[pair.index]!, timeZone).text,
           })),
           note: note(vocabulary, 'pairs'),
         },
@@ -353,7 +368,7 @@ async function buildChunks(
   return chunks
     .sort((left, right) => left[0]!.sourceAtMs - right[0]!.sourceAtMs)
     .map((group, id) => {
-      const lines = group.map(toLine);
+      const lines = group.map((event) => toLine(event, timeZone));
       return {
         id,
         events: Object.freeze([...group]),
@@ -542,7 +557,7 @@ async function classifyChunk(
     {
       chunkIndex: chunk.id,
       chunk: chunk.lines.map((line, index) => `[${index + 1}] ${line.text}`).join('\n'),
-      chunk_date: chunk.lines[0]?.kstTime ?? null,
+      chunk_date: chunk.lines[0]?.localTime ?? null,
       candidates: candidates.map((candidate) => ({
         ...candidate.facts,
         key: candidate.key,
@@ -672,11 +687,12 @@ export function trelloCardsFromEvents(
 
 export async function buildWindowQueue(input: WindowQueueInput): Promise<WindowQueue> {
   assertWindow(input.startMs, input.endMs);
+  const timeZone = input.timeZone.get();
   const events = normalizeEvents(input.events);
-  const lines = Object.freeze(events.map(toLine));
+  const lines = Object.freeze(events.map((event) => toLine(event, timeZone)));
   const cards = input.trelloCards.length > 0 ? input.trelloCards : trelloCardsFromEvents(events);
   const vector = vectorCache(input.embedder ?? defaultEmbedder());
-  const chunks = await buildChunks(events, input.jev, input.vocabulary);
+  const chunks = await buildChunks(events, input.jev, input.vocabulary, timeZone);
   const rankedById = new Map<number, RankedChunk>();
   await pool(chunks, async (chunk) => {
     rankedById.set(chunk.id, await classifyChunk(chunk, input, cards, vector));

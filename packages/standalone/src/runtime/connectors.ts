@@ -17,6 +17,7 @@ import {
   type ConnectorConfigLoadResult,
 } from '../connectors/config-loader.js';
 import { ConnectorRegistry } from '../connectors/framework/connector-registry.js';
+import type { TimeZoneSetting } from './timezone.js';
 import {
   PollingScheduler,
   type RawBatchCommittedCallback,
@@ -50,6 +51,7 @@ export interface ConnectorRuntimeOptions {
   setInterval?: (handler: () => void, timeout: number) => ReturnType<typeof setInterval>;
   clearInterval?: (timer: ReturnType<typeof setInterval>) => void;
   configResult?: ConnectorConfigLoadResult;
+  timeZone: TimeZoneSetting;
 }
 
 export interface ConnectorRuntime {
@@ -204,6 +206,7 @@ export async function startConnectorRuntime(
         trelloStatePath: options.trelloStatePath,
         kagemushaDbPath: options.kagemushaDbPath,
         ...(connectorStatePath === undefined ? {} : { connectorStatePath }),
+        timeZone: options.timeZone,
       });
       await connector.init();
       registry.register(name, connector);

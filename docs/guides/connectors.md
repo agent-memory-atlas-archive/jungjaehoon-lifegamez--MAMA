@@ -137,6 +137,12 @@ An iCal feed is configured as a channel. Store its private URL as a secret; it i
 never written into connector configuration or poll logs. Use an uppercase feed key
 for the matching secret name.
 
+Date-only and floating event times use the owner's configured time zone when read. The connector
+retains each DTSTART and DTEND value and its value kind, so changing the owner time zone does not
+change the archived event. DTSTART with DURATION is supported; an event without DTEND or DURATION
+ends at its start, except that a date-only start lasts one day. RRULE and EXDATE recurrence
+expansion is not supported.
+
 ```sh
 mama secret set MAMA_ICAL_URL_STAYS
 ```

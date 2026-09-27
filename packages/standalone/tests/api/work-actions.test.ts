@@ -13,6 +13,7 @@ import {
   runWorkListView,
   workListActionRegistrations,
 } from '../../src/api/work-actions.js';
+import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 import { openCoreDatabase } from '../../src/runtime/core-db.js';
 
 const access: ActionContext['access'] = {
@@ -23,6 +24,37 @@ const access: ActionContext['access'] = {
 };
 
 describe('minimal work actions', () => {
+  it('judges a date deadline against the configured local midnight', async () => {
+    const knowledge = {
+      readWork: vi.fn().mockReturnValue({
+        items: [
+          {
+            rowId: 1,
+            commitmentId: 'dated-work',
+            revision: 1,
+            latestJudgmentRef: null,
+            values: { title: 'Dated work', status: 'in_progress', deadline: '2026-09-27' },
+            withdrawn: false,
+            createdAt: '2026-09-26T00:00:00Z',
+            updatedAt: '2026-09-26T00:00:00Z',
+          },
+        ],
+        nextCursor: null,
+        coverage: { reasons: [] },
+      }),
+    };
+    const view = await runWorkListView(
+      { view: 'items' },
+      {
+        knowledge: knowledge as never,
+        access,
+        now: () => Date.parse('2026-09-27T06:30:00Z'),
+        timeZone: 'America/Los_Angeles',
+      }
+    );
+    expect(view).toMatchObject({ view: 'items', tasks: [{ temporal_state: 'date_upcoming' }] });
+  });
+
   it('returns a capped, grouped open pipeline without a cursor and accepts a matching readVersion echo', async () => {
     const items = [
       {
@@ -59,7 +91,12 @@ describe('minimal work actions', () => {
     };
     const view = await runWorkListView(
       { view: 'pipeline' },
-      { knowledge: knowledge as never, access, now: () => Date.parse('2026-09-27T00:00:00Z') }
+      {
+        knowledge: knowledge as never,
+        access,
+        now: () => Date.parse('2026-09-27T00:00:00Z'),
+        timeZone: 'UTC',
+      }
     );
     expect(view).toMatchObject({
       view: 'pipeline',
@@ -93,17 +130,30 @@ describe('minimal work actions', () => {
     });
     const first = await runWorkListView(
       { view: 'items', limit: 1 },
-      { knowledge: knowledge as never, access, now: () => Date.parse('2026-09-27T00:00:00Z') }
+      {
+        knowledge: knowledge as never,
+        access,
+        now: () => Date.parse('2026-09-27T00:00:00Z'),
+        timeZone: 'UTC',
+      }
     );
     if (first.view !== 'items') throw new Error('expected items view');
     await expect(
       runWorkListView(
         { view: 'items', readVersion: first.readVersion },
-        { knowledge: knowledge as never, access, now: () => Date.parse('2026-09-27T00:00:00Z') }
+        {
+          knowledge: knowledge as never,
+          access,
+          now: () => Date.parse('2026-09-27T00:00:00Z'),
+          timeZone: 'UTC',
+        }
       )
     ).resolves.toMatchObject({ view: 'items' });
     await expect(
-      runWorkListView({ view: 'items', cursor: '' }, { knowledge: knowledge as never, access })
+      runWorkListView(
+        { view: 'items', cursor: '' },
+        { knowledge: knowledge as never, access, timeZone: 'UTC' }
+      )
     ).rejects.toThrow('omit cursor');
   });
 
@@ -131,7 +181,7 @@ describe('minimal work actions', () => {
     };
     const view = await runWorkListView(
       { view: 'pipeline', limit: 1 },
-      { knowledge: knowledge as never, access }
+      { knowledge: knowledge as never, access, timeZone: 'UTC' }
     );
     expect(view.total).toBe(70);
     expect(JSON.stringify(view).length).toBeLessThan(10_000);
@@ -169,17 +219,31 @@ describe('minimal work actions', () => {
     }));
     const view = await runWorkListView(
       { view: 'pipeline' },
-      { knowledge: { readWork: () => ({ items, nextCursor: null, coverage: { reasons: [] } }) } as never, access }
+      {
+        knowledge: {
+          readWork: () => ({ items, nextCursor: null, coverage: { reasons: [] } }),
+        } as never,
+        access,
+        timeZone: 'UTC',
+      }
     );
     expect(view.total).toBe(101);
   });
 
   it('advertises and validates the same fifty item limit enforced by the runtime', async () => {
-    const registration = workListActionRegistrations({ knowledge: { readWork: () => ({}) } as never })[0]!;
+    const registration = workListActionRegistrations({
+      knowledge: { readWork: () => ({}) } as never,
+      timeZone: createTimeZoneSetting('UTC'),
+    })[0]!;
     expect(registration.contract.inputSchema.properties?.limit).toMatchObject({ maximum: 50 });
-    const dispatch = createDispatcher(createCatalog(workListActionRegistrations({
-      knowledge: { readWork: vi.fn() } as never,
-    })));
+    const dispatch = createDispatcher(
+      createCatalog(
+        workListActionRegistrations({
+          knowledge: { readWork: vi.fn() } as never,
+          timeZone: createTimeZoneSetting('UTC'),
+        })
+      )
+    );
     const result = await dispatch(
       { action: 'work.list', input: { view: 'items', limit: 51 } },
       { access }
@@ -389,8 +453,12 @@ describe('minimal work actions', () => {
       let enteredCount = 0;
       let release!: () => void;
       let bothEntered!: () => void;
-      const gate = new Promise<void>((resolve) => { release = resolve; });
-      const entered = new Promise<void>((resolve) => { bothEntered = resolve; });
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const entered = new Promise<void>((resolve) => {
+        bothEntered = resolve;
+      });
       const knowledge = createKnowledge({
         adapter: handle.adapter,
         embedder: {
@@ -442,7 +510,9 @@ describe('minimal work actions', () => {
       release();
       const results = await Promise.all(writes);
       expect(results.every((result) => result.status === 'completed')).toBe(true);
-      expect(results.map((result) => (result as { data: { revision: number } }).data.revision).sort()).toEqual([2, 3]);
+      expect(
+        results.map((result) => (result as { data: { revision: number } }).data.revision).sort()
+      ).toEqual([2, 3]);
     } finally {
       await handle.close();
       rmSync(root, { recursive: true, force: true });

@@ -18,6 +18,7 @@ import type { QueueCandidateScore, QueueLine, WindowQueue } from '../replay/wind
 import { renderRecentOwnerExchanges, type OwnerExchange } from './recent-owner-exchanges.js';
 import { liveDeltaRoutingInstruction, type OwnerRuntimeBackend } from './owner-system-prompt.js';
 import { buildScheduledReportPrompt } from './report-prompts.js';
+import type { TimeZoneSetting } from './timezone.js';
 import { workListTitleTextScore } from '../api/work-actions.js';
 
 export const OWNER_RUNTIME_SESSION_KEY = 'owner:runtime';
@@ -61,6 +62,7 @@ export interface StimulusDeliveryOptions {
   openWorkCandidates?: () => Promise<unknown>;
   wikiEnabled?: boolean;
   formattingRoutes?: { reports: string; notifications: string };
+  timeZone: TimeZoneSetting;
   readResult?: (row: MailboxRow) => NativeTurnResultRecord | null;
   onUncertain?: StimulusDelivery['onUncertain'];
   recentOwnerExchanges?: (
@@ -238,12 +240,22 @@ function payloadCarriesMessageText(payload: MailboxRow['payload']): boolean {
   );
 }
 
-const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
-
-function kstStamp(iso: string): string {
+function localStamp(iso: string, timeZone: string): string {
   const ms = Date.parse(iso);
   if (!Number.isFinite(ms)) throw new Error(`A message line needs a source time, got ${iso}`);
-  return new Date(ms + KST_OFFSET_MS).toISOString().slice(5, 16).replace('T', ' ');
+  const values = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    })
+      .formatToParts(new Date(ms))
+      .map((part) => [part.type, part.value])
+  );
+  return `${values.month}-${values.day} ${values.hour}:${values.minute}`;
 }
 
 function textField(value: JsonValue | undefined): string {
@@ -255,7 +267,7 @@ function textField(value: JsonValue | undefined): string {
  * The session keeps every turn, so ids, hashes and connector metadata would be re-read on
  * each later model call; the stored observation stays one source.read away.
  */
-function messageLines(payload: JsonValue | undefined): string[] | null {
+function messageLines(payload: JsonValue | undefined, timeZone: TimeZoneSetting): string[] | null {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
   const refs = payload.refs;
   if (!Array.isArray(refs) || !payloadCarriesMessageText(payload)) return null;
@@ -269,7 +281,7 @@ function messageLines(payload: JsonValue | undefined): string[] | null {
       ? `${textField(ref.connector)}:${channelName}`
       : textField(ref.channel) || textField(ref.connector);
     lines.push(
-      `[${kstStamp(textField(ref.sourceAt))}] ${channel} · ${author} · ${textField(ref.observationRef)}: ${text}`
+      `[${localStamp(textField(ref.sourceAt), timeZone.get())}] ${channel} · ${author} · ${textField(ref.observationRef)}: ${text}`
     );
   }
   return lines;
@@ -301,7 +313,7 @@ function queueCandidate(score: QueueCandidateScore): string {
 }
 
 function queueLine(line: QueueLine): string {
-  return `[${line.kstTime}] ${line.channelName} · ${line.author ?? '-'} · ${line.observationRef}: ${line.text}`;
+  return `[${line.localTime}] ${line.channelName} · ${line.author ?? '-'} · ${line.observationRef}: ${line.text}`;
 }
 
 function queueLines(lines: readonly QueueLine[]): string[] {
@@ -351,16 +363,21 @@ export function renderWindowQueue(queue: WindowQueue): string {
 function boundedStimulus(
   row: MailboxRow,
   liveSourceDelta: boolean,
-  options: Pick<StimulusDeliveryOptions, 'wikiEnabled' | 'formattingRoutes' | 'backend'>,
+  options: Pick<
+    StimulusDeliveryOptions,
+    'wikiEnabled' | 'formattingRoutes' | 'backend' | 'timeZone'
+  >,
   candidates: readonly string[] = []
 ): string {
   if (row.kind === 'scheduled')
     return buildScheduledReportPrompt(row.payload, new Date(row.occurredAt), {
       wikiEnabled: options.wikiEnabled,
       messenger: options.formattingRoutes?.reports,
+      timeZone: options.timeZone.get(),
     });
   const lines = [
     '## Bounded stimulus',
+    `owner timezone: ${options.timeZone.get()}`,
     `kind: ${row.kind ?? 'unknown'}`,
     `stimulus_id: ${row.stimulusId}`,
     `channel: ${row.channelKey}`,
@@ -389,7 +406,7 @@ function boundedStimulus(
       }
     }
   }
-  const messages = row.kind === 'source_delta' ? messageLines(row.payload) : null;
+  const messages = row.kind === 'source_delta' ? messageLines(row.payload, options.timeZone) : null;
   if (messages === null) lines.push(`refs: ${JSON.stringify(row.refs)}`);
   if (row.kind === 'source_delta') {
     if (liveSourceDelta) {
@@ -433,7 +450,7 @@ function boundedStimulus(
       lines.push(
         `current_work (commitmentId | revision | title | stage | status | assignee | lastEventTime), ${String(work.length)} items:`,
         ...work,
-        `messages (KST, channel · sender · observationRef: text), ${String(messages.length)} lines:`,
+        `messages (${options.timeZone.get()}, channel · sender · observationRef: text), ${String(messages.length)} lines:`,
         ...messages.map((message) => wrapUntrustedContent('source_delta', message))
       );
       return lines.join('\n');
@@ -575,7 +592,10 @@ function assembledContent(
   row: MailboxRow,
   sessionBlocks: readonly string[],
   liveSourceDelta: boolean,
-  options: Pick<StimulusDeliveryOptions, 'wikiEnabled' | 'formattingRoutes' | 'backend'>,
+  options: Pick<
+    StimulusDeliveryOptions,
+    'wikiEnabled' | 'formattingRoutes' | 'backend' | 'timeZone'
+  >,
   candidates: readonly string[] = []
 ): ContentBlock[] {
   return [
@@ -665,8 +685,7 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
         },
         prepareSessionContent: async ({ isNewSession }) => {
           const sessionBlocks: string[] = [];
-          const pipeline =
-            isNewSession ? await options.openWorkPipeline?.() : undefined;
+          const pipeline = isNewSession ? await options.openWorkPipeline?.() : undefined;
           const entries = await options.guidanceResolver();
           const sessionKey = OWNER_RUNTIME_SESSION_KEY;
           const lastDelivered = guidanceBySessionKey.get(sessionKey);

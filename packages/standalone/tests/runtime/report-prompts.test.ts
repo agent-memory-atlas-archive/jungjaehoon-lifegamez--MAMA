@@ -6,7 +6,7 @@ describe('scheduled report prompts', () => {
     const prompt = buildScheduledReportPrompt(
       { report: 'full', hourKey: '2026-09-27:08' },
       new Date('2026-09-27T00:00:00Z'),
-      { wikiEnabled: false, messenger: 'slack' }
+      { wikiEnabled: false, messenger: 'slack', timeZone: 'UTC' }
     );
     expect(prompt).not.toContain('manage.wiki.');
     expect(prompt).toContain('Messenger: slack');
@@ -16,7 +16,8 @@ describe('scheduled report prompts', () => {
   it('keeps reminders on the session context and one board slot', () => {
     const prompt = buildScheduledReportPrompt(
       { report: 'reminder', hourKey: '2026-09-27:09' },
-      new Date('2026-09-27T00:00:00Z')
+      new Date('2026-09-27T00:00:00Z'),
+      { timeZone: 'UTC' }
     );
     expect(prompt).toContain('what this owner session already knows');
     expect(prompt).toContain('view="pipeline"');

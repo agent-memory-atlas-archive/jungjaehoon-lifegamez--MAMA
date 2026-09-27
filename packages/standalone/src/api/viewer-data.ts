@@ -637,17 +637,17 @@ function preview(value: string): string {
   return normalized.length <= 220 ? normalized : `${normalized.slice(0, 220)}...`;
 }
 
-export function mapArchiveGraphNode(node: WorkGraphPage['nodes'][number]): ArchiveGraphNode {
+export function mapArchiveGraphNode(
+  node: WorkGraphPage['nodes'][number],
+  timeZone: string
+): ArchiveGraphNode {
   const data = node.data;
   const memory = data.kind === 'memory' ? data : null;
   // An observation's label is its source id; show when and where instead (the text is read
   // on demand by the detail view through source.read).
   const observationLabel =
     data.kind === 'observation'
-      ? `${new Date((data.sourceAt ?? data.observedAt) + 9 * 60 * 60 * 1_000)
-          .toISOString()
-          .slice(5, 16)
-          .replace('T', ' ')} KST · ${data.connector}`
+      ? `${new Date(data.sourceAt ?? data.observedAt).toLocaleString('ko-KR', { timeZone })} (${timeZone}) · ${data.connector}`
       : null;
   const summary = memory?.summary ?? observationLabel ?? node.label;
   const payload = memory?.payload ?? null;
@@ -680,9 +680,10 @@ export function mapArchiveGraphEdge(edge: WorkGraphPage['edges'][number]): Archi
 export function shapeArchiveGraph(
   page: WorkGraphPage,
   latency: number,
-  kinds: readonly string[] = []
+  kinds: readonly string[] = [],
+  timeZone: string
 ): ArchiveGraphResponse {
-  const nodes = page.nodes.map(mapArchiveGraphNode);
+  const nodes = page.nodes.map((node) => mapArchiveGraphNode(node, timeZone));
   const edges = page.edges.map(mapArchiveGraphEdge);
   if (kinds.length === 0) {
     return {

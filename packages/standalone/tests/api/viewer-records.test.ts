@@ -7,6 +7,7 @@ import type { ActionDispatcher } from '@jungjaehoon/mama-core';
 import type { JudgmentAccess } from '@jungjaehoon/mama-core/knowledge';
 import { createReportStore } from '../../src/api/report-handler.js';
 import { createViewerServer, type ViewerServer } from '../../src/api/viewer-server.js';
+import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 
 const roots: string[] = [];
 const access: JudgmentAccess = {
@@ -56,6 +57,7 @@ describe('viewer board and wiki record routes', () => {
     reportStore.update('briefing', '<div class="report-card">current</div>', 0);
     const reportSseClients = new Set<import('node:http').ServerResponse>();
     server = createViewerServer({
+      timeZone: createTimeZoneSetting('UTC'),
       dispatch: (async () => {
         throw new Error('record routes must not dispatch actions');
       }) as unknown as ActionDispatcher,
@@ -101,6 +103,7 @@ describe('viewer board and wiki record routes', () => {
     );
     const calls: Array<Record<string, unknown>> = [];
     server = createViewerServer({
+      timeZone: createTimeZoneSetting('UTC'),
       dispatch: (async (call: { action: string; input: Record<string, unknown> }) => {
         calls.push(call.input);
         if (call.input.view === 'overview') {
@@ -156,6 +159,7 @@ describe('viewer board and wiki record routes', () => {
     );
     const reportSseClients = new Set<import('node:http').ServerResponse>();
     server = createViewerServer({
+      timeZone: createTimeZoneSetting('UTC'),
       dispatch: (async () => {
         throw new Error('report events must not dispatch actions');
       }) as unknown as ActionDispatcher,

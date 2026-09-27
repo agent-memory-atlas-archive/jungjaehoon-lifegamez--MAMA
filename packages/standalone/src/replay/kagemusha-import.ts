@@ -3,13 +3,13 @@ import { readFileSync } from 'node:fs';
 import Database from '../sqlite.js';
 import type { SQLiteDatabase } from '../sqlite.js';
 import type { NormalizedItem, RawIndexSink, RawStore } from '../storage/source-archive.js';
+import { localDateKey } from '../runtime/timezone.js';
 import {
   assertRawProjectionQueuesEmpty,
   drainRawProjections,
   writeImportManifest,
 } from './import-manifest.js';
 
-const KST_OFFSET_MS = 9 * 60 * 60 * 1_000;
 const DIRECT_ORIGINS = new Set(['slack', 'chatwork']);
 const KAGEMUSHA_ORIGINS = new Set(['kakao', 'line', 'telegram', 'airbnb']);
 
@@ -51,6 +51,7 @@ export interface KagemushaImportOptions {
   observedAtMs?: number;
   pageSize?: number;
   manifestPath?: string;
+  timeZone: string;
 }
 
 export interface KagemushaImportResult {
@@ -77,17 +78,18 @@ function countUp(record: Record<string, number>, key: string): void {
   record[key] = (record[key] ?? 0) + 1;
 }
 
-function originDay(timestampMs: number): string {
-  return new Date(timestampMs + KST_OFFSET_MS).toISOString().slice(0, 10);
+function originDay(timestampMs: number, timeZone: string): string {
+  return localDateKey(timestampMs, timeZone);
 }
 
 function addOriginDay(
   counts: Record<string, Record<string, number>>,
   origin: string,
-  timestampMs: number
+  timestampMs: number,
+  timeZone: string
 ): void {
   const days = (counts[origin] ??= {});
-  countUp(days, originDay(timestampMs));
+  countUp(days, originDay(timestampMs, timeZone));
 }
 
 function loadDirectMappings(path: string): Map<string, DirectMapping> {
@@ -546,7 +548,7 @@ export async function importKagemushaRows(
         batch.push(item);
         batches.set(item.source, batch);
         countUp(importedByOrigin, origin);
-        addOriginDay(countsByOriginDay, origin, item.timestamp.getTime());
+        addOriginDay(countsByOriginDay, origin, item.timestamp.getTime(), options.timeZone);
       }
       for (const [connector, items] of batches)
         options.rawStore.save(connector, items, { collectOnly: true });
@@ -592,7 +594,7 @@ export async function importKagemushaRows(
         item.observedAt = observedAtMs;
         items.push(item);
         countUp(importedByOrigin, 'feedback');
-        addOriginDay(countsByOriginDay, 'feedback', item.timestamp.getTime());
+        addOriginDay(countsByOriginDay, 'feedback', item.timestamp.getTime(), options.timeZone);
       }
       if (items.length > 0) options.rawStore.save('kagemusha', items, { collectOnly: true });
       const last = rows[rows.length - 1]!;

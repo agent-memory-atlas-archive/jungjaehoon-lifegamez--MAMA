@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createReportScheduler } from '../../src/runtime/report-scheduler.js';
 import { buildScheduledReportPrompt } from '../../src/runtime/report-prompts.js';
+import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 import type { ScheduledInput } from '../../src/runtime/stimulus-delivery.js';
 
 let root: string;
@@ -27,6 +28,7 @@ function setup() {
   };
   const options = {
     config: { full_report_hours: [8, 13, 18], reminder_start_hour: 9, reminder_end_hour: 21 },
+    timeZone: createTimeZoneSetting('Asia/Seoul'),
     statePath,
     intake: {
       acceptScheduled: (input: ScheduledInput) => {
@@ -58,10 +60,24 @@ function setup() {
 }
 
 describe('KST report scheduler', () => {
+  it('uses the configured local hour and observes a timezone change without restart', () => {
+    const ctx = setup();
+    ctx.options.config.full_report_hours = [9, 18];
+    ctx.options.timeZone.set('America/Los_Angeles');
+    const now = new Date('2026-09-27T16:00:00Z');
+    ctx.scheduler.tick(now);
+    expect(ctx.queued).toHaveLength(1);
+    ctx.setPending(false);
+    ctx.options.timeZone.set('Europe/Paris');
+    ctx.scheduler.tick(now);
+    expect(ctx.queued).toHaveLength(2);
+  });
+
   it('asks full reports to update topic pages and journal from the previous full report', () => {
     const prompt = buildScheduledReportPrompt(
       { report: 'full', hourKey: '2026-01-01:08' },
-      new Date('2026-01-01T00:00:00Z')
+      new Date('2026-01-01T00:00:00Z'),
+      { timeZone: 'UTC' }
     );
     expect(prompt).toContain('topic wiki page');
     expect(prompt).toContain('daily/YYYY-MM-DD.md');
@@ -115,17 +131,26 @@ describe('KST report scheduler', () => {
     scheduler.tick(new Date('2026-01-01T04:00:00Z'));
     expect(ctx.queued[0]?.payload).toMatchObject({ previousFullReportAt: '2026-01-01:08' });
     expect(
-      buildScheduledReportPrompt(
-        ctx.queued[0]?.payload,
-        new Date('2026-01-01T04:00:00Z')
-      )
+      buildScheduledReportPrompt(ctx.queued[0]?.payload, new Date('2026-01-01T04:00:00Z'), {
+        timeZone: 'Asia/Seoul',
+      })
     ).toContain('changes since that time');
     expect(
-      buildScheduledReportPrompt(
-        ctx.queued[0]?.payload,
-        new Date('2026-01-01T04:00:00Z')
-      )
-    ).toContain('since="2026-01-01T08:00:00+09:00"');
+      buildScheduledReportPrompt(ctx.queued[0]?.payload, new Date('2026-01-01T04:00:00Z'), {
+        timeZone: 'Asia/Seoul',
+      })
+    ).toContain('since="2025-12-31T23:00:00.000Z"');
+  });
+
+  it('labels report time and recent boundary in the configured zone', () => {
+    const prompt = buildScheduledReportPrompt(
+      { report: 'full', hourKey: '2026-01-01:08', previousFullReportAt: '2026-01-01:08' },
+      new Date('2026-01-01T16:00:00Z'),
+      { timeZone: 'America/Los_Angeles' }
+    );
+    expect(prompt).toContain('(America/Los_Angeles)');
+    expect(prompt).toContain('since="2026-01-01T16:00:00.000Z"');
+    expect(prompt).toContain('in America/Los_Angeles as month/day and HH:mm');
   });
 
   it('sends no reminder in an hour whose full report already went out after the hour stops being a full-report hour', () => {

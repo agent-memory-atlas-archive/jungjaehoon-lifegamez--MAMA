@@ -10,6 +10,7 @@ import { openCoreDatabase } from '../../src/runtime/core-db.js';
 import { RawStore } from '../../src/storage/source-archive.js';
 import { sourceActionRegistrations } from '../../src/api/source-actions.js';
 import { createStoredSourceReader } from '../../src/api/stored-source-reader.js';
+import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 import { storedSourceFamilies } from '../../src/connectors/framework/stored-index-read.js';
 import { ownerSystemPrompt } from '../../src/runtime/owner-system-prompt.js';
 
@@ -414,6 +415,7 @@ describe('calendar through the daemon connector runtime', () => {
       let runtime: Awaited<ReturnType<typeof startConnectorRuntime>> | undefined;
       try {
         runtime = await startConnectorRuntime({
+          timeZone: createTimeZoneSetting('UTC'),
           configPath,
           rawPath: join(root, 'raw'),
           statePath,
@@ -439,7 +441,7 @@ describe('calendar through the daemon connector runtime', () => {
         // A first snapshot is indexed and readable, but not admitted as live source work.
         expect(families).toEqual([{ source: 'calendar', family: null, count: 2 }]);
         for (const backend of ['claude', 'codex'] as const) {
-          expect(ownerSystemPrompt(backend, null, families)).toContain(
+          expect(ownerSystemPrompt(backend, null, families, true, 'UTC')).toContain(
             'Readable sources: calendar (2)'
           );
         }
@@ -455,7 +457,11 @@ describe('calendar through the daemon connector runtime', () => {
           ownerPrincipalId: () => 'fixture-owner',
           rawStore: () => rawStore,
         });
-        const dispatch = createDispatcher(createCatalog(sourceActionRegistrations({ stored })));
+        const dispatch = createDispatcher(
+          createCatalog(
+            sourceActionRegistrations({ stored, timeZone: createTimeZoneSetting('UTC') })
+          )
+        );
         const found = await dispatch(
           {
             action: 'source.search',

@@ -8,10 +8,10 @@ import {
   writeImportManifest,
 } from './import-manifest.js';
 import { existsSync } from 'node:fs';
+import { localDateKey } from '../runtime/timezone.js';
 
 const IMPORT_FROM_MS = Date.parse('2026-09-01T00:00:00.000+09:00');
 const ACTION_PAGE_SIZE = 1_000;
-const KST_OFFSET_MS = 9 * 60 * 60 * 1_000;
 
 export interface TrelloAction {
   id: string;
@@ -32,6 +32,7 @@ export interface TrelloImportOptions {
   untilMs: number;
   observedAtMs?: number;
   manifestPath?: string;
+  timeZone: string;
 }
 
 export interface TrelloImportResult {
@@ -52,8 +53,8 @@ function actionTime(action: TrelloAction): number {
   return value;
 }
 
-function boardDay(timestampMs: number): string {
-  return new Date(timestampMs + KST_OFFSET_MS).toISOString().slice(0, 10);
+function boardDay(timestampMs: number, timeZone: string): string {
+  return localDateKey(timestampMs, timeZone);
 }
 
 function boardChannels(path: string): Array<{ key: string; boardId: string }> {
@@ -221,7 +222,7 @@ export async function importTrelloActions(
         const boardId = item.metadata?.boardId;
         if (typeof boardId !== 'string' || boardId.trim() === '') return counts;
         const days = (counts[boardId] ??= {});
-        const date = boardDay(item.timestamp.getTime());
+        const date = boardDay(item.timestamp.getTime(), options.timeZone);
         days[date] = (days[date] ?? 0) + 1;
         return counts;
       }, {}),

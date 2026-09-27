@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { createOwnerRuntime } from '../../src/runtime/owner-runtime.js';
 import { readMemoryRecordsInScopes } from '@jungjaehoon/mama-core';
 import { createStimulusDelivery } from '../../src/runtime/stimulus-delivery.js';
+import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 
 vi.mock('@jungjaehoon/mama-core', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@jungjaehoon/mama-core')>()),
@@ -49,6 +50,7 @@ describe('owner guidance resolver', () => {
       socketPath: join(home, 'runtime.sock'),
       credentialPath: join(home, 'credential'),
       runtimeRoot: home,
+      timeZone: createTimeZoneSetting('UTC'),
       workspaceDir: join(home, 'workspace'),
       ownerPrincipalId: 'owner',
       agentId: 'agent',

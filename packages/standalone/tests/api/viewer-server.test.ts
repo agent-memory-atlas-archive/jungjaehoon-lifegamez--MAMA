@@ -9,6 +9,7 @@ import type {
 } from '@jungjaehoon/mama-core';
 import type { JudgmentAccess } from '@jungjaehoon/mama-core/knowledge';
 import { createViewerServer, type ViewerServer } from '../../src/api/viewer-server.js';
+import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 
 const ownerAccess: JudgmentAccess = {
   principalId: 'owner',
@@ -137,6 +138,7 @@ async function withServer(
     return implementation(call, context);
   }) as unknown as ActionDispatcher;
   const server = createViewerServer({
+    timeZone: createTimeZoneSetting('UTC'),
     dispatch,
     ownerAccess,
     port: 0,

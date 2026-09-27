@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { closeSync, fchmodSync, mkdirSync, openSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import type { TimeZoneSetting } from '../runtime/timezone.js';
 
 export type SecurityEventClass =
   | 'owner_access'
@@ -28,11 +29,12 @@ export interface SecurityEventOptions {
   path?: string;
   replay?: boolean;
   sendToOwner?: (text: string, idempotencyKey: string) => Promise<void>;
+  timeZone: TimeZoneSetting;
 }
 
 const ALERT_WINDOW_MS = 10 * 60 * 1000;
 
-export function createSecurityEventRecorder(options: SecurityEventOptions = {}) {
+export function createSecurityEventRecorder(options: SecurityEventOptions) {
   const path = options.path ?? join(homedir(), '.mama', 'logs', 'security-events.jsonl');
   const lastAlert = new Map<SecurityEventClass, { time: number; suppressed: number }>();
 
@@ -69,17 +71,15 @@ export function createSecurityEventRecorder(options: SecurityEventOptions = {}) 
       }
 
       if (!shouldAlert || suppressed) return;
-      const kst = new Date(Date.parse(event.time) + 9 * 60 * 60 * 1000)
-        .toISOString()
-        .slice(0, 19)
-        .replace('T', ' ');
+      const timeZone = options.timeZone.get();
+      const localTime = new Date(event.time).toLocaleString('ko-KR', { timeZone });
       const text = [
         'Viewer security alert',
         `Class: ${event.class}`,
         `Path: ${event.path}`,
         `Status: ${event.status}`,
         `Suppressed since previous alert: ${suppressedSinceLastAlert}`,
-        `Time: ${kst} KST`,
+        `Time: ${localTime} (${timeZone})`,
         `Country: ${event.country ?? 'unknown'}`,
       ].join('\n');
       void (async () => {

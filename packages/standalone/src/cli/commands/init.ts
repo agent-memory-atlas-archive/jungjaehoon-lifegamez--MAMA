@@ -238,6 +238,14 @@ export async function runInit(options: InitOptions = {}): Promise<void> {
   if (backend !== 'claude' && backend !== 'codex')
     throw new CliInputError('Backend must be claude or codex.');
   const model = await text(prompt, 'Model');
+  const machineTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const timezoneAnswer = (await prompt.text(`Owner timezone [${machineTimeZone}]`)).trim();
+  const timezone = timezoneAnswer || machineTimeZone;
+  try {
+    new Intl.DateTimeFormat('en', { timeZone: timezone });
+  } catch {
+    throw new CliInputError(`Timezone "${timezone}" is not a valid IANA time zone.`);
+  }
   const secrets: Partial<Record<SecretName, string>> = {
     MAMA_TELEGRAM_TOKEN: nonblankLine(await prompt.secret('Telegram bot token')),
   };
@@ -325,6 +333,7 @@ export async function runInit(options: InitOptions = {}): Promise<void> {
   const config = parseConfig(
     {
       version: 1,
+      timezone,
       agent: {
         backend,
         model,

@@ -1,9 +1,11 @@
 import type { ActionContext, ActionRegistration, ActionSchemaObject } from '@jungjaehoon/mama-core';
 import type { MemoryReadAllowance } from '@jungjaehoon/mama-core/api/catalog';
 import type { StoredSourceReader } from './stored-source-reader.js';
+import type { TimeZoneSetting } from '../runtime/timezone.js';
 
 export interface SourcePorts {
   stored?: StoredSourceReader | null;
+  timeZone: TimeZoneSetting;
 }
 
 function replayReadAllowance(
@@ -31,6 +33,36 @@ function readWindow(body: Record<string, unknown>): {
     ...(body.content_offset === undefined ? {} : { content_offset: body.content_offset }),
     ...(body.content_limit === undefined ? {} : { content_limit: body.content_limit }),
   };
+}
+
+function displaySourceTime(value: unknown, timeZone: string): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const result = value as Record<string, unknown>;
+  if (Array.isArray(result.results)) {
+    return {
+      ...result,
+      results: result.results.map((entry) => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+        const item = entry as Record<string, unknown>;
+        return item.status === 'completed'
+          ? { ...item, data: displaySourceTime(item.data, timeZone) }
+          : entry;
+      }),
+    };
+  }
+  const sourceAt = result.sourceAt;
+  const ms =
+    typeof sourceAt === 'number'
+      ? sourceAt
+      : typeof sourceAt === 'string'
+        ? Date.parse(sourceAt)
+        : Number.NaN;
+  return Number.isFinite(ms)
+    ? {
+        ...result,
+        sourceTime: `${new Date(ms).toLocaleString('ko-KR', { timeZone })} (${timeZone})`,
+      }
+    : value;
 }
 
 function storedReader(ports: SourcePorts): StoredSourceReader {
@@ -188,9 +220,14 @@ export function sourceActionRegistrations(ports: SourcePorts): ActionRegistratio
                       : {};
                   return {
                     author: hit.author_label ?? null,
-                    channel: hit.channel_name ?? hit.channelName ?? metadata.channelName ?? hit.channel ?? null,
+                    channel:
+                      hit.channel_name ??
+                      hit.channelName ??
+                      metadata.channelName ??
+                      hit.channel ??
+                      null,
                     time: Number.isFinite(timestamp)
-                      ? new Date(timestamp).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
+                      ? `${new Date(timestamp).toLocaleString('ko-KR', { timeZone: ports.timeZone.get() })} (${ports.timeZone.get()})`
                       : null,
                     text: content.replace(/\s+/g, ' ').trim().slice(0, 200),
                     observationRef: hit.raw_id ?? null,
@@ -224,6 +261,7 @@ export function sourceActionRegistrations(ports: SourcePorts): ActionRegistratio
       exec: (input, context) => {
         const body = input as Record<string, unknown>;
         const allowance = replayReadAllowance(context.readAllowance);
+        const timeZone = ports.timeZone.get();
         if (body.source === undefined && Array.isArray(body.observationRefs)) {
           // Observation refs are unique, so each ref names its own source.
           const reader = storedReader(ports);
@@ -232,9 +270,23 @@ export function sourceActionRegistrations(ports: SourcePorts): ActionRegistratio
               try {
                 const data =
                   allowance === undefined
-                    ? reader.readObservation(String(ref), context.access, undefined, readWindow(body))
-                    : reader.readObservation(String(ref), context.access, allowance, readWindow(body));
-                return { observationRef: ref, status: 'completed', data };
+                    ? reader.readObservation(
+                        String(ref),
+                        context.access,
+                        undefined,
+                        readWindow(body)
+                      )
+                    : reader.readObservation(
+                        String(ref),
+                        context.access,
+                        allowance,
+                        readWindow(body)
+                      );
+                return {
+                  observationRef: ref,
+                  status: 'completed',
+                  data: displaySourceTime(data, timeZone),
+                };
               } catch (error) {
                 return {
                   observationRef: ref,
@@ -246,15 +298,29 @@ export function sourceActionRegistrations(ports: SourcePorts): ActionRegistratio
           };
         }
         if (body.source === undefined && typeof body.observationRef === 'string') {
-          return allowance === undefined
-            ? storedReader(ports).readObservation(body.observationRef, context.access, undefined, readWindow(body))
-            : storedReader(ports).readObservation(body.observationRef, context.access, allowance, readWindow(body));
+          const data =
+            allowance === undefined
+              ? storedReader(ports).readObservation(
+                  body.observationRef,
+                  context.access,
+                  undefined,
+                  readWindow(body)
+                )
+              : storedReader(ports).readObservation(
+                  body.observationRef,
+                  context.access,
+                  allowance,
+                  readWindow(body)
+                );
+          return displaySourceTime(data, timeZone);
         }
         const source = sourceName(input, 'source.read');
         assertGrantedSource(source, context.access);
-        return allowance === undefined
-          ? storedReader(ports).read(source, body, context.access)
-          : storedReader(ports).read(source, body, context.access, allowance);
+        const data =
+          allowance === undefined
+            ? storedReader(ports).read(source, body, context.access)
+            : storedReader(ports).read(source, body, context.access, allowance);
+        return displaySourceTime(data, timeZone);
       },
     },
   ];

@@ -4,11 +4,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseICalendar } from '../../src/connectors/ical/parser.js';
 import { loadConnector } from '../../src/connectors/index.js';
-import { mapNormalizedItemsToConnectorEventIndexInputs, RawStore } from '../../src/storage/source-archive.js';
+import {
+  mapNormalizedItemsToConnectorEventIndexInputs,
+  RawStore,
+} from '../../src/storage/source-archive.js';
 import { createCatalog, createDispatcher, type ActionContext } from '@jungjaehoon/mama-core';
 import { reportSourceActionRegistrations } from '../../src/api/report-source-actions.js';
 import { upsertConnectorEventIndex } from '../../src/connectors/framework/event-index.js';
 import { openCoreDatabase } from '../../src/runtime/core-db.js';
+import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 
 const calendar = [
   'BEGIN:VCALENDAR',
@@ -35,11 +39,11 @@ function statePath(): string {
 }
 
 describe('iCal connector', () => {
-afterEach(async () => {
-  vi.restoreAllMocks();
-  for (const raw of openRawStores.splice(0).reverse()) raw.close();
-  for (const database of openDatabases.splice(0).reverse()) await database.close();
-  delete process.env.MAMA_ICAL_URL_PRIMARY;
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    for (const raw of openRawStores.splice(0).reverse()) raw.close();
+    for (const database of openDatabases.splice(0).reverse()) await database.close();
+    delete process.env.MAMA_ICAL_URL_PRIMARY;
     for (const path of stateDirs.splice(0)) rmSync(path, { recursive: true, force: true });
   });
 
@@ -47,11 +51,51 @@ afterEach(async () => {
     expect(parseICalendar(calendar)).toEqual([
       {
         uid: 'event-1',
-        start: '2026-10-01T01:00:00.000Z',
-        end: '2026-10-01T02:00:00.000Z',
+        start: '20261001T100000',
+        startKind: 'floating',
+        startTimeZone: 'Asia/Seoul',
+        end: '20261001T110000',
+        endKind: 'floating',
+        endTimeZone: 'Asia/Seoul',
         summary: 'Planning, review',
         status: 'confirmed',
         revisionTime: Date.parse('2026-09-27T09:00:00Z'),
+      },
+    ]);
+  });
+
+  it('accepts duration and missing end properties while retaining date kinds', () => {
+    const parsed = parseICalendar(
+      [
+        'BEGIN:VCALENDAR',
+        'BEGIN:VEVENT',
+        'UID:duration',
+        'DTSTART:20261001',
+        'DURATION:P1D',
+        'END:VEVENT',
+        'BEGIN:VEVENT',
+        'UID:instant',
+        'DTSTART:20261001T100000',
+        'END:VEVENT',
+        'END:VCALENDAR',
+        '',
+      ].join('\r\n')
+    );
+    expect(parsed).toEqual([
+      {
+        uid: 'duration',
+        start: '20261001',
+        startKind: 'date',
+        duration: 'P1D',
+        summary: '(Untitled event)',
+        status: 'confirmed',
+      },
+      {
+        uid: 'instant',
+        start: '20261001T100000',
+        startKind: 'floating',
+        summary: '(Untitled event)',
+        status: 'confirmed',
       },
     ]);
   });
@@ -60,6 +104,7 @@ afterEach(async () => {
     process.env.MAMA_ICAL_URL_PRIMARY = 'https://example.invalid/calendar.ics?secret=never-log';
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => calendar });
     vi.stubGlobal('fetch', fetchMock);
+    const ownerTimeZone = createTimeZoneSetting('Asia/Seoul');
     const connector = await loadConnector(
       'ical',
       {
@@ -68,7 +113,7 @@ afterEach(async () => {
         auth: { type: 'token' },
         channels: { primary: { role: 'reference', name: 'Schedule', feedName: 'Feed' } },
       },
-      { connectorStatePath: statePath() }
+      { connectorStatePath: statePath(), timeZone: ownerTimeZone }
     );
     await connector.init();
     const first = await connector.poll(new Date(0));
@@ -98,6 +143,7 @@ afterEach(async () => {
       .mockResolvedValueOnce({ ok: true, text: async () => body('20260927T090000Z') })
       .mockResolvedValueOnce({ ok: true, text: async () => body('20260927T090500Z') });
     vi.stubGlobal('fetch', fetchMock);
+    const ownerTimeZone = createTimeZoneSetting('Asia/Seoul');
     const connector = await loadConnector(
       'ical',
       {
@@ -106,7 +152,7 @@ afterEach(async () => {
         auth: { type: 'token' },
         channels: { primary: { role: 'reference', name: 'Schedule' } },
       },
-      { connectorStatePath: statePath() }
+      { connectorStatePath: statePath(), timeZone: ownerTimeZone }
     );
     await connector.init();
     const raw = new RawStore(join(stateDirs[stateDirs.length - 1]!, 'raw'));
@@ -115,6 +161,7 @@ afterEach(async () => {
       raw.save('ical', first);
       connector.commitPoll?.();
       const pendingBefore = raw.listPendingProjections('ical', 100, 0).length;
+      ownerTimeZone.set('America/Los_Angeles');
       const second = await connector.poll(new Date(0));
       raw.save('ical', second);
       expect(second[0]?.sourceId).toBe(first[0]?.sourceId);
@@ -144,17 +191,34 @@ afterEach(async () => {
     openRawStores.push(raw);
     const connector = await loadConnector(
       'ical',
-      { enabled: true, pollIntervalMinutes: 5, auth: { type: 'token' }, channels: { primary: { role: 'reference', name: 'Schedule' } } },
-      { connectorStatePath: join(root, 'connector-state.json') }
+      {
+        enabled: true,
+        pollIntervalMinutes: 5,
+        auth: { type: 'token' },
+        channels: { primary: { role: 'reference', name: 'Schedule' } },
+      },
+      {
+        connectorStatePath: join(root, 'connector-state.json'),
+        timeZone: createTimeZoneSetting('Asia/Seoul'),
+      }
     );
     await connector.init();
     const first = await connector.poll(new Date(0));
-    raw.save('ical', first.map((item) => ({ ...item, observedAt: Date.now() })));
+    raw.save(
+      'ical',
+      first.map((item) => ({ ...item, observedAt: Date.now() }))
+    );
     connector.commitPoll?.();
     const modified = await connector.poll(new Date(0));
-    raw.save('ical', modified.map((item) => ({ ...item, observedAt: Date.now() })));
+    raw.save(
+      'ical',
+      modified.map((item) => ({ ...item, observedAt: Date.now() }))
+    );
     const summary = await connector.poll(new Date(0));
-    raw.save('ical', summary.map((item) => ({ ...item, observedAt: Date.now() })));
+    raw.save(
+      'ical',
+      summary.map((item) => ({ ...item, observedAt: Date.now() }))
+    );
     expect(modified[0]?.sourceId).not.toBe(first[0]?.sourceId);
     expect(summary[0]?.sourceId).not.toBe(modified[0]?.sourceId);
     expect(raw.getRevisions('ical', 'primary:event-1').items.map((item) => item.sourceId)).toEqual([
@@ -201,12 +265,23 @@ afterEach(async () => {
     };
     const connector = await loadConnector(
       'ical',
-      { enabled: true, pollIntervalMinutes: 5, auth: { type: 'token' }, channels: { primary: { role: 'reference', name: 'Schedule' } } },
-      { connectorStatePath: join(root, 'connector-state.json') }
+      {
+        enabled: true,
+        pollIntervalMinutes: 5,
+        auth: { type: 'token' },
+        channels: { primary: { role: 'reference', name: 'Schedule' } },
+      },
+      {
+        connectorStatePath: join(root, 'connector-state.json'),
+        timeZone: createTimeZoneSetting('Asia/Seoul'),
+      }
     );
     await connector.init();
     const first = await connector.poll(new Date(0));
-    raw.save('ical', first.map((item) => ({ ...item, observedAt: Date.now() })));
+    raw.save(
+      'ical',
+      first.map((item) => ({ ...item, observedAt: Date.now() }))
+    );
     projectPending();
     connector.commitPoll?.();
     const access: ActionContext['access'] = {
@@ -221,6 +296,7 @@ afterEach(async () => {
         reportSourceActionRegistrations({
           adapter: database.adapter,
           ownerPrincipalId: 'owner-test',
+          timeZone: createTimeZoneSetting('Asia/Seoul'),
         })
       )
     );
@@ -229,7 +305,10 @@ afterEach(async () => {
       data: { returned: 1, events: [{ title: 'Planning, review' }] },
     });
     const futureCancellation = await connector.poll(new Date(0));
-    raw.save('ical', futureCancellation.map((item) => ({ ...item, observedAt: Date.now() })));
+    raw.save(
+      'ical',
+      futureCancellation.map((item) => ({ ...item, observedAt: Date.now() }))
+    );
     projectPending();
     expect(first[0]?.collectOnly).toBe(true);
     expect(futureCancellation[0]).toMatchObject({ metadata: { status: 'cancelled' } });
@@ -258,7 +337,7 @@ afterEach(async () => {
         auth: { type: 'token' },
         channels: { primary: { role: 'reference', name: 'Schedule' } },
       },
-      { connectorStatePath: statePath() }
+      { connectorStatePath: statePath(), timeZone: createTimeZoneSetting('Asia/Seoul') }
     );
     await expect(connector.poll(new Date(0))).rejects.toThrow('iCal feed Schedule fetch failed');
     await expect(connector.healthCheck()).resolves.toMatchObject({

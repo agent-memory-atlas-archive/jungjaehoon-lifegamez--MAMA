@@ -13,6 +13,7 @@ import type { IModelRunner } from '@jungjaehoon/mama-core/runtime/drivers/types'
 import type { SubagentBridge } from '@jungjaehoon/mama-core/runtime/runtime-process';
 import { SessionPool } from '@jungjaehoon/mama-core/runtime/session-pool';
 import { createActionSurface } from '../../src/runtime/action-surface.js';
+import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 import { openCoreDatabase } from '../../src/runtime/core-db.js';
 import {
   createNativeSession,
@@ -38,6 +39,9 @@ describe('native host contract conformance', () => {
         embedder: { embed: async () => new Float32Array(1024).fill(0.25) },
       });
       const surface = createActionSurface({
+        timeZone: createTimeZoneSetting('UTC'),
+        configPath: '/tmp/mama-test-config.yaml',
+        isOwnerMessageTurn: () => true,
         adapter: db.adapter,
         knowledge,
         ownerPrincipalId: 'owner',

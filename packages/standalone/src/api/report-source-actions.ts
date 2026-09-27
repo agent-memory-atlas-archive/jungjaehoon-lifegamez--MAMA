@@ -1,10 +1,16 @@
 import type { ActionRegistration } from '@jungjaehoon/mama-core';
 import type { ActionContext } from '@jungjaehoon/mama-core';
 import type { DatabaseAdapter } from '@jungjaehoon/mama-core/db-manager';
+import type { TimeZoneSetting } from '../runtime/timezone.js';
+import { durationEndEpoch, epochForCalendarValue } from '../runtime/timezone.js';
 
 type Access = ActionContext['access'];
 type Row = Record<string, unknown>;
-type ReportReadPorts = { adapter: Pick<DatabaseAdapter, 'prepare'>; ownerPrincipalId: string };
+type ReportReadPorts = {
+  adapter: Pick<DatabaseAdapter, 'prepare'>;
+  ownerPrincipalId: string;
+  timeZone: TimeZoneSetting;
+};
 
 function grantChannels(
   access: Access,
@@ -66,7 +72,7 @@ function sinceTime(value: unknown, now: number): number {
     const parsed = Date.parse(value);
     if (Number.isFinite(parsed)) return parsed;
   }
-  throw new Error(
+  throw invalidInput(
     'source.recent since must be epoch milliseconds, an ISO time, or a duration such as "24h ago"'
   );
 }
@@ -181,7 +187,7 @@ function recentAction(ports: ReportReadPorts): ActionRegistration {
         }
         group.lines.push({
           author: row.author ?? null,
-          time: new Date(timestamp).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }),
+          time: `${new Date(timestamp).toLocaleString('ko-KR', { timeZone: ports.timeZone.get() })} (${ports.timeZone.get()})`,
           text: String(row.content).slice(0, 200),
           observationRef: row.current_observation_id,
         });
@@ -308,19 +314,51 @@ function upcomingAction(ports: ReportReadPorts): ActionRegistration {
         if (metadata.status === 'cancelled') return [];
         const startRaw = metadata.start ?? metadata.dtstart;
         const endRaw = metadata.end ?? metadata.dtend;
-        if (typeof startRaw !== 'string' || typeof endRaw !== 'string') return [];
-        const start = Date.parse(startRaw);
-        const end = Date.parse(endRaw);
-        if (!Number.isFinite(start) || !Number.isFinite(end) || end < now || start > until)
+        if (typeof startRaw !== 'string') return [];
+        const ownerTimeZone = ports.timeZone.get();
+        const eventZone =
+          typeof metadata.timeZone === 'string'
+            ? metadata.timeZone
+            : typeof metadata.startTimeZone === 'string'
+              ? metadata.startTimeZone
+              : undefined;
+        const start = epochForCalendarValue(
+          startRaw,
+          String(metadata.startKind),
+          eventZone,
+          ownerTimeZone
+        );
+        let end: number;
+        if (typeof endRaw === 'string') {
+          end = epochForCalendarValue(
+            endRaw,
+            String(metadata.endKind),
+            typeof metadata.endTimeZone === 'string' ? metadata.endTimeZone : eventZone,
+            ownerTimeZone
+          );
+        } else if (typeof metadata.duration === 'string') {
+          end = durationEndEpoch(
+            startRaw,
+            String(metadata.startKind),
+            metadata.duration,
+            eventZone ?? ownerTimeZone
+          );
+        } else {
+          end = start + (metadata.allDay === true ? 86_400_000 : 0);
+        }
+        const hasEnded = metadata.endExclusive === true ? end <= now : end < now;
+        if (!Number.isFinite(start) || !Number.isFinite(end) || hasEnded || start > until)
           return [];
         return [
           {
             source: row.source_connector,
             calendar: metadata.calendarName ?? metadata.feedName ?? row.channel,
             start: startRaw,
-            end: endRaw,
+            end: typeof endRaw === 'string' ? endRaw : startRaw,
+            ...(typeof metadata.duration === 'string' ? { duration: metadata.duration } : {}),
             title: metadata.summary ?? '(Untitled event)',
             observationRef: row.current_observation_id,
+            sortMs: start,
           },
         ];
       });
@@ -328,8 +366,13 @@ function upcomingAction(ports: ReportReadPorts): ActionRegistration {
         throw new Error(
           `schedule.upcoming found more than ${cap} events; narrow days or increase cap`
         );
-      events.sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
-      return { days: Number(days), cap: Number(cap), returned: events.length, events };
+      events.sort((a, b) => a.sortMs - b.sortMs);
+      return {
+        days: Number(days),
+        cap: Number(cap),
+        returned: events.length,
+        events: events.map(({ sortMs: _sortMs, ...event }) => event),
+      };
     },
   };
 }

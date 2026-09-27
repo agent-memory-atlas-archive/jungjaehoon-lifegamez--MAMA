@@ -89,11 +89,13 @@ function readableSourcesLine(families: readonly StoredSourceFamily[]): string {
 function ownerStandingPrompt(
   backend: OwnerRuntimeBackend,
   readableSources: readonly StoredSourceFamily[],
-  wikiEnabled: boolean
+  wikiEnabled: boolean,
+  timeZone: string
 ): string {
   const action = (name: string): string => actionName(backend, name);
   return [
     '## Owner runtime',
+    `- The owner's timezone is ${timeZone}; when the owner states or changes their timezone, call ${action('owner.timezone.set')}. A memory preference does not change it.`,
     "- You are the persistent agent for the owner. Incoming messages, source deltas, and native events are evidence; decide what they mean and how they relate to the owner's existing work.",
     `- For a question about an item, person, or task, read the work ledger first with ${action('memory.search')} and ${action('work.list')} using view=items; follow its read-version cursor page by page, then use view=detail for the named commitment when history, evidence basis or long text is needed. Answers, reports and notifications a person reads carry no commitment, observation, judgment or channel ids; answer in sentences; the reads are the evidence and stay in the tool traces. Read preserved source content only for what the ledger does not establish. A memory found by ${action('memory.search')} is traced to its cited source messages with ${action('memory.read:provenance')}.`,
     `- Use progressive source access: ${action('source.search')} is bounded navigation, and ${action('source.read')} is required for the cited original content. Do not treat a preview or index row as the account of what happened.`,
@@ -140,11 +142,12 @@ function ownerStandingPrompt(
 
 export function ownerSystemPrompt(
   backend: OwnerRuntimeBackend,
-  ownerPolicy: string | null = null,
-  readableSources: readonly StoredSourceFamily[] = [],
-  wikiEnabled = true
+  ownerPolicy: string | null,
+  readableSources: readonly StoredSourceFamily[],
+  wikiEnabled: boolean,
+  timeZone: string
 ): string {
-  const standing = ownerStandingPrompt(backend, readableSources, wikiEnabled);
+  const standing = ownerStandingPrompt(backend, readableSources, wikiEnabled, timeZone);
   return ownerPolicy === null || ownerPolicy === ''
     ? standing
     : `${standing}\n\n---\n\n${ownerPolicy}`;

@@ -7,8 +7,9 @@ import type {
 } from '../connectors/framework/polling-scheduler.js';
 import Database from '../sqlite.js';
 import type { WindowQueue } from './window-queue.js';
+import type { TimeZoneSetting } from '../runtime/timezone.js';
+import { epochAtLocalDateTime, localDateKey } from '../runtime/timezone.js';
 
-export const KST_OFFSET_MS = 9 * 60 * 60 * 1_000;
 export const REPLAY_WINDOW_SIZE_MS = 24 * 60 * 60 * 1_000;
 export const REPLAY_REFERENCE_CAP = 500;
 
@@ -55,6 +56,7 @@ export interface ReplaySourceReadOptions {
   rawRoot?: string;
   /** `${connector}\0${channelId}` → configured channel name (connectors.json). */
   channelNames?: ReadonlyMap<string, string>;
+  timeZone: TimeZoneSetting;
 }
 
 export interface ReplayLedgerDigestItem {
@@ -99,9 +101,11 @@ function iso(ms: number): string {
   return new Date(ms).toISOString();
 }
 
-function nextKstMidnight(ms: number): number {
-  const day = new Date(ms + KST_OFFSET_MS).toISOString().slice(0, 10);
-  const midnight = Date.parse(`${day}T00:00:00.000+09:00`);
+function nextLocalMidnight(ms: number, timeZone: string): number {
+  const day = localDateKey(ms, timeZone);
+  const [year, month, date] = day.split('-').map(Number);
+  const tomorrow = new Date(Date.UTC(year!, month! - 1, date! + 1)).toISOString().slice(0, 10);
+  const midnight = epochAtLocalDateTime(`${tomorrow}T00:00:00`, timeZone);
   return midnight > ms ? midnight : midnight + REPLAY_WINDOW_SIZE_MS;
 }
 
@@ -234,7 +238,7 @@ export function readReplaySourceEvents(
   adapter: ReplayCatalogAdapter,
   fromMs: number,
   untilMs: number,
-  options: ReplaySourceReadOptions = {}
+  options: ReplaySourceReadOptions
 ): readonly ReplaySourceEvent[] {
   assertRange(fromMs, untilMs);
   const rows = adapter
@@ -314,8 +318,10 @@ function readRawRowIds(rawRoot: string, fromMs: number, untilMs: number): Map<st
  */
 export class ReplaySourceCatalog {
   private readonly events: readonly ReplaySourceEvent[];
+  private readonly timeZone: TimeZoneSetting;
 
-  constructor(events: readonly ReplaySourceEvent[]) {
+  constructor(events: readonly ReplaySourceEvent[], timeZone: TimeZoneSetting) {
+    this.timeZone = timeZone;
     const copy = events.map((event) => {
       if (
         event.connector.trim() === '' ||
@@ -348,7 +354,7 @@ export class ReplaySourceCatalog {
     assertRange(fromMs, untilMs);
     const result: ReplayWindow[] = [];
     for (let startMs = fromMs; startMs < untilMs; ) {
-      const endMs = Math.min(nextKstMidnight(startMs), untilMs);
+      const endMs = Math.min(nextLocalMidnight(startMs, this.timeZone.get()), untilMs);
       result.push({ startMs, endMs });
       startMs = endMs;
     }
@@ -418,7 +424,10 @@ export function createReplaySourceCatalog(
   adapter: ReplayCatalogAdapter,
   fromMs: number,
   untilMs: number,
-  options: ReplaySourceReadOptions = {}
+  options: ReplaySourceReadOptions
 ): ReplaySourceCatalog {
-  return new ReplaySourceCatalog(readReplaySourceEvents(adapter, fromMs, untilMs, options));
+  return new ReplaySourceCatalog(
+    readReplaySourceEvents(adapter, fromMs, untilMs, options),
+    options.timeZone
+  );
 }

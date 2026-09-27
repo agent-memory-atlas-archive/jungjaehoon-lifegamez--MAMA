@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createCatalog, createDispatcher, type ActionContext } from '@jungjaehoon/mama-core';
 import { sourceActionRegistrations } from '../../src/api/source-actions.js';
 import { minimalWorkActionRegistrations } from '../../src/api/work-actions.js';
+import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 
 const access: ActionContext['access'] = {
   principalId: 'owner-test',
@@ -12,8 +13,33 @@ const access: ActionContext['access'] = {
 };
 
 describe('minimal source actions', () => {
+  it('adds the configured timezone label to source.read display times', async () => {
+    const setting = createTimeZoneSetting('America/Los_Angeles');
+    const stored = {
+      readObservation: () => ({
+        sourceAt: Date.parse('2026-09-27T06:30:00Z'),
+        observedAt: 1,
+        content: 'source',
+      }),
+      isOwner: () => true,
+    };
+    const dispatch = createDispatcher(
+      createCatalog(sourceActionRegistrations({ stored: stored as never, timeZone: setting }))
+    );
+    const result = await dispatch(
+      { action: 'source.read', input: { observationRef: 'obs' } },
+      { access }
+    );
+    expect(result).toMatchObject({
+      status: 'completed',
+      data: { sourceTime: expect.stringContaining('(America/Los_Angeles)') },
+    });
+  });
+
   it('registers source.read with single and batched bounded read fields', () => {
-    const catalog = createCatalog(sourceActionRegistrations({}));
+    const catalog = createCatalog(
+      sourceActionRegistrations({ timeZone: createTimeZoneSetting('UTC') })
+    );
     expect(
       catalog
         .list()
@@ -46,7 +72,9 @@ describe('minimal source actions', () => {
       has: vi.fn().mockReturnValue(true),
       isOwner: vi.fn().mockReturnValue(true),
     };
-    const dispatch = createDispatcher(createCatalog(sourceActionRegistrations({ stored })));
+    const dispatch = createDispatcher(
+      createCatalog(sourceActionRegistrations({ stored, timeZone: createTimeZoneSetting('UTC') }))
+    );
     const refs = ['observation-a', 'observation-b'];
 
     const batch = await dispatch(
@@ -104,7 +132,9 @@ describe('minimal source actions', () => {
       has: vi.fn().mockReturnValue(true),
       isOwner: vi.fn().mockReturnValue(true),
     };
-    const dispatch = createDispatcher(createCatalog(sourceActionRegistrations({ stored })));
+    const dispatch = createDispatcher(
+      createCatalog(sourceActionRegistrations({ stored, timeZone: createTimeZoneSetting('UTC') }))
+    );
     const read = await dispatch(
       { action: 'source.read', input: { observationRef: 'obs-a' } },
       { access }
@@ -113,12 +143,7 @@ describe('minimal source actions', () => {
       status: 'completed',
       data: { source: 'connector-test', content: 'full original' },
     });
-    expect(stored.readObservation).toHaveBeenCalledWith(
-      'obs-a',
-      access,
-      undefined,
-      {}
-    );
+    expect(stored.readObservation).toHaveBeenCalledWith('obs-a', access, undefined, {});
     await dispatch(
       {
         action: 'source.read',
@@ -126,19 +151,26 @@ describe('minimal source actions', () => {
       },
       { access }
     );
-    expect(stored.readObservation).toHaveBeenLastCalledWith(
-      'obs-a',
-      access,
-      undefined,
-      { content_offset: 7, content_limit: 3 }
-    );
+    expect(stored.readObservation).toHaveBeenLastCalledWith('obs-a', access, undefined, {
+      content_offset: 7,
+      content_limit: 3,
+    });
     const search = await dispatch(
       { action: 'source.search', input: { source: 'connector-test', query: 'term' } },
       { access }
     );
     expect(search).toMatchObject({
       status: 'completed',
-      data: { hits: [{ author: 'Writer', channel: 'Synthetic room', text: 'x'.repeat(200), observationRef: 'obs-a' }] },
+      data: {
+        hits: [
+          {
+            author: 'Writer',
+            channel: 'Synthetic room',
+            text: 'x'.repeat(200),
+            observationRef: 'obs-a',
+          },
+        ],
+      },
     });
     expect(JSON.stringify(search).length).toBeLessThan(1_000);
   });
@@ -154,7 +186,9 @@ describe('minimal source actions', () => {
       has: vi.fn().mockReturnValue(true),
       isOwner: vi.fn().mockReturnValue(true),
     };
-    const dispatch = createDispatcher(createCatalog(sourceActionRegistrations({ stored })));
+    const dispatch = createDispatcher(
+      createCatalog(sourceActionRegistrations({ stored, timeZone: createTimeZoneSetting('UTC') }))
+    );
     const read = await dispatch(
       { action: 'source.read', input: { observationRefs: ['obs-a', 'obs-b', 'obs-missing'] } },
       { access }
@@ -177,12 +211,10 @@ describe('minimal source actions', () => {
       { access }
     );
     expect(bounded).toMatchObject({ status: 'completed' });
-    expect(stored.readObservation).toHaveBeenLastCalledWith(
-      'obs-a',
-      access,
-      undefined,
-      { content_offset: 4, content_limit: 2 }
-    );
+    expect(stored.readObservation).toHaveBeenLastCalledWith('obs-a', access, undefined, {
+      content_offset: 4,
+      content_limit: 2,
+    });
   });
 
   it('describes every source and work input field, including nested fields', () => {
@@ -191,7 +223,7 @@ describe('minimal source actions', () => {
       reviseWork: vi.fn(),
     };
     const catalog = createCatalog([
-      ...sourceActionRegistrations({}),
+      ...sourceActionRegistrations({ timeZone: createTimeZoneSetting('UTC') }),
       ...minimalWorkActionRegistrations({ observationExists: () => true, knowledge }),
     ]);
 
@@ -224,7 +256,9 @@ describe('minimal source actions', () => {
       has: vi.fn().mockReturnValue(true),
       isOwner: vi.fn().mockReturnValue(true),
     };
-    const dispatch = createDispatcher(createCatalog(sourceActionRegistrations({ stored })));
+    const dispatch = createDispatcher(
+      createCatalog(sourceActionRegistrations({ stored, timeZone: createTimeZoneSetting('UTC') }))
+    );
     const searched = await dispatch(
       {
         action: 'source.search',
@@ -271,7 +305,10 @@ describe('minimal source actions', () => {
       { action: 'source.search', input: { source: 'other-connector', query: 'term' } },
       { access }
     );
-    expect(deniedSearch).toMatchObject({ status: 'failed', error: { code: 'connector_out_of_scope' } });
+    expect(deniedSearch).toMatchObject({
+      status: 'failed',
+      error: { code: 'connector_out_of_scope' },
+    });
     {
       const action = 'source.read';
       const denied = await dispatch(

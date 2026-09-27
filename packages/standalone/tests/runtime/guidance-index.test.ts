@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { NativeInvocationOptions } from '@jungjaehoon/mama-core/runtime/runtime';
 import { createStimulusDelivery } from '../../src/runtime/stimulus-delivery.js';
+import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 
 function row(kind: string, id: string) {
   return {
@@ -72,6 +73,7 @@ describe('owner guidance index delivery', () => {
     const guidanceResolver = vi.fn(async () => records);
     const delivery = createStimulusDelivery({
       guidanceResolver,
+      timeZone: createTimeZoneSetting('UTC'),
       recentOwnerExchanges: async () => [
         { owner: 'A recent request', answer: 'A delivered answer' },
       ],
@@ -114,7 +116,10 @@ describe('owner guidance index delivery', () => {
         updated_at: 2,
       },
     ];
-    const delivery = createStimulusDelivery({ guidanceResolver: async () => records } as never);
+    const delivery = createStimulusDelivery({
+      guidanceResolver: async () => records,
+      timeZone: createTimeZoneSetting('UTC'),
+    } as never);
     await deliver(delivery, 'owner_message', 'initial-input', true);
 
     records[0] = {
@@ -148,7 +153,10 @@ describe('owner guidance index delivery', () => {
 
   it('uses the same session index for owner, source-delta, scheduled, and native-event turns', async () => {
     const guidanceResolver = vi.fn(async () => []);
-    const delivery = createStimulusDelivery({ guidanceResolver } as never);
+    const delivery = createStimulusDelivery({
+      guidanceResolver,
+      timeZone: createTimeZoneSetting('UTC'),
+    } as never);
     await deliver(delivery, 'owner_message', 'owner-input', true);
     for (const [kind, id] of [
       ['source_delta', 'source-input'],
@@ -167,6 +175,7 @@ describe('owner guidance index delivery', () => {
     const records: Array<Record<string, unknown>> = [];
     const delivery = createStimulusDelivery({
       guidanceResolver: async () => records as never,
+      timeZone: createTimeZoneSetting('UTC'),
     } as never);
     await deliver(delivery, 'owner_message', 'initial-input', true);
     records.push({

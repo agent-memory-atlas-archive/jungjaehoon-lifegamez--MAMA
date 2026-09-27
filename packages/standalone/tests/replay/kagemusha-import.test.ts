@@ -136,6 +136,7 @@ describe('collect-only Kagemusha replay import', () => {
         connectorsConfigPath: configPath,
         rawStore: raw,
         rawIndexSink: indexSink(),
+        timeZone: 'UTC',
         fromMs: 0,
         observedAtMs: 20_000,
       });
@@ -193,6 +194,7 @@ describe('collect-only Kagemusha replay import', () => {
         connectorsConfigPath: configPath,
         rawStore: raw,
         rawIndexSink: indexSink(),
+        timeZone: 'UTC',
         fromMs: sourceAt,
         observedAtMs: sourceAt + 100,
         pageSize: 97,
@@ -220,6 +222,7 @@ describe('collect-only Kagemusha replay import', () => {
         connectorsConfigPath: configPath,
         rawStore: raw,
         rawIndexSink: indexSink(),
+        timeZone: 'UTC',
         fromMs: sourceAt,
         untilMs: first.untilMs,
         observedAtMs: sourceAt + 200,

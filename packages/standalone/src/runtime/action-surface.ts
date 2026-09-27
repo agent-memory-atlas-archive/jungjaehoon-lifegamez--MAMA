@@ -21,6 +21,8 @@ import {
   type AttachmentActionPorts,
 } from '../api/attachment-actions.js';
 import { sourceActionRegistrations } from '../api/source-actions.js';
+import { ownerTimeZoneActionRegistrations } from '../api/owner-timezone-actions.js';
+import type { TimeZoneSetting } from './timezone.js';
 import { reportSourceActionRegistrations } from '../api/report-source-actions.js';
 import {
   minimalWorkActionRegistrations,
@@ -37,6 +39,7 @@ const OWNER_ACTIONS = [
   'source.recent',
   'schedule.upcoming',
   'source.read',
+  'owner.timezone.set',
   'memory.checkpoint.list',
   'work.create',
   'work.revise',
@@ -77,6 +80,9 @@ export interface ActionSurfaceOptions {
   reportSseClients?: Set<ServerResponse>;
   wikiPorts?: WikiPorts;
   attachmentPorts?: AttachmentActionPorts;
+  timeZone: TimeZoneSetting;
+  configPath: string;
+  isOwnerMessageTurn: (sourceMessageRef: string) => boolean;
 }
 
 export interface ActionSurface {
@@ -124,8 +130,9 @@ export function createActionSurface(options: ActionSurfaceOptions): ActionSurfac
     ].includes(contract.name)
   );
   const reportSseClients = options.reportSseClients ?? new Set<ServerResponse>();
-  const reportPorts =
-    options.reportStore === undefined || options.reportStore === null
+  const reportPorts = {
+    timeZone: options.timeZone,
+    ...(options.reportStore === undefined || options.reportStore === null
       ? {}
       : {
           publisher: createReportPublisher(options.reportStore, reportSseClients),
@@ -142,19 +149,30 @@ export function createActionSurface(options: ActionSurfaceOptions): ActionSurfac
             }
             return slots;
           },
-        };
+        }),
+  };
   const registrations = [
     ...core,
-    ...sourceActionRegistrations({ stored: options.storedSourceReader }),
+    ...sourceActionRegistrations({
+      stored: options.storedSourceReader,
+      timeZone: options.timeZone,
+    }),
     ...reportSourceActionRegistrations({
       adapter: options.adapter,
       ownerPrincipalId: options.ownerPrincipalId,
+      timeZone: options.timeZone,
+    }),
+    ...ownerTimeZoneActionRegistrations({
+      configPath: options.configPath,
+      ownerPrincipalId: options.ownerPrincipalId,
+      setting: options.timeZone,
+      isOwnerMessageTurn: options.isOwnerMessageTurn,
     }),
     ...createAttachmentActionRegistrations({
       ...(options.attachmentPorts ?? {}),
       stored: options.storedSourceReader,
     }),
-    ...workListActionRegistrations({ knowledge: options.knowledge }),
+    ...workListActionRegistrations({ knowledge: options.knowledge, timeZone: options.timeZone }),
     ...minimalWorkActionRegistrations({
       knowledge: options.knowledge,
       observationExists: (observationId) =>

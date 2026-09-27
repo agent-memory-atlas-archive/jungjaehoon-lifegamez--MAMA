@@ -10,6 +10,7 @@ import {
   type ReplaySourceEvent,
 } from '../../src/replay/replay-source-catalog.js';
 import type { WindowQueue } from '../../src/replay/window-queue.js';
+import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 
 const HOUR = 60 * 60 * 1_000;
 const start = Date.parse('2026-09-01T00:00:00.000+09:00');
@@ -36,32 +37,35 @@ function event(overrides: Partial<ReplaySourceEvent> = {}): ReplaySourceEvent {
 
 describe('ReplaySourceCatalog', () => {
   it('sorts source events globally into one cross-channel daily delta', () => {
-    const catalog = new ReplaySourceCatalog([
-      event({
-        connector: 'trello',
-        sourceId: 'source-c',
-        observationRef: 'observation-c',
-        channelKey: 'board-a',
-        sourceAtMs: start + 3 * HOUR,
-        rawRowId: 3,
-      }),
-      event({
-        connector: 'slack',
-        sourceId: 'source-b',
-        observationRef: 'observation-b',
-        sourceAtMs: start + 2 * HOUR,
-        rawRowId: 2,
-      }),
-      event({ sourceAtMs: start + HOUR, rawRowId: 1 }),
-      event({
-        connector: 'slack',
-        sourceId: 'source-d',
-        observationRef: 'observation-d',
-        channelKey: 'channel-b',
-        sourceAtMs: start + HOUR,
-        rawRowId: 4,
-      }),
-    ]);
+    const catalog = new ReplaySourceCatalog(
+      [
+        event({
+          connector: 'trello',
+          sourceId: 'source-c',
+          observationRef: 'observation-c',
+          channelKey: 'board-a',
+          sourceAtMs: start + 3 * HOUR,
+          rawRowId: 3,
+        }),
+        event({
+          connector: 'slack',
+          sourceId: 'source-b',
+          observationRef: 'observation-b',
+          sourceAtMs: start + 2 * HOUR,
+          rawRowId: 2,
+        }),
+        event({ sourceAtMs: start + HOUR, rawRowId: 1 }),
+        event({
+          connector: 'slack',
+          sourceId: 'source-d',
+          observationRef: 'observation-d',
+          channelKey: 'channel-b',
+          sourceAtMs: start + HOUR,
+          rawRowId: 4,
+        }),
+      ],
+      createTimeZoneSetting('Asia/Seoul')
+    );
 
     const deltas = catalog.deltasForWindow('run-1', start, start + 12 * HOUR);
 
@@ -113,7 +117,7 @@ describe('ReplaySourceCatalog', () => {
 
   it('keeps descriptors immutable and rejects an event outside its declared range', () => {
     const descriptor = event();
-    const catalog = new ReplaySourceCatalog([descriptor]);
+    const catalog = new ReplaySourceCatalog([descriptor], createTimeZoneSetting('UTC'));
     descriptor.sourceId = 'mutated-after-construction';
 
     expect(catalog.eventsForWindow(start, start + 12 * HOUR)[0]?.sourceId).toBe('source-a');
@@ -122,7 +126,7 @@ describe('ReplaySourceCatalog', () => {
   });
 
   it('creates KST-aligned daily windows through the frozen fence', () => {
-    const catalog = new ReplaySourceCatalog([]);
+    const catalog = new ReplaySourceCatalog([], createTimeZoneSetting('Asia/Seoul'));
     const windows = catalog.windows(start, start + 25 * HOUR);
 
     expect(windows).toEqual([
@@ -169,7 +173,10 @@ describe('ReplaySourceCatalog', () => {
     };
 
     expect(
-      readReplaySourceEvents(adapter, start, start + 12 * HOUR, { rawRoot: root })[0]?.rawRowId
+      readReplaySourceEvents(adapter, start, start + 12 * HOUR, {
+        rawRoot: root,
+        timeZone: createTimeZoneSetting('UTC'),
+      })[0]?.rawRowId
     ).toBe(77);
   });
 
@@ -231,6 +238,7 @@ describe('ReplaySourceCatalog', () => {
         ['chatwork\0room-1', 'client room'],
         ['trello\0board-1', 'client board'],
       ]),
+      timeZone: createTimeZoneSetting('UTC'),
     });
     expect(message).toMatchObject({ channelName: 'client room', contentPreview: longText });
     expect(snapshot).toMatchObject({ contentPreview: '[Card] asset-card | list: submitted' });

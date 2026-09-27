@@ -33,12 +33,13 @@ const fixtureSecrets = {
   MAMA_TELEGRAM_SOURCE_TOKEN: 'fixture-telegram-source',
 };
 
-function prompt(answers: string[], hidden: string[], tty = [true, true]) {
+function prompt(answers: string[], hidden: string[], tty = [true, true], timezoneAnswer?: string) {
   const output: string[] = [];
   const adapter: PromptAdapter = {
     stdinIsTTY: tty[0],
     stdoutIsTTY: tty[1],
-    text: async () => {
+    text: async (label) => {
+      if (label.startsWith('Owner timezone')) return timezoneAnswer ?? '';
       if (!answers.length) throw new Error('Unexpected visible prompt');
       return answers.shift()!;
     },
@@ -79,6 +80,17 @@ afterEach(() => {
 });
 
 describe('owner-only onboarding', () => {
+  it('writes the timezone selected during onboarding', async () => {
+    const p = prompt(
+      minimal(),
+      [fixtureSecrets.MAMA_TELEGRAM_TOKEN],
+      [true, true],
+      'America/Los_Angeles'
+    );
+    await runInit(options(p.adapter));
+    expect(loadConfig({ home }).timezone).toBe('America/Los_Angeles');
+  });
+
   it.each([
     [false, true],
     [true, false],
@@ -108,6 +120,7 @@ describe('owner-only onboarding', () => {
       const p = prompt(minimal(backend), [fixtureSecrets.MAMA_TELEGRAM_TOKEN]);
       await runInit(options(p.adapter));
       const config = loadConfig({ home });
+      expect(config.timezone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
       expect(config.agent.backend).toBe(backend);
       expect(config.agent.model).toBe('fixture-model');
       expect(config.telegram).toMatchObject({

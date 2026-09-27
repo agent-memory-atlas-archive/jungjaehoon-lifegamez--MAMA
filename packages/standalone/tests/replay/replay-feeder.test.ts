@@ -11,6 +11,7 @@ import {
 } from '../../src/replay/replay-source-catalog.js';
 import { ReplayFeeder } from '../../src/replay/replay-feeder.js';
 import type { WindowQueue } from '../../src/replay/window-queue.js';
+import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 
 const HOUR = 60 * 60 * 1_000;
 const start = Date.parse('2026-09-01T00:00:00.000+09:00');
@@ -86,7 +87,7 @@ function harness(
     }),
   };
   const feeder = new ReplayFeeder({
-    catalog: new ReplaySourceCatalog(events),
+    catalog: new ReplaySourceCatalog(events, createTimeZoneSetting('Asia/Seoul')),
     intake,
     mailbox: {
       readInput: (id: string, _principalId: string) =>

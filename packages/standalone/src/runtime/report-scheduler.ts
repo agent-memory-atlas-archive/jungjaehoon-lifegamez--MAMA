@@ -6,6 +6,7 @@ import type { NativeTurnResult } from '@jungjaehoon/mama-core/runtime/native-tur
 import type { W1ReportsConfig } from './config.js';
 import type { StimulusIntake } from './stimulus-delivery.js';
 import { scheduledReport } from './report-prompts.js';
+import type { TimeZoneSetting } from './timezone.js';
 
 interface ReportScheduleState {
   lastFullKey: string | null;
@@ -14,6 +15,7 @@ interface ReportScheduleState {
 
 export interface ReportSchedulerOptions {
   config: W1ReportsConfig;
+  timeZone: TimeZoneSetting;
   statePath: string;
   intake: Pick<StimulusIntake, 'acceptScheduled'>;
   /** Includes queued/retrying inputs across restarts, excludes uncertain failed turns. */
@@ -21,15 +23,6 @@ export interface ReportSchedulerOptions {
   sendToOwner: (text: string, idempotencyKey: string) => Promise<void>;
   onError: (error: unknown) => void;
 }
-
-const KST_HOUR = new Intl.DateTimeFormat('en-CA', {
-  timeZone: 'Asia/Seoul',
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-  hour: '2-digit',
-  hourCycle: 'h23',
-});
 
 function loadState(path: string): ReportScheduleState {
   if (!existsSync(path)) return { lastFullKey: null, lastReminderKey: null };
@@ -54,7 +47,14 @@ export function createReportScheduler(options: ReportSchedulerOptions) {
   let timer: ReturnType<typeof setInterval> | undefined;
   const tick = (now = new Date()): void => {
     if (options.hasPendingReport()) return;
-    const parts = KST_HOUR.formatToParts(now);
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: options.timeZone.get(),
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(now);
     const part = (type: Intl.DateTimeFormatPartTypes) =>
       parts.find((entry) => entry.type === type)!.value;
     const hour = Number(part('hour'));

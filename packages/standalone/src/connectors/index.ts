@@ -1,4 +1,5 @@
 import type { ConnectorConfig, IConnector } from './framework/types.js';
+import type { TimeZoneSetting } from '../runtime/timezone.js';
 
 export * from './framework/index.js';
 
@@ -28,6 +29,7 @@ export interface ConnectorLoadPaths {
   connectorStatePath?: string;
   imessageDbPath?: string;
   claudeCodeProjectsPath?: string;
+  timeZone?: TimeZoneSetting;
 }
 
 const loaders: Record<
@@ -47,7 +49,12 @@ const loaders: Record<
   ical: async (config, paths) => {
     if (paths?.connectorStatePath === undefined)
       throw new Error('iCal connector state path is not configured');
-    return new (await import('./ical/index.js')).ICalConnector(config, paths.connectorStatePath);
+    if (paths.timeZone === undefined) throw new Error('iCal timezone setting is not configured');
+    return new (await import('./ical/index.js')).ICalConnector(
+      config,
+      paths.connectorStatePath,
+      paths.timeZone
+    );
   },
   gmail: async (config) => new (await import('./gmail/index.js')).GmailConnector(config),
   drive: async (config, paths) => {

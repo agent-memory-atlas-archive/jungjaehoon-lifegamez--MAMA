@@ -1,5 +1,6 @@
 import type { JsonValue } from '@jungjaehoon/mama-core/knowledge';
 import { buildBoardPublishLines } from '../operator/board-slot-instructions.js';
+import { epochAtLocalDateTime } from './timezone.js';
 
 export interface ScheduledReport {
   report: 'full' | 'reminder';
@@ -21,7 +22,11 @@ export function scheduledReport(payload: JsonValue | undefined): ScheduledReport
     );
   }
   const previousFullReportAt = payload.previousFullReportAt;
-  if (previousFullReportAt !== undefined && previousFullReportAt !== null && typeof previousFullReportAt !== 'string') {
+  if (
+    previousFullReportAt !== undefined &&
+    previousFullReportAt !== null &&
+    typeof previousFullReportAt !== 'string'
+  ) {
     throw new Error('Scheduled report previousFullReportAt must be a time or null');
   }
   return {
@@ -35,14 +40,21 @@ export function scheduledReport(payload: JsonValue | undefined): ScheduledReport
 export function buildScheduledReportPrompt(
   payload: JsonValue | undefined,
   now: Date,
-  options: { wikiEnabled?: boolean; messenger?: string } = {}
+  options: { wikiEnabled?: boolean; messenger?: string; timeZone: string }
 ): string {
   const { report, previousFullReportAt } = scheduledReport(payload);
-  const recentSince = previousFullReportAt === null
-    ? '24h ago'
-    : `${previousFullReportAt.slice(0, 10)}T${previousFullReportAt.slice(11)}:00:00+09:00`;
+  const timeZone = options.timeZone;
+  const recentSince =
+    previousFullReportAt === null
+      ? '24h ago'
+      : new Date(
+          epochAtLocalDateTime(
+            `${previousFullReportAt.slice(0, 10)}T${previousFullReportAt.slice(11)}:00:00`,
+            timeZone
+          )
+        ).toISOString();
   const fullReportChecklist = [
-    `Current time: ${now.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })} (KST)`,
+    `Current time: ${now.toLocaleString('ko-KR', { timeZone })} (${timeZone})`,
     `Checklist: call source.recent with since="${recentSince}" for changes since that time, work.list with view="pipeline", and schedule.upcoming with days=14.`,
     'Read originals with source.read when a recent line changes the report; distinguish an empty result from failed or stale collection.',
     'Compare every open deadline with the event and holiday calendar; use event end times when deciding whether a booking overlaps.',
@@ -54,7 +66,7 @@ export function buildScheduledReportPrompt(
       ? [
           '[scheduled_full_report]',
           ...fullReportChecklist,
-          ...buildBoardPublishLines(),
+          ...buildBoardPublishLines(timeZone),
           ...(options.wikiEnabled === false
             ? []
             : [

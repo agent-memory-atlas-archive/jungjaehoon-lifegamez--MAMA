@@ -7,12 +7,19 @@ import type {
 } from '../framework/types.js';
 import { readConnectorState, writeConnectorState } from '../framework/connector-state.js';
 import { parseICalendar } from './parser.js';
+import type { TimeZoneSetting } from '../../runtime/timezone.js';
+import { durationEndEpoch, epochForCalendarValue } from '../../runtime/timezone.js';
 
 interface ICalEntityState {
   version: string;
   firstSeenAt: number;
   start: string;
-  end: string;
+  startKind: string;
+  startTimeZone?: string;
+  end?: string;
+  endKind?: string;
+  endTimeZone?: string;
+  duration?: string;
   summary: string;
   status: string;
   feedKey: string;
@@ -32,7 +39,8 @@ export class ICalConnector implements IConnector {
 
   constructor(
     config: ConnectorConfig,
-    private readonly statePath: string
+    private readonly statePath: string,
+    private readonly timeZone: TimeZoneSetting
   ) {
     this.feeds = Object.entries(config.channels).map(([key, channel]) => ({
       key,
@@ -40,17 +48,17 @@ export class ICalConnector implements IConnector {
       envName: `MAMA_ICAL_URL_${key.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`,
     }));
     const state = readConnectorState(statePath, (value) => {
-        const record = value as { synced?: unknown; entities?: unknown } | null;
-        const synced = record?.synced;
-        if (!Array.isArray(synced) || !synced.every((key) => typeof key === 'string')) {
-          throw new Error('iCal connector state must list synced feed keys');
-        }
-        const entities = record?.entities ?? {};
-        if (entities === null || typeof entities !== 'object' || Array.isArray(entities)) {
-          throw new Error('iCal connector state entities must be a record');
-        }
-        return { synced: synced as string[], entities: entities as Record<string, ICalEntityState> };
-      }) ?? { synced: [], entities: {} };
+      const record = value as { synced?: unknown; entities?: unknown } | null;
+      const synced = record?.synced;
+      if (!Array.isArray(synced) || !synced.every((key) => typeof key === 'string')) {
+        throw new Error('iCal connector state must list synced feed keys');
+      }
+      const entities = record?.entities ?? {};
+      if (entities === null || typeof entities !== 'object' || Array.isArray(entities)) {
+        throw new Error('iCal connector state entities must be a record');
+      }
+      return { synced: synced as string[], entities: entities as Record<string, ICalEntityState> };
+    }) ?? { synced: [], entities: {} };
     this.synced = new Set(state.synced);
     this.entities = state.entities;
   }
@@ -128,7 +136,10 @@ export class ICalConnector implements IConnector {
         const seen = new Set<string>();
         const emit = (event: (typeof events)[number]) => {
           const fields = { ...event, feedName: feed.name, feedKey: feed.key };
-          const version = createHash('sha256').update(JSON.stringify(fields)).digest('hex').slice(0, 24);
+          const version = createHash('sha256')
+            .update(JSON.stringify(fields))
+            .digest('hex')
+            .slice(0, 24);
           const entityKey = `${feed.key}:${event.uid}`;
           const previous = this.entities[entityKey];
           const firstSeenAt = previous?.version === version ? previous.firstSeenAt : Date.now();
@@ -137,6 +148,12 @@ export class ICalConnector implements IConnector {
             firstSeenAt,
             start: event.start,
             end: event.end,
+            startKind: event.startKind,
+            ...(event.startTimeZone ? { startTimeZone: event.startTimeZone } : {}),
+            ...(event.end === undefined ? {} : { end: event.end }),
+            ...(event.endKind === undefined ? {} : { endKind: event.endKind }),
+            ...(event.endTimeZone ? { endTimeZone: event.endTimeZone } : {}),
+            ...(event.duration === undefined ? {} : { duration: event.duration }),
             summary: event.summary,
             status: event.status,
             feedKey: feed.key,
@@ -148,13 +165,22 @@ export class ICalConnector implements IConnector {
             sourceEntityId: entityKey,
             channel: feed.key,
             author: 'unknown',
-            content: `${event.summary} | ${event.start} ~ ${event.end}`,
+            content: `${event.summary} | ${event.start} ~ ${event.end ?? event.duration ?? event.start}`,
             timestamp: new Date(event.revisionTime ?? firstSeenAt),
             type: 'event',
             sourceCursor: version,
             metadata: {
               start: event.start,
-              end: event.end,
+              ...(event.end === undefined ? {} : { end: event.end }),
+              startKind: event.startKind,
+              ...(event.startTimeZone ? { startTimeZone: event.startTimeZone } : {}),
+              ...(event.endKind === undefined ? {} : { endKind: event.endKind }),
+              ...(event.endTimeZone ? { endTimeZone: event.endTimeZone } : {}),
+              ...(event.duration === undefined ? {} : { duration: event.duration }),
+              ...(event.startKind === 'date' &&
+              (event.endKind === undefined || event.endKind === 'date')
+                ? { allDay: true, endExclusive: true }
+                : {}),
               summary: event.summary,
               status: event.status,
               feedName: feed.name,
@@ -169,7 +195,27 @@ export class ICalConnector implements IConnector {
         }
         for (const [entityKey, previous] of Object.entries(this.entities)) {
           if (previous.feedKey !== feed.key || seen.has(entityKey)) continue;
-          if (Date.parse(previous.end) <= Date.now()) {
+          const previousEnd = previous.end
+            ? epochForCalendarValue(
+                previous.end,
+                previous.endKind ?? '',
+                previous.endTimeZone ?? previous.startTimeZone,
+                this.timeZone.get()
+              )
+            : previous.duration
+              ? durationEndEpoch(
+                  previous.start,
+                  previous.startKind,
+                  previous.duration,
+                  previous.startTimeZone ?? this.timeZone.get()
+                )
+              : epochForCalendarValue(
+                  previous.start,
+                  previous.startKind,
+                  previous.startTimeZone,
+                  this.timeZone.get()
+                );
+          if (previousEnd <= Date.now()) {
             delete this.entities[entityKey];
             continue;
           }
@@ -177,6 +223,13 @@ export class ICalConnector implements IConnector {
             uid: entityKey.slice(feed.key.length + 1),
             start: previous.start,
             end: previous.end,
+            startKind: previous.startKind as (typeof events)[number]['startKind'],
+            ...(previous.startTimeZone ? { startTimeZone: previous.startTimeZone } : {}),
+            ...(previous.endKind
+              ? { endKind: previous.endKind as (typeof events)[number]['endKind'] }
+              : {}),
+            ...(previous.endTimeZone ? { endTimeZone: previous.endTimeZone } : {}),
+            ...(previous.duration ? { duration: previous.duration } : {}),
             summary: previous.summary,
             status: 'cancelled',
           });

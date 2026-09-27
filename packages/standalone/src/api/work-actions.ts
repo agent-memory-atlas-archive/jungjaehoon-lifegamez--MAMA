@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { ActionContext, ActionRegistration, ActionSchemaObject } from '@jungjaehoon/mama-core';
+import type { TimeZoneSetting } from '../runtime/timezone.js';
+import { epochAtLocalDateTime, localDateKey } from '../runtime/timezone.js';
 import { recordLinkSchema, scopeRefSchema } from '@jungjaehoon/mama-core/api/catalog';
 import {
   JudgmentError,
@@ -20,12 +22,14 @@ export interface WorkPorts {
 
 export interface WorkListPorts {
   knowledge: Pick<Knowledge, 'readWork'>;
+  timeZone: TimeZoneSetting;
 }
 
 export interface WorkListViewContext {
   readonly knowledge: Pick<Knowledge, 'readWork'>;
   readonly access: JudgmentAccess;
   readonly now?: () => number;
+  readonly timeZone: string;
 }
 
 export interface WorkListTextWindow {
@@ -300,7 +304,8 @@ function workListIso(value: unknown): string | null {
 
 function workListDueState(
   item: CommitmentView,
-  now: number
+  now: number,
+  timeZone: string
 ):
   | 'closed'
   | 'exact_upcoming'
@@ -316,9 +321,9 @@ function workListDueState(
   if (exact !== null) return exact > now ? 'exact_upcoming' : 'exact_overdue';
   const deadline = workListText(values.deadline ?? values.due_date);
   if (deadline === null || !/^\d{4}-\d{2}-\d{2}$/.test(deadline)) return 'unscheduled';
-  const deadlineMs = Date.parse(`${deadline}T00:00:00.000+09:00`);
+  const deadlineMs = epochAtLocalDateTime(`${deadline}T00:00:00`, timeZone);
   if (!Number.isFinite(deadlineMs)) return 'unscheduled';
-  const today = new Date(now + 9 * 60 * 60 * 1_000).toISOString().slice(0, 10);
+  const today = localDateKey(now, timeZone);
   if (deadline > today) return 'date_upcoming';
   if (deadline === today) return 'date_due';
   return 'date_overdue';
@@ -327,7 +332,8 @@ function workListDueState(
 function workListCompact(
   item: CommitmentView,
   now: number,
-  score?: number
+  score: number | undefined,
+  timeZone: string
 ): Record<string, unknown> {
   const values = workListValueObject(item.values);
   const status = workListStatus(item);
@@ -344,7 +350,7 @@ function workListCompact(
     status,
     stage: workListText(values.stage),
     project: workListText(values.project),
-    temporal_state: workListDueState(item, now),
+    temporal_state: workListDueState(item, now, timeZone),
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
   };
@@ -490,14 +496,18 @@ export function readOpenWorkCandidates(ctx: WorkListViewContext): Array<{
     const values = workListValueObject(item.values);
     const title = workListText(values.title);
     if (!title) return [];
-    return [{
-      commitmentId: item.commitmentId,
-      title,
-      stage: workListText(values.stage) ?? 'Unstaged',
-      assignee: workListText(values.assignee ?? values.assigneeText ?? values.assignee_text) ?? '',
-      sourceChannel: workListText(values.sourceChannel ?? values.source_channel ?? values.channel) ?? '',
-      updatedAt: typeof item.updatedAt === 'number' ? item.updatedAt : Date.parse(item.updatedAt),
-    }];
+    return [
+      {
+        commitmentId: item.commitmentId,
+        title,
+        stage: workListText(values.stage) ?? 'Unstaged',
+        assignee:
+          workListText(values.assignee ?? values.assigneeText ?? values.assignee_text) ?? '',
+        sourceChannel:
+          workListText(values.sourceChannel ?? values.source_channel ?? values.channel) ?? '',
+        updatedAt: typeof item.updatedAt === 'number' ? item.updatedAt : Date.parse(item.updatedAt),
+      },
+    ];
   });
 }
 
@@ -592,7 +602,8 @@ function workListDetailRecord(
   item: CommitmentView,
   textOffset: number,
   textLimit: number,
-  now: number
+  now: number,
+  timeZone: string
 ): Record<string, unknown> {
   if (item.history === undefined)
     throw new Error('work.list detail did not return revision history');
@@ -603,7 +614,7 @@ function workListDetailRecord(
     if (typeof value === 'string')
       detailedValues[field] = workListTextWindow(value, textOffset, textLimit);
   }
-  const compact = workListCompact(item, now);
+  const compact = workListCompact(item, now, undefined, timeZone);
   return {
     ...compact,
     title:
@@ -651,7 +662,7 @@ function workListDetail(input: Record<string, unknown>, ctx: WorkListViewContext
       missingIds.push(id);
       continue;
     }
-    tasks.push(workListDetailRecord(item, textOffset, textLimit, now));
+    tasks.push(workListDetailRecord(item, textOffset, textLimit, now, ctx.timeZone));
   }
   return {
     success: true,
@@ -665,7 +676,8 @@ function workListDetail(input: Record<string, unknown>, ctx: WorkListViewContext
 function workListOverview(
   snapshot: WorkListSnapshot,
   rankedItems: readonly WorkListRankedItem[],
-  now: number
+  now: number,
+  timeZone: string
 ): WorkListOverview {
   const items = rankedItems.map(({ item }) => item);
   const status = Object.fromEntries(WORK_LIST_STATUSES.map((name) => [name, 0])) as Record<
@@ -689,7 +701,7 @@ function workListOverview(
     channels.set(channel, (channels.get(channel) ?? 0) + 1);
     const assignee = workListText(values.assignee ?? values.assigneeText ?? values.assignee_text);
     assignees.set(assignee, (assignees.get(assignee) ?? 0) + 1);
-    const temporal = workListDueState(item, now);
+    const temporal = workListDueState(item, now, timeZone);
     if (temporal === 'closed') due.closed += 1;
     else if (temporal === 'unscheduled') due.missing += 1;
     else if (temporal.endsWith('overdue')) due.overdue += 1;
@@ -798,7 +810,7 @@ export async function runWorkListView(
   }
   if (view === 'overview') {
     const rankedItems = workListRankedItems(snapshot.items, filter);
-    return workListOverview(snapshot, rankedItems, now);
+    return workListOverview(snapshot, rankedItems, now, ctx.timeZone);
   }
 
   const limit = workListInteger(
@@ -821,7 +833,7 @@ export async function runWorkListView(
   return {
     success: true,
     view: 'items',
-    tasks: page.map(({ item, score }) => workListCompact(item, now, score)),
+    tasks: page.map(({ item, score }) => workListCompact(item, now, score, ctx.timeZone)),
     total: rankedItems.length,
     returned: page.length,
     nextCursor:
@@ -901,7 +913,11 @@ export function workListActionRegistrations(ports: WorkListPorts): ActionRegistr
         ],
       },
       exec: (input, context) =>
-        runWorkListView(input, { knowledge: ports.knowledge, access: context.access }),
+        runWorkListView(input, {
+          knowledge: ports.knowledge,
+          access: context.access,
+          timeZone: ports.timeZone.get(),
+        }),
     },
   ];
 }
@@ -1215,7 +1231,9 @@ export function minimalWorkActionRegistrations(ports: WorkPorts): ActionRegistra
           {
             ...commandFieldsFrom(body),
             commitmentId,
-            ...(body.expectedRevision === undefined ? {} : { expectedRevision: body.expectedRevision }),
+            ...(body.expectedRevision === undefined
+              ? {}
+              : { expectedRevision: body.expectedRevision }),
             commandId: operationId(context, 'work.revise'),
             modelRunId: context.session?.modelRunId,
           } as unknown as ReviseWorkCommand,

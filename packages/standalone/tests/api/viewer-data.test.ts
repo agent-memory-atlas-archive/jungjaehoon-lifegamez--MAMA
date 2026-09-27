@@ -129,9 +129,12 @@ describe('viewer data shaping', () => {
           content: { complete: true, nextRead: null },
         },
       };
-      expect(mapArchiveGraphNode(node)).toMatchObject({ id: 'memory:memory-1', kind: memoryKind });
+      expect(mapArchiveGraphNode(node, 'UTC')).toMatchObject({
+        id: 'memory:memory-1',
+        kind: memoryKind,
+      });
       if (node.data.kind === 'memory') node.data.recordKind = 'commitment';
-      expect(mapArchiveGraphNode(node)).toMatchObject({
+      expect(mapArchiveGraphNode(node, 'UTC')).toMatchObject({
         id: 'memory:memory-1',
         kind: 'commitment',
       });
@@ -140,7 +143,28 @@ describe('viewer data shaping', () => {
 
   it('keeps observations separate from stored memory kinds', () => {
     expect(
-      mapArchiveGraphNode({
+      mapArchiveGraphNode(
+        {
+          ref: { kind: 'observation', id: 'source-1' },
+          resolvedRef: { kind: 'observation', id: 'source-1' },
+          label: 'source',
+          data: {
+            kind: 'observation',
+            connector: 'connector',
+            sourceId: 'source-1',
+            observedAt: 1,
+            sourceAt: null,
+            contentHash: null,
+          },
+        },
+        'UTC'
+      )
+    ).toMatchObject({ id: 'observation:source-1', kind: 'observation' });
+  });
+
+  it('labels observation times with the configured timezone', () => {
+    const label = mapArchiveGraphNode(
+      {
         ref: { kind: 'observation', id: 'source-1' },
         resolvedRef: { kind: 'observation', id: 'source-1' },
         label: 'source',
@@ -149,11 +173,14 @@ describe('viewer data shaping', () => {
           connector: 'connector',
           sourceId: 'source-1',
           observedAt: 1,
-          sourceAt: null,
+          sourceAt: Date.parse('2026-09-27T06:30:00Z'),
           contentHash: null,
         },
-      })
-    ).toMatchObject({ id: 'observation:source-1', kind: 'observation' });
+      },
+      'America/Los_Angeles'
+    );
+    expect(label.label).toContain('(America/Los_Angeles)');
+    expect(label.label).not.toContain('KST');
   });
 
   it('projects the task list fields without inventing values for missing task fields', () => {

@@ -60,6 +60,7 @@ export interface W1ReportsConfig {
 
 export interface W1Config {
   version: 1;
+  timezone: string;
   agent: W1AgentConfig;
   database: { path: string };
   logging: { level: 'debug' | 'info' | 'warn' | 'error'; file: string };
@@ -95,6 +96,7 @@ export class ConfigError extends Error {
 
 const CONFIG_KEYS = [
   'version',
+  'timezone',
   'agent',
   'database',
   'logging',
@@ -345,6 +347,15 @@ function parseConfigValue(
   const raw = object(value, 'config');
   collectIgnoredKeys(raw, CONFIG_KEYS, '', state);
   if (raw.version !== 1) throw new ConfigError('version must be 1');
+  const timezone = text(
+    raw.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
+    'timezone'
+  );
+  try {
+    new Intl.DateTimeFormat('en', { timeZone: timezone });
+  } catch {
+    throw new ConfigError(`timezone "${timezone}" is not a valid IANA time zone`);
+  }
   const database = object(raw.database, 'database');
   collectIgnoredKeys(database, ['path'], 'database', state);
   const logging = object(raw.logging, 'logging');
@@ -413,6 +424,7 @@ function parseConfigValue(
   return {
     config: {
       version: 1,
+      timezone,
       agent: parseAgent(raw.agent, home, state),
       database: { path: configPath(text(database.path, 'database.path'), home) },
       logging: {

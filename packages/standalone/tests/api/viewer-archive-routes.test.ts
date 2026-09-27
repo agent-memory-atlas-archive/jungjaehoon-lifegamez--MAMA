@@ -15,6 +15,7 @@ import {
   type ViewerServerOptions,
 } from '../../src/api/viewer-server.js';
 import { readViewerMemoryStats } from '../../src/api/viewer-data.js';
+import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 
 const ownerAccess: JudgmentAccess = {
   principalId: 'owner',
@@ -113,6 +114,7 @@ async function withServer(
     return implementation(call, context);
   }) as unknown as ActionDispatcher;
   const server = createViewerServer({
+    timeZone: createTimeZoneSetting('UTC'),
     dispatch,
     ownerAccess,
     port: 0,

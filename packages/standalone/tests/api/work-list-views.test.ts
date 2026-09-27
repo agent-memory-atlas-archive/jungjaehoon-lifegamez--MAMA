@@ -12,6 +12,7 @@ import {
   workListActionRegistrations,
   type WorkListViewContext,
 } from '../../src/api/work-actions.js';
+import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 
 const access: JudgmentAccess = {
   principalId: 'principal-test',
@@ -104,7 +105,7 @@ function withHistory(item: CommitmentView): CommitmentView {
 }
 
 function context(readWork: WorkListViewContext['knowledge']['readWork']): WorkListViewContext {
-  return { knowledge: { readWork }, access, now: () => 1_700_000_100_000 };
+  return { knowledge: { readWork }, access, now: () => 1_700_000_100_000, timeZone: 'UTC' };
 }
 
 describe('progressive work.list views', () => {
@@ -277,7 +278,10 @@ describe('progressive work.list views', () => {
   });
 
   it('registers work.list as the product progressive contract', () => {
-    const registration = workListActionRegistrations({ knowledge: { readWork: vi.fn() } }).at(0)!;
+    const registration = workListActionRegistrations({
+      knowledge: { readWork: vi.fn() },
+      timeZone: createTimeZoneSetting('UTC'),
+    }).at(0)!;
     expect(registration.contract.name).toBe('work.list');
     expect(registration.contract.inputSchema.properties?.view?.enum).toEqual([
       'overview',
@@ -308,6 +312,7 @@ describe('progressive work.list views', () => {
     const reader = makeReader([view(1)]);
     const registration = workListActionRegistrations({
       knowledge: { readWork: reader.readWork },
+      timeZone: createTimeZoneSetting('UTC'),
     })[0]!;
     const result = await registration.exec({ view: 'items', limit: 1 }, {
       access,

@@ -49,6 +49,7 @@ describe('failed collect-only imports', () => {
             connectorsConfigPath: configPath,
             rawStore: raw,
             rawIndexSink,
+            timeZone: 'UTC',
             credentials: { apiKey: 'fixture-key', token: 'fixture-token' },
             fromMs: 0,
             untilMs: 10_000,
@@ -78,6 +79,7 @@ describe('failed collect-only imports', () => {
             connectorsConfigPath: configPath,
             rawStore: raw,
             rawIndexSink,
+            timeZone: 'UTC',
             fromMs: 0,
             untilMs: 10_000,
           })
