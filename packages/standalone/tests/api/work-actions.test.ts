@@ -60,18 +60,29 @@ describe('minimal work actions', () => {
     expect(view).toMatchObject({
       view: 'pipeline',
       total: 1,
-      cap: 100,
+      fields: [
+        'commitmentId',
+        'title',
+        'status',
+        'assignee',
+        'deadline',
+        'latest_change',
+        'latest_event',
+      ],
       stages: [
         {
           stage: 'Review',
           count: 1,
-          tasks: [
-            {
-              title: 'Open item',
-              assignee: 'Owner',
-              waiting_on: 'Owner decision',
-              next_action: 'Review the draft',
-            },
+          rows: [
+            [
+              'item-open',
+              'Open item',
+              'blocked',
+              'Owner',
+              '2026-09-28',
+              Math.trunc(Date.parse('2026-09-27T01:00:00Z') / 1_000),
+              null,
+            ],
           ],
         },
       ],
@@ -90,6 +101,55 @@ describe('minimal work actions', () => {
     await expect(
       runWorkListView({ view: 'items', cursor: '' }, { knowledge: knowledge as never, access })
     ).rejects.toThrow('omit cursor');
+  });
+
+  it('returns the whole open ledger as compact pipeline rows under 10k characters', async () => {
+    const items = Array.from({ length: 70 }, (_, index) => ({
+      rowId: index + 1,
+      commitmentId: `item-${index + 1}`,
+      revision: 1,
+      latestJudgmentRef: null,
+      values: {
+        title: `Open item ${index + 1}`,
+        status: 'in_progress',
+        stage: 'Doing',
+        assignee: 'Owner',
+        deadline: '2026-09-30',
+        latestEvent: 'A short update',
+        sourceRefs: Array.from({ length: 10 }, (_, ref) => `obs-${index}-${ref}`),
+      },
+      withdrawn: false,
+      createdAt: '2026-09-26T00:00:00Z',
+      updatedAt: '2026-09-27T01:00:00Z',
+    }));
+    const knowledge = {
+      readWork: vi.fn().mockReturnValue({ items, nextCursor: null, coverage: { reasons: [] } }),
+    };
+    const view = await runWorkListView(
+      { view: 'pipeline', limit: 1 },
+      { knowledge: knowledge as never, access }
+    );
+    expect(view.total).toBe(70);
+    expect(JSON.stringify(view).length).toBeLessThan(10_000);
+    expect(JSON.stringify(view)).not.toContain('sourceRefs');
+    expect(view.fields).toEqual([
+      'commitmentId',
+      'title',
+      'status',
+      'assignee',
+      'deadline',
+      'latest_change',
+      'latest_event',
+    ]);
+    expect(view.stages[0]?.rows[0]).toEqual([
+      'item-1',
+      'Open item 1',
+      'in_progress',
+      'Owner',
+      '2026-09-30',
+      Math.trunc(Date.parse('2026-09-27T01:00:00Z') / 1_000),
+      'A short update',
+    ]);
   });
 
   it('refuses sourceRefs that name no observation and names the ref', async () => {
@@ -230,6 +290,56 @@ describe('minimal work actions', () => {
 
       const view = knowledge.readWork({ commitmentId }, access).items[0];
       expect(view.values).not.toHaveProperty('assignee');
+    } finally {
+      await handle.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('appends a revision when expectedRevision is omitted and rejects a stale supplied revision', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'mama-work-revise-'));
+    const handle = await openCoreDatabase({ path: join(root, 'memory.db') });
+    try {
+      const knowledge = createKnowledge({ adapter: handle.adapter });
+      const dispatch = createDispatcher(
+        createCatalog(minimalWorkActionRegistrations({ observationExists: () => true, knowledge }))
+      );
+      const created = await dispatch(
+        {
+          action: 'work.create',
+          operationId: 'create-revisions',
+          input: {
+            topic: 'work-topic',
+            summary: 'create item',
+            scopes: access.scopes,
+            set: { title: 'Revision item' },
+          },
+        },
+        { access }
+      );
+      const commitmentId = (created as { data: { commitmentId: string } }).data.commitmentId;
+      const append = (operationId: string, expectedRevision?: number) =>
+        dispatch(
+          {
+            action: 'work.revise',
+            operationId,
+            input: {
+              commitmentId,
+              ...(expectedRevision === undefined ? {} : { expectedRevision }),
+              topic: 'work-topic',
+              summary: 'record another change',
+              scopes: access.scopes,
+              set: { latestEvent: operationId },
+            },
+          },
+          { access }
+        );
+      const first = await append('append-without-revision');
+      expect(first).toMatchObject({ status: 'completed', data: { revision: 2 } });
+      const stale = await append('stale-revision', 1);
+      expect(stale).toMatchObject({ status: 'failed' });
+      const second = await append('append-latest');
+      expect(second).toMatchObject({ status: 'completed', data: { revision: 3 } });
     } finally {
       await handle.close();
       rmSync(root, { recursive: true, force: true });

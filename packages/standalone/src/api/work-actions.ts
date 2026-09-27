@@ -13,7 +13,7 @@ import {
 } from '@jungjaehoon/mama-core/knowledge';
 
 export interface WorkPorts {
-  knowledge: Pick<Knowledge, 'createWork' | 'reviseWork'>;
+  knowledge: Pick<Knowledge, 'createWork' | 'reviseWork' | 'readWork'>;
   /** sourceRefs are observationRef handles; core stores them unchecked, so the product checks them. */
   observationExists: (observationId: string) => boolean;
 }
@@ -97,9 +97,17 @@ interface WorkListDetail {
 interface WorkListPipeline {
   success: true;
   view: 'pipeline';
-  stages: Array<{ stage: string; count: number; tasks: Array<Record<string, unknown>> }>;
+  fields: readonly [
+    'commitmentId',
+    'title',
+    'status',
+    'assignee',
+    'deadline',
+    'latest_change',
+    'latest_event',
+  ];
+  stages: Array<{ stage: string; count: number; rows: unknown[][] }>;
   total: number;
-  cap: number;
   observedAt: string;
 }
 
@@ -356,7 +364,7 @@ function workListCompact(
     ['sourceEventId', sourceEventId],
     ['completion_criteria', workListText(values.completionCriteria ?? values.completion_criteria)],
     ['resolution_kind', workListText(values.resolutionKind ?? values.resolution_kind)],
-    ['latest_event', latestEvent],
+    ['latest_event', latestEvent?.replace(/\s+/g, ' ').trim() ?? null],
     ['lastEventTime', values.lastEventTime ?? values.last_event_time],
   ];
   for (const [key, value] of optional) {
@@ -707,28 +715,44 @@ export async function runWorkListView(
         `work.list pipeline contains ${open.length} open items; cap is ${cap}, filter by stage or project`
       );
     }
-    const groups = new Map<string, Array<Record<string, unknown>>>();
+    const groups = new Map<string, unknown[][]>();
+    const fields = [
+      'commitmentId',
+      'title',
+      'status',
+      'assignee',
+      'deadline',
+      'latest_change',
+      'latest_event',
+    ] as const;
     for (const item of open) {
-      const compact = workListCompact(item, now);
       const values = workListValueObject(item.values);
-      compact.latest_change = item.updatedAt;
-      const nextAction = workListText(values.nextAction ?? values.next_action);
-      const waitingOn = workListText(values.waitingOn ?? values.waiting_on);
-      compact.next_action = nextAction;
-      compact.waiting_on = waitingOn;
       const stage = workListText(values.stage) ?? 'Unstaged';
       const group = groups.get(stage) ?? [];
-      group.push(compact);
+      const latestEvent = workListText(values.latestEvent ?? values.latest_event);
+      group.push([
+        item.commitmentId,
+        workListText(values.title),
+        workListStatus(item),
+        workListText(values.assignee ?? values.assigneeText ?? values.assignee_text),
+        workListText(values.deadline ?? values.due_date),
+        Math.trunc(
+          typeof item.updatedAt === 'number'
+            ? item.updatedAt / 1_000
+            : Date.parse(item.updatedAt) / 1_000
+        ),
+        latestEvent?.replace(/\s+/g, ' ').trim() ?? null,
+      ]);
       groups.set(stage, group);
     }
     return {
       success: true,
       view: 'pipeline',
+      fields,
       stages: [...groups.entries()]
         .sort(([a], [b]) => a.localeCompare(b))
-        .map(([stage, tasks]) => ({ stage, count: tasks.length, tasks })),
+        .map(([stage, rows]) => ({ stage, count: rows.length, rows })),
       total: open.length,
-      cap,
       observedAt: new Date(snapshot.observedAt).toISOString(),
     };
   }
@@ -783,7 +807,7 @@ export function workListActionRegistrations(ports: WorkListPorts): ActionRegistr
       contract: {
         name: 'work.list',
         summary:
-          'Read owner work progressively: overview counts, a compact open-work pipeline, bounded items pages, or up to four detailed records with history and text continuation.',
+          'Read owner work progressively: overview counts, a compact open-work pipeline grouped by stage. Each pipeline row is an array using the top-level fields order (commitmentId, title, status, assignee, deadline, latest_change in epoch seconds, latest_event). Pipeline returns the whole open ledger and ignores limit; bounded items pages are capped at 50. Use detail for evidence and revision history.',
         inputSchema: {
           type: 'object',
           additionalProperties: false,
@@ -800,7 +824,7 @@ export function workListActionRegistrations(ports: WorkListPorts): ActionRegistr
                 ],
               },
             },
-            limit: { type: 'integer', minimum: 1, maximum: WORK_LIST_MAX_LIMIT },
+            limit: { type: 'integer', minimum: 1, maximum: 100 },
             cursor: { type: 'string', minLength: 0 },
             readVersion: {
               type: 'string',
@@ -1002,7 +1026,7 @@ const createSchema: ActionSchemaObject = {
 
 const reviseSchema: ActionSchemaObject = {
   type: 'object',
-  required: ['commitmentId', 'expectedRevision', 'topic', 'summary'],
+  required: ['commitmentId', 'topic', 'summary'],
   additionalProperties: false,
   properties: {
     ...commandFields,
@@ -1014,7 +1038,8 @@ const reviseSchema: ActionSchemaObject = {
     expectedRevision: {
       type: 'integer',
       minimum: 0,
-      description: 'Revision read before editing, e.g. 2.',
+      description:
+        'Optional revision read before editing; when omitted, the latest owner revision is appended.',
     },
     set: {
       ...workPatchSchema,
@@ -1125,7 +1150,7 @@ export function minimalWorkActionRegistrations(ports: WorkPorts): ActionRegistra
         name: 'work.revise',
         recallableWrite: true,
         summary:
-          'Revise owner work at an expected revision. The required summary states what changed and why, in one or two sentences. Compare-and-set prevents overwriting a revision the caller did not read; links with relation derived_from cite the observations the revision rests on.',
+          'Append a revision to owner work. expectedRevision is optional for the single owner writer; when supplied it rejects a stale write. The required summary states what changed and why. Links with relation derived_from cite the observations the revision rests on.',
         inputSchema: reviseSchema,
         examples: [
           {
@@ -1144,12 +1169,23 @@ export function minimalWorkActionRegistrations(ports: WorkPorts): ActionRegistra
         const body = input as Record<string, unknown>;
         assertReplayEventDatetime(body, context, 'work.revise');
         assertSourceRefsExist(body, ports);
-        const commitmentId = body.commitmentId;
+        const commitmentId = body.commitmentId as string;
+        const latest =
+          body.expectedRevision === undefined
+            ? ports.knowledge.readWork({ commitmentId, history: 'current' }, context.access)
+                .items[0]?.revision
+            : body.expectedRevision;
+        if (latest === undefined) {
+          throw new JudgmentError(
+            'REFERENCE_NOT_FOUND',
+            `Commitment is unavailable: ${String(commitmentId)}`
+          );
+        }
         return ports.knowledge.reviseWork(
           {
             ...commandFieldsFrom(body),
             commitmentId,
-            expectedRevision: body.expectedRevision,
+            expectedRevision: latest,
             commandId: operationId(context, 'work.revise'),
             modelRunId: context.session?.modelRunId,
           } as unknown as ReviseWorkCommand,

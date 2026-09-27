@@ -1,4 +1,4 @@
-import type { ActionRegistration, ActionSchemaObject } from '@jungjaehoon/mama-core';
+import type { ActionContext, ActionRegistration, ActionSchemaObject } from '@jungjaehoon/mama-core';
 import type { MemoryReadAllowance } from '@jungjaehoon/mama-core/api/catalog';
 import type { StoredSourceReader } from './stored-source-reader.js';
 
@@ -30,6 +30,15 @@ function storedReader(ports: SourcePorts): StoredSourceReader {
     throw error;
   }
   return ports.stored;
+}
+
+function assertGrantedSource(source: string, access: ActionContext['access']): void {
+  if (access.connectors?.includes(source)) return;
+  const error = new Error(
+    `principal ${access.principalId} may not read ${source}; readable connectors: ${(access.connectors ?? []).join(', ') || '(none)'}`
+  );
+  error.name = 'connector_out_of_scope';
+  throw error;
 }
 
 const timeValue: ActionSchemaObject = {
@@ -112,7 +121,7 @@ const observationRefsSchema: ActionSchemaObject = {
 
 const sourceReadSchema = {
   ...sourceSchema,
-  required: ['source'] as const,
+  required: [] as const,
   properties: {
     ...sourceSchema.properties,
     observationRefs: observationRefsSchema,
@@ -141,21 +150,45 @@ export function sourceActionRegistrations(ports: SourcePorts): ActionRegistratio
       },
       exec: (input, context) => {
         const source = sourceName(input, 'source.search');
+        assertGrantedSource(source, context.access);
         const allowance = replayReadAllowance(context.readAllowance);
-        return allowance === undefined
-          ? storedReader(ports).search(source, input as Record<string, unknown>, context.access)
-          : storedReader(ports).search(
-              source,
-              input as Record<string, unknown>,
-              context.access,
-              allowance
-            );
+        const result =
+          allowance === undefined
+            ? storedReader(ports).search(source, input as Record<string, unknown>, context.access)
+            : storedReader(ports).search(
+                source,
+                input as Record<string, unknown>,
+                context.access,
+                allowance
+              );
+        const data = result as { hits?: Array<Record<string, unknown>> };
+        return {
+          ...result,
+          ...(Array.isArray(data.hits)
+            ? {
+                hits: data.hits.map((hit) => {
+                  const sourceAt = hit.source_at;
+                  const timestamp =
+                    typeof sourceAt === 'string' ? Date.parse(sourceAt) : Number.NaN;
+                  const content =
+                    typeof hit.content_preview === 'string' ? hit.content_preview : '';
+                  return {
+                    author: hit.author_label ?? null,
+                    time: Number.isFinite(timestamp)
+                      ? new Date(timestamp).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
+                      : null,
+                    text: content.replace(/\s+/g, ' ').trim().slice(0, 200),
+                    observationRef: hit.raw_id ?? null,
+                  };
+                }),
+              }
+            : {}),
+        };
       },
     },
     {
       contract: {
         name: 'source.read',
-        readsConnector: { fromInput: 'source' },
         summary:
           'Read a bounded slice using one observationRef, or read up to 500 observationRefs from one source delta in one call. Batch results contain one per-ref result or error; continue with each nextRead until complete.',
         inputSchema: sourceReadSchema,
@@ -174,16 +207,18 @@ export function sourceActionRegistrations(ports: SourcePorts): ActionRegistratio
         ],
       },
       exec: (input, context) => {
-        const source = sourceName(input, 'source.read');
+        const body = input as Record<string, unknown>;
         const allowance = replayReadAllowance(context.readAllowance);
+        if (body.source === undefined && typeof body.observationRef === 'string') {
+          return allowance === undefined
+            ? storedReader(ports).readObservation(body.observationRef, context.access)
+            : storedReader(ports).readObservation(body.observationRef, context.access, allowance);
+        }
+        const source = sourceName(input, 'source.read');
+        assertGrantedSource(source, context.access);
         return allowance === undefined
-          ? storedReader(ports).read(source, input as Record<string, unknown>, context.access)
-          : storedReader(ports).read(
-              source,
-              input as Record<string, unknown>,
-              context.access,
-              allowance
-            );
+          ? storedReader(ports).read(source, body, context.access)
+          : storedReader(ports).read(source, body, context.access, allowance);
       },
     },
   ];

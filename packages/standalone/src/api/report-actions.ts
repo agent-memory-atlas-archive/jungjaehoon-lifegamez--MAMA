@@ -135,7 +135,9 @@ export function reportActionRegistrations(ports: ReportPorts): ActionRegistratio
           throw reportFailure('publisher_unavailable', 'Report publisher not configured');
         }
         const publication = publisher(slots, {
-          ...(basisRevision === undefined ? {} : { basisRevision }),
+          // An omitted basis means unknown freshness. Persist that state so a
+          // same-HTML publish also clears a previously asserted basis.
+          basisRevision: basisRevision ?? null,
           operationId: context.operationId ?? null,
           modelRunId: context.session?.modelRunId ?? null,
         });

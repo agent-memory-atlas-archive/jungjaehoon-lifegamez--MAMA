@@ -86,6 +86,35 @@ describe('report.* action registrations', () => {
     });
   });
 
+  it('publishes one slot without a basis and returns only changed slot ids', async () => {
+    const html = '<div class="report-card">Changed</div>';
+    const store = createReportStore({
+      initialSlots: {
+        decisions: {
+          slotId: 'decisions',
+          html,
+          priority: 0,
+          updatedAt: Date.now(),
+          basisRevision: 'previous-basis',
+        },
+      },
+    });
+    const call = dispatch({ publisher: createReportPublisher(store, new Set()) });
+    const result = await call(
+      { action: 'report.publish', input: { slots: { decisions: html } } },
+      { access }
+    );
+    expect(result).toMatchObject({
+      status: 'completed',
+      data: { acceptedSlotIds: ['decisions'], changedSlotIds: ['decisions'] },
+    });
+    expect(store.get('decisions')).toMatchObject({
+      html,
+      basisRevision: null,
+      freshness: 'unknown',
+    });
+  });
+
   it('report.publish rejects non-string slot values and keeps the code', async () => {
     const publisher = vi.fn();
     const call = dispatch({ publisher });

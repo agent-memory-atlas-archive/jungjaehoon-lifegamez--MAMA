@@ -84,6 +84,7 @@ describe('ReportStore', () => {
         html: '<p>original</p>',
         priority: 7,
         updatedAt: originalUpdatedAt,
+        freshness: 'unknown',
       });
     }
   );
@@ -234,6 +235,7 @@ describe('createReportPublisher', () => {
       html: '<p>same</p>',
       priority: 7,
       updatedAt: briefingBefore.updatedAt,
+      freshness: 'unknown',
     });
     expect(store.get('decisions')?.html).toBe('<p>changed</p>');
     expect(store.get('oversized')).toBeUndefined();

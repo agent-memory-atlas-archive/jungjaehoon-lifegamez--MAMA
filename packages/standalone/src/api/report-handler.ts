@@ -84,6 +84,7 @@ export function createReportStore(
       priority,
       updatedAt: Date.now(),
       ...(updateOptions?.basisRevision !== undefined ? { basisRevision: basis } : {}),
+      ...(basis === null ? { freshness: 'unknown' as const } : {}),
       ...(updateOptions?.operationId === undefined
         ? {}
         : { operationId: updateOptions.operationId }),
@@ -206,7 +207,9 @@ export function createReportPublisher(
       const existing = store.get(slotId);
       if (
         existing?.html === html &&
-        (options?.basisRevision === undefined || existing.basisRevision === options.basisRevision)
+        (options?.basisRevision === undefined ||
+          existing.basisRevision === options.basisRevision) &&
+        (options?.basisRevision !== null || existing.freshness === 'unknown')
       ) {
         continue;
       }

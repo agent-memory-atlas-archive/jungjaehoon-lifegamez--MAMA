@@ -217,10 +217,12 @@ export class PollingScheduler {
           },
         ];
       });
-      const collectOnly = canonicalItems.filter((item) => item.collectOnly === true);
-      const live = canonicalItems.filter((item) => item.collectOnly !== true);
-      if (collectOnly.length > 0) this.rawStore.save(name, collectOnly, { collectOnly: true });
-      if (live.length > 0) this.rawStore.save(name, live);
+      // A connector's first snapshot of a new feed is indexed like any item but is not live work;
+      // historical import pages use the raw store's collect-only path and stay for their import.
+      const snapshotIds = new Set(
+        canonicalItems.filter((item) => item.collectOnly === true).map((item) => item.sourceId)
+      );
+      if (canonicalItems.length > 0) this.rawStore.save(name, canonicalItems);
 
       const pending: PendingProjection[] = [];
       let afterSequence = 0;
@@ -257,7 +259,7 @@ export class PollingScheduler {
       }
 
       const byChannel = new Map<string, NormalizedItem[]>();
-      for (const item of pending) {
+      for (const item of pending.filter((row) => !snapshotIds.has(row.sourceId))) {
         const group = byChannel.get(item.channel) ?? [];
         group.push(item);
         byChannel.set(item.channel, group);

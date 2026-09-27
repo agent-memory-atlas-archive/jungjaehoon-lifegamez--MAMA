@@ -71,6 +71,12 @@ function sinceTime(value: unknown, now: number): number {
   );
 }
 
+function invalidInput(message: string): Error {
+  const error = new Error(message);
+  error.name = 'invalid_input';
+  return error;
+}
+
 function decodeMetadata(value: unknown): Record<string, unknown> {
   if (typeof value !== 'string' || value === '') return {};
   const parsed: unknown = JSON.parse(value);
@@ -144,9 +150,7 @@ function recentAction(ports: ReportReadPorts): ActionRegistration {
           Number(cap) + 1
         ) as Row[];
       if (rows.length > Number(cap))
-        throw new Error(
-          `source.recent found more than ${cap} changes; narrow since or increase cap`
-        );
+        throw invalidInput(`source.recent found more than ${cap} changes; narrow since or channel`);
       const visible = allowedRows(rows, context.access, ports.ownerPrincipalId);
       const groups = new Map<
         string,

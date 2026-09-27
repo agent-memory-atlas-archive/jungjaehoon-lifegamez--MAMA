@@ -348,4 +348,79 @@ describe('manage.wiki.* action registrations', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('allows append-only wiki edits without a version and keeps replace versioned', async () => {
+    const root = vault();
+    try {
+      const writer = new ObsidianWriter(root, '.');
+      writer.ensureDirectories();
+      const call = dispatch({
+        vault: { path: writer.getWikiPath(), name: null },
+        publisher: (pages) => writer.writePagesAtomically(pages),
+      });
+      await call(
+        {
+          action: 'manage.wiki.publish',
+          input: {
+            pages: [
+              {
+                path: 'projects/example.md',
+                title: 'Example',
+                type: 'entity',
+                content: '## History\n- started',
+                expectedContentVersion: null,
+              },
+            ],
+          },
+        },
+        { access: ownerAccess }
+      );
+      const appended = await call(
+        {
+          action: 'manage.wiki.update',
+          input: {
+            path: 'projects/example.md',
+            edits: [{ section: '## History', append: '- changed today' }],
+          },
+        },
+        { access: ownerAccess }
+      );
+      expect(appended).toMatchObject({
+        status: 'completed',
+        data: { contentVersion: expect.any(String) },
+      });
+      const beforeReplace = readWikiPageContent(writer.getWikiPath(), 'projects/example.md')!;
+      const replaceWithoutVersion = await call(
+        {
+          action: 'manage.wiki.update',
+          input: {
+            path: 'projects/example.md',
+            edits: [{ section: '## History', replace: '- replaced' }],
+          },
+        },
+        { access: ownerAccess }
+      );
+      expect(replaceWithoutVersion).toMatchObject({
+        status: 'failed',
+        error: { code: 'invalid_input' },
+      });
+      const replace = await call(
+        {
+          action: 'manage.wiki.update',
+          input: {
+            path: 'projects/example.md',
+            expectedContentVersion: beforeReplace.version,
+            edits: [{ section: '## History', replace: '- replaced' }],
+          },
+        },
+        { access: ownerAccess }
+      );
+      expect(replace).toMatchObject({
+        status: 'completed',
+        data: { contentVersion: expect.any(String) },
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

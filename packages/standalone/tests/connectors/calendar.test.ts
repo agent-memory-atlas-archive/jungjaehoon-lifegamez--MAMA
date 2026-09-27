@@ -4,9 +4,12 @@ import type { ConnectorConfig } from '../../src/connectors/framework/types.js';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createCatalog, createDispatcher, type ActionContext } from '@jungjaehoon/mama-core';
 import { startConnectorRuntime } from '../../src/runtime/connectors.js';
 import { openCoreDatabase } from '../../src/runtime/core-db.js';
 import { RawStore } from '../../src/storage/source-archive.js';
+import { sourceActionRegistrations } from '../../src/api/source-actions.js';
+import { createStoredSourceReader } from '../../src/api/stored-source-reader.js';
 import { storedSourceFamilies } from '../../src/connectors/framework/stored-index-read.js';
 import { ownerSystemPrompt } from '../../src/runtime/owner-system-prompt.js';
 
@@ -433,12 +436,72 @@ describe('calendar through the daemon connector runtime', () => {
         expect(accept).not.toHaveBeenCalled();
         expect(rawStore.query('calendar', new Date(0))).toHaveLength(2);
         const families = storedSourceFamilies(database.adapter, ['calendar']);
-        expect(families).toEqual([]);
+        // A first snapshot is indexed and readable, but not admitted as live source work.
+        expect(families).toEqual([{ source: 'calendar', family: null, count: 2 }]);
         for (const backend of ['claude', 'codex'] as const) {
           expect(ownerSystemPrompt(backend, null, families)).toContain(
-            'Readable sources: none stored'
+            'Readable sources: calendar (2)'
           );
         }
+        const access: ActionContext['access'] = {
+          principalId: 'fixture-owner',
+          agentId: 'fixture-agent',
+          actions: ['source.search', 'source.read'],
+          connectors: ['calendar'],
+          scopes: [],
+        };
+        const stored = createStoredSourceReader({
+          adapter: database.adapter,
+          ownerPrincipalId: () => 'fixture-owner',
+          rawStore: () => rawStore,
+        });
+        const dispatch = createDispatcher(createCatalog(sourceActionRegistrations({ stored })));
+        const found = await dispatch(
+          {
+            action: 'source.search',
+            input: {
+              source: 'calendar',
+              from: '2024-01-14T00:00:00Z',
+              to: '2024-01-29T00:00:00Z',
+            },
+          },
+          { access }
+        );
+        expect(found).toMatchObject({
+          status: 'completed',
+          data: {
+            hits: expect.arrayContaining([
+              expect.objectContaining({ text: expect.stringContaining('Lodging stay') }),
+              expect.objectContaining({
+                text: expect.stringContaining('Upcoming deadline'),
+              }),
+            ]),
+          },
+        });
+        const hits = (found as { data: { hits: Array<{ text: string; observationRef: string }> } })
+          .data.hits;
+        const lodging = hits.find((hit) => hit.text.includes('Lodging stay'))!;
+        const read = await dispatch(
+          {
+            action: 'source.read',
+            input: { source: 'calendar', observationRef: lodging.observationRef },
+          },
+          { access }
+        );
+        expect(read).toMatchObject({
+          status: 'completed',
+          data: {
+            content: expect.stringContaining('Lodging stay'),
+            metadata: {
+              start: '2024-01-16',
+              end: '2024-01-19',
+              location: 'Meeting room',
+              allDay: true,
+              endExclusive: true,
+              organizer: { displayName: 'Fixture organizer' },
+            },
+          },
+        });
         await runtime.pollNow();
         expect(accept).not.toHaveBeenCalled();
         expect(storedSourceFamilies(database.adapter, ['calendar'])).toEqual(families);

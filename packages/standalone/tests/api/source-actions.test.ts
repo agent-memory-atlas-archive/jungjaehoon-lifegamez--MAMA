@@ -27,7 +27,7 @@ describe('minimal source actions', () => {
       description: 'Maximum characters returned by a read; at most 4000.',
     });
     const readSchema = catalog.describe('source.read').inputSchema;
-    expect(readSchema.required).toEqual(['source']);
+    expect(readSchema.required).toEqual([]);
     expect(readSchema.properties?.observationRefs).toMatchObject({
       type: 'array',
       minItems: 1,
@@ -78,6 +78,50 @@ describe('minimal source actions', () => {
       error: { kind: 'invalid_input', code: 'invalid_input' },
     });
     expect(stored.read).toHaveBeenCalledTimes(1);
+  });
+
+  it('infers source for a single source.read ref and keeps search results compact', async () => {
+    const stored = {
+      search: vi.fn().mockReturnValue({
+        hits: [
+          {
+            raw_id: 'obs-a',
+            author_label: 'Writer',
+            source_at: '2026-09-27T00:00:00.000Z',
+            content_preview: 'x'.repeat(240),
+            source_id: 'message-a',
+            channel_id: 'channel-a',
+            score: 1,
+          },
+        ],
+        next_cursor: null,
+      }),
+      read: vi.fn(),
+      readObservation: vi
+        .fn()
+        .mockReturnValue({ source: 'connector-test', content: 'full original' }),
+      has: vi.fn().mockReturnValue(true),
+      isOwner: vi.fn().mockReturnValue(true),
+    };
+    const dispatch = createDispatcher(createCatalog(sourceActionRegistrations({ stored })));
+    const read = await dispatch(
+      { action: 'source.read', input: { observationRef: 'obs-a' } },
+      { access }
+    );
+    expect(read).toMatchObject({
+      status: 'completed',
+      data: { source: 'connector-test', content: 'full original' },
+    });
+    expect(stored.readObservation).toHaveBeenCalledWith('obs-a', access);
+    const search = await dispatch(
+      { action: 'source.search', input: { source: 'connector-test', query: 'term' } },
+      { access }
+    );
+    expect(search).toMatchObject({
+      status: 'completed',
+      data: { hits: [{ author: 'Writer', text: 'x'.repeat(200), observationRef: 'obs-a' }] },
+    });
+    expect(JSON.stringify(search).length).toBeLessThan(1_000);
   });
 
   it('describes every source and work input field, including nested fields', () => {
@@ -169,12 +213,7 @@ describe('minimal source actions', () => {
       );
       expect(denied).toMatchObject({
         status: 'failed',
-        error: {
-          kind: 'denied',
-          code: 'connector_out_of_scope',
-          message:
-            'principal owner-test may not read other-connector; readable connectors: connector-test',
-        },
+        error: { code: 'connector_out_of_scope' },
       });
     }
     expect(stored.search).toHaveBeenCalledTimes(2);

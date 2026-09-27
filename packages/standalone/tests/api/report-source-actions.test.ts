@@ -127,7 +127,7 @@ describe('report source reads', () => {
     );
     expect(result).toMatchObject({
       status: 'failed',
-      error: { message: expect.stringContaining('narrow since') },
+      error: { code: 'invalid_input', message: expect.stringContaining('narrow since or channel') },
     });
   });
 

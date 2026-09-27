@@ -125,10 +125,10 @@ export function wikiActionRegistrations(ports: WikiPorts): ActionRegistration[] 
         name: 'manage.wiki.update',
         recallableWrite: true,
         summary:
-          'Update one existing wiki page by sections instead of republishing it: append a dated line to a section (created at the page end when absent) or replace a section body. Pass the expectedContentVersion from manage.wiki.read; title, type and evidence ids are kept, and sourceIds adds evidence ids to the page metadata.',
+          'Update one existing wiki page by sections instead of republishing it. Append-only edits can omit expectedContentVersion; any section replacement must pass the version from manage.wiki.read. Title, type and evidence ids are kept, and sourceIds adds evidence ids to the page metadata.',
         inputSchema: {
           type: 'object',
-          required: ['path', 'expectedContentVersion', 'edits'],
+          required: ['path', 'edits'],
           properties: {
             path: { type: 'string', pattern: '^.+\\.md$' },
             expectedContentVersion: { type: 'string', pattern: '^[a-f0-9]{64}$' },
@@ -170,7 +170,7 @@ export function wikiActionRegistrations(ports: WikiPorts): ActionRegistration[] 
       exec: (input) => {
         const body = input as {
           path: string;
-          expectedContentVersion: string;
+          expectedContentVersion?: string;
           edits: WikiSectionEdit[];
           sourceIds?: string[];
         };
@@ -184,7 +184,18 @@ export function wikiActionRegistrations(ports: WikiPorts): ActionRegistration[] 
           );
         }
         const page = parseWrittenPage(current.content);
-        if (current.version !== body.expectedContentVersion) {
+        const requiresVersion = body.edits.some((edit) => edit.replace !== undefined);
+        if (requiresVersion && body.expectedContentVersion === undefined) {
+          const error = new Error(
+            'Section replacement requires expectedContentVersion from manage.wiki.read'
+          );
+          error.name = 'invalid_input';
+          throw error;
+        }
+        if (
+          body.expectedContentVersion !== undefined &&
+          current.version !== body.expectedContentVersion
+        ) {
           // Carry what a retry needs, so a concurrent writer's change does not cost a whole-page read.
           const sections = Object.fromEntries(
             body.edits.map((edit) => [edit.section, readWikiSection(page.body, edit.section)])

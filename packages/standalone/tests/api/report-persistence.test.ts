@@ -198,6 +198,7 @@ describe('createPersistentReportStore', () => {
         html: '<p>original</p>',
         priority: 7,
         updatedAt: originalUpdatedAt,
+        freshness: 'unknown',
       });
       await flushDebounce();
       expect(createPersistentReportStore({ filePath }).get('briefing')).toEqual({
@@ -205,6 +206,7 @@ describe('createPersistentReportStore', () => {
         html: '<p>original</p>',
         priority: 7,
         updatedAt: originalUpdatedAt,
+        freshness: 'unknown',
       });
     }
   );
