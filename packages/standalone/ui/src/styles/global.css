@@ -261,6 +261,12 @@
   background: var(--color-agent-light);
   color: var(--color-agent-strong);
 }
+.card-meta {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
 .card-action {
   margin-top: 6px;
   font-size: 12px;

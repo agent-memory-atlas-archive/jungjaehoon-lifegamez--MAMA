@@ -92,6 +92,61 @@ describe('viewer board and wiki record routes', () => {
     });
   });
 
+  it('counts the board header from the work ledger and the published action slot', async () => {
+    const reportStore = createReportStore();
+    reportStore.update(
+      'action_required',
+      '<div class="report-card">one</div><div class="report-card">two</div>',
+      0
+    );
+    const calls: Array<Record<string, unknown>> = [];
+    server = createViewerServer({
+      dispatch: (async (call: { action: string; input: Record<string, unknown> }) => {
+        calls.push(call.input);
+        if (call.input.view === 'overview') {
+          return {
+            status: 'completed',
+            data: {
+              status: { pending: 3, in_progress: 2, review: 1, blocked: 0, done: 9, cancelled: 1 },
+              due: { missing: 0, overdue: 2, upcoming: 4, closed: 10 },
+            },
+          };
+        }
+        return call.input.cursor === undefined
+          ? {
+              status: 'completed',
+              data: {
+                tasks: [{ assignee: 'Person A' }, { assignee: 'unconfirmed' }, { assignee: null }],
+                nextCursor: 'page-2',
+              },
+            }
+          : { status: 'completed', data: { tasks: [{ assignee: '' }], nextCursor: null } };
+      }) as unknown as ActionDispatcher,
+      ownerAccess: access,
+      reportStore,
+      reportSseClients: new Set(),
+      port: 0,
+    });
+    await server.start();
+
+    await expect(get(server, '/api/operator/summary')).resolves.toEqual({
+      status: 200,
+      body: {
+        report: { actionRequired: 2, updatedAt: expect.any(Number) },
+        work: { open: 6, review: 1, overdue: 2, unassigned: 3 },
+      },
+    });
+    expect(calls.filter((input) => input.view === 'items')).toEqual([
+      { view: 'items', status: ['pending', 'in_progress', 'review', 'blocked'], limit: 50 },
+      {
+        view: 'items',
+        status: ['pending', 'in_progress', 'review', 'blocked'],
+        limit: 50,
+        cursor: 'page-2',
+      },
+    ]);
+  });
+
   it('seeds report events from the same store used by the publisher', async () => {
     const reportStore = createReportStore();
     reportStore.update(

@@ -219,6 +219,15 @@ function graphRef(value: string): { kind: string; id: string } | null {
   return { kind, id: value.slice(split + 1) };
 }
 
+const OPEN_WORK_STATUSES = ['pending', 'in_progress', 'review', 'blocked'] as const;
+
+/** The ledger records "unconfirmed" when no observation points to an assignee. */
+function confirmedAssignee(value: unknown): boolean {
+  return (
+    typeof value === 'string' && value.trim() !== '' && value.trim().toLowerCase() !== 'unconfirmed'
+  );
+}
+
 function notAvailable(): { reason: 'not available in this build' } {
   return { reason: 'not available in this build' };
 }
@@ -622,14 +631,39 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
     };
   };
 
+  /** Board header counts, read from the work ledger and the published board. */
   const operatorSummary = async (): Promise<unknown> => {
-    const page = await callAction('work.list', { view: 'items', limit: 50 });
-    const tasks = shapeOperatorTasksFromItems(page).tasks;
+    const overview = (await callAction('work.list', { view: 'overview' })) as {
+      status: Record<string, number>;
+      due: { overdue: number };
+    };
+    let unassigned = 0;
+    let cursor: string | null = null;
+    do {
+      const page = (await callAction('work.list', {
+        view: 'items',
+        status: [...OPEN_WORK_STATUSES],
+        limit: 50,
+        ...(cursor === null ? {} : { cursor }),
+      })) as { tasks: Array<Record<string, unknown>>; nextCursor: string | null };
+      unassigned += page.tasks.filter((task) => !confirmedAssignee(task.assignee)).length;
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+    const slots = options.reportStore?.getAllSorted() ?? [];
+    const actionSlot = slots.find((slot) => slot.slotId === 'action_required');
     return {
-      report: { actionRequired: null },
-      tasks: { unconfirmed: tasks.filter((task) => task.auto_created && !task.confirmed).length },
-      triggers: { active: null, disabled: null, fired: null, succeeded: null, failed: null },
-      reason: 'trigger machinery and report slots are not available in this build',
+      report: {
+        actionRequired: actionSlot
+          ? (actionSlot.html.match(/class="report-card"/g) ?? []).length
+          : 0,
+        updatedAt: slots.length === 0 ? null : Math.max(...slots.map((slot) => slot.updatedAt)),
+      },
+      work: {
+        open: OPEN_WORK_STATUSES.reduce((sum, status) => sum + (overview.status[status] ?? 0), 0),
+        review: overview.status.review ?? 0,
+        overdue: overview.due.overdue,
+        unassigned,
+      },
     };
   };
 

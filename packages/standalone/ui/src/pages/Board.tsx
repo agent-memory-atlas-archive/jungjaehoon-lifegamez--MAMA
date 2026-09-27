@@ -243,17 +243,17 @@ export default function Board({ onOpenTask }: { onOpenTask: (taskId: number) => 
               value={summary?.report.actionRequired ?? '-'}
               tone={summary && summary.report.actionRequired > 0 ? 'warning' : 'default'}
             />
+            <StatCard label="Open work" value={summary?.work.open ?? '-'} />
             <StatCard
-              label="Unconfirmed tasks"
-              value={summary?.tasks.unconfirmed ?? '-'}
-              tone={summary && summary.tasks.unconfirmed > 0 ? 'warning' : 'default'}
+              label="Overdue"
+              value={summary?.work.overdue ?? '-'}
+              tone={summary && summary.work.overdue > 0 ? 'danger' : 'default'}
             />
             <StatCard
-              label="Failed trigger runs"
-              value={summary?.triggers.failed ?? '-'}
-              tone={summary && summary.triggers.failed > 0 ? 'danger' : 'default'}
+              label="Assignee unconfirmed"
+              value={summary?.work.unassigned ?? '-'}
+              tone={summary && summary.work.unassigned > 0 ? 'warning' : 'default'}
             />
-            <StatCard label="Active triggers" value={summary?.triggers.active ?? '-'} />
           </div>
 
           {loading ? (
