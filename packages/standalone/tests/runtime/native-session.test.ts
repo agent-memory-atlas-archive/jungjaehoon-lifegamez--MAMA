@@ -73,6 +73,8 @@ describe('one owner native session', () => {
           .map((tool) => tool.name)
           .sort()
       ).toEqual([
+        'deliver.discord.file',
+        'deliver.slack.file',
         'deliver.telegram.file',
         'graph.query',
         'manage.wiki.publish',

@@ -1151,3 +1151,27 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Result: GitHub Pages now builds the Markdown docs tree; README, site home, first-day tutorial, and current release notes describe the rebuild for readers.
 - Evidence: checked CLI commands, onboarding/config facts, selectable sources, exports, migrations 096–098, version sync, front matter YAML, and 192 local Markdown links across 34 public Markdown files; no broken paths or heading links.
 - Still open: the hosted Pages build and fresh-machine tutorial flow have not been run. Live report/wiki and file-delivery steps remain unobserved as noted above.
+
+### Restoration Phase B1 — 2026-09-27
+
+- Result: Added Discord/Slack owner allowlists, three single-messenger delivery routes, route startup validation, and Slack Socket Mode secret collection in `mama init`.
+- Evidence: runtime config and onboarding tests pass; disabled or unconfigured route tests fail startup explicitly.
+- Still open: credentials and live provider setup were not exercised; no home data was touched.
+
+### Restoration Phase B2 — 2026-09-27
+
+- Result: Added Discord and Slack owner adapters on the existing turn-intake contract, using the provider SDK calls from `origin/main:packages/standalone/src/gateways/discord.ts` and `slack.ts` without the removed router/session seams.
+- Evidence: owner allowlist, hashed rejection, duplicate intake, attachment failure visibility, and restart reply recovery tests pass for both adapters.
+- Still open: no live Discord or Slack owner conversation was run.
+
+### Restoration Phase B3 — 2026-09-27
+
+- Result: Generalized the V3 ledger without converting its format, shared one ledger instance across enabled messengers, recorded provider message refs and chunk progress, and added content-bound Discord/Slack file actions.
+- Evidence: corrupt-ledger failure, restart recovery, one-time file sends, Telegram receipts, and attachment-action tests pass; downloads use the atomic daemon-owned writer.
+- Still open: no live provider upload or recipient-side receipt was observed.
+
+### Restoration Phase B4 — 2026-09-27
+
+- Result: Replaced singleton delivery wiring with an enabled-messenger registry; direct replies follow their source messenger, while notifications, reports, and security alerts follow their configured route.
+- Evidence: daemon notification/report tests pass; root build, root typecheck, and changed-file lint pass. Standalone suite: 1,025 passed; 24 listener `EPERM` failures.
+- Still open: live scheduled reports, notifications, and security-alert routing were not exercised against providers.

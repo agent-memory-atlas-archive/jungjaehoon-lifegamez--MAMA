@@ -24,6 +24,7 @@ let root: string;
 const fixtureSecrets = {
   MAMA_TELEGRAM_TOKEN: 'fixture-telegram',
   MAMA_SLACK_TOKEN: 'fixture-slack',
+  MAMA_SLACK_APP_TOKEN: 'fixture-slack-app',
   MAMA_CHATWORK_TOKEN: 'fixture-chatwork',
   MAMA_TRELLO_KEY: 'fixture-key',
   MAMA_TRELLO_TOKEN: 'fixture-trello',
@@ -53,7 +54,7 @@ function prompt(answers: string[], hidden: string[], tty = [true, true]) {
 }
 
 function minimal(backend = 'codex', launch = 'n') {
-  return [backend, 'fixture-model', '100', '101', '', 'n', launch];
+  return [backend, 'fixture-model', '100', '101', '', 'n', 'n', 'n', launch];
 }
 
 function options(adapter: PromptAdapter) {
@@ -139,6 +140,44 @@ describe('owner-only onboarding', () => {
     }
   );
 
+  it('sets up a Discord owner gateway in init without enabling a source connector', async () => {
+    const p = prompt(
+      ['codex', 'fixture-model', '100', '101', '', 'y', 'channel_test', 'user_test', 'n', 'n', 'n'],
+      [fixtureSecrets.MAMA_TELEGRAM_TOKEN, 'fixture-discord-owner']
+    );
+    await runInit(options(p.adapter));
+    const config = loadConfig({ home });
+    expect(config.discord).toMatchObject({
+      enabled: true,
+      owner_channel_id: 'channel_test',
+      allowed_channels: ['channel_test'],
+      owner_user_ids: ['user_test'],
+    });
+    expect(readFileSync(join(root, 'auth.env'), 'utf8')).toContain(
+      "MAMA_DISCORD_TOKEN='fixture-discord-owner'"
+    );
+    expect(readFileSync(join(root, 'config.yaml'), 'utf8')).not.toContain('fixture-discord-owner');
+  });
+
+  it('sets up Slack bot and Socket Mode credentials for an owner gateway', async () => {
+    const p = prompt(
+      ['codex', 'fixture-model', '100', '101', '', 'n', 'y', 'channel_test', 'user_test', 'n', 'n'],
+      [fixtureSecrets.MAMA_TELEGRAM_TOKEN, 'fixture-slack-owner', 'fixture-slack-app-owner']
+    );
+    await runInit(options(p.adapter));
+    const config = loadConfig({ home });
+    expect(config.slack).toMatchObject({
+      enabled: true,
+      owner_channel_id: 'channel_test',
+      allowed_channels: ['channel_test'],
+      owner_user_ids: ['user_test'],
+    });
+    const auth = readFileSync(join(root, 'auth.env'), 'utf8');
+    expect(auth).toContain("MAMA_SLACK_TOKEN='fixture-slack-owner'");
+    expect(auth).toContain("MAMA_SLACK_APP_TOKEN='fixture-slack-app-owner'");
+    expect(readFileSync(join(root, 'config.yaml'), 'utf8')).not.toContain('fixture-slack-owner');
+  });
+
   it('wires every selected connector, tunnel environment and opt-in launchd without leaking credentials', async () => {
     const p = prompt(
       [
@@ -154,6 +193,8 @@ describe('owner-only onboarding', () => {
         'calendar',
         'channel-discord',
         'chat-telegram',
+        'n',
+        'n',
         'y',
         'https://access.example.test',
         'fixture-audience',
@@ -250,6 +291,8 @@ describe('owner-only onboarding', () => {
         'project-fixture',
         'Fixture Project',
         'chat-fixture-1',
+        'n',
+        'n',
         'n',
         'n',
       ],

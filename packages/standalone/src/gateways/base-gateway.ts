@@ -6,7 +6,7 @@ import type {
   MessageSource,
 } from './types.js';
 import type { SessionDirectory, TurnIntake } from './turn-contract.js';
-import type { TelegramFileDeliveryResult } from '../api/file-delivery.js';
+import type { OwnerFileDeliveryResult } from '../api/file-delivery.js';
 
 export interface BaseGatewayOptions {
   intake: TurnIntake;
@@ -34,7 +34,7 @@ export abstract class BaseGateway implements Gateway {
     path: string,
     caption: string | undefined,
     operationId: string
-  ): Promise<TelegramFileDeliveryResult>;
+  ): Promise<OwnerFileDeliveryResult>;
 
   protected get mentionPattern(): RegExp | null {
     return null;

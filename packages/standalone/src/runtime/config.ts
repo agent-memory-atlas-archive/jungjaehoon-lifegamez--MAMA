@@ -28,6 +28,19 @@ export interface W1TelegramConfig {
   polling: boolean;
 }
 
+export interface W1MessengerConfig {
+  enabled: boolean;
+  owner_channel_id?: string;
+  allowed_channels: string[];
+  owner_user_ids: string[];
+}
+export type MessengerName = 'telegram' | 'discord' | 'slack';
+export interface W1DeliveryConfig {
+  reports: MessengerName;
+  notifications: MessengerName;
+  security_alerts: MessengerName;
+}
+
 export interface W1WikiConfig {
   enabled: boolean;
   vaultPath?: string;
@@ -51,6 +64,9 @@ export interface W1Config {
   database: { path: string };
   logging: { level: 'debug' | 'info' | 'warn' | 'error'; file: string };
   telegram: W1TelegramConfig;
+  discord?: W1MessengerConfig;
+  slack?: W1MessengerConfig;
+  delivery?: W1DeliveryConfig;
   jev: W1JevConfig;
   reports: W1ReportsConfig;
   wiki?: W1WikiConfig;
@@ -83,6 +99,9 @@ const CONFIG_KEYS = [
   'database',
   'logging',
   'telegram',
+  'discord',
+  'slack',
+  'delivery',
   'jev',
   'wiki',
   'reports',
@@ -265,6 +284,58 @@ function deriveTelegramOwnerIds(
   return onlyOwnerId === undefined ? [] : positiveAllowedChatIds.length === 1 ? [onlyOwnerId] : [];
 }
 
+function parseMessenger(
+  value: unknown,
+  name: 'discord' | 'slack',
+  state: ParseState
+): W1MessengerConfig {
+  const raw = value === undefined ? {} : object(value, name);
+  collectIgnoredKeys(
+    raw,
+    ['enabled', 'owner_channel_id', 'allowed_channels', 'owner_user_ids'],
+    name,
+    state
+  );
+  if (typeof (raw.enabled ?? false) !== 'boolean')
+    throw new ConfigError(`${name}.enabled must be boolean`);
+  const enabled = (raw.enabled ?? false) as boolean;
+  const allowedChannels = stringList(raw.allowed_channels, `${name}.allowed_channels`);
+  const ownerChannelId = optionalText(raw.owner_channel_id, `${name}.owner_channel_id`);
+  const ownerUserIds = stringList(raw.owner_user_ids, `${name}.owner_user_ids`);
+  if (enabled && ownerChannelId === undefined)
+    throw new ConfigError(`${name}.owner_channel_id is required when ${name}.enabled is true`);
+  if (enabled && allowedChannels.length === 0)
+    throw new ConfigError(`${name}.allowed_channels is required when ${name}.enabled is true`);
+  if (ownerChannelId !== undefined && !allowedChannels.includes(ownerChannelId)) {
+    throw new ConfigError(`${name}.owner_channel_id must be listed in ${name}.allowed_channels`);
+  }
+  if (enabled && ownerUserIds.length === 0)
+    throw new ConfigError(`${name}.owner_user_ids is required when ${name}.enabled is true`);
+  return {
+    enabled,
+    ...(ownerChannelId === undefined ? {} : { owner_channel_id: ownerChannelId }),
+    allowed_channels: allowedChannels,
+    owner_user_ids: Array.from(new Set(ownerUserIds.map((id) => id.trim()))),
+  };
+}
+
+function parseDelivery(value: unknown, state: ParseState): W1DeliveryConfig {
+  const raw = value === undefined ? {} : object(value, 'delivery');
+  collectIgnoredKeys(raw, ['reports', 'notifications', 'security_alerts'], 'delivery', state);
+  const route = (key: keyof W1DeliveryConfig): MessengerName => {
+    const selected = raw[key] ?? 'telegram';
+    if (selected !== 'telegram' && selected !== 'discord' && selected !== 'slack') {
+      throw new ConfigError(`delivery.${key} must be telegram, discord, or slack`);
+    }
+    return selected;
+  };
+  return {
+    reports: route('reports'),
+    notifications: route('notifications'),
+    security_alerts: route('security_alerts'),
+  };
+}
+
 function parseConfigValue(
   value: unknown,
   options: ParseConfigOptions = {}
@@ -357,6 +428,9 @@ function parseConfigValue(
         // only an explicit `false` hands inbound polling to another instance.
         polling: (telegramRaw.polling ?? true) as boolean,
       },
+      discord: parseMessenger(raw.discord, 'discord', state),
+      slack: parseMessenger(raw.slack, 'slack', state),
+      delivery: parseDelivery(raw.delivery, state),
       jev,
       reports: parseReports(raw.reports, state),
       ...(wiki === undefined ? {} : { wiki }),

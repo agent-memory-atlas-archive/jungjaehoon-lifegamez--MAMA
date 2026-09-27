@@ -51,6 +51,6 @@ export function buildScheduledReportPrompt(payload: JsonValue | undefined, now: 
   return [
     ...instructions,
     'Owner-facing text carries no commitment, observation, judgment or channel ids; use readable work titles and sentences.',
-    'Format the final output with the standing Telegram formatting guide (bold titles, links to originals, quotes). Board div/span/CSS belongs only in report.publish. No code-block wrapper, working notes or [notify]/[ack] tags.',
+    'Format the final output for the selected owner messenger. Board div/span/CSS belongs only in report.publish. No code-block wrapper, working notes or [notify]/[ack] tags.',
   ].join('\n');
 }

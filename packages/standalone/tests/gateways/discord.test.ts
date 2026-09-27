@@ -1,0 +1,196 @@
+import { EventEmitter } from 'node:events';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import { Events } from 'discord.js';
+
+const mocks = vi.hoisted(() => ({ clients: [] as unknown[] }));
+vi.mock('discord.js', async (load) => {
+  const actual = await load<typeof import('discord.js')>();
+  return {
+    ...actual,
+    Client: class MockClient extends EventEmitter {
+      channels = { fetch: vi.fn() };
+      login = vi.fn(async () => undefined);
+      destroy = vi.fn();
+      constructor() {
+        super();
+        mocks.clients.push(this);
+      }
+    },
+  };
+});
+import { DiscordGateway } from '../../src/gateways/discord.js';
+import { OwnerMessageLedger } from '../../src/gateways/telegram-message-ledger.js';
+
+type MockClient = EventEmitter & {
+  channels: { fetch: ReturnType<typeof vi.fn> };
+  login: ReturnType<typeof vi.fn>;
+  destroy: ReturnType<typeof vi.fn>;
+};
+interface TestAttachment {
+  id: string;
+  name: string;
+  url: string;
+  contentType: string;
+}
+
+let root: string;
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), 'discord-owner-'));
+  mocks.clients.length = 0;
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+  rmSync(root, { recursive: true, force: true });
+});
+
+function ownerMessage(
+  id: string,
+  user: string,
+  channel = 'channel_test',
+  attachments: TestAttachment[] = []
+) {
+  return {
+    id,
+    channelId: channel,
+    createdTimestamp: 1_700_000_000_000,
+    content: 'owner input',
+    author: { id: user, bot: false },
+    attachments: { size: attachments.length, values: () => attachments },
+  };
+}
+
+describe('Discord owner gateway', () => {
+  it('drops non-owners with hashed ids and accepts a duplicate owner event once', async () => {
+    const accepted: unknown[] = [];
+    const logs: string[] = [];
+    const gateway = new DiscordGateway({
+      token: 'fixture-token',
+      intake: {
+        acceptOwnerMessage: (input) => {
+          accepted.push(input);
+          return { state: 'accepted' } as never;
+        },
+        isPending: () => true,
+      },
+      config: {
+        enabled: true,
+        ownerChannelId: 'channel_test',
+        allowedChannels: ['channel_test'],
+        ownerUserIds: ['user_owner'],
+      },
+      messageLedgerPath: join(root, 'owner-ledger.json'),
+      downloadsDir: join(root, 'downloads'),
+      log: (line) => logs.push(line),
+    });
+    await gateway.start();
+    const client = mocks.clients[0] as MockClient;
+    client.emit(Events.MessageCreate, ownerMessage('id_rejected', 'user_stranger'));
+    client.emit(Events.MessageCreate, ownerMessage('id_accepted', 'user_owner'));
+    client.emit(Events.MessageCreate, ownerMessage('id_accepted', 'user_owner'));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(accepted).toHaveLength(1);
+    expect(accepted[0]).toMatchObject({
+      id: 'discord:channel_test:id_accepted',
+      channelKey: 'channel_test',
+    });
+    expect(logs.join('\n')).toContain('channel_hash=');
+    expect(logs.join('\n')).not.toContain('channel_test');
+    expect(logs.join('\n')).not.toContain('user_stranger');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('download unavailable');
+      })
+    );
+    const failedFile = ownerMessage('id_file', 'user_owner', 'channel_test', [
+      {
+        id: 'file_test',
+        name: 'result.pdf',
+        url: 'https://files.example.test/result.pdf',
+        contentType: 'application/pdf',
+      },
+    ]);
+    client.emit(Events.MessageCreate, failedFile);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(accepted[1]).toMatchObject({
+      payload: { attachments: [{ name: 'result.pdf', error: 'download unavailable' }] },
+    });
+    await gateway.stop();
+  });
+
+  it('uploads a file once for an operation id and returns the durable receipt on repeat', async () => {
+    const filesRoot = join(root, 'workspace', 'files');
+    mkdirSync(filesRoot, { recursive: true });
+    const filePath = join(filesRoot, 'result.pdf');
+    writeFileSync(filePath, 'result');
+    const gateway = new DiscordGateway({
+      token: 'fixture-token',
+      intake: { acceptOwnerMessage: () => ({ state: 'accepted' }) as never },
+      config: {
+        enabled: true,
+        ownerChannelId: 'channel_test',
+        allowedChannels: ['channel_test'],
+        ownerUserIds: ['user_owner'],
+      },
+      messageLedgerPath: join(root, 'ledger.json'),
+      filesRoot,
+    });
+    await gateway.start();
+    const send = vi.fn(async () => ({ id: 'message_test' }));
+    (mocks.clients[0] as MockClient).channels.fetch.mockResolvedValue({
+      isSendable: () => true,
+      isTextBased: () => true,
+      send,
+    });
+    expect(await gateway.sendFile(filePath, undefined, 'operation_test')).toMatchObject({
+      messageId: 'message_test',
+      size: 6,
+    });
+    expect(await gateway.sendFile(filePath, undefined, 'operation_test')).toMatchObject({
+      idempotent: true,
+      size: 6,
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+    await gateway.stop();
+  });
+
+  it('resumes a known-unsent reply after restart and keeps its receipt', async () => {
+    const ledgerPath = join(root, 'ledger.json');
+    const ledger = new OwnerMessageLedger(ledgerPath);
+    ledger.claim('discord:channel_test:message_test', {
+      deliveryTarget: 'discord:channel_test',
+      payloadIdentity: 'a'.repeat(64),
+    });
+    ledger.markReady('discord:channel_test:message_test', 'recovered response');
+    const gateway = new DiscordGateway({
+      token: 'fixture-token',
+      intake: { acceptOwnerMessage: () => ({ state: 'accepted' }) as never },
+      config: {
+        enabled: true,
+        ownerChannelId: 'channel_test',
+        allowedChannels: ['channel_test'],
+        ownerUserIds: ['user_owner'],
+      },
+      messageLedgerPath: ledgerPath,
+    });
+    const send = vi.fn(async () => ({ id: 'message_reply' }));
+    (mocks.clients[0] as MockClient).channels.fetch.mockResolvedValue({
+      isSendable: () => true,
+      isTextBased: () => true,
+      send,
+    });
+    await gateway.start();
+    await gateway.recoverPendingResponses();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(
+      new OwnerMessageLedger(ledgerPath).get('discord:channel_test:message_test')
+    ).toMatchObject({
+      state: 'delivered',
+      messageIds: ['message_reply'],
+    });
+    await gateway.stop();
+  });
+});

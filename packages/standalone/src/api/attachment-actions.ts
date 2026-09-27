@@ -15,14 +15,16 @@ import {
 import { extractChatworkFileIds } from '../connectors/chatwork/index.js';
 import { extractSlackFileIds } from '../connectors/slack/index.js';
 import type { StoredSourceReader } from './stored-source-reader.js';
-import { validateWorkspaceFile, type TelegramFileSender } from './file-delivery.js';
+import { validateWorkspaceFile, type OwnerFileSender } from './file-delivery.js';
 
 export interface AttachmentActionPorts {
   stored?: StoredSourceReader | null;
   connectors?: () => ConnectorRegistry | null;
   workspaceDir?: string;
   downloadsDir?: string;
-  telegram?: () => TelegramFileSender | null;
+  telegram?: () => OwnerFileSender | null;
+  discord?: () => OwnerFileSender | null;
+  slack?: () => OwnerFileSender | null;
 }
 
 const attachmentRefSchema: ActionSchemaObject = {
@@ -56,7 +58,7 @@ const attachmentDownloadSchema: ActionSchemaObject = {
   },
 };
 
-const telegramFileSchema: ActionSchemaObject = {
+const ownerFileSchema: ActionSchemaObject = {
   type: 'object',
   required: ['path'],
   additionalProperties: false,
@@ -69,7 +71,7 @@ const telegramFileSchema: ActionSchemaObject = {
     caption: {
       type: 'string',
       maxLength: 1_024,
-      description: 'Optional Telegram file caption.',
+      description: 'Optional file caption.',
     },
   },
 };
@@ -305,30 +307,29 @@ export function createAttachmentActionRegistrations(
         };
       },
     },
-    {
+    ...(['telegram', 'discord', 'slack'] as const).map((messenger) => ({
       contract: {
-        name: 'deliver.telegram.file',
-        summary:
-          'Send one regular file under the owner workspace files directory to telegram.owner_chat_id; images are photos and other files are documents.',
-        inputSchema: telegramFileSchema,
+        name: `deliver.${messenger}.file`,
+        summary: `Send one regular file under the owner workspace files directory through ${messenger}; images and documents use the messenger upload API.`,
+        inputSchema: ownerFileSchema,
         examples: [
           { title: 'Send a workspace result', input: { path: '/workspace/files/result.xlsx' } },
         ],
       },
-      exec: async (input, context) => {
+      exec: async (input: unknown, context: ActionContext) => {
         const values = input as Record<string, unknown>;
         const path = values.path;
         if (typeof path !== 'string' || path.trim() === '') throw new Error('path is required');
         if (typeof context.operationId !== 'string' || context.operationId.trim() === '') {
-          throw new Error('deliver.telegram.file requires an operation id');
+          throw new Error(`deliver.${messenger}.file requires an operation id`);
         }
-        const sender = ports.telegram?.();
-        if (!sender) throw new Error('Telegram file delivery port is not configured');
+        const sender = ports[messenger]?.();
+        if (!sender) throw new Error(`${messenger} file delivery port is not configured`);
         const validated = validateWorkspaceFile(workspaceFilesRoot(ports), path);
         const caption = values.caption === undefined ? undefined : String(values.caption);
         const result = await sender.sendFile(validated.path, caption, context.operationId);
         return { path: validated.path, ...result };
       },
-    },
+    })),
   ];
 }

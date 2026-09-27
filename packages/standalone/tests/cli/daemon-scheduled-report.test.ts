@@ -281,17 +281,15 @@ describe('daemon scheduled reports', () => {
     expect(ctx.order.indexOf('owner:stop')).toBeLessThan(ctx.order.indexOf('telegram:stop'));
   });
 
-  it.each([
-    ['replay', true],
-    ['live', false],
-  ] as const)(
-    'does not create a scheduler in %s with Telegram enabled=%s',
-    async (mode, enabled) => {
-      const ctx = await boot(mode, enabled);
-      expect(ctx.scheduler).toBeUndefined();
-      expect(ctx.order).not.toContain('scheduler:create');
-      expect(ctx.rows()).toHaveLength(0);
-      expect(telegram.sendMessage).not.toHaveBeenCalled();
-    }
-  );
+  it('does not create a scheduler in replay mode', async () => {
+    const ctx = await boot('replay', true);
+    expect(ctx.scheduler).toBeUndefined();
+    expect(ctx.order).not.toContain('scheduler:create');
+    expect(ctx.rows()).toHaveLength(0);
+    expect(telegram.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('rejects a disabled default delivery route during live startup', async () => {
+    await expect(boot('live', false)).rejects.toThrow(/delivery.reports targets telegram/);
+  });
 });

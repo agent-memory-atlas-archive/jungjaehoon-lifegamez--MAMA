@@ -45,10 +45,9 @@ hourly in the inclusive window, select priority work, include gathered non-urgen
 changes, and update `action_required`. A full-report hour takes precedence over a
 reminder. Scheduled report text is currently requested in Korean.
 
-The scheduler checks every minute. It records an hour as sent only after Telegram
-delivery succeeds; pending reports prevent another scheduled report from starting.
-Reports currently reach the owner through Telegram. Discord and Slack are selectable messengers;
-see the [Telegram guide](telegram.md) for today's owner setup.
+The scheduler checks every minute. It records an hour as sent only after delivery
+through `delivery.reports` succeeds; pending reports prevent another scheduled report
+from starting. See the [messengers guide](messengers.md) for route setup.
 
 ## Check a discrepancy
 

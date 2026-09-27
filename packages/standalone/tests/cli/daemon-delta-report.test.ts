@@ -296,8 +296,7 @@ describe('live delta reports', () => {
       expect(telegram.sendMessage).toHaveBeenCalledOnce();
       expect(telegram.sendMessage).toHaveBeenCalledWith(7, sent);
       expect(
-        JSON.parse(readFileSync(join(root, 'runtime', 'telegram-message-ledger.json'), 'utf8'))
-          .entries
+        JSON.parse(readFileSync(join(root, 'runtime', 'owner-message-ledger.json'), 'utf8')).entries
       ).toEqual([
         expect.objectContaining({ state: 'delivered', idempotencyKey: id, messageIds: [101] }),
       ]);

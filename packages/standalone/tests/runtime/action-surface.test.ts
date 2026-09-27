@@ -30,6 +30,8 @@ describe('W1 action surface', () => {
       scopes: [{ kind: 'project', id: 'workspace-test' }],
     });
     const expected = [
+      'deliver.discord.file',
+      'deliver.slack.file',
       'deliver.telegram.file',
       'graph.query',
       'manage.wiki.publish',

@@ -1,4 +1,3 @@
-import { TELEGRAM_FORMAT_GUIDE } from '../gateways/telegram-format.js';
 import type { StoredSourceFamily } from '../connectors/framework/stored-index-read.js';
 
 /**
@@ -11,7 +10,7 @@ export type OwnerRuntimeBackend = 'claude' | 'codex';
 
 export const LIVE_DELTA_ROUTING_INSTRUCTION =
   'For a live source delta, recognise what changed and record moved work before answering. ' +
-  'Start the final answer with [notify] <Telegram text> when the owner should know now, or [ack] to acknowledge silently. ' +
+  'Start the final answer with [notify] <message text> when the owner should know now, or [ack] to acknowledge silently. ' +
   "Use the owner's saved preferences to judge what to notify; the host does not judge urgency. " +
   'Notifications carry no commitment, observation, judgment or channel ids.';
 
@@ -80,8 +79,9 @@ function ownerStandingPrompt(
     `- For a question about an item, person, or task, read the work ledger first with ${action('memory.search')} and ${action('work.list')} using view=items; follow its read-version cursor page by page, then use view=detail for the named commitment when history, evidence basis or long text is needed. Answers, reports and notifications a person reads carry no commitment, observation, judgment or channel ids; answer in sentences; the reads are the evidence and stay in the tool traces. Read preserved source content only for what the ledger does not establish. A memory found by ${action('memory.search')} is traced to its cited source messages with ${action('memory.read:provenance')}.`,
     `- Use progressive source access: ${action('source.search')} is bounded navigation, and ${action('source.read')} is required for the cited original content. Do not treat a preview or index row as the account of what happened.`,
     readableSourcesLine(readableSources),
-    `- A message's attachments are listed with ${action('source.attachment.list')} and fetched with ${action('source.attachment.download')} into the daemon downloads directory (read-only for the agent); copy a download into workspace files before modifying, unzipping, or sending it with ${action('deliver.telegram.file')}.`,
-    `- Every file the owner sends on Telegram arrives with a local path under the daemon downloads/telegram directory (read-only for the agent); ${backend === 'claude' ? 'read that path with the file reader for its type' : 'read that path with the shell'}. An attachment error means the download failed; tell the owner the error.`,
+    `- A message's attachments are listed with ${action('source.attachment.list')} and fetched with ${action('source.attachment.download')} into the daemon downloads directory (read-only for the agent); copy a download into workspace files before modifying, unzipping, or sending it with the matching deliver.<messenger>.file action.`,
+    `- Files the owner sends arrive with a local path under the daemon downloads directory (read-only for the agent); ${backend === 'claude' ? 'read that path with the file reader for its type' : 'read that path with the shell'}. An attachment error means the download failed; tell the owner the error.`,
+    '- Format the final response for the current messenger; its adapter handles message formatting and splitting.',
     backend === 'claude'
       ? '- Available file readers: images and PDFs with the Read tool; spreadsheets with Bash/python3 (openpyxl), archives with Bash/unzip.'
       : '- Available file readers: images by viewing them, PDFs and spreadsheets with python3 (PyMuPDF/pdfplumber/openpyxl), archives with unzip.',
@@ -109,7 +109,6 @@ function ownerStandingPrompt(
     `- Do not claim a correction, save, work change, or delivery is done unless the action returned success. Report a refusal or failure as such.`,
     `- ${ownerAdministrationRule()}`,
     `- Use ${action('memory.search')}, ${action('work.list')}, and ${action('graph.query')} to gather durable context before deciding. Keep observations distinct from entrusted work; acknowledgements and chatter need no record, but a moved work item must be recorded now.`,
-    TELEGRAM_FORMAT_GUIDE,
     ownerSubagentInstructions(backend),
   ].join('\n');
 }

@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { loadConfig, parseConfig, type W1Config } from '../../src/runtime/config.js';
+import { validateDeliveryRoutes } from '../../src/cli/commands/daemon.js';
 
 let testHome: string;
 beforeEach(() => {
@@ -38,6 +39,9 @@ function validConfig(): W1Config {
       owner_user_ids: ['owner-test'],
       polling: false,
     },
+    discord: { enabled: false, allowed_channels: [], owner_user_ids: [] },
+    slack: { enabled: false, allowed_channels: [], owner_user_ids: [] },
+    delivery: { reports: 'telegram', notifications: 'telegram', security_alerts: 'telegram' },
     jev: {
       keyFile: '/tmp/jev-key',
       vocabFile: '/tmp/vocab.json',
@@ -164,6 +168,53 @@ describe('W1 runtime configuration', () => {
         telegram: { ...base.telegram, enabled: true, owner_chat_id: 'chat-test' },
       }).telegram.owner_chat_id
     ).toBe('chat-test');
+  });
+
+  it('validates Discord and Slack owner destinations and delivery route names', () => {
+    const base = validConfig();
+    expect(() => parseConfig({ ...base, discord: { enabled: true } })).toThrow(
+      /discord.owner_channel_id/
+    );
+    expect(() =>
+      parseConfig({
+        ...base,
+        slack: { enabled: true, owner_channel_id: 'c', allowed_channels: ['c'] },
+      })
+    ).toThrow(/slack.owner_user_ids/);
+    expect(
+      parseConfig({
+        ...base,
+        discord: {
+          enabled: true,
+          owner_channel_id: 'c',
+          allowed_channels: ['c'],
+          owner_user_ids: ['u'],
+        },
+        delivery: { reports: 'discord', notifications: 'telegram', security_alerts: 'slack' },
+      }).delivery
+    ).toEqual({ reports: 'discord', notifications: 'telegram', security_alerts: 'slack' });
+    expect(() =>
+      parseConfig({
+        ...base,
+        delivery: { reports: 'email', notifications: 'telegram', security_alerts: 'telegram' },
+      })
+    ).toThrow(/delivery.reports/);
+  });
+
+  it('fails startup when a delivery route names a disabled or unconfigured messenger', () => {
+    const base = validConfig();
+    expect(() => validateDeliveryRoutes(base)).toThrow(/delivery.reports targets telegram/);
+    const telegram = {
+      ...base,
+      telegram: { ...base.telegram, enabled: true, owner_chat_id: 'chat-test' },
+    };
+    expect(() => validateDeliveryRoutes(telegram)).not.toThrow();
+    expect(() =>
+      validateDeliveryRoutes({
+        ...telegram,
+        delivery: { ...telegram.delivery!, notifications: 'discord' },
+      })
+    ).toThrow(/delivery.notifications targets discord/);
   });
 
   it('loads YAML from an explicit path and fails on a missing required section', () => {

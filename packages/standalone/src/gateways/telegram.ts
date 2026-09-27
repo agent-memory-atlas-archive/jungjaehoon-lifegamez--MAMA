@@ -19,12 +19,14 @@ import {
 } from './telegram-format.js';
 import {
   TelegramMessageLedger,
+  type OwnerMessageLedger,
   type TelegramMessageLedgerEntry,
 } from './telegram-message-ledger.js';
 import { TelegramResponsePresenter } from './telegram-response-presenter.js';
 import {
   openWorkspaceFile,
   readWorkspaceFile,
+  workspaceFileIdentity,
   type TelegramFileDeliveryResult,
 } from '../api/file-delivery.js';
 import { isDefinitiveTelegramRejection } from './telegram-errors.js';
@@ -55,6 +57,7 @@ export interface TelegramGatewayOptions {
   intake: TurnIntake;
   config?: Partial<TelegramGatewayConfig>;
   messageLedgerPath?: string;
+  messageLedger?: OwnerMessageLedger;
   filesRoot?: string;
   downloadsDir?: string;
   log?: (line: string) => void;
@@ -181,12 +184,11 @@ export class TelegramGateway extends BaseGateway {
       });
     this.log = options.log ?? ((line) => console.log(line));
     const ledgerPath = options.messageLedgerPath ?? process.env.MAMA_TELEGRAM_MESSAGE_LEDGER_PATH;
-    if (!ledgerPath?.trim()) {
+    if (!options.messageLedger && !ledgerPath?.trim()) {
       throw new Error('Telegram message ledger path is required');
     }
-    this.messageLedger = new TelegramMessageLedger(ledgerPath, {
-      log: this.log,
-    });
+    this.messageLedger =
+      options.messageLedger ?? new TelegramMessageLedger(ledgerPath!, { log: this.log });
   }
 
   async start(): Promise<void> {
@@ -251,6 +253,9 @@ export class TelegramGateway extends BaseGateway {
     this.requireAllowedChat(chatId);
     const existing = this.messageLedger.get(sourceRef);
     if (!existing) throw new Error(`Telegram response has no accepted message ${sourceRef}`);
+    if (existing.deliveryTarget && existing.deliveryTarget !== `telegram:${chatId}`) {
+      throw new Error('Telegram response destination conflicts with its accepted message');
+    }
     if (existing.state === 'delivered') return;
     if (existing.state === 'ready' && existing.response !== response) {
       throw new Error('Telegram response conflicts with its durable ledger entry');
@@ -289,11 +294,9 @@ export class TelegramGateway extends BaseGateway {
 
     const validated = openWorkspaceFile(this.filesRoot, path);
     try {
-      const payloadIdentity = createHash('sha256')
-        .update(`${validated.path}\0${validated.size}\0${caption ?? ''}`)
-        .digest('hex');
+      const payloadIdentity = workspaceFileIdentity(validated.fd, caption);
       const claim = this.messageLedger.claim(`file:${operationId}`, {
-        deliveryTarget: ownerChatId,
+        deliveryTarget: `telegram:${ownerChatId}`,
         payloadIdentity,
       });
       if (!claim.claimed) {
@@ -400,7 +403,13 @@ export class TelegramGateway extends BaseGateway {
       selected.text,
       selected.entities
     );
-    const ledgerEntry = this.messageLedger.claim(ref).entry;
+    const inputIdentity = createHash('sha256')
+      .update(`${selected.text}\0${files.map(({ file }) => file.file_unique_id).join(',')}`)
+      .digest('hex');
+    const ledgerEntry = this.messageLedger.claim(ref, {
+      deliveryTarget: `telegram:${chatId}`,
+      payloadIdentity: inputIdentity,
+    }).entry;
     const presenter = this.createResponsePresenter(ref, Number(message.chat.id));
     this.activePresenters.set(ref, presenter);
     try {

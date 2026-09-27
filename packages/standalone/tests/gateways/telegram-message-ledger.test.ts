@@ -1,11 +1,23 @@
 import { describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { TelegramMessageLedger } from '../../src/gateways/telegram-message-ledger.js';
 
 describe('TelegramMessageLedger', () => {
+  it('quarantines a corrupt shared ledger and fails startup instead of creating an empty one', () => {
+    const root = mkdtempSync(join(tmpdir(), 'owner-ledger-corrupt-'));
+    try {
+      const path = join(root, 'ledger.json');
+      writeFileSync(path, '{broken');
+      expect(() => new TelegramMessageLedger(path)).toThrow(/ledger is corrupt/);
+      expect(readdirSync(root).some((name) => name.includes('.corrupt-'))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('keeps the delivered receipt when a regenerated payload has the same delivery key', () => {
     const root = mkdtempSync(join(tmpdir(), 'ledger-regenerated-'));
     try {

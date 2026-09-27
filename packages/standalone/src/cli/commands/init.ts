@@ -92,6 +92,8 @@ async function collectConnectors(
   for (const name of names) {
     for (const tokenName of connectorSecrets[name])
       secrets[tokenName] = nonblankLine(await prompt.secret(tokenName));
+    if (name === 'slack')
+      secrets.MAMA_SLACK_APP_TOKEN = nonblankLine(await prompt.secret('MAMA_SLACK_APP_TOKEN'));
     if (name === 'calendar')
       prompt.write(
         'Calendar currently reads the primary calendar only; its source channel id is calendar.'
@@ -245,6 +247,43 @@ export async function runInit(options: InitOptions = {}): Promise<void> {
     throw new CliInputError('Enter numeric Telegram chat and user ids.');
   }
   const connectors = await collectConnectors(prompt, secrets);
+  const discordEnabled = await yes(prompt, 'Enable Discord owner messages');
+  let discordConfig: Record<string, unknown> = {
+    enabled: false,
+    allowed_channels: [],
+    owner_user_ids: [],
+  };
+  if (discordEnabled) {
+    secrets.MAMA_DISCORD_TOKEN ??= nonblankLine(await prompt.secret('Discord bot token'));
+    const channel = await text(prompt, 'Discord owner channel id');
+    const user = await text(prompt, 'Discord owner user id');
+    discordConfig = {
+      enabled: true,
+      owner_channel_id: channel,
+      allowed_channels: [channel],
+      owner_user_ids: [user],
+    };
+  }
+  const slackEnabled = await yes(prompt, 'Enable Slack owner messages');
+  let slackConfig: Record<string, unknown> = {
+    enabled: false,
+    allowed_channels: [],
+    owner_user_ids: [],
+  };
+  if (slackEnabled) {
+    secrets.MAMA_SLACK_TOKEN ??= nonblankLine(await prompt.secret('Slack bot token'));
+    secrets.MAMA_SLACK_APP_TOKEN ??= nonblankLine(
+      await prompt.secret('Slack Socket Mode app token')
+    );
+    const channel = await text(prompt, 'Slack owner channel id');
+    const user = await text(prompt, 'Slack owner user id');
+    slackConfig = {
+      enabled: true,
+      owner_channel_id: channel,
+      allowed_channels: [channel],
+      owner_user_ids: [user],
+    };
+  }
   const viewer: Record<string, string> = {};
   if (await yes(prompt, 'Expose the viewer through a tunnel')) {
     const issuer = await text(prompt, 'Access issuer (HTTPS URL)');
@@ -303,6 +342,9 @@ export async function runInit(options: InitOptions = {}): Promise<void> {
         owner_user_ids: [userId],
         polling: true,
       },
+      discord: discordConfig,
+      slack: slackConfig,
+      delivery: { reports: 'telegram', notifications: 'telegram', security_alerts: 'telegram' },
       wiki: {
         enabled: true,
         vaultPath: join(root, 'workspace'),

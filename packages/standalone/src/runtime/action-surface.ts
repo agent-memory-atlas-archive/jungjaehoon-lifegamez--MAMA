@@ -52,6 +52,8 @@ const OWNER_ACTIONS = [
   'source.attachment.list',
   'source.attachment.download',
   'deliver.telegram.file',
+  'deliver.discord.file',
+  'deliver.slack.file',
 ] as const;
 
 export interface HostToolDefinition {

@@ -1,24 +1,38 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, read, realpathSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  read,
+  readSync,
+  realpathSync,
+} from 'node:fs';
+import { createHash } from 'node:crypto';
 import { basename, dirname, extname, join, resolve, sep } from 'node:path';
 
-export const TELEGRAM_MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+export const OWNER_FILE_MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+export const TELEGRAM_MAX_UPLOAD_BYTES = OWNER_FILE_MAX_UPLOAD_BYTES;
 export const TELEGRAM_MAX_PHOTO_BYTES = 10 * 1024 * 1024;
 export const TELEGRAM_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
 
-export interface TelegramFileDeliveryResult {
-  messageId?: number;
+export interface OwnerFileDeliveryResult {
+  messageId?: number | string;
   sentAs: 'photo' | 'document';
   size: number;
   idempotent?: boolean;
 }
 
-export interface TelegramFileSender {
+export interface OwnerFileSender {
   sendFile(
     path: string,
     caption: string | undefined,
     operationId: string
   ): Promise<TelegramFileDeliveryResult>;
 }
+
+export type TelegramFileDeliveryResult = OwnerFileDeliveryResult;
+export type TelegramFileSender = OwnerFileSender;
 
 export interface ValidatedWorkspaceFile {
   path: string;
@@ -63,8 +77,10 @@ export function openWorkspaceFile(
     const opened = fstatSync(fd);
     if (!opened.isFile()) throw new Error('path must be a regular file');
     const size = opened.size;
-    if (size > TELEGRAM_MAX_UPLOAD_BYTES) {
-      throw new Error(`file exceeds Telegram upload limit of ${TELEGRAM_MAX_UPLOAD_BYTES} bytes`);
+    if (size > OWNER_FILE_MAX_UPLOAD_BYTES) {
+      throw new Error(
+        `file exceeds owner messenger upload limit of ${OWNER_FILE_MAX_UPLOAD_BYTES} bytes`
+      );
     }
     return {
       fd,
@@ -94,4 +110,18 @@ export async function* readWorkspaceFile(fd: number): AsyncGenerator<Buffer> {
     if (bytesRead === 0) return;
     yield buffer.subarray(0, bytesRead);
   }
+}
+
+export function workspaceFileIdentity(fd: number, caption?: string): string {
+  const hash = createHash('sha256').update(`caption\0${caption ?? ''}\0`);
+  const fileSize = fstatSync(fd).size;
+  let position = 0;
+  while (position < fileSize) {
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    const size = readSync(fd, buffer, 0, Math.min(buffer.length, fileSize - position), position);
+    if (size === 0) throw new Error('Workspace file changed while calculating its identity');
+    position += size;
+    hash.update(buffer.subarray(0, size));
+  }
+  return hash.digest('hex');
 }

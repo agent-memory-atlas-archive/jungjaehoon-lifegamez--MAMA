@@ -602,7 +602,7 @@ describe('attachment actions', () => {
       deliver({ path: directory }, { access, operationId: 'op-directory' })
     ).rejects.toThrow(/regular file/);
     await expect(deliver({ path: oversized }, { access, operationId: 'op-large' })).rejects.toThrow(
-      /Telegram upload limit/
+      /owner messenger upload limit/
     );
     expect(sender.sendFile).not.toHaveBeenCalled();
   });

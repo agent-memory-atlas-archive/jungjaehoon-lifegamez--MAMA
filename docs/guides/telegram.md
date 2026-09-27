@@ -1,6 +1,9 @@
-# Talk to MAMA on Telegram
+# Telegram owner gateway
 
-Telegram is the owner conversation and report-delivery gateway. Set it up with
+For setup and shared Telegram, Discord, and Slack delivery rules, see the [messengers guide](messengers.md).
+
+Telegram is an owner conversation gateway. Its direct replies return to the Telegram chat;
+reports, notifications, and security alerts use the routes in `delivery`. Set it up with
 [`mama init`](../start/owner-setup.md), using a bot token entered in your terminal.
 The daemon reads `MAMA_TELEGRAM_TOKEN` from the environment loaded by
 `~/.mama/start.sh`. A `telegram.token` entry in YAML is rejected.

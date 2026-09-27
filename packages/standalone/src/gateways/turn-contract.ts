@@ -5,7 +5,7 @@ import type { MessageSource, NormalizedMessage } from './types.js';
 
 /** The narrow producer contract used by a gateway: accept, do not run a model. */
 export interface OwnerMessageInput {
-  /** The Telegram sourceMessageRef becomes the mailbox stimulus identity. */
+  /** Stable provider-qualified source message reference used as the mailbox stimulus identity. */
   id: string;
   channelKey: string;
   occurredAt: number;

@@ -7,6 +7,9 @@ import type { NativeTurnResult } from '@jungjaehoon/mama-core/runtime/native-tur
 import type { StimulusReceipt } from '@jungjaehoon/mama-core/runtime/runtime';
 import type { OwnerMessageInput, TurnIntake } from '../../gateways/turn-contract.js';
 import { TelegramGateway, type TelegramGatewayOptions } from '../../gateways/telegram.js';
+import { DiscordGateway, type DiscordGatewayOptions } from '../../gateways/discord.js';
+import { SlackGateway, type SlackGatewayOptions } from '../../gateways/slack.js';
+import { OwnerMessageLedger } from '../../gateways/telegram-message-ledger.js';
 import {
   sourceDeltaStimulusId,
   stimulusFailureReason,
@@ -23,7 +26,12 @@ import {
   type ConnectorRuntime,
   type ConnectorRuntimeOptions,
 } from '../../runtime/connectors.js';
-import { defaultConfigPath, loadConfig, type W1Config } from '../../runtime/config.js';
+import {
+  defaultConfigPath,
+  loadConfig,
+  type MessengerName,
+  type W1Config,
+} from '../../runtime/config.js';
 import { declareModelCache } from '../../runtime/model-cache.js';
 import { sessionCredentialPath } from '../../runtime/session-credential.js';
 import { ensureMamaMcpConfig, resolveActionServerPath } from '../runtime/action-mcp-config.js';
@@ -38,7 +46,7 @@ import {
 } from '../../api/viewer-server.js';
 import { resolvePackageVersion } from '../../package-version.js';
 import { readViewerMemoryStats } from '../../api/viewer-data.js';
-import type { TelegramFileDeliveryResult } from '../../api/file-delivery.js';
+import type { OwnerFileDeliveryResult } from '../../api/file-delivery.js';
 import { buildBoardPublishLines } from '../../operator/board-slot-instructions.js';
 import { createReportScheduler, type ReportScheduler } from '../../runtime/report-scheduler.js';
 
@@ -62,7 +70,7 @@ export interface DaemonGateway {
     path: string,
     caption: string | undefined,
     operationId: string
-  ): Promise<TelegramFileDeliveryResult>;
+  ): Promise<OwnerFileDeliveryResult>;
 }
 
 export interface DaemonPaths {
@@ -78,7 +86,7 @@ export interface DaemonPaths {
   connectorsRoot: string;
   trelloStatePath: string;
   kagemushaDbPath: string;
-  telegramLedgerPath: string;
+  ownerMessageLedgerPath: string;
 }
 
 export interface DaemonIsolationOptions {
@@ -92,6 +100,8 @@ export interface DaemonBootDependencies {
   createViewerServer?: (options: ViewerServerOptions) => ViewerServer;
   startConnectorRuntime?: (options: ConnectorRuntimeOptions) => Promise<ConnectorRuntime>;
   createTelegramGateway?: (options: TelegramGatewayOptions) => DaemonGateway;
+  createDiscordGateway?: (options: DiscordGatewayOptions) => DaemonGateway;
+  createSlackGateway?: (options: SlackGatewayOptions) => DaemonGateway;
   createReportScheduler?: typeof createReportScheduler;
   ensureIsolation?: (options: DaemonIsolationOptions) => void;
 }
@@ -121,6 +131,7 @@ export interface DaemonHandle {
   readonly viewer: ViewerServer | null;
   readonly connectors: ConnectorRuntime | null;
   readonly gateway: DaemonGateway | null;
+  readonly gateways?: ReadonlyMap<MessengerName, DaemonGateway>;
   stop(): Promise<void>;
 }
 
@@ -182,6 +193,47 @@ function pathsOverlap(left: string, right: string): boolean {
   return inside(left, right) || inside(right, left);
 }
 
+function sourceForRef(ref: string): MessengerName {
+  if (ref.startsWith('telegram:')) return 'telegram';
+  if (ref.startsWith('discord:')) return 'discord';
+  if (ref.startsWith('slack:')) return 'slack';
+  throw new Error('Owner message reference has no supported messenger prefix');
+}
+
+export function validateDeliveryRoutes(config: W1Config): void {
+  const active = {
+    telegram:
+      config.telegram.enabled &&
+      Boolean(
+        config.telegram.owner_chat_id &&
+        config.telegram.allowed_chats.includes(config.telegram.owner_chat_id)
+      ),
+    discord: Boolean(
+      config.discord?.enabled &&
+      config.discord.owner_channel_id &&
+      config.discord.allowed_channels.includes(config.discord.owner_channel_id)
+    ),
+    slack: Boolean(
+      config.slack?.enabled &&
+      config.slack.owner_channel_id &&
+      config.slack.allowed_channels.includes(config.slack.owner_channel_id)
+    ),
+  };
+  const routes = config.delivery ?? {
+    reports: 'telegram',
+    notifications: 'telegram',
+    security_alerts: 'telegram',
+  };
+  for (const [purpose, messenger] of Object.entries(routes) as Array<
+    [keyof typeof routes, MessengerName]
+  >) {
+    if (!active[messenger])
+      throw new Error(
+        `delivery.${purpose} targets ${messenger}, which is disabled or has no allowlisted owner channel`
+      );
+  }
+}
+
 function pathsFor(configPath: string, config: W1Config): DaemonPaths {
   const mamaRoot = dirname(configPath);
   const runtimeRoot = join(mamaRoot, 'runtime');
@@ -209,7 +261,7 @@ function pathsFor(configPath: string, config: W1Config): DaemonPaths {
     trelloStatePath: join(connectorsRoot, 'trello-state.json'),
     // Kagemusha's own database, read-only (archive connector: ~/.kagemusha/kagemusha.db).
     kagemushaDbPath: join(dirname(mamaRoot), '.kagemusha', 'kagemusha.db'),
-    telegramLedgerPath: join(runtimeRoot, 'telegram-message-ledger.json'),
+    ownerMessageLedgerPath: join(runtimeRoot, 'owner-message-ledger.json'),
   };
 }
 
@@ -274,6 +326,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
   let viewer: ViewerServer | null = null;
   let connectors: ConnectorRuntime | undefined;
   let gateway: DaemonGateway | null = null;
+  const gateways = new Map<MessengerName, DaemonGateway>();
   let reportScheduler: ReportScheduler | undefined;
   let stopped = false;
   let deliveryReady = options.mode === 'replay';
@@ -290,7 +343,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
     if (viewer) await stopOne(logger, 'viewer', () => viewer!.stop(), errors);
     if (owner) await stopOne(logger, 'owner_runtime', () => owner!.stop(), errors);
     // The owner drains active result writers before their delivery port closes.
-    if (gateway) await stopOne(logger, 'telegram', () => gateway!.stop(), errors);
+    for (const [name, active] of gateways) await stopOne(logger, name, () => active.stop(), errors);
     if (errors.length > 0) throw new AggregateError(errors, 'Daemon shutdown failed');
   };
 
@@ -298,6 +351,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
     currentStage = 'config';
     stage(logger, 'config');
     config = options.config ?? loadConfig({ path: configPath, home: options.home });
+    validateDeliveryRoutes(config);
     // launchd may have created the redirected log already; preserve its contents and tighten it.
     mkdirSync(dirname(config.logging.file), { recursive: true });
     const logDescriptor = openSync(config.logging.file, 'a', 0o600);
@@ -325,9 +379,10 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
       row: MailboxRow,
       result: NativeTurnResult
     ): Promise<void> => {
-      if (gateway === null)
-        throw new Error('Telegram gateway is not available for an owner response');
-      await gateway.deliverResponse(row.stimulusId, result.response);
+      const messenger = sourceForRef(row.stimulusId);
+      const selected = gateways.get(messenger);
+      if (!selected) throw new Error(`${messenger} gateway is not available for an owner response`);
+      await selected.deliverResponse(row.stimulusId, result.response);
     };
     const deliverSourceResponse = async (
       row: MailboxRow,
@@ -368,7 +423,9 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
       const content = routed.slice('[notify]'.length).trim();
       if (!content) return;
       if (gateway === null) throw new Error('Telegram gateway is not available for a delta report');
-      await gateway.sendToOwner(content, row.stimulusId);
+      const selected = gateways.get(config.delivery?.notifications ?? 'telegram');
+      if (!selected) throw new Error('Notification delivery messenger is not available');
+      await selected.sendToOwner(content, row.stimulusId);
     };
     const ownerFactory = dependencies.createOwnerRuntime ?? createOwnerRuntime;
     owner = await ownerFactory({
@@ -396,7 +453,9 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
       attachmentPorts: {
         downloadsDir: paths.downloadsDir,
         connectors: () => connectors?.registry ?? null,
-        telegram: () => gateway,
+        telegram: () => gateways.get('telegram') ?? null,
+        discord: () => gateways.get('discord') ?? null,
+        slack: () => gateways.get('slack') ?? null,
       },
       ...(config.wiki?.enabled
         ? {
@@ -409,7 +468,8 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
         : {}),
       ownerPolicyProvider,
       deliveryReady: () => deliveryReady,
-      recentDeliveredOwnerMessages: () => gateway?.recentDeliveredMessageRefs() ?? [],
+      recentDeliveredOwnerMessages: () =>
+        [...gateways.values()].flatMap((active) => active.recentDeliveredMessageRefs()),
       ...(options.mode === 'replay'
         ? {}
         : {
@@ -419,11 +479,10 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
                 `stimulus parked uncertain kind=${row.kind ?? 'unknown'} mailbox_id=${row.id}`
               );
               if (row.kind !== 'owner_message') return;
-              if (!gateway)
-                throw new Error(
-                  'Telegram gateway is not available for an interrupted owner response'
-                );
-              await gateway.recoverPendingResponses();
+              const selected = gateways.get(sourceForRef(row.stimulusId));
+              if (!selected)
+                throw new Error('Owner messenger is not available for an interrupted response');
+              await selected.recoverPendingResponses();
             },
             onSourceResult: deliverSourceResponse,
             onScheduledResult: async (row, result) => {
@@ -451,8 +510,9 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
         path: join(paths.mamaRoot, 'logs', 'security-events.jsonl'),
         replay: options.mode === 'replay',
         sendToOwner: async (text, key) => {
-          if (!gateway) throw new Error('Telegram gateway is not available for a security alert');
-          await gateway.sendToOwner(text, key);
+          const selected = gateways.get(config.delivery?.security_alerts ?? 'telegram');
+          if (!selected) throw new Error('Security alert delivery messenger is not available');
+          await selected.sendToOwner(text, key);
         },
       },
       getMemoryStats: () => readViewerMemoryStats(owner!.database.adapter),
@@ -502,6 +562,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
         viewer,
         connectors: null,
         gateway: null,
+        gateways,
         stop: stopResources,
       };
     }
@@ -529,37 +590,92 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
     });
     stage(logger, 'connectors');
 
-    currentStage = 'telegram';
+    currentStage = 'messengers';
+    const intake = loggedOwnerIntake(owner.intake, logger);
+    const ledgerPath = paths.ownerMessageLedgerPath;
+    const messageLedger = new OwnerMessageLedger(ledgerPath, { log: (line) => logger.info(line) });
+    const filesRoot = join(paths.workspaceDir, 'files');
     if (config.telegram.enabled) {
       const token = process.env.MAMA_TELEGRAM_TOKEN;
-      if (!token?.trim())
-        throw new Error(
-          'MAMA_TELEGRAM_TOKEN is required; run mama secret set MAMA_TELEGRAM_TOKEN and restart through ~/.mama/start.sh'
-        );
-      const telegramFactory =
-        dependencies.createTelegramGateway ??
-        ((gatewayOptions) => new TelegramGateway(gatewayOptions));
-      gateway = telegramFactory({
+      if (!token?.trim()) throw new Error('MAMA_TELEGRAM_TOKEN is required');
+      const factory =
+        dependencies.createTelegramGateway ?? ((options) => new TelegramGateway(options));
+      gateway = factory({
         token,
-        intake: loggedOwnerIntake(owner.intake, logger),
+        intake,
         config: {
-          enabled: config.telegram.enabled,
+          enabled: true,
           allowedChats: config.telegram.allowed_chats,
           ownerUserIds: config.telegram.owner_user_ids,
           ownerChatId: config.telegram.owner_chat_id,
           polling: config.telegram.polling,
         },
-        messageLedgerPath: paths.telegramLedgerPath,
+        messageLedgerPath: ledgerPath,
+        messageLedger,
         log: (line) => logger.info(line),
         onFatalError: (error) => {
           logger.error(`telegram fatal polling error=${stimulusFailureReason(error)}`);
           process.exit(1);
         },
-        filesRoot: join(paths.workspaceDir, 'files'),
+        filesRoot,
         downloadsDir: paths.downloadsDir,
       });
+      gateways.set('telegram', gateway);
       await gateway.start();
       stage(logger, 'telegram');
+    } else stage(logger, 'telegram:disabled');
+    if (config.discord?.enabled) {
+      const token = process.env.MAMA_DISCORD_TOKEN;
+      if (!token?.trim()) throw new Error('MAMA_DISCORD_TOKEN is required');
+      const factory =
+        dependencies.createDiscordGateway ?? ((options) => new DiscordGateway(options));
+      const active = factory({
+        token,
+        intake,
+        config: {
+          enabled: true,
+          ownerChannelId: config.discord.owner_channel_id,
+          allowedChannels: config.discord.allowed_channels,
+          ownerUserIds: config.discord.owner_user_ids,
+        },
+        messageLedgerPath: ledgerPath,
+        messageLedger,
+        filesRoot,
+        downloadsDir: paths.downloadsDir,
+        log: (line) => logger.info(line),
+      });
+      gateways.set('discord', active);
+      await active.start();
+      stage(logger, 'discord');
+    }
+    if (config.slack?.enabled) {
+      const token = process.env.MAMA_SLACK_TOKEN;
+      const appToken = process.env.MAMA_SLACK_APP_TOKEN;
+      if (!token?.trim()) throw new Error('MAMA_SLACK_TOKEN is required');
+      if (!appToken?.trim()) throw new Error('MAMA_SLACK_APP_TOKEN is required');
+      const factory = dependencies.createSlackGateway ?? ((options) => new SlackGateway(options));
+      const active = factory({
+        token,
+        appToken,
+        intake,
+        config: {
+          enabled: true,
+          ownerChannelId: config.slack.owner_channel_id,
+          allowedChannels: config.slack.allowed_channels,
+          ownerUserIds: config.slack.owner_user_ids,
+        },
+        messageLedgerPath: ledgerPath,
+        messageLedger,
+        filesRoot,
+        downloadsDir: paths.downloadsDir,
+        log: (line) => logger.info(line),
+      });
+      gateways.set('slack', active);
+      await active.start();
+      stage(logger, 'slack');
+    }
+    const reportRoute = config.delivery?.reports ?? 'telegram';
+    if (gateways.has(reportRoute)) {
       currentStage = 'report_scheduler';
       const schedulerFactory = dependencies.createReportScheduler ?? createReportScheduler;
       reportScheduler = schedulerFactory({
@@ -572,32 +688,21 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
             return receipt;
           },
         },
-        // Mailbox state also covers a queued input restored at boot and a failure
-        // before native dispatch that the runtime will retry itself. Accepted
-        // failures park uncertain; R5 retries those as a new scheduled turn.
         hasPendingReport: () =>
           Boolean(
             owner!.database.adapter
               .prepare(
-                `
-          SELECT 1 FROM mailbox_inputs m
-          LEFT JOIN native_input_deliveries n ON n.input_id = m.id
-          WHERE m.principal_id = ? AND m.kind = 'scheduled'
-            AND m.status IN ('pending', 'claimed')
-            AND (n.state IS NULL OR n.state != 'uncertain') LIMIT 1
-        `
+                `SELECT 1 FROM mailbox_inputs m LEFT JOIN native_input_deliveries n ON n.input_id = m.id WHERE m.principal_id = ? AND m.kind = 'scheduled' AND m.status IN ('pending', 'claimed') AND (n.state IS NULL OR n.state != 'uncertain') LIMIT 1`
               )
               .get(OWNER_PRINCIPAL_ID)
           ),
-        sendToOwner: (text, key) => gateway!.sendToOwner(text, key),
+        sendToOwner: (text, key) => gateways.get(reportRoute)!.sendToOwner(text, key),
         onError: (error) =>
           logger.error(`report scheduler failed reason=${stimulusFailureReason(error)}`),
       });
       reportScheduler.start();
       stage(logger, 'report_scheduler');
-    } else {
-      stage(logger, 'telegram:disabled');
-    }
+    } else stage(logger, 'report_scheduler:route_unavailable');
     deliveryReady = true;
 
     return {
@@ -607,6 +712,7 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
       viewer,
       connectors,
       gateway,
+      gateways,
       stop: stopResources,
     };
   } catch (error) {
