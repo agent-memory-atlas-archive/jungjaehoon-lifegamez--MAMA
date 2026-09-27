@@ -336,7 +336,11 @@ function failureKind(error: unknown): 'invalid_input' | 'denied' | 'failed' | 'i
   if (error instanceof TwinRefNotVisibleError) {
     return 'denied';
   }
-  if (error instanceof AgentGraphValidationError || error instanceof SecretMaterialRefusedError) {
+  if (
+    error instanceof AgentGraphValidationError ||
+    error instanceof SecretMaterialRefusedError ||
+    thrownCode(error) === 'invalid_input'
+  ) {
     return 'invalid_input';
   }
   if (

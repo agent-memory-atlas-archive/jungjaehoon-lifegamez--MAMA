@@ -110,6 +110,7 @@ describe('report source reads', () => {
           {
             source: 'chat',
             channel: 'Room A',
+            count: 1,
             lines: [{ author: 'Writer', text: 'First update', observationRef: 'obs-one' }],
           },
         ],
@@ -119,15 +120,20 @@ describe('report source reads', () => {
     expect(JSON.stringify(result)).not.toContain('Hidden update');
   });
 
-  it('fails loudly when recent activity exceeds the stated cap', async () => {
+  it('fails loudly as invalid input when recent channels exceed the stated cap', async () => {
     const { dispatch, access } = setup();
+    const owner = { ...access, principalId: 'owner', channels: undefined };
     const result = await dispatch(
       { action: 'source.recent', input: { since: now - 60_000, cap: 1 } },
-      { access }
+      { access: owner }
     );
     expect(result).toMatchObject({
       status: 'failed',
-      error: { code: 'invalid_input', message: expect.stringContaining('narrow since or channel') },
+      error: {
+        kind: 'invalid_input',
+        code: 'invalid_input',
+        message: expect.stringContaining('narrow since or channel'),
+      },
     });
   });
 

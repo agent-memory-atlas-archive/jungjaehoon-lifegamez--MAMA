@@ -52,6 +52,8 @@ interface WorkListFilter {
 interface WorkListCursor {
   readonly v: 1;
   readonly filter: string;
+  /** The first page's filter, so a continuation may pass the cursor alone. */
+  readonly query?: WorkListFilter;
   readonly readVersion: string;
   readonly offset: number;
 }
@@ -478,6 +480,21 @@ function encodeWorkListCursor(cursor: WorkListCursor): string {
   return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
 }
 
+/** The filter a cursor carries; malformed cursors are rejected by decodeWorkListCursor. */
+function workListCursorQuery(value: unknown): WorkListFilter | undefined {
+  if (typeof value !== 'string' || value === '' || value.length > 4_096) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
+  } catch {
+    return undefined;
+  }
+  const query = (parsed as { query?: unknown } | null)?.query;
+  return query !== null && typeof query === 'object' && !Array.isArray(query)
+    ? workListFilter(query as Record<string, unknown>)
+    : undefined;
+}
+
 function decodeWorkListCursor(value: unknown, filter: WorkListFilter): WorkListCursor {
   if (value === '') {
     throw new Error('work.list cursor is empty; omit cursor to start from the first page');
@@ -699,7 +716,11 @@ export async function runWorkListView(
     throw new Error('work.list ids are only valid with view=detail');
   }
   if (view === 'detail') return workListDetail(input, ctx);
-  const filter = workListFilter(input);
+  const requested = workListFilter(input);
+  const filter =
+    input.cursor !== undefined && Object.keys(requested).length === 0
+      ? (workListCursorQuery(input.cursor) ?? requested)
+      : requested;
   const snapshot = workListReadSnapshot(ctx, filter);
   const now = ctx.now?.() ?? snapshot.observedAt;
   if (input.readVersion !== undefined && input.readVersion !== snapshot.readVersion) {
@@ -790,6 +811,7 @@ export async function runWorkListView(
         : encodeWorkListCursor({
             v: 1,
             filter: workListFingerprint(filter),
+            query: filter,
             readVersion: snapshot.readVersion,
             offset: nextOffset,
           }),

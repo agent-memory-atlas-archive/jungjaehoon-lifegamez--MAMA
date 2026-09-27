@@ -71,6 +71,9 @@ function sinceTime(value: unknown, now: number): number {
   );
 }
 
+/** Rows scanned in host memory; each channel reports its full count and its latest lines. */
+const RECENT_SCAN_LIMIT = 20_000;
+
 function invalidInput(message: string): Error {
   const error = new Error(message);
   error.name = 'invalid_input';
@@ -114,7 +117,7 @@ function recentAction(ports: ReportReadPorts): ActionRegistration {
             minimum: 1,
             maximum: 500,
             description:
-              'Maximum recent changes scanned; exceeding it fails with a request to narrow the time window.',
+              'Maximum channels returned; each channel reports its full change count and its latest perChannel lines.',
           },
         },
       },
@@ -125,7 +128,7 @@ function recentAction(ports: ReportReadPorts): ActionRegistration {
       const now = Date.now();
       const since = sinceTime(values.since, now);
       const perChannel = values.perChannel === undefined ? 5 : (values.perChannel as number);
-      const cap = values.cap === undefined ? 250 : (values.cap as number);
+      const cap = values.cap === undefined ? 100 : (values.cap as number);
       if (!Number.isSafeInteger(perChannel) || Number(perChannel) < 1 || Number(perChannel) > 20)
         throw new Error('source.recent perChannel must be from 1 to 20');
       if (!Number.isSafeInteger(cap) || Number(cap) < 1 || Number(cap) > 500)
@@ -147,14 +150,16 @@ function recentAction(ports: ReportReadPorts): ActionRegistration {
           ...visibility.params,
           since,
           ...(sourceCeiling === undefined || sourceCeiling === null ? [] : [sourceCeiling]),
-          Number(cap) + 1
+          RECENT_SCAN_LIMIT + 1
         ) as Row[];
-      if (rows.length > Number(cap))
-        throw invalidInput(`source.recent found more than ${cap} changes; narrow since or channel`);
+      if (rows.length > RECENT_SCAN_LIMIT)
+        throw invalidInput(
+          `source.recent found more than ${RECENT_SCAN_LIMIT} changes; narrow since or channel`
+        );
       const visible = allowedRows(rows, context.access, ports.ownerPrincipalId);
       const groups = new Map<
         string,
-        { source: string; channel: string; lines: Array<Record<string, unknown>> }
+        { source: string; channel: string; count: number; lines: Array<Record<string, unknown>> }
       >();
       for (const row of visible) {
         const metadata = decodeMetadata(row.metadata_json);
@@ -163,7 +168,9 @@ function recentAction(ports: ReportReadPorts): ActionRegistration {
         const label =
           typeof metadata.channelName === 'string' ? metadata.channelName : key || source;
         const groupKey = `${source}\0${key}`;
-        const group = groups.get(groupKey) ?? { source, channel: label, lines: [] };
+        const group = groups.get(groupKey) ?? { source, channel: label, count: 0, lines: [] };
+        group.count += 1;
+        groups.set(groupKey, group);
         if (group.lines.length >= Number(perChannel)) continue;
         const timestamp = Number(row.source_timestamp_ms);
         if (
@@ -223,6 +230,10 @@ function recentAction(ports: ReportReadPorts): ActionRegistration {
             failedAt: row.last_error_at,
           };
         });
+      if (groups.size > Number(cap))
+        throw invalidInput(
+          `source.recent found changes in ${groups.size} channels, more than cap ${cap}; narrow since or channel`
+        );
       return {
         since: new Date(since).toISOString(),
         cap: Number(cap),

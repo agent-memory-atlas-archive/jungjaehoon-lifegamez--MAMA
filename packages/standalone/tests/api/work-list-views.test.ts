@@ -188,6 +188,26 @@ describe('progressive work.list views', () => {
     ).toEqual(['commitment-2', 'commitment-3']);
   });
 
+  it('continues a filtered items read from the cursor alone and refuses a different filter', async () => {
+    const reader = makeReader(Array.from({ length: 80 }, (_, index) => view(index + 1)));
+    const first = await runWorkListView(
+      { view: 'items', status: ['pending'], limit: 25 },
+      context(reader.readWork)
+    );
+    expect(first).toMatchObject({ total: 40, returned: 25 });
+    const second = await runWorkListView(
+      { view: 'items', limit: 25, cursor: first.nextCursor },
+      context(reader.readWork)
+    );
+    expect(second).toMatchObject({ total: 40, returned: 15, nextCursor: null });
+    await expect(
+      runWorkListView(
+        { view: 'items', status: ['done'], cursor: first.nextCursor },
+        context(reader.readWork)
+      )
+    ).rejects.toThrow(/different query/);
+  });
+
   it('rejects a cursor after the commitment read version changes', async () => {
     const reader = makeReader(Array.from({ length: 30 }, (_, index) => view(index + 1)));
     const first = await runWorkListView({}, context(reader.readWork));
