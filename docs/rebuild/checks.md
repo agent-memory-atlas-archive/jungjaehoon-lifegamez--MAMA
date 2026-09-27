@@ -947,3 +947,11 @@ The implementation writes raw/index data during import only. Replay is the owner
   messages; gitleaks on 92 branch commits: no leaks; email/phone/id patterns only synthetic test values.
   Full root build, typecheck, lint and tests pass after the rewrite (core 894, standalone 735, MCP 139,
   plugin 166). The PR body scans clean.
+- 2026-09-27 09:10 KST: live report and alert check. The 08:00 full report ran as a scheduled turn,
+  was delivered on Telegram (outbound ledger key report:2026-09-27:08, log line with model_run_id), the
+  hour was recorded only after the send (lastFullKey 2026-09-27:08), and the four board slots carry their
+  writer run. The 09:00 reminder was queued. False alarm found: at 08:25 the owner's browser fetched the
+  web manifest without cookies (browsers do), the origin served it (200) and detection classed it
+  auth_failed and alerted. Now an unauthenticated request that was served is public_asset (recorded, no
+  alert); only a refused one is auth_failed. API tests 200/200 (the new test fails without the fix; five
+  tests that encoded the false alarm now use a refused route).

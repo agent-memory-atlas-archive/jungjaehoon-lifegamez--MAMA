@@ -138,7 +138,11 @@ function securityClass(
   )
     return 'forged_access_header';
   if (audit.unknownIdentity) return 'unknown_identity';
-  if (audit.identity === null || audit.identity === 'local') return 'auth_failed';
+  if (audit.identity === null || audit.identity === 'local') {
+    // Unauthenticated assets served on purpose (the web manifest, static viewer files) are fetched by
+    // browsers without cookies; only a refused request is a failed authentication.
+    return status < 400 ? 'public_asset' : 'auth_failed';
+  }
   if (status >= 200 && status < 400) return 'owner_access';
   return 'request_failed';
 }

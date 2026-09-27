@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 
 export type SecurityEventClass =
   | 'owner_access'
+  | 'public_asset'
   | 'auth_failed'
   | 'forged_access_header'
   | 'host_rejected'
@@ -55,7 +56,8 @@ export function createSecurityEventRecorder(options: SecurityEventOptions = {}) 
         console.error('[viewer] security_event_write_failed');
       }
 
-      if (event.class === 'owner_access' || options.replay) return;
+      if (event.class === 'owner_access' || event.class === 'public_asset' || options.replay)
+        return;
       const now = Date.now();
       for (const [key, time] of lastAlert) {
         if (now - time >= ALERT_WINDOW_MS) lastAlert.delete(key);

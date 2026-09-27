@@ -461,7 +461,7 @@ describe('security events and owner alerts', () => {
     const rows = securityRows();
     expect(rows).toHaveLength(12);
     expect(rows.slice(0, 4).map((row) => [row.class, row.status, row.identity])).toEqual([
-      ['auth_failed', 200, 'anonymous'],
+      ['public_asset', 200, 'anonymous'],
       ['auth_failed', 401, 'anonymous'],
       ['host_rejected', 421, 'anonymous'],
       ['auth_failed', 403, 'anonymous'],
@@ -476,6 +476,15 @@ describe('security events and owner alerts', () => {
     expect(rows.slice(4).every((row) => row.class === 'probe')).toBe(true);
     expect(fs.statSync(securityPath()).mode & 0o777).toBe(0o600);
   });
+  it('records a served asset fetched without credentials as public_asset and does not alert', async () => {
+    const sendToOwner = vi.fn(async (_text: string, _key: string) => {});
+    await serve({ securityEvents: { sendToOwner } });
+    const result = await request('/viewer/manifest.json', { ...tunnel });
+    expect(result.status).toBeLessThan(400);
+    expect(securityRows().map((row) => row.class)).toEqual(['public_asset']);
+    expect(sendToOwner).not.toHaveBeenCalled();
+  });
+
   it('records token owner access and forged headers even with a valid token', async () => {
     const token = randomBytes(24).toString('hex');
     vi.stubEnv('MAMA_AUTH_TOKEN', token);
@@ -541,19 +550,19 @@ describe('security events and owner alerts', () => {
     vi.setSystemTime(new Date('2026-09-27T00:00:00Z'));
     const sendToOwner = vi.fn(async (_text: string, _key: string) => {});
     await serve({ securityEvents: { sendToOwner } });
-    await request('/health', tunnel);
-    await request('/health', tunnel);
+    await request('/api/report', tunnel);
+    await request('/api/report', tunnel);
     await request('/health', { ...tunnel, 'cf-access-jwt-assertion': 'invalid' });
     await request('/api/runtime/status', tunnel);
     expect(sendToOwner).toHaveBeenCalledTimes(3);
     vi.setSystemTime(new Date('2026-09-27T00:09:59Z'));
-    await request('/health', tunnel);
+    await request('/api/runtime/status', tunnel);
     expect(sendToOwner).toHaveBeenCalledTimes(3);
     vi.setSystemTime(new Date('2026-09-27T00:10:00Z'));
-    await request('/health', tunnel);
+    await request('/api/runtime/status', tunnel);
     expect(sendToOwner).toHaveBeenCalledTimes(4);
     const text = sendToOwner.mock.calls[0]![0];
-    for (const value of ['auth_failed', '/health', '200', '09:00:00 KST', 'KR'])
+    for (const value of ['auth_failed', '/api/report', '401', '09:00:00 KST', 'KR'])
       expect(text).toContain(value);
     expect(text).not.toContain(tunnel['cf-ray']);
     expect(securityRows()).toHaveLength(6);
@@ -564,8 +573,8 @@ describe('security events and owner alerts', () => {
       throw new Error(secret);
     });
     await serve({ securityEvents: { sendToOwner } });
-    await request('/health', tunnel);
-    await request('/health', tunnel);
+    await request('/api/runtime/status', tunnel);
+    await request('/api/runtime/status', tunnel);
     expect(sendToOwner).toHaveBeenCalledOnce();
     expect(errors).toHaveBeenCalledOnce();
     expect(JSON.stringify(errors.mock.calls)).toContain('security_alert_failed');
@@ -613,7 +622,10 @@ describe('security events and owner alerts', () => {
         })
     );
     await serve({ securityEvents: { sendToOwner } });
-    await Promise.all([request('/health', tunnel), request('/health', tunnel)]);
+    await Promise.all([
+      request('/api/runtime/status', tunnel),
+      request('/api/runtime/status', tunnel),
+    ]);
     expect(securityRows()).toHaveLength(2);
     expect(sendToOwner).toHaveBeenCalledOnce();
     finish();
@@ -621,7 +633,7 @@ describe('security events and owner alerts', () => {
   it('preserves the response and alerts if the event file cannot be written', async () => {
     const sendToOwner = vi.fn(async () => {});
     await serve({ securityEvents: { path: process.env.HOME, sendToOwner } });
-    expect((await request('/health', tunnel)).status).toBe(200);
+    expect((await request('/api/runtime/status', tunnel)).status).toBe(401);
     expect(sendToOwner).toHaveBeenCalledOnce();
     expect(JSON.stringify(errors.mock.calls)).toContain('security_event_write_failed');
   });
@@ -644,7 +656,7 @@ describe('security events and owner alerts', () => {
 describe('security events API', () => {
   it('drops a partial oversized first line and limits reads to 256 KiB', async () => {
     await serve();
-    await request('/health', tunnel);
+    await request('/api/runtime/status', tunnel);
     const line = fs.readFileSync(securityPath(), 'utf8');
     fs.writeFileSync(securityPath(), 'x'.repeat(500000) + '\n' + line);
     const reads = vi.mocked(fs.readSync).mockClear();
@@ -658,7 +670,7 @@ describe('security events API', () => {
   });
   it('requires owner auth and bounds both row count and file reads', async () => {
     await serve();
-    await request('/health', tunnel);
+    await request('/api/runtime/status', tunnel);
     const path = securityPath();
     const line = fs.readFileSync(path, 'utf8');
     fs.writeFileSync(path, line.repeat(4000));
