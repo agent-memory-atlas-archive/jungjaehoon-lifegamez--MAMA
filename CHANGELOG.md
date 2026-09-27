@@ -25,6 +25,16 @@ version is released.
   applicable corrections into later conversations.
 - File attachments sent to the owner arrive in `~/.mama/downloads/`; the agent can read that
   directory but cannot write there.
+- Corrections are kept as guidance: lessons, preferences, constraints and workflows, each with a
+  line saying when it applies. The agent sees the list when a session starts, reads an entry when it
+  applies, and saves, revises or retires a workflow as you agree on it.
+- A source change is handled in one turn. The agent continues from what it already knows: it updates
+  the affected work item, the one board section it touches and the item's wiki page, then decides
+  whether to notify you. It no longer re-reads all work and the whole board for every change.
+- Scheduled reports read the recent changes in every source, all open work by stage, and the next 14
+  days of schedule, including several Google calendars, holiday calendars and iCal reservation feeds.
+- The board header counts open, overdue and unassigned work, and each board section shows when it
+  was last written.
 
 ### Removed
 
@@ -64,6 +74,14 @@ version is released.
   See the [CLI reference](docs/reference/cli.md).
 - **Downloads:** attachment downloads moved to `~/.mama/downloads/`. Copy a file into the
   workspace before editing it.
+- **Reply ledger:** the daemon keeps delivery records for every messenger in
+  `~/.mama/runtime/owner-message-ledger.json`. The old Telegram record file is not read, so a reply
+  in flight during the upgrade is not resumed.
+- **Report hours:** set them in `config.yaml` under `reports` (`full_report_hours`,
+  `reminder_start_hour`, `reminder_end_hour`). `MAMA_TRIGGER_LOOP_FULL_REPORT_HOURS` in `start.sh`
+  is no longer read.
+- **Connector token names:** a connector's `auth.tokenName` must be a name `mama secret set`
+  accepts: one of the listed MAMA secret names, or `MAMA_ICAL_URL_<NAME>` for an iCal feed.
 - **Database migrations:** migrations 096–098 drop the unused connector event full-text index,
   guard a native-input view against malformed historical JSON, and add `workflow` as a memory
   kind. Let MAMA apply these migrations; do not edit the database schema by hand.
@@ -79,8 +97,10 @@ version is released.
   reads also still need live checks.
 - Historical replay needs a separate Jev key; onboarding does not configure it. Historical
   backfill is available only through a script.
-- The first live report run that also writes wiki pages and the first live download-copy-deliver
-  run have not yet been observed.
+- The first live download-copy-deliver run and the one-turn source-change flow on a live change have
+  not yet been observed.
+- Response time depends strongly on the model's reasoning effort: the same owner report took 291 s
+  with `agent.effort: high` and 19 s with `medium` after the read changes. `medium` is recommended.
 - A live correction has not yet confirmed that guidance changes the next related answer. Live
   connector coverage, full report delivery, and daemon restart recovery remain incomplete.
 

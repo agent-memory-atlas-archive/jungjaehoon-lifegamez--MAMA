@@ -1195,3 +1195,15 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Evidence: focused prompt, candidate, scheduling, calendar, and iCal regressions pass; `pnpm build`, `pnpm typecheck`, and ESLint on changed files pass.
 - Standalone suite: 1,062 passed; 25 failures are socket `EPERM` across eight files (Unix runtime sockets and viewer HTTP binds).
 - Still open: no live owner turn or provider poll was run; `~/.mama` and `~/.claude` were not accessed.
+
+### Owner report latency and read fixes — live (2026-09-27)
+
+- Result: a report the owner asks for is text written from what the session already knows, with
+  reads only to confirm; report reads that failed live (work.list cursor filter, source.read by
+  observation refs, source.recent over its cap) now succeed or refuse with a narrowing hint; agent
+  effort is `medium`.
+- Evidence (live DB read-back, owner Telegram turns): the same full-report request took 291.2 s and
+  517,700 tokens at effort `high` before the change, and 18.7 s, 77,075 tokens, 4 tool calls, 0 failed
+  calls after it. The answer matched the reference operator's report except one missing extra-fee item.
+- Still open: a live source delta on the one-turn flow and the 08:00 scheduled report on the new
+  structure have not run yet.
