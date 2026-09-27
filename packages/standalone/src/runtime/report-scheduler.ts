@@ -65,7 +65,10 @@ export function createReportScheduler(options: ReportSchedulerOptions) {
         ? state.lastFullKey === hourKey
         : hour < options.config.reminder_start_hour ||
           hour > options.config.reminder_end_hour ||
-          state.lastReminderKey === hourKey
+          state.lastReminderKey === hourKey ||
+          // A full report already sent this hour covers it, even if the hour is no longer a
+          // full-report hour after a config change.
+          state.lastFullKey === hourKey
     )
       return;
     // A failed accepted turn is uncertain in the mailbox. R5 explicitly asks for

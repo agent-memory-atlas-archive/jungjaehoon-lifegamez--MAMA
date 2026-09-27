@@ -209,6 +209,27 @@ export function sourceActionRegistrations(ports: SourcePorts): ActionRegistratio
       exec: (input, context) => {
         const body = input as Record<string, unknown>;
         const allowance = replayReadAllowance(context.readAllowance);
+        if (body.source === undefined && Array.isArray(body.observationRefs)) {
+          // Observation refs are unique, so each ref names its own source.
+          const reader = storedReader(ports);
+          return {
+            results: body.observationRefs.map((ref) => {
+              try {
+                const data =
+                  allowance === undefined
+                    ? reader.readObservation(String(ref), context.access)
+                    : reader.readObservation(String(ref), context.access, allowance);
+                return { observationRef: ref, status: 'completed', data };
+              } catch (error) {
+                return {
+                  observationRef: ref,
+                  status: 'failed',
+                  error: error instanceof Error ? error.message : String(error),
+                };
+              }
+            }),
+          };
+        }
         if (body.source === undefined && typeof body.observationRef === 'string') {
           return allowance === undefined
             ? storedReader(ports).readObservation(body.observationRef, context.access)

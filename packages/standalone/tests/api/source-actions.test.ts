@@ -124,6 +124,34 @@ describe('minimal source actions', () => {
     expect(JSON.stringify(search).length).toBeLessThan(1_000);
   });
 
+  it('infers each source for a batch of refs without a source and reports per-ref failures', async () => {
+    const stored = {
+      search: vi.fn(),
+      read: vi.fn(),
+      readObservation: vi.fn((ref: string) => {
+        if (ref === 'obs-missing') throw new Error('observation_not_found');
+        return { source: ref === 'obs-a' ? 'chatwork' : 'slack', content: `original ${ref}` };
+      }),
+      has: vi.fn().mockReturnValue(true),
+      isOwner: vi.fn().mockReturnValue(true),
+    };
+    const dispatch = createDispatcher(createCatalog(sourceActionRegistrations({ stored })));
+    const read = await dispatch(
+      { action: 'source.read', input: { observationRefs: ['obs-a', 'obs-b', 'obs-missing'] } },
+      { access }
+    );
+    expect(read).toMatchObject({
+      status: 'completed',
+      data: {
+        results: [
+          { observationRef: 'obs-a', status: 'completed', data: { source: 'chatwork' } },
+          { observationRef: 'obs-b', status: 'completed', data: { source: 'slack' } },
+          { observationRef: 'obs-missing', status: 'failed', error: 'observation_not_found' },
+        ],
+      },
+    });
+  });
+
   it('describes every source and work input field, including nested fields', () => {
     const knowledge = {
       createWork: vi.fn(),

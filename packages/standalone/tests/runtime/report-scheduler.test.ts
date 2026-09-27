@@ -101,6 +101,17 @@ describe('KST report scheduler', () => {
     expect(keys.at(-1)).toBe('report:2026-01-01:13:reminder');
   });
 
+  it('sends no reminder in an hour whose full report already went out after the hour stops being a full-report hour', () => {
+    const ctx = setup();
+    mkdirSync(join(root, 'runtime'), { recursive: true });
+    writeFileSync(
+      ctx.statePath,
+      JSON.stringify({ lastFullKey: '2026-01-02:20', lastReminderKey: '2026-01-02:19' })
+    );
+    createReportScheduler(ctx.options).tick(new Date('2026-01-02T11:58:00Z')); // 20:58 KST
+    expect(ctx.queued).toHaveLength(0);
+  });
+
   it('writes the full hour only after sending finishes and suppresses it after restart', async () => {
     const ctx = setup();
     const now = new Date('2026-01-01T23:05:00Z'); // next date, 08 KST
