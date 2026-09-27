@@ -1,6 +1,8 @@
 import {
   closeSync,
   constants,
+  fstatSync,
+  lstatSync,
   mkdirSync,
   openSync,
   realpathSync,
@@ -39,30 +41,44 @@ export function requireHttpsUrl(value: unknown, field: string): string {
 // Cap connector downloads at 50 MiB (52,428,800 bytes), based on Bot API document delivery.
 const ATTACHMENT_DOWNLOAD_LIMIT = 50 * 1024 * 1024;
 
-/** Validate and open without yielding to an agent that can replace workspace directories. */
+/**
+ * The agent can replace workspace directories while the daemon writes. An empty temp file is
+ * created first; bytes are written only after that exact file (same device and inode) is found
+ * again under the rechecked workspace directory, so a swapped ancestor never receives them.
+ */
 export function saveAttachmentBytes(
   workspace: string,
   targetPath: string,
   bytes: Uint8Array
 ): void {
   const directory = resolveAttachmentDirectory(workspace, dirname(targetPath));
-  const finalPath = join(directory, basename(targetPath));
-  const temporaryPath = `${finalPath}.${process.pid}.${Date.now()}.part`;
+  const name = basename(targetPath);
+  const temporaryName = `${name}.${process.pid}.${Date.now()}.part`;
   const fd = openSync(
-    temporaryPath,
+    join(directory, temporaryName),
     constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
     0o600
   );
+  let fdOpen = true;
+  let temporaryPath: string | undefined;
   try {
+    const opened = fstatSync(fd);
+    const recheckedDirectory = resolveAttachmentDirectory(workspace, dirname(targetPath));
+    const found = lstatSync(join(recheckedDirectory, temporaryName));
+    if (found.dev !== opened.dev || found.ino !== opened.ino) {
+      throw new Error('attachment directory changed while saving');
+    }
+    temporaryPath = join(recheckedDirectory, temporaryName);
     writeFileSync(fd, bytes);
-  } catch (error) {
     closeSync(fd);
-    rmSync(temporaryPath, { force: true });
-    throw error;
+    fdOpen = false;
+    // rename replaces the final name itself (a symlink placed there is replaced, never followed).
+    renameSync(temporaryPath, join(recheckedDirectory, name));
+    temporaryPath = undefined;
+  } finally {
+    if (fdOpen) closeSync(fd);
+    if (temporaryPath !== undefined) rmSync(temporaryPath, { force: true });
   }
-  closeSync(fd);
-  // rename replaces the final name itself (a symlink placed there is replaced, never followed).
-  renameSync(temporaryPath, finalPath);
 }
 
 export async function saveResponseBody(

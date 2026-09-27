@@ -554,6 +554,7 @@ function preloadRecursiveEdgeVisibility(
   visibility: TwinVisibility
 ): {
   edgeCache: Map<string, TwinEdgeRecord | null>;
+  edgeVisibility: Map<string, boolean>;
   precomputed: Set<string>;
 } {
   const edgeCache = new Map<string, TwinEdgeRecord | null>();
@@ -598,6 +599,7 @@ function preloadRecursiveEdgeVisibility(
   }
   return {
     edgeCache,
+    edgeVisibility: new Map(),
     precomputed: visibleTwinRefKeys(adapter, nestedRefs, visibility),
   };
 }
@@ -607,10 +609,16 @@ export function visibleTwinRefKeysRecursive(
   refs: readonly TwinRef[],
   visibility: TwinVisibility
 ): Set<string> {
-  const { edgeCache, precomputed } = preloadRecursiveEdgeVisibility(adapter, refs, visibility);
+  const { edgeCache, edgeVisibility, precomputed } = preloadRecursiveEdgeVisibility(
+    adapter,
+    refs,
+    visibility
+  );
   const visible = new Set<string>();
   for (const ref of refs) {
-    if (isTwinRefVisible(adapter, ref, visibility, new Set(), edgeCache, precomputed)) {
+    if (
+      isTwinRefVisible(adapter, ref, visibility, new Set(), edgeCache, edgeVisibility, precomputed)
+    ) {
       visible.add(refVisibilityKey(ref));
     }
   }
@@ -621,8 +629,9 @@ function isTwinRefVisible(
   adapter: TwinRefVisibilityAdapter,
   ref: TwinRef,
   visibility: TwinVisibility,
-  visitedEdges: Set<string>,
+  edgesInProgress: Set<string>,
   edgeCache: Map<string, TwinEdgeRecord | null>,
+  edgeVisibility: Map<string, boolean>,
   precomputed?: Set<string>
 ): boolean {
   if (precomputed && ref.kind !== 'edge') {
@@ -685,40 +694,47 @@ function isTwinRefVisible(
     throw new Error(`UNSUPPORTED_REFERENCE_KIND: ${(ref as { kind: string }).kind}`);
   }
 
-  if (visitedEdges.has(ref.id)) {
+  // An edge met again while it is being decided lies on a cycle through itself: never visible.
+  // Every edge on such a cycle is invisible from any root, so a finished answer is memoized.
+  if (edgesInProgress.has(ref.id)) {
     return false;
+  }
+  const decided = edgeVisibility.get(ref.id);
+  if (decided !== undefined) {
+    return decided;
   }
   let edge = edgeCache.get(ref.id);
   if (edge === undefined) {
     edge = getTwinEdge(adapter, ref.id);
     edgeCache.set(ref.id, edge);
   }
-  if (!edge) {
+  if (!edge || !isWithinVisibilityTime(edge.created_at, visibility)) {
+    edgeVisibility.set(ref.id, false);
     return false;
   }
-  if (!isWithinVisibilityTime(edge.created_at, visibility)) {
-    return false;
-  }
-  const pathWithCurrent = new Set(visitedEdges);
-  pathWithCurrent.add(ref.id);
-  return (
+  edgesInProgress.add(ref.id);
+  const visible =
     isTwinRefVisible(
       adapter,
       edge.subject_ref,
       visibility,
-      new Set(pathWithCurrent),
+      edgesInProgress,
       edgeCache,
+      edgeVisibility,
       precomputed
     ) &&
     isTwinRefVisible(
       adapter,
       edge.object_ref,
       visibility,
-      new Set(pathWithCurrent),
+      edgesInProgress,
       edgeCache,
+      edgeVisibility,
       precomputed
-    )
-  );
+    );
+  edgesInProgress.delete(ref.id);
+  edgeVisibility.set(ref.id, visible);
+  return visible;
 }
 
 export function assertTwinRefsVisible(
@@ -740,9 +756,15 @@ export function assertTwinRefsVisible(
       throw new Error(`UNSUPPORTED_REFERENCE_KIND: ${(ref as { kind: string }).kind}`);
     }
   }
-  const { edgeCache, precomputed } = preloadRecursiveEdgeVisibility(adapter, refs, visibility);
+  const { edgeCache, edgeVisibility, precomputed } = preloadRecursiveEdgeVisibility(
+    adapter,
+    refs,
+    visibility
+  );
   for (const ref of refs) {
-    if (!isTwinRefVisible(adapter, ref, visibility, new Set(), edgeCache, precomputed)) {
+    if (
+      !isTwinRefVisible(adapter, ref, visibility, new Set(), edgeCache, edgeVisibility, precomputed)
+    ) {
       throw new TwinRefNotVisibleError(ref);
     }
   }
@@ -777,15 +799,31 @@ export function listVisibleTwinEdgesForRefs(
       if (candidates.length === 0) {
         break;
       }
-      const { edgeCache, precomputed } = preloadRecursiveEdgeVisibility(
+      const { edgeCache, edgeVisibility, precomputed } = preloadRecursiveEdgeVisibility(
         adapter,
         candidates.flatMap((edge) => [edge.subject_ref, edge.object_ref]),
         options
       );
       for (const edge of candidates) {
         if (
-          isTwinRefVisible(adapter, edge.subject_ref, options, new Set(), edgeCache, precomputed) &&
-          isTwinRefVisible(adapter, edge.object_ref, options, new Set(), edgeCache, precomputed)
+          isTwinRefVisible(
+            adapter,
+            edge.subject_ref,
+            options,
+            new Set(),
+            edgeCache,
+            edgeVisibility,
+            precomputed
+          ) &&
+          isTwinRefVisible(
+            adapter,
+            edge.object_ref,
+            options,
+            new Set(),
+            edgeCache,
+            edgeVisibility,
+            precomputed
+          )
         ) {
           admitted.push(edge);
           if (admitted.length === limit) {
@@ -802,7 +840,7 @@ export function listVisibleTwinEdgesForRefs(
     return admitted;
   }
   const candidateEdges = listTwinEdgesForRefs(adapter, refs);
-  const { edgeCache, precomputed } = preloadRecursiveEdgeVisibility(
+  const { edgeCache, edgeVisibility, precomputed } = preloadRecursiveEdgeVisibility(
     adapter,
     candidateEdges.flatMap((edge) => [edge.subject_ref, edge.object_ref]),
     options
@@ -812,8 +850,24 @@ export function listVisibleTwinEdgesForRefs(
       (edgeTypes.size === 0 || edgeTypes.has(edge.edge_type)) &&
       (typeof options.startMs !== 'number' || edge.created_at >= options.startMs) &&
       (typeof options.asOfMs !== 'number' || edge.created_at <= options.asOfMs) &&
-      isTwinRefVisible(adapter, edge.subject_ref, options, new Set(), edgeCache, precomputed) &&
-      isTwinRefVisible(adapter, edge.object_ref, options, new Set(), edgeCache, precomputed)
+      isTwinRefVisible(
+        adapter,
+        edge.subject_ref,
+        options,
+        new Set(),
+        edgeCache,
+        edgeVisibility,
+        precomputed
+      ) &&
+      isTwinRefVisible(
+        adapter,
+        edge.object_ref,
+        options,
+        new Set(),
+        edgeCache,
+        edgeVisibility,
+        precomputed
+      )
   );
   const sortedEdges = [...edges].sort((left, right) => {
     const createdDiff = right.created_at - left.created_at;

@@ -209,6 +209,7 @@ export class TelegramGateway extends BaseGateway {
       this.connected = true;
       this.lastError = null;
       this.emitEvent({ type: 'connected', source: 'telegram', timestamp: new Date() });
+      await this.recoverPendingResponses();
       if (this.config.polling !== false) {
         // Polling runs for the life of the process; a failure here means no owner message
         // is ever received, so it is logged, not swallowed.
@@ -222,7 +223,6 @@ export class TelegramGateway extends BaseGateway {
       } else {
         console.log('telegram polling disabled by config');
       }
-      await this.recoverPendingResponses();
     } catch (error) {
       this.lastError = telegramErrorMessage(error);
       if (this.bot) await this.bot.stop().catch(() => {});
@@ -525,11 +525,8 @@ export class TelegramGateway extends BaseGateway {
           await this.deliverReadyEntry(entry.key);
         }
       } catch (error) {
-        const detail = telegramErrorMessage(error);
-        this.log(`telegram recovery failed key=${entry.key} error=${detail}`);
-        if (isDefinitiveTelegramRejection(error)) {
-          this.messageLedger.markFailed(entry.key, detail, false);
-        }
+        // Delivery already recorded its progress; one entry must not keep polling from starting.
+        this.log(`telegram recovery failed key=${entry.key} error=${telegramErrorMessage(error)}`);
       }
     }
   }

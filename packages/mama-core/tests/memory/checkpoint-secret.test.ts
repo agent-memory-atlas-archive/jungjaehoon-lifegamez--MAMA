@@ -44,6 +44,18 @@ describe.each(['public', 'adapter'] as const)('checkpoint secret boundary (%s)',
   );
 });
 
+it('refuses credentials in the recent conversation before persistence', async () => {
+  const credential = 'gh' + 'p_' + 'a'.repeat(30);
+  await expect(
+    saveCheckpointInAdapter(getAdapter(), 'resume work', [], 'run checks', [
+      { role: 'user', content: `token ${credential}` },
+    ])
+  ).rejects.toMatchObject({ name: 'secret_material_refused' });
+  expect(getAdapter().prepare('SELECT COUNT(*) AS count FROM checkpoints').get()).toMatchObject({
+    count: 0,
+  });
+});
+
 it('round-trips a clean checkpoint through the direct public API', async () => {
   await saveCheckpoint('resume work', ['src/fixture.ts'], 'run checks');
   expect(await loadCheckpoint()).toMatchObject({

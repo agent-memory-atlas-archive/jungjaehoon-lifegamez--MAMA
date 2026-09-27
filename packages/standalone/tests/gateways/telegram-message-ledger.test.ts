@@ -102,4 +102,29 @@ describe('TelegramMessageLedger', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('keeps a delivered receipt for new wording but refuses another destination', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mama-telegram-ledger-'));
+    try {
+      const ledger = new TelegramMessageLedger(join(root, 'ledger.json'), { log: () => {} });
+      const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+      ledger.claim('outbound:report', { deliveryTarget: 'telegram:7', payloadIdentity: hash('a') });
+      ledger.markReady('outbound:report', 'a', 'html-v1');
+      ledger.markDelivered('outbound:report');
+      expect(
+        ledger.claim('outbound:report', {
+          deliveryTarget: 'telegram:7',
+          payloadIdentity: hash('b'),
+        })
+      ).toMatchObject({ claimed: false, entry: { state: 'delivered' } });
+      expect(() =>
+        ledger.claim('outbound:report', {
+          deliveryTarget: 'telegram:8',
+          payloadIdentity: hash('a'),
+        })
+      ).toThrow(/binding mismatch/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

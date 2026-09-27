@@ -149,11 +149,13 @@ export class ChatworkConnector implements IConnector {
 
     const items: NormalizedItem[] = [];
     const pendingMessageIds = new Map(this.lastMessageIds);
-    let hadError = false;
+    const failedRooms = new Set<string>();
+    let polledRooms = 0;
     const sinceEpoch = Math.floor(since.getTime() / 1000);
 
     for (const [roomId, channelCfg] of Object.entries(this.config.channels)) {
       if (channelCfg.role === 'ignore') continue;
+      polledRooms += 1;
 
       try {
         // force=1: the latest 100 messages independent of the server-side read cursor,
@@ -165,7 +167,7 @@ export class ChatworkConnector implements IConnector {
         });
 
         if (!res.ok) {
-          hadError = true;
+          failedRooms.add(roomId);
           this.lastError = `Room ${roomId}: HTTP ${res.status}`;
           continue;
         }
@@ -202,17 +204,19 @@ export class ChatworkConnector implements IConnector {
 
         if (maxMsgId) pendingMessageIds.set(roomId, maxMsgId);
       } catch (err) {
-        hadError = true;
-        this.lastError = err instanceof Error ? err.message : String(err);
+        failedRooms.add(roomId);
+        this.lastError = `Room ${roomId}: ${err instanceof Error ? err.message : String(err)}`;
       }
     }
 
     this.lastPollTime = new Date();
     this.lastPollCount = items.length;
     // lastError was set in catch blocks; clear only if no error occurred this pass
-    if (hadError) {
+    if (failedRooms.size > 0) {
       this.abortPollHandoff();
-      throw new Error('Chatwork poll failed for one or more configured rooms');
+      throw new Error(
+        `Chatwork poll failed for ${failedRooms.size} of ${polledRooms} configured rooms; last error: ${this.lastError}`
+      );
     }
     this.pendingMessageIds = pendingMessageIds;
     if (!this.pollCommitDeferred) this.commitPoll();

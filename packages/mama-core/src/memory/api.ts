@@ -3228,7 +3228,12 @@ export async function saveCheckpointInAdapter(
   if (!summary) {
     throw new Error('Summary is required for checkpoint');
   }
-  const scan = scanMemoryWriteInput({ summary, open_files: openFiles, next_steps: nextSteps });
+  const scan = scanMemoryWriteInput({
+    summary,
+    open_files: openFiles,
+    next_steps: nextSteps,
+    recent_conversation: recentConversation,
+  });
   if (!scan.clean) throw new SecretMaterialRefusedError(scan.matches);
   if (scan.warnings.length > 0) warn(`Checkpoint content warnings: ${scan.warnings.join(', ')}`);
 

@@ -105,3 +105,16 @@ Codex re-read every item against the code: all F1–F3 defects resolved except t
 6. P2 F1.25 regression: an unavailable sibling attachment failed a valid download.
 7. P2 F3.9: the recursive visibility CTE grew with reconverging paths; it recurses per edge with UNION.
 8. P3 Trello: a board failing only on an invalid timestamp was not counted in the poll error.
+
+## F5 — Codex review of the F4 commit (2026-09-27)
+
+1. P1 The directory recheck still had a cross-process window before the open: the temp file is now
+   opened empty and bytes are written only after the same device and inode are found under the
+   rechecked directory; a failed rename removes the temp file.
+2. P1 The checkpoint scan covers `recentConversation`, which checkpoint loading returns.
+3. P2 Recovery no longer marks entries failed (that reset chunk progress on retry) and runs before polling
+   again (it raced polling on processing entries); a failed entry is logged and polling still starts.
+4. P2 A delivered key keeps its receipt only for the same destination; another chat still throws.
+5. P2 Edge visibility is memoized per call; an edge met while being decided lies on a cycle and is
+   invisible from any root, so the answers match the path-by-path evaluation.
+   Also: the Chatwork poll error names failed/polled rooms and the last error, like Trello.

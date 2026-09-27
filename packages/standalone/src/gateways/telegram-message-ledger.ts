@@ -21,7 +21,6 @@ export interface TelegramMessageLedgerEntry {
   response?: string;
   nextChunkIndex?: number;
   deliveryUncertain?: boolean;
-  error?: string;
   /** Missing on pre-formatting receipts, whose original chunk boundaries must survive. */
   chunkFormat?: TelegramChunkFormat;
   deliveryTarget?: string;
@@ -120,7 +119,8 @@ export class TelegramMessageLedger {
         (existing.deliveryTarget !== binding.deliveryTarget ||
           existing.payloadIdentity !== binding.payloadIdentity)
       ) {
-        if (existing.state === 'delivered') {
+        // A regenerated report reuses its delivered key with new wording; the first copy stands.
+        if (existing.state === 'delivered' && existing.deliveryTarget === binding.deliveryTarget) {
           this.log(`telegram delivered payload identity differs key=${key}`);
           return { claimed: false, entry: { ...existing } };
         }
@@ -200,14 +200,13 @@ export class TelegramMessageLedger {
   }
 
   /** A transport failure can leave remote delivery unknown; never keep it as active work. */
-  markFailed(key: string, error?: string, deliveryUncertain = true): void {
+  markFailed(key: string): void {
     const entry = this.requireEntry(key);
     this.commit(() => {
       this.entries.set(key, {
         ...entry,
         state: 'failed',
-        deliveryUncertain,
-        ...(error === undefined ? {} : { error }),
+        deliveryUncertain: true,
         updatedAt: this.now(),
         ownerId: this.ownerId,
       });
@@ -422,7 +421,6 @@ function isLedgerEntry(value: unknown): value is TelegramMessageLedgerEntry {
     (item.nextChunkIndex === undefined ||
       (Number.isSafeInteger(item.nextChunkIndex) && (item.nextChunkIndex as number) >= 0)) &&
     (item.deliveryUncertain === undefined || typeof item.deliveryUncertain === 'boolean') &&
-    (item.error === undefined || typeof item.error === 'string') &&
     (item.idempotencyKey === undefined || typeof item.idempotencyKey === 'string') &&
     (item.messageIds === undefined ||
       (Array.isArray(item.messageIds) &&

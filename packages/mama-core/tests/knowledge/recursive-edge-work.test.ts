@@ -55,4 +55,41 @@ describe('recursive edge preload work', () => {
       db.close();
     }
   });
+
+  it('decides each edge once while evaluating a deep reconverging DAG', () => {
+    const db = new Database(':memory:');
+    db.exec(`CREATE TABLE twin_edges (
+      edge_id TEXT PRIMARY KEY, edge_type TEXT, subject_kind TEXT, subject_id TEXT,
+      object_kind TEXT, object_id TEXT, source TEXT, content_hash BLOB, created_at INTEGER
+    );`);
+    const insert = db.prepare(
+      "INSERT INTO twin_edges VALUES (?, 'mentions', ?, ?, ?, ?, 'code', ?, 100)"
+    );
+    try {
+      insert.run('leaf', 'report', 'report-leaf', 'report', 'report-leaf', Buffer.alloc(32));
+      // 24 levels: a path-by-path evaluation visits about 2^25 edges; memoized, about 50.
+      for (let level = 0; level < 24; level++) {
+        for (const side of ['a', 'b']) {
+          insert.run(
+            `${side}-${level}`,
+            'edge',
+            level === 0 ? 'leaf' : `a-${level - 1}`,
+            'edge',
+            level === 0 ? 'leaf' : `b-${level - 1}`,
+            Buffer.alloc(32)
+          );
+        }
+      }
+      const started = Date.now();
+      const visible = visibleTwinRefKeysRecursive(
+        db as unknown as DatabaseAdapter,
+        [{ kind: 'edge', id: 'a-23' }],
+        {}
+      );
+      expect([...visible]).toEqual(['edge\0a-23']);
+      expect(Date.now() - started).toBeLessThan(1_000);
+    } finally {
+      db.close();
+    }
+  });
 });

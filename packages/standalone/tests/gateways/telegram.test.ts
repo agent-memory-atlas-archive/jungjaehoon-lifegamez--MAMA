@@ -105,7 +105,7 @@ async function gatewayFor(
 
 describe('TelegramGateway', () => {
   it.each([400, 403, 429, 503, undefined])(
-    'starts polling and continues recovery after a send error (%s)',
+    'recovers the next entry and starts polling after a send error (%s)',
     async (code) => {
       const root = mkdtempSync(join(tmpdir(), 'telegram-recovery-error-'));
       temporaryRoots.push(root);
@@ -116,9 +116,7 @@ describe('TelegramGateway', () => {
         ledger.markReady(key, key);
       }
       const log = vi.fn();
-      let pollingStartedBeforeRecovery = false;
       seams.api.sendMessage.mockImplementationOnce(async () => {
-        pollingStartedBeforeRecovery = seams.start.mock.calls.length === 1;
         throw Object.assign(new Error('fixture send error'), { error_code: code });
       });
       const gateway = new TelegramGateway({
@@ -130,14 +128,13 @@ describe('TelegramGateway', () => {
       });
       try {
         await expect(gateway.start()).resolves.toBeUndefined();
-        expect(pollingStartedBeforeRecovery).toBe(true);
         expect(seams.start).toHaveBeenCalledOnce();
         const entries = new TelegramMessageLedger(path);
+        // A definitive refusal stays ready at its chunk; anything else may have reached Telegram.
         expect(entries.get('outbound:failed')).toMatchObject({
-          state: code !== undefined && code < 500 ? 'failed' : 'ready',
-          ...(code !== undefined && code < 500
-            ? { error: 'fixture send error', deliveryUncertain: false }
-            : {}),
+          state: 'ready',
+          nextChunkIndex: 0,
+          deliveryUncertain: !(code !== undefined && code < 500),
         });
         expect(entries.get('outbound:next')?.state).toBe('delivered');
         expect(log.mock.calls.flat().join('\n')).toMatch(

@@ -1084,3 +1084,6 @@ The implementation writes raw/index data during import only. Replay is the owner
   edge CTE, Trello failed-board count). All eight fixed with a red/green test each; a re-download of the
   same attachment still replaces the earlier file (temp file + rename in the rechecked directory).
 - Live: not exercised; the Trello count is proven by fixtures while the live token returns 401.
+- Codex's review of that commit found five more (review-fixes.md §F5: cross-process directory swap,
+  checkpoint transcript scan, recovery chunk reset and polling race, destination binding, exponential
+  visibility evaluation); fixed with tests (a 24-level DAG fails on the old evaluator).

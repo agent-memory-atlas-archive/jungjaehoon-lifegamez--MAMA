@@ -90,7 +90,9 @@ describe('ChatworkConnector', () => {
       }
     );
     await connector.init();
-    await expect(connector.poll(new Date(0))).rejects.toThrow(/poll failed/);
+    await expect(connector.poll(new Date(0))).rejects.toThrow(
+      'Chatwork poll failed for 1 of 2 configured rooms; last error: Room second: HTTP 503'
+    );
     failSecondRoom = false;
     expect((await connector.poll(new Date(0))).map((item) => item.sourceId)).toEqual(['first:101']);
     await connector.dispose();
