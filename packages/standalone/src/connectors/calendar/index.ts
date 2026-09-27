@@ -9,6 +9,7 @@ import type {
   ConnectorPollCursor,
 } from '../framework/types.js';
 import { execGwsAsync } from '../framework/gws-utils.js';
+import { readConnectorState, writeConnectorState } from '../framework/connector-state.js';
 
 interface CalendarEvent {
   id: string;
@@ -53,8 +54,14 @@ export class CalendarConnector implements IConnector {
   // The primary calendar uses the existing configured channel key "calendar".
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   private readonly calendars: Array<{ key: string; id: string; label: string }>;
+  /** Calendars whose whole window has been collected once; later polls only ask for changes. */
+  private readonly synced: Set<string>;
+  private pendingSynced: Set<string> | null = null;
 
-  constructor(config: ConnectorConfig) {
+  constructor(
+    config: ConnectorConfig,
+    private readonly statePath: string
+  ) {
     const configured = Object.entries(config.channels).filter(
       ([key, channel]) =>
         channel.role !== 'ignore' && (channel.calendarId || key === 'calendar' || key === 'primary')
@@ -66,6 +73,26 @@ export class CalendarConnector implements IConnector {
           label: channel.name ?? key,
         }))
       : [{ key: 'calendar', id: 'primary', label: 'Primary calendar' }];
+    this.synced = new Set(
+      readConnectorState(statePath, (value) => {
+        const synced = (value as { synced?: unknown } | null)?.synced;
+        if (!Array.isArray(synced) || !synced.every((key) => typeof key === 'string')) {
+          throw new Error('Calendar connector state must list synced calendar keys');
+        }
+        return synced as string[];
+      }) ?? []
+    );
+  }
+
+  commitPoll(): void {
+    if (this.pendingSynced === null) return;
+    for (const key of this.pendingSynced) this.synced.add(key);
+    this.pendingSynced = null;
+    writeConnectorState(this.statePath, { synced: [...this.synced].sort() });
+  }
+
+  abortPollHandoff(): void {
+    this.pendingSynced = null;
   }
 
   private async verifyAccess(): Promise<void> {
@@ -131,7 +158,10 @@ export class CalendarConnector implements IConnector {
       const timeMin = windowStart.toISOString();
       const timeMax = new Date(windowStart.getTime() + EVENT_LIST_HORIZON_MS).toISOString();
       const observedAt = new Date().toISOString();
+      const pendingSynced = new Set<string>();
       for (const calendar of this.calendars) {
+        // A calendar added after the first poll still needs its whole window once.
+        const changesOnly = cursor?.hasCursor === true && this.synced.has(calendar.key);
         let pageToken: string | undefined;
         let pageComplete = false;
         const visitedPageTokens = new Set<string>();
@@ -145,7 +175,7 @@ export class CalendarConnector implements IConnector {
               calendarId: calendar.id,
               timeMin,
               timeMax,
-              ...(cursor?.hasCursor === true ? { updatedMin: since.toISOString() } : {}),
+              ...(changesOnly ? { updatedMin: since.toISOString() } : {}),
               singleEvents: true,
               showDeleted: true,
               orderBy: 'startTime',
@@ -188,8 +218,8 @@ export class CalendarConnector implements IConnector {
               .slice(0, 24);
             items.push({
               source: 'calendar',
-              sourceId: `${calendar.id === 'primary' && this.calendars.length === 1 ? '' : `${calendar.key}:`}${ev.id}:${version}`,
-              sourceEntityId: `${calendar.id === 'primary' && this.calendars.length === 1 ? '' : `${calendar.key}:`}${ev.id}`,
+              sourceId: `${calendar.key === 'calendar' ? '' : `${calendar.key}:`}${ev.id}:${version}`,
+              sourceEntityId: `${calendar.key === 'calendar' ? '' : `${calendar.key}:`}${ev.id}`,
               channel: calendar.key,
               author: previewText(organizer),
               content: [
@@ -219,7 +249,9 @@ export class CalendarConnector implements IConnector {
           throw new Error(
             `Calendar page cap (${MAX_EVENT_LIST_PAGES}) reached; upstream snapshot is incomplete`
           );
+        pendingSynced.add(calendar.key);
       }
+      this.pendingSynced = pendingSynced;
       this.lastPollTime = new Date();
       this.lastPollCount = items.length;
       this.lastError = undefined;

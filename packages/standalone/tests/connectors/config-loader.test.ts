@@ -36,6 +36,19 @@ describe('connector config loader', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.message).toContain('managed MAMA secret');
   });
+  it('accepts managed iCal feed secret names', () => {
+    const result = loadConnectorConfig(
+      writeConfig({
+        ical: {
+          ...valid,
+          channels: { stays: { role: 'reference', name: 'Stays', feedName: 'Stays' } },
+          auth: { type: 'token', tokenName: 'MAMA_ICAL_URL_STAYS' },
+        },
+      })
+    );
+    expect(result.ok).toBe(true);
+  });
+
   it('registers every restored connector with a loadable factory', async () => {
     const root = mkdtempSync(join(tmpdir(), 'connector-factory-'));
     roots.push(root);

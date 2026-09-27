@@ -36,7 +36,14 @@ const loaders: Record<
 > = {
   chatwork: async (config) => new (await import('./chatwork/index.js')).ChatworkConnector(config),
   slack: async (config) => new (await import('./slack/index.js')).SlackConnector(config),
-  calendar: async (config) => new (await import('./calendar/index.js')).CalendarConnector(config),
+  calendar: async (config, paths) => {
+    if (paths?.connectorStatePath === undefined)
+      throw new Error('Calendar connector state path is not configured');
+    return new (await import('./calendar/index.js')).CalendarConnector(
+      config,
+      paths.connectorStatePath
+    );
+  },
   ical: async (config) => new (await import('./ical/index.js')).ICalConnector(config),
   gmail: async (config) => new (await import('./gmail/index.js')).GmailConnector(config),
   drive: async (config, paths) => {

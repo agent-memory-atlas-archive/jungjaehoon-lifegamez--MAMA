@@ -187,7 +187,9 @@ export async function startConnectorRuntime(
 
   try {
     for (const name of enabledConnectorNames) {
-      const connectorStatePath = ['drive', 'sheets', 'discord', 'telegram'].includes(name)
+      const connectorStatePath = ['calendar', 'drive', 'sheets', 'discord', 'telegram'].includes(
+        name
+      )
         ? join(options.statePath, `${name}-state.json`)
         : undefined;
       const connector = await load(name, config.config[name], {

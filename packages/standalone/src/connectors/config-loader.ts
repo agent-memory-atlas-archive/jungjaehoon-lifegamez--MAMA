@@ -7,7 +7,7 @@ import type {
   ConnectorsConfig,
 } from './framework/types.js';
 import { LOADABLE_CONNECTORS } from './index.js';
-import { SECRET_NAMES } from '../cli/secrets.js';
+import { SECRET_NAMES, isIcalSecret } from '../cli/secrets.js';
 
 export type ConnectorConfigLoadErrorCode = 'read_error' | 'parse_error' | 'validation_error';
 
@@ -137,7 +137,7 @@ function auth(value: unknown, field: string, state: ValidationState): AuthConfig
   const result: AuthConfig = { type: raw.type };
   if (raw.tokenName !== undefined) {
     const name = text(raw.tokenName, `${field}.tokenName`);
-    if (!(SECRET_NAMES as readonly string[]).includes(name)) {
+    if (!(SECRET_NAMES as readonly string[]).includes(name) && !isIcalSecret(name)) {
       throw new ConfigValidationError(`${field}.tokenName must name a managed MAMA secret`);
     }
     result.tokenName = name;

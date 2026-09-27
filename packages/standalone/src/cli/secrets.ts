@@ -27,7 +27,7 @@ export const SECRET_NAMES = [
 ] as const;
 export type SecretName = (typeof SECRET_NAMES)[number] | `MAMA_ICAL_URL_${string}`;
 
-function isIcalSecret(name: string | undefined): name is `MAMA_ICAL_URL_${string}` {
+export function isIcalSecret(name: string | undefined): name is `MAMA_ICAL_URL_${string}` {
   return typeof name === 'string' && /^MAMA_ICAL_URL_[A-Z][A-Z0-9_]*$/.test(name);
 }
 

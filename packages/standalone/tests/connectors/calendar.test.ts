@@ -39,6 +39,12 @@ const config: ConnectorConfig = {
   auth: { type: 'cli', cli: 'gws', cliAuthCommand: 'gws auth login' },
 };
 const now = new Date('2024-01-15T00:00:00.000Z');
+const stateRoots: string[] = [];
+function statePath(): string {
+  const root = mkdtempSync(join(tmpdir(), 'calendar-state-'));
+  stateRoots.push(root);
+  return join(root, 'calendar-state.json');
+}
 const since = new Date('2024-01-10T00:00:00.000Z');
 const event = (overrides: Record<string, unknown> = {}) => ({
   id: 'fixture-event',
@@ -56,7 +62,7 @@ const list = (items: unknown[], extra: Record<string, unknown> = {}) =>
   JSON.stringify({ items, ...extra });
 
 async function initialized() {
-  const connector = await loadConnector('calendar', config);
+  const connector = await loadConnector('calendar', config, { connectorStatePath: statePath() });
   await connector.init();
   gws.run.mockClear();
   return connector;
@@ -67,11 +73,14 @@ beforeEach(() => {
   vi.setSystemTime(now);
   gws.run.mockReset().mockReturnValue(list([]));
 });
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  for (const root of stateRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 describe('CalendarConnector (ported from the pre-stub connector)', () => {
   it('loads through the production loader and verifies calendar access at init', async () => {
-    const connector = await loadConnector('calendar', config);
+    const connector = await loadConnector('calendar', config, { connectorStatePath: statePath() });
     await connector.init();
     expect(connector.name).toBe('calendar');
     expect(connector.type).toBe('api');
@@ -100,7 +109,7 @@ describe('CalendarConnector (ported from the pre-stub connector)', () => {
     gws.run.mockImplementation(() => {
       throw error;
     });
-    const connector = await loadConnector('calendar', config);
+    const connector = await loadConnector('calendar', config, { connectorStatePath: statePath() });
     await expect(connector.init()).rejects.toThrow(fix);
     await expect(connector.healthCheck()).resolves.toMatchObject({
       healthy: false,
@@ -111,7 +120,7 @@ describe('CalendarConnector (ported from the pre-stub connector)', () => {
 
   it('rejects JSON error output even when gws exits successfully', async () => {
     gws.run.mockReturnValue(JSON.stringify({ error: { code: 401, message: 'Login required' } }));
-    const connector = await loadConnector('calendar', config);
+    const connector = await loadConnector('calendar', config, { connectorStatePath: statePath() });
     await expect(connector.init()).rejects.toThrow(/gws auth login/);
   });
 
@@ -140,6 +149,7 @@ describe('CalendarConnector (ported from the pre-stub connector)', () => {
     await connector.poll(since, { hasCursor: false });
     const first = JSON.parse(gws.run.mock.calls[0]![0]!.at(-1)!) as Record<string, unknown>;
     expect(first).not.toHaveProperty('updatedMin');
+    connector.commitPoll?.();
     gws.run.mockClear();
     await connector.poll(since, { hasCursor: true });
     const later = JSON.parse(gws.run.mock.calls[0]![0]!.at(-1)!) as Record<string, unknown>;
@@ -147,13 +157,17 @@ describe('CalendarConnector (ported from the pre-stub connector)', () => {
   });
 
   it('reads configured calendars with their keys as channels and display names', async () => {
-    const connector = await loadConnector('calendar', {
-      ...config,
-      channels: {
-        calendar: { role: 'reference', name: 'Owner calendar' },
-        holidays: { role: 'reference', calendarId: 'holiday-id', name: 'Public holidays' },
+    const connector = await loadConnector(
+      'calendar',
+      {
+        ...config,
+        channels: {
+          calendar: { role: 'reference', name: 'Owner calendar' },
+          holidays: { role: 'reference', calendarId: 'holiday-id', name: 'Public holidays' },
+        },
       },
-    });
+      { connectorStatePath: statePath() }
+    );
     await connector.init();
     gws.run.mockClear().mockReturnValue(list([event()]));
     const items = await connector.poll(since, { hasCursor: false });
@@ -511,4 +525,28 @@ describe('calendar through the daemon connector runtime', () => {
       }
     }
   );
+
+  it('collects the whole window once for a calendar added after earlier polls', async () => {
+    const path = statePath();
+    writeFileSync(path, JSON.stringify({ synced: ['calendar'] }));
+    const connector = await loadConnector(
+      'calendar',
+      {
+        ...config,
+        channels: {
+          calendar: { role: 'reference', name: 'Primary calendar' },
+          holidays: { role: 'reference', calendarId: 'holiday-id', name: 'Holidays' },
+        },
+      },
+      { connectorStatePath: path }
+    );
+    await connector.init();
+    gws.run.mockClear();
+    await connector.poll(since, { hasCursor: true });
+    const params = gws.run.mock.calls.map((call) => JSON.parse(call[0][4] as string));
+    expect(params.find((p) => p.calendarId === 'primary')).toHaveProperty('updatedMin');
+    expect(params.find((p) => p.calendarId === 'holiday-id')).not.toHaveProperty('updatedMin');
+    connector.commitPoll?.();
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ synced: ['calendar', 'holidays'] });
+  });
 });
