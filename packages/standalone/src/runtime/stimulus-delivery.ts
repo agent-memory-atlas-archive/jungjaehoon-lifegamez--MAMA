@@ -18,7 +18,6 @@ import type { QueueCandidateScore, QueueLine, WindowQueue } from '../replay/wind
 import { renderRecentOwnerExchanges, type OwnerExchange } from './recent-owner-exchanges.js';
 import type { OwnerRuntimeBackend } from './owner-system-prompt.js';
 import { buildScheduledReportPrompt } from './report-prompts.js';
-import { isLaneRecord, laneForStimulus, renderLaneInstructions } from './lane-instructions.js';
 import { localStamp, type TimeZoneSetting } from './timezone.js';
 import { workListTitleTextScore, type OpenWorkCandidate } from '../api/work-actions.js';
 import type { ReportSlot } from '../api/report-handler.js';
@@ -526,29 +525,39 @@ function oneLine(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
 }
 
-function guidanceLine(entry: GuidanceEntry): string {
-  const when = entry.applies_when
-    ? `applies when: ${oneLine(entry.applies_when)}`
-    : `summary: ${oneLine(entry.summary)}`;
-  return `${oneLine(entry.id)} | ${entry.kind} | ${oneLine(entry.topic)} | ${when}`;
+/** One owner correction in full: its header, what it says and, for a procedure, its steps. */
+function guidanceBlock(entry: GuidanceEntry): string {
+  return [
+    `${oneLine(entry.id)} | ${entry.kind} | ${oneLine(entry.topic)}${entry.applies_when ? ` | applies when: ${oneLine(entry.applies_when)}` : ''}`,
+    `  ${oneLine(entry.summary)}`,
+    ...(entry.steps ?? []).map((step, index) => `  ${index + 1}. ${oneLine(step)}`),
+    ...(entry.evidence_checks ?? []).map((check) => `  check: ${oneLine(check)}`),
+  ].join('\n');
 }
 
 function guidanceVersion(entry: GuidanceEntry): string {
   return `${String(entry.updated_at)}\0${entry.kind}\0${entry.status}`;
 }
 
+/** Active corrections oldest first, so a later correction reads after the one it refines. */
 function activeGuidance(entries: readonly GuidanceEntry[]): GuidanceEntry[] {
   return entries
     .filter((entry) => entry.status === 'active')
     .slice()
-    .sort((left, right) => left.id.localeCompare(right.id));
+    .sort(
+      (left, right) => guidanceTime(left) - guidanceTime(right) || left.id.localeCompare(right.id)
+    );
+}
+
+function guidanceTime(entry: GuidanceEntry): number {
+  return typeof entry.updated_at === 'number' ? entry.updated_at : Date.parse(entry.updated_at);
 }
 
 function renderGuidanceIndex(entries: readonly GuidanceEntry[]): string {
   return [
-    '<guidance-index>',
-    ...activeGuidance(entries).map(guidanceLine),
-    '</guidance-index>',
+    '<owner-corrections>',
+    ...activeGuidance(entries).map(guidanceBlock),
+    '</owner-corrections>',
   ].join('\n');
 }
 
@@ -570,19 +579,19 @@ function renderGuidanceDelta(
     const after = guidanceVersion(entry);
     if (before === after) continue;
     if (entry.status === 'active') {
-      changes.push(`${before === undefined ? 'added' : 'revised'}: ${guidanceLine(entry)}`);
+      changes.push(`${before === undefined ? 'added' : 'revised'}: ${guidanceBlock(entry)}`);
     } else if (before?.endsWith('\0active')) {
       changes.push(
-        `retired: ${oneLine(entry.id)} | ${entry.kind} | ${oneLine(entry.topic)} | status: ${entry.status}`
+        `${entry.status === 'superseded' ? 'replaced' : 'retired'}: ${oneLine(entry.id)} | ${entry.kind} | ${oneLine(entry.topic)} | status: ${entry.status}`
       );
     }
   }
   return changes.length === 0
     ? ''
     : [
-        '<guidance-delta>',
+        '<owner-corrections-changed>',
         ...changes.sort((left, right) => left.localeCompare(right)),
-        '</guidance-delta>',
+        '</owner-corrections-changed>',
       ].join('\n');
 }
 
@@ -595,17 +604,14 @@ function assembledContent(
     StimulusDeliveryOptions,
     'wikiEnabled' | 'formattingRoutes' | 'backend' | 'timeZone'
   >,
-  candidates: readonly string[] = [],
-  laneInstruction = ''
+  candidates: readonly string[] = []
 ): ContentBlock[] {
   return [
     {
       type: 'text',
-      text: [
-        ...sessionBlocks,
-        ...(laneInstruction === '' ? [] : [laneInstruction]),
-        boundedStimulus(row, liveSourceDelta, options, candidates),
-      ].join('\n\n'),
+      text: [...sessionBlocks, boundedStimulus(row, liveSourceDelta, options, candidates)].join(
+        '\n\n'
+      ),
     },
   ];
 }
@@ -688,18 +694,7 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
         prepareSessionContent: async ({ isNewSession }) => {
           const sessionBlocks: string[] = [];
           const pipeline = isNewSession ? await options.openWorkPipeline?.() : undefined;
-          const entries = await options.guidanceResolver();
-          // Lane records are rendered in full for their lane each turn, not listed as guidance.
-          const guidance = entries.filter((entry) => !isLaneRecord(entry));
-          const lane = laneForStimulus(row.kind, row.payload);
-          const laneInstruction = lane
-            ? renderLaneInstructions(
-                lane,
-                entries,
-                options.backend ?? 'codex',
-                options.wikiEnabled ?? true
-              )
-            : '';
+          const guidance = await options.guidanceResolver();
           const sessionKey = OWNER_RUNTIME_SESSION_KEY;
           const lastDelivered = guidanceBySessionKey.get(sessionKey);
           if (isNewSession) {
@@ -734,8 +729,7 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
             options,
             liveSourceDelta
               ? relatedWorkCandidates(row, (await options.openWorkCandidates?.()) ?? [])
-              : [],
-            laneInstruction
+              : []
           );
         },
         sessionKey: OWNER_RUNTIME_SESSION_KEY,

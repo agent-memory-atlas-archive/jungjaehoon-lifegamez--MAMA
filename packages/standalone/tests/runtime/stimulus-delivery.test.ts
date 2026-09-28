@@ -223,7 +223,6 @@ describe('one stimulus intake and delivery', () => {
     const section = prompt.split('candidates (you decide):')[1] ?? '';
     expect(section).toContain(sameChannel.commitmentId);
     expect(section).toContain(overlapping.commitmentId);
-    expect(prompt).toContain('manage.wiki.update');
     expect(section).not.toContain(old.commitmentId);
   });
 
@@ -498,13 +497,12 @@ describe('one stimulus intake and delivery', () => {
     );
 
     expect(guidanceResolver).toHaveBeenCalledWith();
-    expect(prompt).toContain('<guidance-index>');
+    expect(prompt).toContain('<owner-corrections>');
     expect(prompt).toContain('<open-work-pipeline>');
     expect(prompt).toContain('Open item');
-    expect(prompt).toContain(
-      'legacy-guidance | lesson | release review | summary: Use the verified owner workflow for release review.'
-    );
-    expect(prompt).not.toContain('<guidance-delta>');
+    expect(prompt).toContain('legacy-guidance | lesson | release review');
+    expect(prompt).toContain('  Use the verified owner workflow for release review.');
+    expect(prompt).not.toContain('<owner-corrections-changed>');
   });
 
   it('includes the saved board slots and timestamps in a new session', async () => {
@@ -606,7 +604,7 @@ describe('one stimulus intake and delivery', () => {
       context as never
     );
 
-    expect(prompt).toContain('<guidance-index>\n</guidance-index>');
+    expect(prompt).toContain('<owner-corrections>\n</owner-corrections>');
   });
 
   it('does not use source-delta text to query guidance', async () => {
@@ -713,11 +711,11 @@ describe('one stimulus intake and delivery', () => {
 
     expect(guidanceResolver).toHaveBeenCalledTimes(2);
     expect(guidanceResolver.mock.calls.every((args) => args.length === 0)).toBe(true);
-    expect(prompts[0]).toContain('<guidance-index>');
+    expect(prompts[0]).toContain('<owner-corrections>');
     expect(prompts[0]).toContain(
       'startup-guidance | preference | asset delivery | applies when: When delivering a reviewed asset'
     );
-    expect(prompts[1]).not.toContain('<guidance-index>');
+    expect(prompts[1]).not.toContain('<owner-corrections>');
     expect(prompts[0]).toContain('use the earlier asset');
     expect(prompts[0]).toContain('prior delivered answer');
     expect(prompts[1]).not.toContain('<recent_owner_exchanges>');
@@ -1007,30 +1005,21 @@ describe('one stimulus intake and delivery', () => {
         } as never
       );
       expect(results).toEqual(['Owner report']);
-      expect(prompt).toContain('<guidance-index>');
+      expect(prompt).toContain('<owner-corrections>');
       expect(guidanceResolver).toHaveBeenCalledWith();
       expect(prompt).not.toMatch(/lodging|check-ins|check-outs/i);
-      expect(prompt).toContain(
-        `<lane-instructions lane="${report === 'full' ? 'full-report' : 'hourly-reminder'}">`
-      );
-      expect(prompt).toContain('work.list');
+      // The report instructions are standing text; the turn carries the report tag and host data.
       expect(prompt).toContain('no commitment, observation, judgment or channel ids');
       if (report === 'full') {
         for (const part of [
-          'Publish all four board sections with report.publish',
-          'source.recent',
-          'work.list with view="pipeline"',
-          'schedule.upcoming with days=14',
+          '[scheduled_full_report]',
+          'Previous full report boundary:',
           'Slot HTML must use ONLY this class vocabulary',
         ])
           expect(prompt).toContain(part);
       } else {
         for (const part of [
-          'what this owner session already knows',
-          'view="pipeline"',
-          'most need attention this hour',
-          'at a glance',
-          'action_required',
+          '[scheduled_task_reminder]',
           'Source deltas handled since the previous report (the latest 0 of 0; cap 50;',
         ])
           expect(prompt).toContain(part);

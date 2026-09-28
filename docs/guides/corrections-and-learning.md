@@ -11,66 +11,47 @@ applies. For example: “For the daily report, put the actions I need to take fi
 Keep ordinary answers in their usual order.” A task-specific correction should
 identify the affected work and its evidence.
 
-## Save or revise guidance
+## How a correction is applied and kept
 
-At the start of a new owner session, MAMA gives the agent an index of active
-lessons, preferences, constraints, and workflows. Each line includes an id,
-kind, topic, and the situation where it applies. When an entry applies, the agent
-reads the full record with `memory.read:record` before acting.
+When you correct MAMA, the agent applies the correction to the current work in the
+same turn: it revises the affected work items and board sections, reading the
+originals it needs, and only then replies. It does not answer with a promise for
+something it can do now.
 
-The agent saves an owner correction or an approved way of working with
-`memory.save`. Every lesson, preference, constraint, and workflow needs an
-`appliesWhen` line. Use kind `workflow` for a procedure and include its ordered
-steps; add `evidenceChecks` when the procedure must check particular evidence.
-Use `lesson`, `preference`, or `constraint` for other guidance. Link the owner's
-message with a `derived_from` link when its observation reference is available.
+It then keeps the correction as a lesson, preference, constraint, or workflow,
+saved with `memory.save` and an `appliesWhen` line. Use kind `workflow` for a
+procedure and include its ordered steps; add `evidenceChecks` when the procedure
+must check particular evidence. The agent compares a new correction with the ones
+it already has. When it belongs with an earlier one, the agent revises that
+record with `replaces`, keeping every earlier point you have not withdrawn or
+replaced; otherwise it saves a new one. It links your message with a
+`derived_from` link when its observation reference is available. A request you
+mark as for this time only is applied to that answer and not saved.
 
-To change existing guidance, name it in `memory.save`'s `replaces` field. The old
-record stays in history. Use `memory.retire` with a reason when the owner
-withdraws guidance or it no longer applies. Retirement changes its status and
-keeps the record; it does not delete it. `memory.read:provenance` reads the
-record's source links. If a correction changes work status, ownership, or
-history, MAMA also needs to revise that work; guidance alone does not change the
-[board](reports-and-board.md).
+The old record stays in history. Use `memory.retire` with a reason when you
+withdraw a correction or it no longer applies; retirement changes its status and
+keeps the record. `memory.read:provenance` reads the record's source links.
 
-Older guidance may not have an `appliesWhen` line. Its index line shows the
-record's summary instead. The agent can revise it when its scope needs to be made
-clear.
+## When corrections reach the agent
 
-## Correct how a lane works
+MAMA's built-in instructions for source changes, hourly reminders, full reports,
+and answers form one rule set that the agent holds for every kind of turn,
+together with the messenger's formatting rules. A report you ask for in chat
+follows the same instructions as the scheduled full report.
 
-MAMA works in four lanes: source changes, hourly reminders, full reports, and
-owner answers. Each lane follows MAMA's built-in instructions plus your
-corrections for that lane. The corrections are one `workflow` record with topic
-`lane/source-delta`, `lane/hourly-reminder`, `lane/full-report`, or
-`lane/owner-answer`. They sit on top of the built-in instructions and win where
-the two conflict, so a correction never removes an instruction it does not
-mention.
+Every active correction is shown to the agent in full (its summary, the situation
+where it applies, and its steps) on the first turn of a new owner session, along
+with the recent owner exchanges carried into that session. Later turns receive a
+correction again, in full, whenever it is added or revised, and a note when it is
+retired. Corrections take precedence over the built-in instructions wherever they
+fit, whichever kind of turn they came from; when two conflict, the later one
+wins. Corrections never change the rules on untrusted source content,
+credentials, success claims, or administration, and they do not change the reply
+markers or the board layout.
 
-When you correct how a lane works, such as how reminders are formatted or when
-MAMA should notify you, the agent compares it with that lane's current
-corrections, which every owner turn shows for all four lanes, and saves the
-consolidated set in the same turn: earlier corrections you have not withdrawn or
-replaced stay, and overlapping ones are merged. It does not save a separate
-lesson. A request about reporting, formatting, or
-notification counts as a correction even when you phrase it casually; one you mark
-as for this time only is applied to that answer and not saved. The
-reply format markers, security rules, and board layout are not part of a lane
-and stay fixed.
-
-## When guidance reaches the agent
-
-The full index arrives on the first turn of a new owner session, along with the
-recent owner exchanges already carried into that session. Later turns in that
-session receive only guidance added, revised, or retired since the last index.
-Scheduled reports, source changes, and native events follow the same rule. An
-unchanged index produces no extra block. Lane records are left out of the index:
-each turn shows its lane's built-in instructions and current corrections in full.
-
-The agent decides whether an entry applies. Guidance is not evidence of current
-work state: the agent still reads the work record and preserved originals when
-needed. `memory.read:record` reads the full guidance; `memory.read:provenance`
-and `source.read` help check its basis.
+The agent decides whether a correction applies. A correction is not evidence of
+current work state: the agent still reads the work record and preserved originals
+when needed.
 
 ## Check the next related situation
 

@@ -67,19 +67,20 @@ describe('owner guidance index delivery', () => {
     } as never);
 
     const first = await deliver(delivery, 'owner_message', 'first-input', true);
-    expect(first).toContain('<guidance-index>');
+    expect(first).toContain('<owner-corrections>');
     expect(first).toContain(
       'memory-guidance-1 | lesson | release review | applies when: When a release is ready for review'
     );
+    expect(first).toContain('  Review the build before sending it.');
     expect(first).toContain('<recent_owner_exchanges>');
     expect(first).toContain('A recent request');
 
     const second = await deliver(delivery, 'owner_message', 'second-input', false);
-    expect(second).not.toContain('<guidance-index>');
-    expect(second).not.toContain('<guidance-delta>');
+    expect(second).not.toContain('<owner-corrections>');
+    expect(second).not.toContain('<owner-corrections-changed>');
 
     const restarted = await deliver(delivery, 'owner_message', 'third-input', true);
-    expect(restarted).toContain('<guidance-index>');
+    expect(restarted).toContain('<owner-corrections>');
     expect(guidanceResolver).toHaveBeenCalledTimes(3);
   });
 
@@ -127,15 +128,19 @@ describe('owner guidance index delivery', () => {
     });
 
     const delta = await deliver(delivery, 'scheduled', 'scheduled-input', false);
-    expect(delta).toContain('<guidance-delta>');
+    expect(delta).toContain('<owner-corrections-changed>');
     expect(delta).toContain('memory-guidance-revised');
     expect(delta).toContain('When a release needs a second review');
     expect(delta).toContain('memory-guidance-added | workflow | publish a release');
+    expect(delta).toContain('  1. Read the checklist');
+    expect(delta).toContain('  3. Send the summary');
     expect(delta).toContain('retired: memory-guidance-retired | constraint | old approval route');
-    expect(delta).not.toContain('Review the build before sending it.');
+    // A revised correction arrives in full, so the agent never works from a stale copy.
+    expect(delta).toContain('revised: memory-guidance-revised');
+    expect(delta).toContain('  Review the build before sending it.');
 
     const unchanged = await deliver(delivery, 'native_event', 'native-input', false);
-    expect(unchanged).not.toContain('<guidance-delta>');
+    expect(unchanged).not.toContain('<owner-corrections-changed>');
   });
 
   it('uses the same session index for owner, source-delta, scheduled, and native-event turns', async () => {
@@ -151,8 +156,8 @@ describe('owner guidance index delivery', () => {
       ['native_event', 'native-input'],
     ]) {
       const prompt = await deliver(delivery, kind, id, false);
-      expect(prompt).not.toContain('<guidance-index>');
-      expect(prompt).not.toContain('<guidance-delta>');
+      expect(prompt).not.toContain('<owner-corrections>');
+      expect(prompt).not.toContain('<owner-corrections-changed>');
     }
     expect(guidanceResolver).toHaveBeenCalledTimes(4);
     expect(guidanceResolver.mock.calls.every((args) => args.length === 0)).toBe(true);
@@ -179,199 +184,27 @@ describe('owner guidance index delivery', () => {
       'model turn did not complete'
     );
     const retry = await deliver(delivery, 'owner_message', 'retry-input', false);
-    expect(retry).toContain('<guidance-delta>');
+    expect(retry).toContain('<owner-corrections-changed>');
     expect(retry).toContain('added: memory-guidance-pending');
   });
 
-  it('keeps lane workflows out of the session guidance index and delta', async () => {
-    const records: Array<Record<string, unknown>> = [];
-    const delivery = createStimulusDelivery({
-      guidanceResolver: async () => records as never,
-      timeZone: createTimeZoneSetting('UTC'),
-    } as never);
-
-    records.push({
-      id: 'lane-topic-lesson',
-      kind: 'lesson',
-      topic: 'lane/source-delta',
-      applies_when: 'When a delta mentions a vendor',
-      summary: 'A lesson saved under a lane topic is still guidance.',
-      status: 'active',
-      updated_at: 1,
-    });
-    const initial = await deliver(delivery, 'owner_message', 'lane-index-first', true);
-    expect(initial).toContain('lane-topic-lesson | lesson | lane/source-delta');
-    records.push({
-      id: 'lane-record',
-      kind: 'workflow',
-      topic: 'lane/source-delta',
-      applies_when: 'For live source deltas',
-      steps: ['Replace this lane instruction.'],
-      summary: 'Editable lane workflow',
-      status: 'active',
-      updated_at: 1,
-    });
-    const next = await deliver(delivery, 'scheduled', 'lane-index-next', false);
-    expect(next).not.toContain('lane-record | workflow');
-    expect(next).not.toContain('<guidance-index>');
-  });
-
-  it('renders each lane default and the current workflow once in turn content', async () => {
-    const current: Array<Record<string, unknown>> = [];
-    const delivery = createStimulusDelivery({
-      guidanceResolver: async () => current as never,
-      timeZone: createTimeZoneSetting('UTC'),
-    } as never);
-
-    for (const [kind, id, lane] of [
-      ['source_delta', 'lane-default-delta', 'source-delta'],
-      ['scheduled', 'lane-default-reminder', 'hourly-reminder'],
-      ['scheduled', 'lane-default-full', 'full-report'],
-      ['owner_message', 'lane-default-owner', 'owner-answer'],
-    ] as const) {
-      const prompt = await deliver(delivery, kind, id, false);
-      expect(prompt).toContain(`<lane-instructions lane="${lane}">`);
-      expect(prompt).not.toContain('Owner corrections for this lane');
-      expect(prompt.match(/<lane-instructions /g)).toHaveLength(1);
-      const defaultText = {
-        'source-delta': 'Decide whether each live source delta is chatter',
-        'hourly-reminder': 'Use what this owner session already knows',
-        'full-report': 'Call source.recent for changes since the supplied prior full-report time',
-        'owner-answer': 'Keep the answer concise, with no working notes',
-      }[lane];
-      expect(prompt).toContain(defaultText);
-      if (lane === 'owner-answer') {
-        expect(prompt).toContain(
-          'When the owner asks for work to be done or corrects the state of work, do it in this turn for every affected item'
-        );
-        // An owner turn that changes work keeps every still-true card on the board.
-        expect(prompt).toContain('preserving every card that remains true');
-      }
-      if (lane === 'source-delta') {
-        expect(prompt).toContain('Set eventDatetime to the source event time');
-        expect(prompt).toContain('assignee and roles the evidence points to');
-        expect(prompt).toContain('Record "unconfirmed" only when no observation points to anyone');
-        expect(prompt).toContain('Read work.show only when a revise is rejected as stale');
-        expect(prompt).toContain('end_of_window_instructions');
-        expect(
-          prompt.match(/Update every board section the item appears in or leaves/g)
-        ).toHaveLength(1);
-      }
-    }
-
-    for (const [kind, id, lane] of [
-      ['source_delta', 'lane-saved-delta', 'source-delta'],
-      ['scheduled', 'lane-saved-reminder', 'hourly-reminder'],
-      ['scheduled', 'lane-saved-full', 'full-report'],
-      ['owner_message', 'lane-saved-owner', 'owner-answer'],
-    ] as const) {
-      current.length = 0;
-      current.push({
-        id: `saved-${lane}`,
-        kind: 'workflow',
-        topic: `lane/${lane}`,
-        summary: `Saved summary for ${lane}.`,
-        details: `Saved instruction text for ${lane}.`,
-        applies_when: `For ${lane}`,
-        steps: [`Apply the saved ${lane} instruction.`],
-        status: 'active',
-        updated_at: 1,
-      });
-      const prompt = await deliver(delivery, kind, id, false);
-      expect(prompt).toContain(`<lane-instructions lane="${lane}">`);
-      // A correction sits on top of the default: the default lines stay and the correction wins.
-      const defaultLine = {
-        'source-delta': 'Decide whether each live source delta is chatter',
-        'hourly-reminder': 'Use what this owner session already knows',
-        'full-report': 'Call source.recent for changes since the supplied prior full-report time',
-        'owner-answer': 'Keep the answer concise, with no working notes',
-      }[lane];
-      expect(prompt).toContain(defaultLine);
-      expect(prompt).toContain(
-        `Owner corrections for this lane (record saved-${lane}); where they conflict with the default lines above, these apply:`
-      );
-      expect(prompt).toContain(`Saved summary for ${lane}.`);
-      expect(prompt).toContain(`Apply the saved ${lane} instruction.`);
-      expect(prompt).not.toContain(`Saved instruction text for ${lane}.`);
-      // The default comes first, the correction under it, and nothing tells the turn to save.
-      expect(prompt.indexOf(defaultLine)).toBeLessThan(
-        prompt.indexOf('Owner corrections for this lane')
-      );
-      expect(prompt).not.toContain('memory.save');
-      expect(prompt.match(/<lane-instructions /g)).toHaveLength(1);
-    }
-  });
-
-  it('keeps the fixed delta marker contract when its lane workflow omits markers', async () => {
-    const delivery = createStimulusDelivery({
-      guidanceResolver: async () =>
-        [
-          {
-            id: 'delta-without-markers',
-            kind: 'workflow',
-            topic: 'lane/source-delta',
-            summary: 'Handle the change.',
-            applies_when: 'For deltas',
-            steps: ['Record changed work.'],
-            status: 'active',
-            updated_at: 1,
-          },
-        ] as never,
-      timeZone: createTimeZoneSetting('UTC'),
-    } as never);
-
-    const prompt = await deliver(delivery, 'source_delta', 'delta-marker-contract', false);
-    expect(prompt).toContain(
-      'End this turn with exactly one marker: [notify] followed by the message the owner receives, or [ack].'
-    );
-    expect(prompt.match(/<lane-instructions /g)).toHaveLength(1);
-  });
-
-  it('shows a replayed delta its lane text unchanged and states that nothing is delivered', async () => {
-    const delivery = createStimulusDelivery({
-      guidanceResolver: async () =>
-        [
-          {
-            id: 'delta-with-markers',
-            kind: 'workflow',
-            topic: 'lane/source-delta',
-            summary: 'Handle the change.',
-            applies_when: 'For deltas',
-            steps: ['Send [ack] for chatter and record nothing.'],
-            status: 'active',
-            updated_at: 1,
-          },
-        ] as never,
-      timeZone: createTimeZoneSetting('UTC'),
-    } as never);
-
-    const prompt = await deliver(delivery, 'replay_delta', 'replay-lane-text', false);
-    expect(prompt).toContain('Send [ack] for chatter and record nothing.');
-    expect(prompt).toContain(
-      'This replay window is history and is not delivered to the owner: notification instructions do not apply, and the turn ends without [notify] or [ack].'
-    );
-    expect(prompt).not.toContain('End this turn with exactly one marker');
-  });
-
-  it("shows owner turns the other lanes' current corrections to compare with", async () => {
+  it('shows every active correction in full, whatever its topic, and nothing retired', async () => {
     const records = [
       {
-        id: 'delta-correction',
+        id: 'report-style',
         kind: 'workflow',
-        topic: 'lane/source-delta',
-        summary: 'Bundle routine changes into the hourly reminder.',
-        applies_when: 'For deltas',
-        steps: ['Notify only urgent changes.'],
+        topic: 'lane/full-report',
+        applies_when: 'When writing a report',
+        summary: 'Reports lead with the conclusion.',
+        steps: ['Write sections with headings.', 'Leave out greetings and apologies.'],
         status: 'active',
         updated_at: 2,
       },
       {
-        id: 'old-reminder-correction',
-        kind: 'workflow',
-        topic: 'lane/hourly-reminder',
-        summary: 'Superseded reminder correction.',
-        applies_when: 'For reminders',
-        steps: ['Old step.'],
+        id: 'old-style',
+        kind: 'preference',
+        topic: 'report style',
+        summary: 'A withdrawn preference.',
         status: 'superseded',
         updated_at: 1,
       },
@@ -381,111 +214,120 @@ describe('owner guidance index delivery', () => {
       timeZone: createTimeZoneSetting('UTC'),
     } as never);
 
-    const owner = await deliver(delivery, 'owner_message', 'owner-sees-corrections', false);
+    const owner = await deliver(delivery, 'owner_message', 'corrections-in-full', true);
     expect(owner).toContain(
-      'Current owner corrections of the other lanes (they apply in those lanes, not in this answer):'
+      'report-style | workflow | lane/full-report | applies when: When writing a report'
     );
-    expect(owner).toContain(
-      'lane/source-delta (record delta-correction): Bundle routine changes into the hourly reminder.'
-    );
-    expect(owner).toContain('- Notify only urgent changes.');
-    expect(owner).toContain('lane/hourly-reminder: none');
-    expect(owner).toContain('lane/full-report: none');
-    expect(owner).not.toContain('Superseded reminder correction.');
-
-    const delta = await deliver(delivery, 'source_delta', 'delta-no-other-lanes', false);
-    expect(delta).not.toContain('Current owner corrections of the other lanes');
+    expect(owner).toContain('  Reports lead with the conclusion.');
+    expect(owner).toContain('  1. Write sections with headings.');
+    expect(owner).toContain('  2. Leave out greetings and apologies.');
+    expect(owner).not.toContain('A withdrawn preference.');
   });
 
-  it('shows every active correction record of a lane, oldest first', async () => {
-    const records = ['first', 'second'].map((name, index) => ({
-      id: `${name}-reminder-correction`,
-      kind: 'workflow',
-      topic: 'lane/hourly-reminder',
-      summary: `The ${name} reminder correction.`,
-      applies_when: 'For reminders',
-      steps: [`Apply the ${name} correction.`],
-      status: 'active',
-      updated_at: index + 1,
-    }));
+  it('marks a correction replaced by a newer one as replaced, not retired', async () => {
+    const records: Array<Record<string, unknown>> = [
+      {
+        id: 'first-style',
+        kind: 'preference',
+        topic: 'report style',
+        summary: 'Short reports.',
+        status: 'active',
+        updated_at: 1,
+      },
+    ];
     const delivery = createStimulusDelivery({
-      guidanceResolver: async () => records.slice().reverse() as never,
+      guidanceResolver: async () => records as never,
+      timeZone: createTimeZoneSetting('UTC'),
+    } as never);
+    await deliver(delivery, 'owner_message', 'style-first', true);
+    records[0] = { ...records[0], status: 'superseded', updated_at: 2 };
+    records.push({
+      id: 'second-style',
+      kind: 'preference',
+      topic: 'report style',
+      summary: 'Short reports with section headings.',
+      status: 'active',
+      updated_at: 2,
+    });
+
+    const next = await deliver(delivery, 'owner_message', 'style-next', false);
+    expect(next).toContain(
+      'replaced: first-style | preference | report style | status: superseded'
+    );
+    expect(next).toContain('added: second-style | preference | report style');
+    expect(next).toContain('  Short reports with section headings.');
+  });
+
+  it('lists corrections oldest first even when their times are stored differently', async () => {
+    const records = [
+      {
+        id: 'b-newer',
+        kind: 'lesson',
+        topic: 't',
+        summary: 'Newer.',
+        status: 'active',
+        updated_at: '2026-09-28T10:00:00.000Z',
+      },
+      {
+        id: 'a-older',
+        kind: 'lesson',
+        topic: 't',
+        summary: 'Older.',
+        status: 'active',
+        updated_at: Date.parse('2026-09-28T09:00:00.000Z'),
+      },
+      {
+        id: 'c-oldest',
+        kind: 'lesson',
+        topic: 't',
+        summary: 'Oldest.',
+        status: 'active',
+        updated_at: 999_999_999,
+      },
+    ];
+    const delivery = createStimulusDelivery({
+      guidanceResolver: async () => records as never,
       timeZone: createTimeZoneSetting('UTC'),
     } as never);
 
-    const reminder = await deliver(delivery, 'scheduled', 'two-corrections-reminder', false);
-    expect(reminder).toContain(
-      'Owner corrections for this lane (record first-reminder-correction, second-reminder-correction); where they conflict with the default lines above, these apply, and a later record wins over an earlier one:'
-    );
-    expect(reminder.indexOf('The first reminder correction.')).toBeLessThan(
-      reminder.indexOf('The second reminder correction.')
-    );
-
-    const owner = await deliver(delivery, 'owner_message', 'two-corrections-owner', false);
-    expect(owner).toContain('lane/hourly-reminder (record first-reminder-correction)');
-    expect(owner).toContain('lane/hourly-reminder (record second-reminder-correction)');
+    const prompt = await deliver(delivery, 'owner_message', 'ordering', true);
+    const order = ['Oldest.', 'Older.', 'Newer.'].map((text) => prompt.indexOf(text));
+    expect(order).toEqual([...order].sort((left, right) => left - right));
   });
 
-  it('gives owner-answer turns no delta marker contract', async () => {
+  it('keeps the delta marker contract in live source-delta turns', async () => {
+    const delivery = createStimulusDelivery({
+      guidanceResolver: async () => [],
+      timeZone: createTimeZoneSetting('UTC'),
+    } as never);
+
+    const prompt = await deliver(delivery, 'source_delta', 'delta-marker-contract', false);
+    expect(prompt).toContain(
+      'End this turn with exactly one marker: [notify] followed by the message the owner receives, or [ack].'
+    );
+  });
+
+  it('tells a replayed delta that nothing is delivered', async () => {
+    const delivery = createStimulusDelivery({
+      guidanceResolver: async () => [],
+      timeZone: createTimeZoneSetting('UTC'),
+    } as never);
+
+    const prompt = await deliver(delivery, 'replay_delta', 'replay-delta', false);
+    expect(prompt).toContain(
+      'This replay window is history and is not delivered to the owner: notification instructions do not apply, and the turn ends without [notify] or [ack].'
+    );
+    expect(prompt).not.toContain('End this turn with exactly one marker');
+  });
+
+  it('gives owner-message turns no delta marker contract', async () => {
     const delivery = createStimulusDelivery({
       guidanceResolver: async () => [],
       timeZone: createTimeZoneSetting('UTC'),
     } as never);
 
     const prompt = await deliver(delivery, 'owner_message', 'owner-no-markers', false);
-    expect(prompt).toContain('<lane-instructions lane="owner-answer">');
     expect(prompt).not.toContain('[notify]');
     expect(prompt).not.toContain('[ack]');
-  });
-
-  it('projects lane action names to the Claude tool names and gives no change instruction', async () => {
-    const delivery = createStimulusDelivery({
-      backend: 'claude',
-      guidanceResolver: async () => [],
-      timeZone: createTimeZoneSetting('UTC'),
-    } as never);
-
-    const prompt = await deliver(delivery, 'source_delta', 'claude-lane-actions', false);
-    expect(prompt).toContain('mcp__mama__report_publish');
-    expect(prompt).not.toContain('report.publish');
-    // Turn content never tells the agent to save a lane; the standing correction rule does.
-    expect(prompt).not.toContain('memory_save');
-  });
-
-  it('omits topic-page work from delta defaults when the wiki is disabled', async () => {
-    const delivery = createStimulusDelivery({
-      guidanceResolver: async () => [],
-      timeZone: createTimeZoneSetting('UTC'),
-      wikiEnabled: false,
-    } as never);
-
-    const prompt = await deliver(delivery, 'source_delta', 'delta-no-wiki', false);
-    expect(prompt).not.toContain('manage.wiki.');
-    expect(prompt).not.toContain('topic wiki page');
-    expect(prompt).toContain('end_of_window_instructions');
-  });
-
-  it('shows a lane record unchanged and states the wiki is off when it is disabled', async () => {
-    const delivery = createStimulusDelivery({
-      guidanceResolver: async () =>
-        [
-          {
-            id: 'delta-with-wiki-step',
-            kind: 'workflow',
-            topic: 'lane/source-delta',
-            summary: 'Handle the change.',
-            applies_when: 'For deltas',
-            steps: ['Never touch the topic wiki page.'],
-            status: 'active',
-            updated_at: 1,
-          },
-        ] as never,
-      timeZone: createTimeZoneSetting('UTC'),
-      wikiEnabled: false,
-    } as never);
-
-    const prompt = await deliver(delivery, 'source_delta', 'delta-record-no-wiki', false);
-    expect(prompt).toContain('Never touch the topic wiki page.');
-    expect(prompt).toContain('wiki: disabled; skip any wiki step in these corrections.');
   });
 });

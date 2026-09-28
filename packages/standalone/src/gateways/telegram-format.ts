@@ -77,7 +77,7 @@ const TRAILING_OPENING_TAG = /<[a-z][^>]*>$/i;
  * Loaded once with the owner session, regardless of which input starts it.
  */
 export const TELEGRAM_FORMAT_GUIDE = [
-  'Apply the following only to messages delivered via Telegram, including telegram_send.',
+  'Apply the following only to messages delivered via Telegram.',
   'Telegram message formatting: write the body in the Telegram HTML text subset.',
   '- In sectioned reports, wrap section headings in <b>...</b>. Plain language means clear wording,',
   '  not plain-text-only output; keep these headings formatted even when a brief asks for plain language.',
