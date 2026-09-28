@@ -316,7 +316,7 @@ describe('one stimulus intake and delivery', () => {
     );
     expect(report.split('\n')).toContain('[owner_full_report]');
     expect(report).toContain('Changes since: 24h ago');
-    expect(report).toContain('schedule.upcoming with days=14');
+    expect(report).toContain('schedule.upcoming({ days: 14 })');
     expect(report).toContain('Messenger: telegram');
     expect(report).not.toContain('manage.wiki.');
     expect(report).not.toContain('## Bounded stimulus');
@@ -1066,7 +1066,7 @@ describe('one stimulus intake and delivery', () => {
         for (const part of [
           '[scheduled_full_report]',
           'Changes since: 24h ago',
-          'schedule.upcoming with days=14',
+          'schedule.upcoming({ days: 14 })',
           'Write the report in five parts, in order',
         ])
           expect(prompt).toContain(part);

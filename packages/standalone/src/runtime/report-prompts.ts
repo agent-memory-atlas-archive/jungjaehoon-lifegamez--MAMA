@@ -57,7 +57,7 @@ export function buildScheduledReportPrompt(
     '[scheduled_task_reminder]',
     currentTime(now, options.timeZone),
     ...acknowledgedDeltaLines(payload, options.timeZone),
-    `- Use what this session already knows and call ${action('work.list')} with view="pipeline" for the compact open-work list; call ${action('schedule.upcoming')} when this session has not read the calendar. Read source originals only when needed to resolve a material uncertainty.`,
+    `- Use what this session already knows and read the compact open-work list with work.list({ view: "pipeline" }), with schedule.upcoming({ days: 14 }) in the same ${action('code_act')} call when this session has not read the calendar. Read source originals only when needed to resolve a material uncertainty.`,
     '- Choose the open items that most need attention this hour, including every item waiting on an owner decision and any deadline affected by a calendar event or holiday, and summarize the handled source deltas above as the changes since the previous report.',
     `- Update only action_required with ${action('report.publish')}; scheduled full reports handle the other sections${options.wikiEnabled ? ' and the wiki' : ''}.`,
     '- Return a short reminder the owner can read at a glance, most urgent or nearest deadline first, under a title that names the top priorities.',
@@ -94,7 +94,7 @@ function fullReportTurn(
     scheduled ? '[scheduled_full_report]' : '[owner_full_report]',
     currentTime(now, options.timeZone),
     `Changes since: ${since}${previousFullReportAt === null ? '' : ' (the previous full report)'}`,
-    `- Call ${action('source.recent')} with since set to that time, ${action('work.list')} with view="pipeline", and ${action('schedule.upcoming')} with days=14. Read originals with ${action('source.read')} when a recent line changes the report; distinguish an empty result from failed or stale collection.`,
+    `- Read in one ${action('code_act')} call: const [recent, open, days] = await Promise.all([source.recent({ since }), work.list({ view: "pipeline" }), schedule.upcoming({ days: 14 })]), with since set to that time. Read originals with source.read when a recent line changes the report; distinguish an empty result from failed or stale collection.`,
     '- Compare every open deadline with the event and holiday calendar, using event end times when deciding whether a booking overlaps. Name work items under each stage and list every item waiting on an owner decision with the decision requested. Say plainly when there were no changes.',
     `- Publish all four board sections with ${action('report.publish')} before writing the text report.`,
     ...(scheduled && options.wikiEnabled

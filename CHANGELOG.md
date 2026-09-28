@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Code-act is back. The agent can run one short script that calls several actions at once instead
+  of one round trip per action, for example reading recent messages, open work and the calendar
+  together for a report. The rebuild had dropped it. It runs in its own process with no access to
+  files, other programs or the network, and every action it calls is checked and recorded as if the
+  agent had called it directly. In mama-core it is `codeActRegistration` (the `code_act` action over
+  any dispatcher) and `runCodeAct`.
+
 ### Fixed
 
 - Board sections keep the whole picture. A source change used to replace a section with only its own

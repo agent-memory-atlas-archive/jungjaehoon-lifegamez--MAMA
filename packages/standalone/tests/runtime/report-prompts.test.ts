@@ -37,8 +37,10 @@ describe('scheduled report prompts', () => {
     const prompt = buildScheduledReportPrompt(noDeltas, new Date('2026-09-27T00:00:00Z'), turn());
     expect(prompt.split('\n')[0]).toBe('[scheduled_task_reminder]');
     expect(prompt).toContain('Use what this session already knows');
-    expect(prompt).toContain('work.list with view="pipeline"');
-    expect(prompt).toContain('schedule.upcoming when this session has not read the calendar');
+    expect(prompt).toContain('work.list({ view: "pipeline" })');
+    expect(prompt).toContain(
+      'in the same code_act call when this session has not read the calendar'
+    );
     expect(prompt).toContain(
       'Update only action_required with report.publish; scheduled full reports handle the other sections and the wiki.'
     );
@@ -55,7 +57,7 @@ describe('scheduled report prompts', () => {
     expect(prompt.split('\n')[0]).toBe('[scheduled_full_report]');
     expect(prompt).toContain('Changes since: 24h ago\n');
     expect(prompt).toContain(
-      'Call source.recent with since set to that time, work.list with view="pipeline", and schedule.upcoming with days=14.'
+      'Read in one code_act call: const [recent, open, days] = await Promise.all([source.recent({ since }), work.list({ view: "pipeline" }), schedule.upcoming({ days: 14 })]), with since set to that time.'
     );
     expect(prompt).toContain('Publish all four board sections with report.publish');
     expect(prompt).toContain('manage.wiki.update');
@@ -69,7 +71,7 @@ describe('scheduled report prompts', () => {
     const prompt = buildOwnerFullReportPrompt(new Date('2026-09-27T00:00:00Z'), turn());
     expect(prompt.split('\n')[0]).toBe('[owner_full_report]');
     expect(prompt).toContain('Changes since: 24h ago\n');
-    expect(prompt).toContain('schedule.upcoming with days=14');
+    expect(prompt).toContain('schedule.upcoming({ days: 14 })');
     expect(prompt).toContain('Publish all four board sections with report.publish');
     expect(prompt).toContain('Write the report in five parts, in order');
     expect(prompt).not.toContain('manage.wiki.');
@@ -80,9 +82,10 @@ describe('scheduled report prompts', () => {
       new Date('2026-09-27T00:00:00Z'),
       turn({ backend: 'claude' })
     );
-    expect(prompt).toContain('mcp__mama__source_recent');
+    // The tool is named as the CLI exposes it; the functions inside the code keep action names.
+    expect(prompt).toContain('Read in one mcp__mama__code_act call');
     expect(prompt).toContain('mcp__mama__report_publish');
-    expect(prompt).not.toMatch(/\bsource\.recent\b/);
+    expect(prompt).toContain('source.recent({ since })');
   });
 
   it('ranks action_required by urgency for publishers and reminders, without a card count', () => {

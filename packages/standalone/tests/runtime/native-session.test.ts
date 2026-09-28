@@ -77,6 +77,7 @@ describe('one owner native session', () => {
           .map((tool) => tool.name)
           .sort()
       ).toEqual([
+        'code_act',
         'deliver.discord.file',
         'deliver.slack.file',
         'deliver.telegram.file',

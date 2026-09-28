@@ -3,6 +3,7 @@ import { createNativeToolTraceObserver } from '@jungjaehoon/mama-core/runtime/na
 import {
   appendOperationToolTrace,
   appendToolTrace,
+  codeActRegistration,
   coreActionRegistrations,
   createCatalog,
   createDispatcher,
@@ -38,6 +39,7 @@ import type { BoardSlots } from '../operator/board-read-views.js';
 import { LOADABLE_CONNECTORS as OWNER_CONNECTORS } from '../connectors/index.js';
 
 const OWNER_ACTIONS = [
+  'code_act',
   'graph.query',
   'source.search',
   'source.recent',
@@ -192,6 +194,8 @@ export function createActionSurface(options: ActionSurfaceOptions): ActionSurfac
     }),
     ...reportActionRegistrations(reportPorts),
     ...wikiActionRegistrations(options.wikiPorts ?? {}),
+    // Inner calls go through the dispatcher below, so each is granted and traced as the caller's.
+    codeActRegistration(() => dispatch),
   ];
   const catalog = createCatalog(registrations);
   const dispatch = createDispatcher(catalog, {
