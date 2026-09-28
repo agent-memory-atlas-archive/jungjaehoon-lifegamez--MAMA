@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto';
-import type { ActionContext, ActionRegistration, ActionSchemaObject } from '@jungjaehoon/mama-core';
+import type {
+  ActionContext,
+  ActionRegistration,
+  ActionSchemaObject,
+  DatabaseAdapter,
+} from '@jungjaehoon/mama-core';
 import type { TimeZoneSetting } from '../runtime/timezone.js';
 import { epochAtLocalDateTime, localDateKey } from '../runtime/timezone.js';
 import { recordLinkSchema, scopeRefSchema } from '@jungjaehoon/mama-core/api/catalog';
@@ -486,17 +491,42 @@ function workListReadSnapshot(ctx: WorkListViewContext, filter: WorkListFilter):
   return { items: Object.freeze(items), readVersion: workListReadVersion(items), observedAt };
 }
 
-export function readOpenWorkCandidates(ctx: WorkListViewContext): Array<{
+export function readOpenWorkCandidates(
+  ctx: WorkListViewContext & { adapter: Pick<DatabaseAdapter, 'prepare'> }
+): Array<{
   commitmentId: string;
   title: string;
   stage: string;
   assignee: string;
-  sourceChannel: string;
+  evidenceChannels: string[];
   updatedAt: number;
 }> {
   const snapshot = workListReadSnapshot(ctx, {});
-  return snapshot.items.flatMap((item) => {
-    if (['done', 'cancelled'].includes(workListStatus(item))) return [];
+  const openItems = snapshot.items.filter(
+    (item) => !['done', 'cancelled'].includes(workListStatus(item))
+  );
+  const basisIds = [...new Set(openItems.flatMap((item) => item.basis.map((ref) => ref.id)))];
+  const channelRows = ctx.adapter
+    .prepare(
+      `SELECT edge.subject_id AS judgment_id, observation.channel
+             FROM twin_edges edge
+             JOIN observation_versions observation ON observation.observation_id = edge.object_id
+            WHERE edge.subject_kind = 'memory'
+              AND edge.edge_type = 'derived_from'
+              AND edge.object_kind = 'observation'
+              AND edge.subject_id IN (SELECT value FROM json_each(?))`
+    )
+    .all(JSON.stringify(basisIds)) as Array<{
+    judgment_id: string;
+    channel: string | null;
+  }>;
+  const evidenceByJudgment = new Map<string, Set<string>>();
+  for (const row of channelRows) {
+    const channels = evidenceByJudgment.get(row.judgment_id) ?? new Set<string>();
+    if (row.channel) channels.add(row.channel);
+    evidenceByJudgment.set(row.judgment_id, channels);
+  }
+  return openItems.flatMap((item) => {
     const values = workListValueObject(item.values);
     const title = workListText(values.title);
     if (!title) return [];
@@ -507,8 +537,9 @@ export function readOpenWorkCandidates(ctx: WorkListViewContext): Array<{
         stage: workListText(values.stage) ?? 'Unstaged',
         assignee:
           workListText(values.assignee ?? values.assigneeText ?? values.assignee_text) ?? '',
-        sourceChannel:
-          workListText(values.sourceChannel ?? values.source_channel ?? values.channel) ?? '',
+        evidenceChannels: [
+          ...new Set(item.basis.flatMap((ref) => [...(evidenceByJudgment.get(ref.id) ?? [])])),
+        ],
         updatedAt: typeof item.updatedAt === 'number' ? item.updatedAt : Date.parse(item.updatedAt),
       },
     ];

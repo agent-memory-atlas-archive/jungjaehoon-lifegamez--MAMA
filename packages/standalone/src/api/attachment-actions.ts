@@ -132,7 +132,11 @@ function providerFor(
   source: string
 ): ReturnType<typeof attachmentConnector> {
   if (source !== 'chatwork' && source !== 'slack') {
-    throw new Error(`Connector ${source} does not support source attachments`);
+    const error = new Error(
+      `Connector ${source} does not support source attachments. Supported connectors: chatwork, slack.`
+    );
+    error.name = 'invalid_input';
+    throw error;
   }
   const registry = ports.connectors?.();
   if (!registry) throw new Error(`Connector registry is not available for ${source} attachments`);
@@ -265,8 +269,8 @@ export function createAttachmentActionRegistrations(
         if (typeof fileId !== 'string' || fileId.trim() === '')
           throw new Error('fileId is required');
         const observation = await readObservation(ports, values, context);
-        const roomId = roomIdFor(observation);
         const provider = providerFor(ports, observation.source);
+        const roomId = roomIdFor(observation);
         const request = attachmentRequest(observation);
         const unrelated = request.fileIds !== undefined && !request.fileIds.includes(fileId);
         const listed = unrelated

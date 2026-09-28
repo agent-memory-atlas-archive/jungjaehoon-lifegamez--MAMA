@@ -45,7 +45,7 @@ export function buildBoardSlotShapeLines(): string[] {
   return [
     '- pipeline: the agent-written current workflow table; update it together with the other slots.',
     '- briefing: one report-summary block (title + stat highlights), then up to 4 report-cards for the key situations.',
-    '- action_required: a report-section-title, then up to 5 report-cards; every card-action states the concrete next step.',
+    '- action_required: a report-section-title, then up to 8 report-cards; every card-action states the concrete next step.',
     '- decisions: report-cards for items waiting on an owner decision or confirmation; omit filler when none exist,',
     '  but still publish the slot with a one-line quiet note.',
   ];

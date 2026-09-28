@@ -44,6 +44,10 @@ describe('owner standing prompt', () => {
     expect(prompt).toContain('Only live source-delta turns end with [notify] or [ack]');
     expect(prompt).toContain('Answers to owner messages never carry these markers');
     expect(prompt).toContain('update every board section the item appears in or leaves');
+    expect(prompt).toContain('keeps every card that is still true');
+    expect(prompt).toContain('only the cards of the items it moved');
+    expect(prompt).toContain('update briefing when the day’s key situation changes');
+    expect(prompt).toContain('while keeping briefing’s other cards');
     expect(prompt).toContain('Only a scheduled full report rewrites all four sections');
     expect(prompt).toContain(
       'A report requested by the owner is text and does not publish the board'

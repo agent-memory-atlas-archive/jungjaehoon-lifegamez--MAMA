@@ -1223,3 +1223,9 @@ The implementation writes raw/index data during import only. Replay is the owner
   64-character version and succeeded on an append without it.
 - Still open: deploy and live checks (iCal re-snapshot, timezone change from chat, board-section
   updates on a live delta); RRULE is not expanded.
+
+### Review fixes — board lanes, candidates, viewer and attachments (2026-09-28)
+
+- Board lanes: the delta prompt now preserves true cards and updates briefing selectively; action_required allows up to eight cards, HTML reads cover the slot cap, and new sessions receive all saved slots. Prompt, report, session-start and 5KB HTML tests pass.
+- Candidates: one query derives channel/source values from each open item's basis edges; the real SQLite evidence-to-delta test passes without `sourceChannel`. Viewer pagination passes through the route's list handler; both attachment actions classify unsupported connectors as `invalid_input`.
+- Verification: root build/typecheck, changed-file ESLint/Prettier and focused tests pass; affected files report 79 passed and 8 listener `EPERM` failures in viewer and native-socket tests. Still open: deploy and confirm lane preservation/candidate routing in a live owner delta; no live homes were read or changed.

@@ -90,7 +90,8 @@ describe('one stimulus intake and delivery', () => {
       commandId: string,
       title: string,
       sourceChannel: string,
-      recordedAt: number
+      recordedAt: number,
+      evidenceRef?: string
     ) =>
       knowledge.createWork(
         {
@@ -99,15 +100,37 @@ describe('one stimulus intake and delivery', () => {
           summary: `record ${title}`,
           scopes: access.scopes,
           recordedAt,
-          set: { title, status: 'in_progress', stage: 'doing', sourceChannel },
+          set: { title, status: 'in_progress', stage: 'doing' },
+          ...(evidenceRef === undefined
+            ? {}
+            : {
+                links: [
+                  {
+                    relation: 'derived_from' as const,
+                    target: { kind: 'observation' as const, id: evidenceRef },
+                  },
+                ],
+              }),
         },
         access
       );
+    const channelEvidence = await knowledge.ingestSource(
+      {
+        commandId: 'same-channel-evidence',
+        source: { connector: 'collector', id: 'same-channel-message' },
+        body: 'evidence for a same-channel work item',
+        scope: { channel: 'synthetic-room' },
+        scopes: access.scopes,
+        observedAt: now - 1_000,
+      },
+      access
+    );
     const sameChannel = await createWork(
       'same-channel',
       'Unrelated estimate',
       'synthetic-room',
-      now - 1_000
+      now - 1_000,
+      channelEvidence.observationId
     );
     const overlapping = await createWork(
       'title-overlap',
@@ -129,7 +152,13 @@ describe('one stimulus intake and delivery', () => {
         now - 3_000
       );
     }
-    const candidates = readOpenWorkCandidates({ knowledge, access, now: () => now });
+    const candidates = readOpenWorkCandidates({
+      knowledge,
+      adapter: database.adapter,
+      access,
+      now: () => now,
+      timeZone: 'UTC',
+    });
     expect(candidates).toHaveLength(73);
     const delivery = createDelivery({
       guidanceResolver: async () => [],
@@ -207,7 +236,7 @@ describe('one stimulus intake and delivery', () => {
           title: 'Design review',
           stage: 'doing',
           assignee: '',
-          sourceChannel: 'synthetic-room',
+          evidenceChannels: ['synthetic-room'],
           updatedAt: now - 1_000,
         },
       ],
@@ -433,6 +462,186 @@ describe('one stimulus intake and delivery', () => {
       'legacy-guidance | lesson | release review | summary: Use the verified owner workflow for release review.'
     );
     expect(prompt).not.toContain('<guidance-delta>');
+  });
+
+  it('includes the saved board slots and timestamps in a new session', async () => {
+    const delivery = createDelivery({
+      guidanceResolver: async () => [],
+      boardSnapshot: async () => ({
+        briefing: {
+          html: '<div class="report-summary">Current summary</div>',
+          updatedAt: '2026-09-28T00:00:00.000Z',
+        },
+        action_required: {
+          html: '<div class="report-card">Current action</div>',
+          updatedAt: '2026-09-28T01:00:00.000Z',
+        },
+        decisions: {
+          html: '<div class="report-card">Owner decision</div>',
+          updatedAt: '2026-09-27T23:00:00.000Z',
+        },
+        pipeline: {
+          html: '<table class="report-table"><tbody></tbody></table>',
+          updatedAt: '2026-09-27T22:00:00.000Z',
+        },
+      }),
+    } as never);
+    let prompt = '';
+    const context = {
+      nativeInputId: 'input-board',
+      resultForReceipt: () => null,
+      run: vi.fn(
+        async (
+          content: Array<{ type: string; text?: string }>,
+          request?: NativeInvocationOptions
+        ) => {
+          content =
+            (await request?.prepareSessionContent?.({
+              sessionId: 'test-session',
+              isNewSession: true,
+            })) ?? content;
+          prompt = content[0]?.text ?? '';
+          return {} as never;
+        }
+      ),
+      steer: vi.fn(),
+      wasDispatched: () => false,
+      onInputDispatch: vi.fn(),
+      onAccepted: vi.fn(),
+    };
+
+    await delivery.deliver(
+      {
+        id: 'input-board',
+        stimulusId: 'input-board',
+        principalId: 'owner',
+        kind: 'owner_message',
+        channelKey: 'synthetic-channel',
+        occurredAt: 1,
+        refs: [],
+        preview: [],
+        status: 'claimed',
+        attempts: 1,
+        createdAt: 1,
+        payload: { text: 'continue' },
+        coalesceKey: null,
+      } as never,
+      context as never
+    );
+
+    expect(prompt).toContain('<current-board>');
+    expect(prompt).toContain('name="action_required" updatedAt="2026-09-28T01:00:00.000Z"');
+    expect(prompt).toContain('<div class="report-card">Current action</div>');
+    expect(prompt).toContain('name="briefing" updatedAt="2026-09-28T00:00:00.000Z"');
+    expect(prompt).toContain('<div class="report-summary">Current summary</div>');
+    expect(prompt).toContain('name="decisions" updatedAt="2026-09-27T23:00:00.000Z"');
+    expect(prompt).toContain('<div class="report-card">Owner decision</div>');
+    expect(prompt).toContain('name="pipeline" updatedAt="2026-09-27T22:00:00.000Z"');
+    expect(prompt).toContain('<table class="report-table"><tbody></tbody></table>');
+    expect(prompt).toContain('</current-board>');
+  });
+
+  it('matches candidates from their real evidence channel without a sourceChannel field', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'mama-candidate-evidence-'));
+    homes.push(home);
+    const database = await openCoreDatabase({ path: join(home, 'state.db') });
+    databases.push(database);
+    const knowledge = createKnowledge({ adapter: database.adapter as DatabaseInstance });
+    const access = {
+      principalId: 'owner',
+      agentId: 'agent',
+      scopes: [{ kind: 'project' as const, id: 'workspace' }],
+      actions: [],
+    };
+    const evidence = await knowledge.ingestSource(
+      {
+        commandId: 'evidence-channel-a',
+        source: { connector: 'synthetic', id: 'message-a' },
+        body: 'current work evidence',
+        scope: { channel: 'channel-a' },
+        scopes: access.scopes,
+        observedAt: Date.now(),
+      },
+      access
+    );
+    await knowledge.createWork(
+      {
+        commandId: 'work-from-evidence',
+        topic: 'synthetic-topic',
+        summary: 'work backed by source evidence',
+        scopes: access.scopes,
+        recordedAt: Date.now(),
+        set: { title: 'Evidence-backed task', status: 'in_progress' },
+        links: [
+          { relation: 'derived_from', target: { kind: 'observation', id: evidence.observationId } },
+        ],
+      },
+      access
+    );
+
+    const candidates = readOpenWorkCandidates({
+      knowledge,
+      adapter: database.adapter,
+      access,
+      now: () => Date.now(),
+      timeZone: 'UTC',
+    });
+    const delivery = createDelivery({
+      guidanceResolver: async () => [],
+      openWorkCandidates: async () => candidates,
+    });
+    let prompt = '';
+    const context = {
+      nativeInputId: 'delta-channel-a',
+      resultForReceipt: () => null,
+      run: vi.fn(async (content: Array<{ text?: string }>, request?: NativeInvocationOptions) => {
+        content =
+          (await request?.prepareSessionContent?.({
+            sessionId: 'test-session',
+            isNewSession: false,
+          })) ?? content;
+        prompt = content[0]?.text ?? '';
+        return {} as never;
+      }),
+      steer: vi.fn(),
+      wasDispatched: () => false,
+      onInputDispatch: vi.fn(),
+      onAccepted: vi.fn(),
+    };
+    await delivery.deliver(
+      {
+        id: 'delta-channel-a',
+        stimulusId: 'delta-channel-a',
+        principalId: 'owner',
+        kind: 'source_delta',
+        channelKey: 'channel-a',
+        occurredAt: Date.now(),
+        refs: [{ sourceAt: new Date().toISOString() }],
+        preview: [],
+        status: 'claimed',
+        attempts: 1,
+        createdAt: Date.now(),
+        coalesceKey: null,
+        payload: {
+          kind: 'source_delta',
+          channel: 'channel-a',
+          preview: ['unrelated update'],
+          refs: [],
+        },
+      } as never,
+      context as never
+    );
+
+    expect(prompt).toContain('Evidence-backed task');
+    expect(candidates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          title: 'Evidence-backed task',
+          evidenceChannels: ['channel-a'],
+        }),
+      ])
+    );
+    expect(candidates[0]).not.toHaveProperty('sourceChannel');
   });
 
   it('sends an empty index when there are no active guidance records', async () => {

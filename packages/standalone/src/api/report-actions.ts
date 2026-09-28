@@ -51,14 +51,14 @@ export function reportActionRegistrations(ports: ReportPorts): ActionRegistratio
       contract: {
         name: 'report.read',
         summary:
-          'Read the owner dashboard report slots (briefing, action_required, decisions, pipeline) as a dated presentation snapshot, not a live operational count. Progressive: no slot lists descriptors (name, updatedAt, htmlLength, publishable); a named slot pages its text or stored html by Unicode code points (nextOffset/total keep a long slot fully reachable). A continuation (offset > 0) must echo the readVersion of the previous page.',
+          'Read the owner dashboard report slots (briefing, action_required, decisions, pipeline) as a dated presentation snapshot, not a live operational count. No slot lists descriptors (name, updatedAt, htmlLength, publishable). A named slot reads text by Unicode code-point pages; HTML defaults to the full slot cap in one call. A continuation (offset > 0) must echo the readVersion of the previous page.',
         inputSchema: {
           type: 'object',
           properties: {
             slot: { type: 'string', minLength: 1 },
             format: { enum: ['text', 'html'] },
             offset: { type: 'integer', minimum: 0 },
-            limit: { type: 'integer', minimum: 1, maximum: 4000 },
+            limit: { type: 'integer', minimum: 1, maximum: 6000 },
             readVersion: { type: 'string', minLength: 1 },
           },
           additionalProperties: false,

@@ -60,6 +60,7 @@ export interface StimulusDeliveryOptions {
   backend?: OwnerRuntimeBackend;
   openWorkPipeline?: () => Promise<unknown>;
   openWorkCandidates?: () => Promise<unknown>;
+  boardSnapshot?: () => Promise<Record<string, { html: string; updatedAt: number | string }>>;
   wikiEnabled?: boolean;
   formattingRoutes?: { reports: string; notifications: string };
   timeZone: TimeZoneSetting;
@@ -496,6 +497,7 @@ function stimulusChannels(row: MailboxRow): Set<string> {
   if (!payload) return new Set();
   return new Set(
     [
+      row.channelKey,
       textField(payload.channel),
       ...payloadRefs(payload).flatMap((ref) => {
         const metadata =
@@ -533,7 +535,10 @@ function relatedWorkCandidates(row: MailboxRow, workItems: unknown): string[] {
     const commitmentId = pipelineText(item.commitmentId);
     const changedAt = typeof item.updatedAt === 'number' ? item.updatedAt : Number.NaN;
     if (!title || !commitmentId || !Number.isFinite(changedAt) || changedAt < cutoff) return [];
-    const sameChannel = channels.has(pipelineText(item.sourceChannel));
+    const evidenceChannels = Array.isArray(item.evidenceChannels)
+      ? item.evidenceChannels.filter((channel): channel is string => typeof channel === 'string')
+      : [];
+    const sameChannel = evidenceChannels.some((channel) => channels.has(channel));
     const overlap = workListTitleTextScore(query, title);
     if (!sameChannel && overlap === 0) return [];
     return [{ item, title, commitmentId, overlap, sameChannel, changedAt }];
@@ -580,6 +585,19 @@ function renderGuidanceIndex(entries: readonly GuidanceEntry[]): string {
     ...activeGuidance(entries).map(guidanceLine),
     '</guidance-index>',
   ].join('\n');
+}
+
+function renderCurrentBoard(
+  slots: Record<string, { html: string; updatedAt: number | string }>
+): string {
+  const sections = Object.entries(slots).map(([slot, value]) => {
+    const updatedAt =
+      typeof value.updatedAt === 'number'
+        ? new Date(value.updatedAt).toISOString()
+        : value.updatedAt;
+    return `<slot name="${slot}" updatedAt="${updatedAt}">\n${value.html}\n</slot>`;
+  });
+  return `<current-board>\n${sections.join('\n')}\n</current-board>`;
 }
 
 function renderGuidanceDelta(
@@ -717,6 +735,8 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
                 `<open-work-pipeline>\n${JSON.stringify(pipeline)}\n</open-work-pipeline>`
               );
             }
+            const board = await options.boardSnapshot?.();
+            if (board !== undefined) sessionBlocks.push(renderCurrentBoard(board));
             const exchanges = renderRecentOwnerExchanges(
               (await options.recentOwnerExchanges?.(row)) ?? []
             );

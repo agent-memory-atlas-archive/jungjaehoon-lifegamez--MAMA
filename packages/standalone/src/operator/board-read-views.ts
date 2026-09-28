@@ -23,8 +23,8 @@ export interface BoardSlot {
 }
 export type BoardSlots = Record<string, BoardSlot>;
 
-const CONTENT_DEFAULT_LIMIT = 1000;
-const CONTENT_MAX_LIMIT = 4000;
+const TEXT_DEFAULT_LIMIT = 1000;
+const CONTENT_MAX_LIMIT = 6000;
 const FORMATS = ['text', 'html'] as const;
 type BoardFormat = (typeof FORMATS)[number];
 
@@ -72,7 +72,12 @@ export function readBoardView(rawInput: unknown, slots: BoardSlots): BoardReadRe
   }
   const format = parseFormat(input.format);
   const offset = parseNonNegativeInt(input.offset, 'offset');
-  const limit = parseBoundedInt(input.limit, 'limit', CONTENT_DEFAULT_LIMIT, CONTENT_MAX_LIMIT);
+  const limit = parseBoundedInt(
+    input.limit,
+    'limit',
+    format === 'html' ? CONTENT_MAX_LIMIT : TEXT_DEFAULT_LIMIT,
+    CONTENT_MAX_LIMIT
+  );
   // Normalize once: a missing html (despite the nominal type) is an empty slot,
   // not a throw. The same normalized value backs both the representation and the
   // content version, so a text read, an html read and readVersion all agree.

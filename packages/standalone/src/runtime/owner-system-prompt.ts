@@ -9,7 +9,7 @@ import type { StoredSourceFamily } from '../connectors/framework/stored-index-re
 export type OwnerRuntimeBackend = 'claude' | 'codex';
 
 export const LIVE_DELTA_ROUTING_INSTRUCTION =
-  'For a turn that changes work (a live delta or an owner answer), update every board section the item appears in or leaves with report.publish. Read each section with report.read first unless this session already wrote that section. Only a scheduled full report rewrites all four sections. A report requested by the owner is text and does not publish the board. ' +
+  'For a turn that changes work (a live delta or an owner answer), update every board section the item appears in or leaves with report.publish. Each section describes the whole current situation: it keeps every card that is still true and adds, replaces or removes only the cards of the items it moved; never shrink a section to its own item. Read each section with report.read first unless this session already wrote that section. Deltas update briefing when the day’s key situation changes: revise its summary line and key-situation cards while keeping briefing’s other cards. Only a scheduled full report rewrites all four sections from scratch. A report requested by the owner is text and does not publish the board. ' +
   'For a live source delta, revise or create the affected work item(s) with evidence and roles; append a dated line to its topic wiki page when enabled. ' +
   'If nothing moved, end with one short [ack] line; otherwise end with [notify] <text> or [ack].';
 

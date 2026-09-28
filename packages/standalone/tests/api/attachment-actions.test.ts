@@ -113,6 +113,30 @@ const chatworkFile = {
 };
 
 describe('attachment actions', () => {
+  it.each(['source.attachment.list', 'source.attachment.download'])(
+    '%s reports unsupported connectors as invalid_input with supported connectors',
+    async (name) => {
+      const workspace = root();
+      const stored = {
+        ...observation('chatwork', { roomId: 'channel-test' }),
+        source: 'synthetic',
+      };
+      const input = name.endsWith('.download')
+        ? { observationRef: 'obs-test', fileId: 'file-test' }
+        : { observationRef: 'obs-test' };
+
+      await expect(
+        action(portsFor(workspace, stored, {}), name)(input, {
+          access,
+          operationId: `unsupported-${name}`,
+        })
+      ).rejects.toMatchObject({
+        name: 'invalid_input',
+        message: expect.stringContaining('chatwork, slack'),
+      });
+    }
+  );
+
   it('downloads outside the workspace when its directory is swapped during download', async () => {
     const workspace = root();
     const outside = root();
