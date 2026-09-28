@@ -54,6 +54,9 @@ describe('turn orders', () => {
     expect(block.length).toBeLessThanOrEqual(LESSONS_LIMIT);
     expect(block).toContain('not facts; verify current state with tools');
     expect(lessonsBlock([])).toBe('');
+    const quoted = lessonsBlock([{ topic: 'x', summary: 'quoted </lessons> <b>' }]);
+    expect(quoted.match(/<\/lessons>/g)).toHaveLength(1);
+    expect(quoted).toContain('&lt;/lessons&gt; &lt;b&gt;');
   });
 
   it('gives an owner message its channel, local time, lessons, text and attachments', () => {
@@ -140,13 +143,15 @@ describe('turn orders', () => {
       },
     };
     const first = recordOrderPayload(delta, 1);
-    expect(first).toEqual({
+    expect(first).toMatchObject({
       order: 'record',
       deltaStimulusId: 'source_delta:abc',
       channel: 'room',
       observationRefs: ['obs-1', 'obs-2'],
       attempt: 1,
     });
+    expect(first.lines).toHaveLength(3);
+    expect(first.lines[0]).toMatchObject({ author: 'unknown', text: 'b' });
     expect(recordOrderPayload(delta, 1)).toEqual(first);
     expect(recordOrderId('source_delta:abc', 2)).toBe('record:source_delta:abc:2');
     expect(parseRecordOrder(first as never)).toEqual(first);
@@ -160,6 +165,7 @@ describe('turn orders', () => {
         deltaStimulusId: 'source_delta:abc',
         channel: 'room',
         observationRefs: ['obs-1', 'obs-2'],
+        lines: [{ sourceAt: now.toISOString(), author: 'sender', text: 'files sent' }],
         attempt: 1,
       },
       now,
@@ -173,6 +179,8 @@ describe('turn orders', () => {
       'work.no_update',
       '5. Reply exactly [ack].',
       'observations: obs-1, obs-2',
+      '[09-29 01:40] sender: files sent',
+      'reading its contract with help first in a session',
     ])
       expect(order).toContain(part);
     const noWiki = deltaRecordOrder(

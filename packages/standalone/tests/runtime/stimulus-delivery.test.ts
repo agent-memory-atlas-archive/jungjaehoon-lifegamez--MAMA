@@ -414,7 +414,7 @@ describe('one stimulus intake and delivery', () => {
       preview: [],
       status: 'claimed',
       attempts: 1,
-      createdAt: 1,
+      createdAt: Date.now(),
       coalesceKey: null,
       occurredAt: Date.now(),
       ...row,
@@ -503,7 +503,12 @@ describe('one stimulus intake and delivery', () => {
   it('gives a delta with only history lines no turn and no record order', async () => {
     const records = recordOrders();
     const delivered = vi.fn();
-    const delivery = createDelivery({ recordOrders: records, onDelivered: delivered });
+    const skipped = vi.fn();
+    const delivery = createDelivery({
+      recordOrders: records,
+      onDelivered: delivered,
+      onSkipped: skipped,
+    });
     const ctx = context(() => {});
     await delivery.deliver(
       claimed({
@@ -525,6 +530,31 @@ describe('one stimulus intake and delivery', () => {
     expect((ctx as unknown as { run: ReturnType<typeof vi.fn> }).run).not.toHaveBeenCalled();
     expect(records.enqueueFirst).not.toHaveBeenCalled();
     expect(delivered).toHaveBeenCalledOnce();
+    expect(skipped.mock.calls[0]?.[1]).toContain('all 1 lines were older than the six-hour');
+  });
+
+  it('measures the backfill guard from when the row was accepted, not when it runs', async () => {
+    const run = vi.fn();
+    const acceptedAt = Date.now() - 10 * 60 * 60 * 1000;
+    await createDelivery({ recordOrders: recordOrders() }).deliver(
+      claimed({
+        stimulusId: 'source_delta:backlog',
+        kind: 'source_delta',
+        channelKey: 'room',
+        createdAt: acceptedAt,
+        payload: {
+          refs: [
+            {
+              observationRef: 'obs-late',
+              contentPreview: 'waited behind a backlog',
+              sourceAt: new Date(acceptedAt - 60_000).toISOString(),
+            },
+          ],
+        },
+      }),
+      context(run)
+    );
+    expect(run).toHaveBeenCalledOnce();
   });
 
   it('quotes delta message text so it cannot close the untrusted block', async () => {
@@ -570,6 +600,7 @@ describe('one stimulus intake and delivery', () => {
           deltaStimulusId: 'source_delta:1',
           channel: 'room',
           observationRefs: ['obs-1'],
+          lines: [],
           attempt: 1,
         },
       }),

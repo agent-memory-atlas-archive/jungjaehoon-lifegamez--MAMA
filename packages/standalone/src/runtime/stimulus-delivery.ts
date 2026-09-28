@@ -96,6 +96,8 @@ export interface StimulusDeliveryOptions {
   onScheduledResult?: (row: MailboxRow, result: NativeTurnResult) => void | Promise<void>;
   onDelivered?: (row: MailboxRow, modelRunId: string | null) => void | Promise<void>;
   onFailed?: (row: MailboxRow, reason: string, modelRunId: string | null) => void | Promise<void>;
+  /** A live delta acked without a turn because every line was history when it was accepted. */
+  onSkipped?: (row: MailboxRow, reason: string) => void | Promise<void>;
 }
 
 export interface ReplayClockDelivery extends StimulusDelivery {
@@ -463,7 +465,7 @@ function ownerText(row: MailboxRow): string {
 }
 
 type TurnPlan =
-  | { kind: 'skip' }
+  | { kind: 'skip'; reason: string }
   | {
       kind: 'turn';
       lessonQuery: string | null;
@@ -471,7 +473,7 @@ type TurnPlan =
     };
 
 /** What a row's turn says, by kind; a live delta with only history lines has no turn. */
-function planTurn(row: MailboxRow, options: StimulusDeliveryOptions, nowMs: number): TurnPlan {
+function planTurn(row: MailboxRow, options: StimulusDeliveryOptions): TurnPlan {
   const zone = options.timeZone.get();
   if (row.kind === 'owner_message') {
     return {
@@ -492,8 +494,15 @@ function planTurn(row: MailboxRow, options: StimulusDeliveryOptions, nowMs: numb
   if (row.kind === 'source_delta') {
     if (replaySourceCeiling(row) !== undefined)
       return { kind: 'turn', lessonQuery: null, render: () => replayWindowText(row, options) };
-    const lines = liveDeltaLines(deltaLines(row.payload), nowMs);
-    if (lines.length === 0) return { kind: 'skip' };
+    // Kagemusha filters at collection: the reference is when the row was accepted, so a delta
+    // that waited behind a backlog is still delivered.
+    const all = deltaLines(row.payload);
+    const lines = liveDeltaLines(all, row.createdAt);
+    if (lines.length === 0)
+      return {
+        kind: 'skip',
+        reason: `all ${all.length} lines were older than the six-hour backfill guard when accepted`,
+      };
     return {
       kind: 'turn',
       lessonQuery: lines.map((line) => line.text).join(' '),
@@ -583,9 +592,10 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
     try {
       const replaySourceEndMs = replaySourceCeiling(row);
       activeReplaySourceEndMs = replaySourceEndMs;
-      const plan = planTurn(row, options, Date.now());
+      const plan = planTurn(row, options);
       if (plan.kind === 'skip') {
         // Kagemusha's backfill guard: only history lines, so no live turn and no record order.
+        await options.onSkipped?.(row, plan.reason);
         await options.onDelivered?.(row, null);
         return;
       }

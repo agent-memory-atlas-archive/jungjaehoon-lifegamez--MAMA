@@ -78,7 +78,18 @@ function runningChildren(adapter: DatabaseAdapter, modelRunId: string, startedAt
   return row?.n ?? 0;
 }
 
-export function createRecordOrders(options: RecordOrdersOptions): RecordOrderPort {
+export interface RecordOrders extends RecordOrderPort {
+  /**
+   * Re-run the checks a previous process may have lost while waiting for child runs: for each
+   * batch of the last day with no record order still queued, an unrecorded batch gets its next
+   * attempt or is logged as lost.
+   */
+  recover(): void;
+}
+
+const RECOVERY_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+export function createRecordOrders(options: RecordOrdersOptions): RecordOrders {
   const sleep =
     options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   const childWaitMs = options.childWaitMs ?? 10 * 60 * 1000;
@@ -154,6 +165,31 @@ export function createRecordOrders(options: RecordOrdersOptions): RecordOrderPor
     },
     onLost: (row: MailboxRow, reason: string) => {
       settle(parseRecordOrder(row.payload), reason);
+    },
+    recover: () => {
+      const rows = options.adapter
+        .prepare(
+          `SELECT payload_json, status FROM mailbox_inputs
+            WHERE kind = 'scheduled' AND channel_key = ? AND created_at >= ?`
+        )
+        .all(RECORD_ORDER_CHANNEL, Date.now() - RECOVERY_WINDOW_MS) as Array<{
+        payload_json: string;
+        status: string;
+      }>;
+      const latest = new Map<string, { record: RecordOrderPayload; open: boolean }>();
+      for (const row of rows) {
+        const record = parseRecordOrder(JSON.parse(row.payload_json));
+        const open = row.status === 'pending' || row.status === 'claimed';
+        const current = latest.get(record.deltaStimulusId);
+        latest.set(record.deltaStimulusId, {
+          record: current && current.record.attempt > record.attempt ? current.record : record,
+          open: open || (current?.open ?? false),
+        });
+      }
+      for (const { record, open } of latest.values()) {
+        if (open || batchRecorded(options.adapter, record)) continue;
+        settle(record, 'the check was lost when the previous process stopped');
+      }
     },
   };
 }

@@ -144,7 +144,7 @@ describe('KST report scheduler', () => {
     ctx.scheduler.tick(now);
     expect(ctx.queued[0]?.payload).toMatchObject({ report: 'reminder' });
     expect(ctx.queued[0]?.payload).not.toHaveProperty('acknowledgedDeltas');
-    await ctx.scheduler.onResult(ctx.result(), { response: '[ack]' });
+    await ctx.scheduler.onResult(ctx.result(), { response: 'nothing urgent\n[ack]' });
     expect(ctx.sent).toEqual([]);
     expect(JSON.parse(readFileSync(ctx.statePath, 'utf8'))).toMatchObject({
       lastReminderKey: '2026-01-01:10',

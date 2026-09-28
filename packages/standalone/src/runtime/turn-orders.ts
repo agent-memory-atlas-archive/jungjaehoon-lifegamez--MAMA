@@ -43,6 +43,11 @@ function clip(value: string, limit: number): string {
   return flat.length <= limit ? flat : `${flat.slice(0, limit - 1)}…`;
 }
 
+/** Stored text never closes a host block, as Kagemusha escapes its lesson blocks. */
+function escapeMarkup(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 /** Kagemusha's lesson block: advisory, bounded, never a fact or a tool-call instruction. */
 export function lessonsBlock(lessons: readonly Lesson[]): string {
   if (lessons.length === 0) return '';
@@ -52,9 +57,11 @@ export function lessonsBlock(lessons: readonly Lesson[]): string {
   const lines: string[] = [];
   let size = open.length + close.length + 2;
   for (const lesson of lessons) {
-    const line = `- ${clip(lesson.topic, 80)}: ${clip(lesson.summary, 360)}${
-      lesson.appliesWhen ? ` (applies when: ${clip(lesson.appliesWhen, 160)})` : ''
-    }`;
+    const line = escapeMarkup(
+      `- ${clip(lesson.topic, 80)}: ${clip(lesson.summary, 360)}${
+        lesson.appliesWhen ? ` (applies when: ${clip(lesson.appliesWhen, 160)})` : ''
+      }`
+    );
     if (size + line.length + 1 > LESSONS_LIMIT) break;
     lines.push(line);
     size += line.length + 1;
@@ -203,11 +210,19 @@ export function deltaNotifyOrder(
     .join('\n');
 }
 
+export interface RecordOrderLine {
+  sourceAt: string;
+  author: string;
+  text: string;
+}
+
 export interface RecordOrderPayload {
   order: 'record';
   deltaStimulusId: string;
   channel: string;
   observationRefs: string[];
+  /** The delta's last lines, as Kagemusha's record turn carries them (five, 300 chars each). */
+  lines: RecordOrderLine[];
   attempt: number;
 }
 
@@ -216,18 +231,20 @@ export function recordOrderPayload(
   delta: { stimulusId: string; channelKey: string; payload?: JsonValue },
   attempt: number
 ): RecordOrderPayload {
+  const lines = deltaLines(delta.payload);
   const observationRefs = [
-    ...new Set(
-      deltaLines(delta.payload)
-        .map((line) => line.observationRef)
-        .filter(Boolean)
-    ),
+    ...new Set(lines.map((line) => line.observationRef).filter(Boolean)),
   ].sort();
   return {
     order: 'record',
     deltaStimulusId: delta.stimulusId,
     channel: delta.channelKey,
     observationRefs,
+    lines: lines.slice(-5).map((line) => ({
+      sourceAt: line.sourceAt,
+      author: line.author,
+      text: clip(line.text, 300),
+    })),
     attempt,
   };
 }
@@ -245,9 +262,12 @@ export function parseRecordOrder(payload: JsonValue | undefined): RecordOrderPay
     typeof value.channel !== 'string' ||
     !Array.isArray(value.observationRefs) ||
     !value.observationRefs.every((ref) => typeof ref === 'string') ||
+    !Array.isArray(value.lines) ||
     typeof value.attempt !== 'number'
   )
-    throw new Error('A record order needs deltaStimulusId, channel, observationRefs and attempt');
+    throw new Error(
+      'A record order needs deltaStimulusId, channel, observationRefs, lines and attempt'
+    );
   return value as unknown as RecordOrderPayload;
 }
 
@@ -258,13 +278,18 @@ export function deltaRecordOrder(
   options: TurnOrderOptions & { wikiEnabled: boolean }
 ): string {
   const action = (name: string): string => actionName(options.backend, name);
+  const lines = record.lines.map((line) => {
+    const known = Number.isFinite(Date.parse(line.sourceAt));
+    return `[${known ? localStamp(line.sourceAt, options.timeZone) : '-'}] ${line.author}: ${line.text}`;
+  });
   return [
     `[delta_record] ${record.channel} · ${record.observationRefs.length} messages`,
     currentTime(now, options.timeZone),
-    'Record what the delta just shown in this session changed:',
-    `1. Use its lines; read originals with ${action('source.read')} and observationRefs from the list below only for what the lines do not show.`,
+    ...(lines.length === 0 ? [] : [wrapUntrustedContent('source_delta', lines.join('\n'))]),
+    'Record what this delta changed:',
+    `1. Use its lines above; read originals with ${action('source.read')} and observationRefs from the list below only for what the lines do not show.`,
     `2. Find the work they belong to with ${action('work.list')} (view=items with text) before creating anything.`,
-    `3. For each moved item, ${action('work.revise')} (or ${action('work.create')} for newly entrusted work) with derived_from links to the observations below and eventDatetime set to the source event time; update only the board sections that change with ${action('report.publish')}${
+    `3. For each moved item, ${action('work.revise')} (or ${action('work.create')} for newly entrusted work) with derived_from links to the observations below and eventDatetime set to the source event time; update only the board sections that change with ${action('report.publish')}, reading its contract with ${action('help')} first in a session${
       options.wikiEnabled
         ? `; add the dated line to the case's topic page with ${action('manage.wiki.update')}`
         : ''

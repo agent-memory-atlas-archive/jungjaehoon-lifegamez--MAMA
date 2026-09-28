@@ -109,8 +109,12 @@ export function createReportScheduler(options: ReportSchedulerOptions) {
       const { report, hourKey } = scheduledReport(row.payload);
       const text = result.response.trim();
       if (!text) throw new Error('Scheduled report returned empty output');
-      // A reminder with nothing that needs the owner ends with [ack] and is not sent.
-      if (!(report === 'reminder' && text === '[ack]'))
+      // A reminder with nothing that needs the owner ends with [ack] and is not sent; the last
+      // marker decides, as for delta replies.
+      const lastMarker = text.slice(
+        Math.max(text.lastIndexOf('[notify]'), text.lastIndexOf('[ack]'))
+      );
+      if (!(report === 'reminder' && lastMarker.startsWith('[ack]')))
         await options.sendToOwner(text, `report:${hourKey}:${report}`);
       const next = { ...state, [report === 'full' ? 'lastFullKey' : 'lastReminderKey']: hourKey };
       mkdirSync(dirname(options.statePath), { recursive: true });

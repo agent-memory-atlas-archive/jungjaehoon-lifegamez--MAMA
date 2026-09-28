@@ -51,12 +51,15 @@ export function helpActionRegistrations(ports: HelpActionPorts): ActionRegistrat
             })),
           };
         if (!Array.isArray(requested)) throw invalidInput('actions must be a list of action names');
-        const byName = new Map(contracts.map((contract) => [contract.name, contract]));
-        const unknown = requested.filter((name) => !byName.has(String(name)));
+        // The model sees tools.work_list (Codex) or mcp__mama__work_list (Claude); both name work.list.
+        const key = (name: string): string =>
+          name.replace(/^mcp__mama__/, '').replace(/[.:]/g, '_');
+        const byName = new Map(contracts.map((contract) => [key(contract.name), contract]));
+        const unknown = requested.filter((name) => !byName.has(key(String(name))));
         if (unknown.length > 0) throw invalidInput(`unknown actions: ${unknown.join(', ')}`);
         return {
           actions: requested.map((name) => {
-            const contract = byName.get(String(name))!;
+            const contract = byName.get(key(String(name)))!;
             return {
               name: contract.name,
               summary: contract.summary,

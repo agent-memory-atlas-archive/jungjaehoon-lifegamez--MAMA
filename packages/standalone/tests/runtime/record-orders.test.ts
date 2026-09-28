@@ -109,7 +109,38 @@ function orders(adapter: Awaited<ReturnType<typeof database>>) {
   return { port, accepted, events };
 }
 
+function mailboxRow(
+  adapter: Awaited<ReturnType<typeof database>>,
+  attempt: number,
+  status: 'pending' | 'acked'
+) {
+  adapter
+    .prepare(
+      `INSERT INTO mailbox_inputs (stimulus_id, kind, principal_id, channel_key, preview_json, payload_json, occurred_at, created_at, status)
+       VALUES (?, 'scheduled', 'owner', 'operator:record', '[]', ?, 1, ?, ?)`
+    )
+    .run(
+      `record:${delta.stimulusId}:${attempt}`,
+      JSON.stringify(recordOrderPayload(delta, attempt)),
+      Date.now(),
+      status
+    );
+}
+
 describe('record orders', () => {
+  it('recovers a lost check at start: next attempt when unrecorded, nothing while one is queued', async () => {
+    const adapter = await database();
+    mailboxRow(adapter, 1, 'acked');
+    const { port, accepted, events } = orders(adapter);
+    port.recover();
+    expect(accepted.map((stimulus) => stimulus.id)).toEqual([`record:${delta.stimulusId}:2`]);
+    expect(events[0]).toMatchObject({ type: 'retry', attempt: 2 });
+    mailboxRow(adapter, 2, 'pending');
+    const second = orders(adapter);
+    second.port.recover();
+    expect(second.accepted).toEqual([]);
+  });
+
   it('counts a batch recorded only by a revision citing its observations or a declared no-update', async () => {
     const adapter = await database();
     const record = recordOrderPayload(delta, 1);

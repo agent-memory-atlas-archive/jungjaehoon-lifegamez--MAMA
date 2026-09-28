@@ -185,6 +185,21 @@ without a separate check".
    not run live in this change and is recorded as unverified. Whether Claude needs `code_act` is
    left open.
 
+## Implementation notes (code review round 1)
+
+- Lessons are searched per guidance kind (lesson, preference, constraint, workflow; three each)
+  and the best three are kept: a whole-memory search returns work records first (597 active work
+  records against 32 guidance records on 2026-09-29).
+- The record order carries the delta's last five lines, each up to 300 characters, as Kagemusha's
+  record prompt does, so a retry or a record order that runs after other turns still has them.
+- The backfill guard is measured from when the row was accepted, and a skipped row is logged.
+- At start, record orders of the last day with no attempt still queued are checked again, so a
+  check lost to a hard kill while it waited for child runs is not silent.
+- Board content rules stay in the `report.publish` contract and are read with `help` before the
+  first publish in a session, as Kagemusha's `help("full-report")` serves its slot vocabulary.
+- Deploy order: merge the standing corrections into `owner-policy.md` (and fix its line 62)
+  before this build runs, because it removes the corrections block (relocate before delete).
+
 ## Owner decisions still open
 
 1. How the agent edits `owner-policy.md` when a correction is a standing rule (owner-message-only

@@ -91,6 +91,10 @@ export interface OwnerRuntimeOptions {
   onRecordOrderEvent?: (event: RecordOrderEvent) => void;
   /** Lesson recall for a turn; defaults to memory.search over the owner's guidance. */
   lessons?: StimulusDeliveryOptions['lessons'];
+  /** A lesson search that did not complete; the turn goes on with what the others found. */
+  onLessonSearchFailed?: (reason: string) => void;
+  /** A live delta acked without a turn (only history lines). */
+  onStimulusSkipped?: StimulusDeliveryOptions['onSkipped'];
   /** Keep accepted inputs queued while product delivery ports are starting. */
   deliveryReady?: () => boolean;
   maxTurns: number;
@@ -295,6 +299,13 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       });
     }
     const processStartedAt = Date.now();
+    const recordOrders = createRecordOrders({
+      adapter: database.adapter,
+      accept: (stimulus) =>
+        intakeRuntime.accept({ ...stimulus, principalId: options.ownerPrincipalId }),
+      processStartedAt,
+      ...(options.onRecordOrderEvent === undefined ? {} : { onEvent: options.onRecordOrderEvent }),
+    });
     delivery = createStimulusDelivery({
       backend: options.backend,
       timeZone: options.timeZone,
@@ -314,6 +325,7 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
         ? {}
         : { onUncertain: options.onStimulusUncertain }),
       ...(options.onStimulusDead === undefined ? {} : { onDead: options.onStimulusDead }),
+      ...(options.onStimulusSkipped === undefined ? {} : { onSkipped: options.onStimulusSkipped }),
       recentOwnerExchanges: (row) =>
         readRecentOwnerExchanges(
           intakeRuntime.mailbox!,
@@ -325,12 +337,25 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       lessons:
         options.lessons ??
         (async (text): Promise<TurnLesson[]> => {
-          const search = await surface.hostToolCall(
-            'memory.search',
-            { query: text.slice(0, 2_000), limit: 10 },
-            `turn-lessons:${randomUUID()}`
+          // Guidance is a few dozen records among hundreds of work records: search each guidance
+          // kind on its own so work items never crowd the corrections out.
+          const searches = await Promise.all(
+            GUIDANCE_KINDS.map((kind) =>
+              surface.hostToolCall(
+                'memory.search',
+                { query: text.slice(0, 2_000), kind, limit: 3 },
+                `turn-lessons:${randomUUID()}`
+              )
+            )
           );
-          const hits = search.status === 'completed' ? searchHits(search.data) : [];
+          const failed = searches.filter((search) => search.status !== 'completed');
+          if (failed.length > 0)
+            options.onLessonSearchFailed?.(
+              `${failed.length} of ${searches.length} lesson searches failed`
+            );
+          const hits = searches.flatMap((search) =>
+            search.status === 'completed' ? searchHits(search.data) : []
+          );
           if (hits.length === 0) return [];
           const active = new Map(
             (
@@ -359,15 +384,7 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
             })
             .slice(0, 3);
         }),
-      recordOrders: createRecordOrders({
-        adapter: database.adapter,
-        accept: (stimulus) =>
-          intakeRuntime.accept({ ...stimulus, principalId: options.ownerPrincipalId }),
-        processStartedAt,
-        ...(options.onRecordOrderEvent === undefined
-          ? {}
-          : { onEvent: options.onRecordOrderEvent }),
-      }),
+      recordOrders,
       ...(options.onOwnerResult === undefined ? {} : { onOwnerResult: options.onOwnerResult }),
       ...(options.onSourceResult === undefined ? {} : { onSourceResult: options.onSourceResult }),
       ...(options.onScheduledResult === undefined
@@ -418,6 +435,7 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       reclaimStaleSocket: true,
     });
     ownerMailbox = intakeRuntime.mailbox;
+    recordOrders.recover();
     const intake = createStimulusIntake(intakeRuntime, options.ownerPrincipalId);
     let stopped = false;
     return {

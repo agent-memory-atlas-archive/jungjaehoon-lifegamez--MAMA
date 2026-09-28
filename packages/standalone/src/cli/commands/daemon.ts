@@ -484,6 +484,11 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
         logger.error(
           `stimulus parked dead kind=${row.kind ?? 'unknown'} mailbox_id=${row.id} reason=${stimulusFailureReason(reason)}`
         ),
+      onLessonSearchFailed: (reason) => logger.error(`lesson recall failed reason=${reason}`),
+      onStimulusSkipped: (row, reason) =>
+        logger.info(
+          `stimulus skipped kind=${row.kind ?? 'unknown'} mailbox_id=${row.id} reason=${reason}`
+        ),
       onRecordOrderEvent: (event) => {
         const line = `record order ${event.type} delta=${event.deltaStimulusId} attempt=${event.attempt}${
           'reason' in event ? ` reason=${stimulusFailureReason(event.reason)}` : ''
