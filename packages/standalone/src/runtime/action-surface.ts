@@ -3,7 +3,6 @@ import { createNativeToolTraceObserver } from '@jungjaehoon/mama-core/runtime/na
 import {
   appendOperationToolTrace,
   appendToolTrace,
-  codeActRegistration,
   coreActionRegistrations,
   createCatalog,
   createDispatcher,
@@ -23,6 +22,7 @@ import {
 } from '../api/attachment-actions.js';
 import { sourceActionRegistrations } from '../api/source-actions.js';
 import { ownerTimeZoneActionRegistrations } from '../api/owner-timezone-actions.js';
+import { codeActRegistration } from '../api/code-act-actions.js';
 import {
   ownerReportPhraseActionRegistrations,
   type OwnerReportPhraseActionPorts,

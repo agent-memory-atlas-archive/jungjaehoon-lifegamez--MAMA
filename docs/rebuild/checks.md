@@ -1292,6 +1292,6 @@ The implementation writes raw/index data during import only. Replay is the owner
 
 ### Code-act restored (2026-09-29)
 
-- Result: `code_act` is a mama-core action again (ported from Kagemusha's code-act sandbox and worker). The code runs in a separate Node process under `--permission` with IPC host calls; each call is dispatched with the calling turn's context, so grants and traces are the caller's. MAMA OS registers it for the owner, and the report and reminder turns read in one `code_act` call.
+- Result: `code_act` is a MAMA OS action again (ported from Kagemusha's code-act sandbox and worker, kept in the product as Kagemusha keeps it in its app). The code runs in a separate Node process under `--permission` with IPC host calls; each call is dispatched with the calling turn's context, so grants and traces are the caller's. MAMA OS registers it for the owner, and the report and reminder turns read in one `code_act` call.
 - Evidence: the #325 rebuild deleted the old code-act (4,864 lines) without naming a replacement. In the 4379 chat report the reads took 8 one-action model round trips (82 s). Tests: several actions in one call, ungranted actions stay denied, a vm escape still cannot read files, the parent timer kills a stuck worker, and each inner call is its own tool_traces row in the calling run.
 - Still fails: not live-verified. The next report must show its reads in one or two round trips.

@@ -245,14 +245,6 @@ export {
   type ActionDispatcher,
   type DispatcherOptions,
 } from './api/dispatch.js';
-export {
-  CODE_ACT_CONTRACT,
-  codeActRegistration,
-  runCodeAct,
-  type CodeActFunction,
-  type CodeActHost,
-  type CodeActResult,
-} from './api/code-act.js';
 export { createClient, type Client, type ClientCall, type ClientOptions } from './client/client.js';
 export {
   startRuntime,

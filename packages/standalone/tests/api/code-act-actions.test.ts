@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { createCatalog, type ActionRegistration } from '../../src/api/catalog.js';
-import { codeActRegistration, runCodeAct } from '../../src/api/code-act.js';
-import { createDispatcher, type ActionDispatcher } from '../../src/api/dispatch.js';
-import type { JudgmentAccess } from '../../src/knowledge/judgments.js';
+import {
+  createCatalog,
+  createDispatcher,
+  type ActionDispatcher,
+  type ActionRegistration,
+  type JudgmentAccess,
+} from '@jungjaehoon/mama-core';
+import { codeActRegistration, runCodeAct } from '../../src/api/code-act-actions.js';
 
 const echo = (name: string): ActionRegistration => ({
   contract: {

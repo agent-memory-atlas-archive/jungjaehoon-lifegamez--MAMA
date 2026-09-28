@@ -9,9 +9,12 @@
  * is not a boundary, and an escaped script must reach no files, processes or network.
  */
 import { spawn } from 'node:child_process';
-import type { ActionContract } from '../action-contracts.js';
-import type { ActionContext, ActionRegistration } from './catalog.js';
-import type { ActionDispatcher } from './dispatch.js';
+import type {
+  ActionContext,
+  ActionContract,
+  ActionDispatcher,
+  ActionRegistration,
+} from '@jungjaehoon/mama-core';
 
 const WORKER_SOURCE = `
 const vm = require('node:vm');
