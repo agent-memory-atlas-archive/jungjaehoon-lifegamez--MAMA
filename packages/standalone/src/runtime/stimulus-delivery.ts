@@ -403,7 +403,7 @@ function boundedStimulus(
         new Date(row.occurredAt),
         reportTurn(row.stimulusId.split(':', 1)[0]!)
       ),
-      `Owner message: ${JSON.stringify(ownerText)}`,
+      `Owner message payload: ${JSON.stringify(row.payload)}`,
       ...attachmentLines(row.payload),
     ].join('\n');
   const lines = [

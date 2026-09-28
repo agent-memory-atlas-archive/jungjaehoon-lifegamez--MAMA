@@ -28,6 +28,8 @@ function readPhrases(path: string): string[] {
 }
 
 export function createReportPhraseSetting(path: string): ReportPhraseSetting {
+  // A malformed file stops startup instead of failing every owner message later.
+  readPhrases(path);
   return {
     get: () => readPhrases(path),
     set: (phrases) => {

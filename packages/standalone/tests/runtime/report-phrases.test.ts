@@ -43,10 +43,14 @@ describe('owner report phrases', () => {
     expect(setting.get()).toEqual(['weekly summary']);
   });
 
-  it('refuses a malformed phrase file', () => {
+  it('refuses a malformed phrase file at startup and on a later read', () => {
     const path = phraseFile();
     writeFileSync(path, JSON.stringify({ phrases: ['full report', ''] }));
-    expect(() => createReportPhraseSetting(path).get()).toThrow('must hold { "phrases"');
+    expect(() => createReportPhraseSetting(path)).toThrow('must hold { "phrases"');
+    writeFileSync(path, JSON.stringify({ phrases: ['full report'] }));
+    const setting = createReportPhraseSetting(path);
+    writeFileSync(path, '{');
+    expect(() => setting.get()).toThrow();
   });
 });
 

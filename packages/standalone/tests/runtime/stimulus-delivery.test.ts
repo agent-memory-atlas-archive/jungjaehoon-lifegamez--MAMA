@@ -321,7 +321,7 @@ describe('one stimulus intake and delivery', () => {
     expect(report).not.toContain('manage.wiki.');
     expect(report).not.toContain('## Bounded stimulus');
     // The owner's own words and files still reach the agent, which decides what was asked.
-    expect(report).toContain('Owner message: "send the Full Report please"');
+    expect(report).toContain('Owner message payload: {"text":"send the Full Report please"');
     expect(report).toContain(
       'attachment: name="notes.pdf" path="/downloads/notes.pdf" size=12 bytes'
     );
