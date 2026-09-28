@@ -259,7 +259,7 @@ function upcomingAction(ports: ReportReadPorts): ActionRegistration {
     contract: {
       name: 'schedule.upcoming',
       summary:
-        "Read upcoming calendar and iCal events from the stored event index, including configured holiday calendars. days sets the window (default 14, at most 90); cancelled and ended events are left out, and all-day events end at their exclusive end in the event's timezone or the owner's. Events come sorted by start time with source, calendar, start, end, title and an observation ref. More events than cap (default 250) is an error; narrow days.",
+        "Read upcoming calendar and iCal events from the stored event index, including configured holiday calendars. days sets the window (default 14, at most 90); cancelled and ended events are left out; an all-day event stays upcoming until its exclusive end (the day after its start when it has no end) in the event's timezone or the owner's. Events come sorted by start time with source, calendar, title, an observation ref, and start and end as written in the source. More events than cap (default 250) is an error; narrow days.",
       inputSchema: {
         type: 'object',
         additionalProperties: false,

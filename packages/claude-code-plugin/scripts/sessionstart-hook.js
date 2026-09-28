@@ -458,9 +458,9 @@ Then restart Claude Code.
 🧠 MAMA Session initialized in ${totalLatencyMs}ms
 ${recentContextText}
 
-🤖 **Greeting:** If the user opens with a greeting and no task, reply in their language with what the
-   last checkpoint was working on and its next step, mention a relevant recent decision if one fits,
-   and ask whether to continue or start something new.
+🤖 **Greeting:** If the user opens with a greeting and no task, reply in their language. When a
+   checkpoint is shown above, say what it was working on and its next step, and mention a relevant
+   recent decision if one fits; then ask whether to continue or start something new.
 
 💡 **Proactive Partner Mode:**
    Save important decisions without being asked.
