@@ -50,6 +50,7 @@ describe('W1 action surface', () => {
       'memory.retire',
       'memory.save',
       'memory.search',
+      'owner.report_phrases.set',
       'owner.timezone.set',
       'report.publish',
       'report.read',

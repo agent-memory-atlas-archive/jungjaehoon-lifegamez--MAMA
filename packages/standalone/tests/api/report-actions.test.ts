@@ -8,9 +8,6 @@ import { describe, expect, it, vi } from 'vitest';
 import { createCatalog, createDispatcher } from '@jungjaehoon/mama-core';
 import { reportActionRegistrations, type ReportPorts } from '../../src/api/report-actions.js';
 import { createReportPublisher, createReportStore } from '../../src/api/report-handler.js';
-import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
-
-const timeZone = createTimeZoneSetting('UTC');
 
 const access = {
   principalId: 'owner',
@@ -26,7 +23,7 @@ function dispatch(ports: ReportPorts) {
 
 describe('report.* action registrations', () => {
   it('lists exactly the two report actions with their schemas', () => {
-    const catalog = createCatalog(reportActionRegistrations({ timeZone }));
+    const catalog = createCatalog(reportActionRegistrations({}));
     const names = catalog.list().map((contract) => contract.name);
     expect(names.sort()).toEqual(['report.publish', 'report.read']);
     const publish = catalog.describe('report.publish');
@@ -55,7 +52,6 @@ describe('report.* action registrations', () => {
             },
           ])
         ),
-      timeZone,
     })({ action: 'report.read', input: { slot: 'action_required', format: 'html' } }, { access });
 
     expect(result).toMatchObject({
@@ -65,7 +61,7 @@ describe('report.* action registrations', () => {
   });
 
   it('rejects the removed basis_revision input', async () => {
-    const call = dispatch({ publisher: vi.fn(), timeZone });
+    const call = dispatch({ publisher: vi.fn() });
     const result = await call(
       {
         action: 'report.publish',
@@ -77,7 +73,7 @@ describe('report.* action registrations', () => {
   });
 
   it('report.read fails closed until routes init binds the reader port', async () => {
-    const ports: ReportPorts = { timeZone };
+    const ports: ReportPorts = {};
     const call = dispatch(ports);
     const early = await call({ action: 'report.read', input: {} }, { access });
     expect(early).toMatchObject({
@@ -101,7 +97,6 @@ describe('report.* action registrations', () => {
     const store = createReportStore();
     const ports: ReportPorts = {
       publisher: createReportPublisher(store, new Set()),
-      timeZone,
     };
     const call = dispatch(ports);
 
@@ -143,7 +138,7 @@ describe('report.* action registrations', () => {
         },
       },
     });
-    const call = dispatch({ publisher: createReportPublisher(store, new Set()), timeZone });
+    const call = dispatch({ publisher: createReportPublisher(store, new Set()) });
     const result = await call(
       { action: 'report.publish', input: { slots: { decisions: html } } },
       { access }
@@ -158,7 +153,7 @@ describe('report.* action registrations', () => {
 
   it('report.publish rejects non-string slot values and keeps the code', async () => {
     const publisher = vi.fn();
-    const call = dispatch({ publisher, timeZone });
+    const call = dispatch({ publisher });
     const result = await call(
       { action: 'report.publish', input: { slots: { briefing: 42 } } },
       { access }
@@ -171,7 +166,7 @@ describe('report.* action registrations', () => {
   });
 
   it('report.publish reports the unbound publisher port instead of a silent noop', async () => {
-    const call = dispatch({ timeZone });
+    const call = dispatch({});
     const result = await call(
       { action: 'report.publish', input: { slots: { briefing: '<p>x</p>' } } },
       { access }
@@ -187,7 +182,7 @@ describe('report.* action registrations', () => {
     const store = createReportStore({ onChange });
     store.update('briefing', '<div class="report-card">old</div>', 0);
     onChange.mockClear();
-    const call = dispatch({ publisher: createReportPublisher(store, new Set()), timeZone });
+    const call = dispatch({ publisher: createReportPublisher(store, new Set()) });
 
     const result = await call(
       {

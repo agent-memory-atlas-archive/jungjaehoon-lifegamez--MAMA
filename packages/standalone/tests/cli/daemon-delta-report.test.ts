@@ -297,8 +297,8 @@ describe('live delta reports', () => {
     daemon.owner.acceptSourceDelta(input);
     await vi.waitFor(() => expect(prompts).toHaveLength(1));
     expect(prompts.map((prompt) => prompt.source)).toEqual(['source_delta']);
-    expect(prompts[0]!.text).toContain('[notify]');
-    expect(prompts[0]!.text).toContain('[ack]');
+    // The marker rule is standing text; the turn states that its result is delivered.
+    expect(prompts[0]!.text).toContain('delivery: live');
     expect(logs).toContain(`delta report route=${route} id=${id}`);
     expect(logs).toContain(`stimulus delivered kind=source_delta id=${id} model_run_id=run:1`);
     expect(logs).not.toContain(expect.stringContaining(`delta-board:${id}`));
@@ -390,10 +390,8 @@ describe('live delta reports', () => {
       );
       await daemon.owner.runtime.drainOnce();
       expect(prompts).toHaveLength(1);
-      expect(prompts[0]!.text).toContain(
-        'This replay window is history and is not delivered to the owner'
-      );
-      expect(prompts[0]!.text).not.toContain('End this turn with exactly one marker');
+      expect(prompts[0]!.text).toContain('delivery: replay window, not delivered to the owner');
+      expect(prompts[0]!.text).not.toContain('delivery: live');
       expect(telegram.sendMessage).not.toHaveBeenCalled();
       expect(logs.some((line) => line.startsWith('delta report'))).toBe(false);
     }

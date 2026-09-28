@@ -295,16 +295,14 @@ describe('owner guidance index delivery', () => {
     expect(order).toEqual([...order].sort((left, right) => left - right));
   });
 
-  it('keeps the delta marker contract in live source-delta turns', async () => {
+  it('marks a live source-delta turn as delivered', async () => {
     const delivery = createStimulusDelivery({
       guidanceResolver: async () => [],
       timeZone: createTimeZoneSetting('UTC'),
     } as never);
 
     const prompt = await deliver(delivery, 'source_delta', 'delta-marker-contract', false);
-    expect(prompt).toContain(
-      'End this turn with exactly one marker: [notify] followed by the message the owner receives, or [ack].'
-    );
+    expect(prompt).toContain('delivery: live');
   });
 
   it('tells a replayed delta that nothing is delivered', async () => {
@@ -314,10 +312,8 @@ describe('owner guidance index delivery', () => {
     } as never);
 
     const prompt = await deliver(delivery, 'replay_delta', 'replay-delta', false);
-    expect(prompt).toContain(
-      'This replay window is history and is not delivered to the owner: notification instructions do not apply, and the turn ends without [notify] or [ack].'
-    );
-    expect(prompt).not.toContain('End this turn with exactly one marker');
+    expect(prompt).toContain('delivery: replay window, not delivered to the owner');
+    expect(prompt).not.toContain('delivery: live');
   });
 
   it('gives owner-message turns no delta marker contract', async () => {

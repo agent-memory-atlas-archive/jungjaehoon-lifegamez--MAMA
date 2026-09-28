@@ -78,11 +78,13 @@ describe('KST report scheduler', () => {
     const prompt = buildScheduledReportPrompt(
       { report: 'full', hourKey: '2026-01-01:08' },
       new Date('2026-01-01T00:00:00Z'),
-      { timeZone: 'UTC' }
+      { backend: 'codex', wikiEnabled: true, messenger: 'telegram', timeZone: 'UTC' }
     );
-    expect(prompt).toContain('Slot HTML must use ONLY this class vocabulary');
-    expect(prompt).not.toContain('source.recent');
-    expect(prompt).not.toContain('daily/YYYY-MM-DD.md');
+    // The board vocabulary lives in the report.publish contract, not in each report turn.
+    expect(prompt).not.toContain('Slot HTML must use ONLY this class vocabulary');
+    expect(prompt).toContain('source.recent');
+    expect(prompt).toContain('manage.wiki.update');
+    expect(prompt).toContain('daily/YYYY-MM-DD.md');
   });
 
   it('uses one delivery identity across model attempts after the schedule write fails', async () => {
@@ -124,14 +126,20 @@ describe('KST report scheduler', () => {
     expect(ctx.queued[0]?.payload).toMatchObject({ previousFullReportAt: '2026-01-01:08' });
     expect(
       buildScheduledReportPrompt(ctx.queued[0]?.payload, new Date('2026-01-01T04:00:00Z'), {
+        backend: 'codex',
+        wikiEnabled: true,
+        messenger: 'telegram',
         timeZone: 'Asia/Seoul',
       })
-    ).toContain('Previous full report boundary');
+    ).toContain('Changes since: ');
     expect(
       buildScheduledReportPrompt(ctx.queued[0]?.payload, new Date('2026-01-01T04:00:00Z'), {
+        backend: 'codex',
+        wikiEnabled: true,
+        messenger: 'telegram',
         timeZone: 'Asia/Seoul',
       })
-    ).toContain('Previous full report boundary: 2025-12-31T23:00:00.000Z');
+    ).toContain('Changes since: 2025-12-31T23:00:00.000Z (the previous full report)');
   });
 
   it('passes acknowledged deltas since the latest report time with a visible cap', () => {
@@ -176,11 +184,15 @@ describe('KST report scheduler', () => {
     const prompt = buildScheduledReportPrompt(
       { report: 'full', hourKey: '2026-01-01:08', previousFullReportAt: '2026-01-01:08' },
       new Date('2026-01-01T16:00:00Z'),
-      { timeZone: 'America/Los_Angeles' }
+      {
+        backend: 'codex',
+        wikiEnabled: true,
+        messenger: 'telegram',
+        timeZone: 'America/Los_Angeles',
+      }
     );
     expect(prompt).toContain('(America/Los_Angeles)');
-    expect(prompt).toContain('Previous full report boundary: 2026-01-01T16:00:00.000Z');
-    expect(prompt).toContain('in America/Los_Angeles as month/day and HH:mm');
+    expect(prompt).toContain('Changes since: 2026-01-01T16:00:00.000Z (the previous full report)');
   });
 
   it('sends no reminder in an hour whose full report already went out after the hour stops being a full-report hour', () => {

@@ -34,6 +34,9 @@ import { ownerSystemPrompt } from './owner-system-prompt.js';
 import { storedSourceFamilies } from '../connectors/framework/stored-index-read.js';
 import { createOwnerPolicyProvider, type OwnerPolicyProvider } from './owner-policy.js';
 import { readRecentOwnerExchanges } from './recent-owner-exchanges.js';
+import { createReportPhraseSetting } from './report-phrases.js';
+import { buildOwnerFullReportPrompt } from './report-prompts.js';
+import { initTokenEstimator } from '@jungjaehoon/mama-core/runtime/token-estimator';
 import {
   createStimulusDelivery,
   createStimulusIntake,
@@ -164,6 +167,9 @@ function isOwnerGuidanceRecord(
 
 /** Assemble the one owner database, catalog, native session and mailbox runtime. */
 export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<OwnerRuntime> {
+  // The session's system prompt is composed at its first turn; counting it before the tokenizer
+  // loads used the byte estimate, which nearly doubles Korean text.
+  await initTokenEstimator();
   const database = await openCoreDatabase({ path: options.databasePath });
   let rawStore: RawStore | undefined;
   let nativeSession: OwnerRuntimeOptions['nativeSession'] = options.nativeSession;
@@ -218,6 +224,9 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
           };
         })()
       : {};
+    const reportPhrases = createReportPhraseSetting(
+      join(options.runtimeRoot, 'full-report-phrases.json')
+    );
     const surface = createActionSurface({
       adapter: database.adapter,
       knowledge,
@@ -231,6 +240,16 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       isOwnerMessageTurn: (sourceMessageRef) =>
         ownerMailbox?.readInput(sourceMessageRef, options.ownerPrincipalId)?.kind ===
         'owner_message',
+      reportPhrases: {
+        setting: reportPhrases,
+        fullReportTurn: (sourceMessageRef) =>
+          buildOwnerFullReportPrompt(new Date(), {
+            backend: options.backend,
+            wikiEnabled: options.wiki?.enabled ?? false,
+            messenger: sourceMessageRef.split(':', 1)[0]!,
+            timeZone: options.timeZone.get(),
+          }),
+      },
       reportStore,
       reportSseClients,
       wikiPorts,
@@ -277,6 +296,7 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
     }
     delivery = createStimulusDelivery({
       backend: options.backend,
+      reportPhrases,
       timeZone: options.timeZone,
       wikiEnabled: options.wiki?.enabled ?? false,
       formattingRoutes: options.formattingRoutes ?? {

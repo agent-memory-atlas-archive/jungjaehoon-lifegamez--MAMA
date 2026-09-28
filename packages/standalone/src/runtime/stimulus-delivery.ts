@@ -17,7 +17,8 @@ import type { SourceDelta } from '../connectors/framework/polling-scheduler.js';
 import type { QueueCandidateScore, QueueLine, WindowQueue } from '../replay/window-queue.js';
 import { renderRecentOwnerExchanges, type OwnerExchange } from './recent-owner-exchanges.js';
 import type { OwnerRuntimeBackend } from './owner-system-prompt.js';
-import { buildScheduledReportPrompt } from './report-prompts.js';
+import { buildOwnerFullReportPrompt, buildScheduledReportPrompt } from './report-prompts.js';
+import { asksForFullReport, type ReportPhraseSetting } from './report-phrases.js';
 import { localStamp, type TimeZoneSetting } from './timezone.js';
 import { workListTitleTextScore, type OpenWorkCandidate } from '../api/work-actions.js';
 import type { ReportSlot } from '../api/report-handler.js';
@@ -58,7 +59,8 @@ export interface StimulusIntake {
 
 export interface StimulusDeliveryOptions {
   guidanceResolver: GuidanceResolver;
-  backend?: OwnerRuntimeBackend;
+  backend: OwnerRuntimeBackend;
+  reportPhrases?: ReportPhraseSetting;
   openWorkPipeline?: () => Promise<unknown>;
   openWorkCandidates?: () => Promise<readonly OpenWorkCandidate[]>;
   boardSnapshot?: () => Promise<Record<string, ReportSlot>>;
@@ -349,15 +351,40 @@ function boundedStimulus(
   liveSourceDelta: boolean,
   options: Pick<
     StimulusDeliveryOptions,
-    'wikiEnabled' | 'formattingRoutes' | 'backend' | 'timeZone'
+    'wikiEnabled' | 'formattingRoutes' | 'backend' | 'timeZone' | 'reportPhrases'
   >,
   candidates: readonly string[] = []
 ): string {
+  const reportTurn = (messenger: string) => ({
+    backend: options.backend,
+    wikiEnabled: options.wikiEnabled ?? false,
+    messenger,
+    timeZone: options.timeZone.get(),
+  });
   if (row.kind === 'scheduled')
-    return buildScheduledReportPrompt(row.payload, new Date(row.occurredAt), {
-      messenger: options.formattingRoutes?.reports,
-      timeZone: options.timeZone.get(),
-    });
+    return buildScheduledReportPrompt(
+      row.payload,
+      new Date(row.occurredAt),
+      reportTurn(options.formattingRoutes?.reports ?? 'telegram')
+    );
+  const ownerText =
+    row.kind === 'owner_message' &&
+    row.payload &&
+    typeof row.payload === 'object' &&
+    !Array.isArray(row.payload) &&
+    typeof row.payload.text === 'string'
+      ? row.payload.text
+      : null;
+  // Kagemusha's chat report routing: a registered phrase gets the full report turn itself.
+  if (
+    ownerText !== null &&
+    options.reportPhrases !== undefined &&
+    asksForFullReport(ownerText, options.reportPhrases.get())
+  )
+    return buildOwnerFullReportPrompt(
+      new Date(row.occurredAt),
+      reportTurn(row.stimulusId.split(':', 1)[0]!)
+    );
   const lines = [
     '## Bounded stimulus',
     `owner timezone: ${options.timeZone.get()}`,
@@ -393,15 +420,11 @@ function boundedStimulus(
   if (messages === null) lines.push(`refs: ${JSON.stringify(row.refs)}`);
   if (row.kind === 'source_delta') {
     if (liveSourceDelta) {
-      lines.push(
-        'End this turn with exactly one marker: [notify] followed by the message the owner receives, or [ack]. Owner-answer turns never carry these markers.'
-      );
+      lines.push('delivery: live');
       lines.push(`formatting: ${options.formattingRoutes?.notifications ?? 'telegram'}`);
       if (candidates.length > 0) lines.push('candidates (you decide):', ...candidates);
     } else {
-      lines.push(
-        'This replay window is history and is not delivered to the owner: notification instructions do not apply, and the turn ends without [notify] or [ack].'
-      );
+      lines.push('delivery: replay window, not delivered to the owner');
     }
     lines.push(
       row.refs.length === 0

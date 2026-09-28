@@ -20,6 +20,7 @@ import {
 import { CodexRuntimeProcess } from '@jungjaehoon/mama-core/runtime/runtime-process';
 import { PersistentCLIAdapter } from '@jungjaehoon/mama-core/runtime/drivers/persistent-cli-adapter';
 import { getSessionPool, type SessionPool } from '@jungjaehoon/mama-core/runtime/session-pool';
+import type { PromptLayer } from '@jungjaehoon/mama-core/runtime/prompt-layers';
 import type {
   BackendType,
   ContentBlock,
@@ -256,6 +257,17 @@ function createDriver(
 }
 
 /** Build one persistent owner session over the shared core native turn runner. */
+/**
+ * The owner session's system prompt: the standing instructions and the owner's policy file.
+ * Both reach the agent whole, as Kagemusha's one prompt does; neither is an expendable layer.
+ */
+export function ownerSystemLayers(standing: string, ownerPolicy: string | null): PromptLayer[] {
+  return [
+    ...(standing ? [{ name: 'owner-standing', content: standing, priority: 1 }] : []),
+    ...(ownerPolicy ? [{ name: 'owner-policy', content: ownerPolicy, priority: 1 }] : []),
+  ];
+}
+
 export function createNativeSession(options: NativeSessionOptions): NativeSession {
   if (options.agent && options.createAgent) {
     throw new Error('Native session accepts an agent or a driver factory, not both');
@@ -327,21 +339,9 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
       const ownerPolicy = ownerPolicyProvider?.() ?? emptyOwnerPolicy;
       const role = current?.nativeRole ?? defaultRole;
       const nativeTools = options.backend === 'claude' ? projectClaudeNativeTools(role) : undefined;
-      const systemLayers = [
-        ...(systemPrompt ? [{ name: 'owner-standing', content: systemPrompt, priority: 1 }] : []),
-        ...(ownerPolicy.content
-          ? [{ name: 'owner-policy', content: ownerPolicy.content, priority: 2 }]
-          : []),
-      ];
-      const buildSystemLayers = async () => {
-        const currentOwnerPolicy = ownerPolicyProvider?.() ?? emptyOwnerPolicy;
-        return [
-          ...(systemPrompt ? [{ name: 'owner-standing', content: systemPrompt, priority: 1 }] : []),
-          ...(currentOwnerPolicy.content
-            ? [{ name: 'owner-policy', content: currentOwnerPolicy.content, priority: 2 }]
-            : []),
-        ];
-      };
+      const systemLayers = ownerSystemLayers(systemPrompt, ownerPolicy.content);
+      const buildSystemLayers = async () =>
+        ownerSystemLayers(systemPrompt, (ownerPolicyProvider?.() ?? emptyOwnerPolicy).content);
       return {
         channelKey: current?.sessionKey ?? OWNER_RUNTIME_SESSION_KEY,
         systemLayers,

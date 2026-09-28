@@ -233,7 +233,7 @@ describe('daemon scheduled reports', () => {
     expect(ctx.logs).toContain(
       `telegram outbound delivered idempotency_key="report:2026-01-01:13:full" message_ids=[101]`
     );
-    expect(ctx.prompts[0]).toContain('report.publish');
+    expect(ctx.prompts[0]).toContain('[scheduled_full_report]');
     expect(JSON.parse(readFileSync(ctx.statePath, 'utf8')).lastFullKey).toBe('2026-01-01:13');
     ctx.scheduler!.tick(now);
     expect(ctx.rows()).toHaveLength(1);
