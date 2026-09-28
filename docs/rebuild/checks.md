@@ -1256,11 +1256,18 @@ The implementation writes raw/index data during import only. Replay is the owner
 
 ### Live check after deploying PR 327 (2026-09-28)
 
-- Result: deltas ran in 29 s with 3 tool calls (80–236 s and 10–18 calls before), each turn carried the lane block and the marker rule once and the related-work candidates; a second delta changed only the pipeline section and kept every other card. Two owner corrections were saved in their turn as lane records.
-- Failed: a lane record replaced the whole default, and the correcting owner turn could not see the source-delta default, so it saved only 4 notification steps and dropped the recording and board rules for new sessions. The lane block's "Change this lane by saving…" footer was also executed as an instruction: a delta turn and an owner turn re-saved identical lane records without any correction.
-- Fix: corrections now sit on top of the lane default and win on conflict, with no change instruction in turn content; the stored records need no data change (records that copied default lines repeat them under the correction line).
-- Observation: the first delta created a pending work item and did not update the pipeline section.
-- Failed (owner turns): all 10 owner turns called memory.save and most replied with a promise; tools never failed, but work and board changed only after the owner insisted twice. The correction rule said to save, never to apply, and the owner-answer default said to answer from what the session knew. Fix: a correction is applied to the affected work items and board before replying, saving is not applying, and no promise for work doable now; owner requests to do work are done in the turn for every affected item.
-- Observation: the owner saw duplicate tasks; the ledger has none open. Five merged duplicates are cancelled but the Tasks page defaults to All (done and cancelled included) and shows only the first 50, so they sit beside their canonical items. Still open: a Tasks default for open work and UI paging.
-- Failed (lane records): owner turns showed only the owner-answer lane, so the owner-answer record was rewritten 12 times in 30 minutes, each time keeping mostly the latest correction, and reminder corrections landed in the owner-answer lane. Fix: owner turns list the other lanes' current corrections with their record ids, and a correction is compared with the lane's current ones and saved as one consolidated record.
-- Still open: the overlay and the apply-now rule are not live-verified until redeployed.
+- Result: delta turns got faster and kept the board: 29 s and 3 tool calls (80–236 s and 10–18 calls before), with the lane block, the marker rule and candidates present, and a later delta changing only the pipeline section.
+- Evidence: daemon.log routes, tool_traces per model run, turn inputs counted in the session log, and report-slots.json before and after.
+- Still fails: the first delta created a pending item and left the pipeline section unchanged.
+
+### Lane corrections sit on the default (2026-09-28)
+
+- Result: a correction record now renders under the lane default and wins where they conflict, and turn content no longer tells the agent to save a lane.
+- Evidence: live, an owner-saved source-delta correction of 4 steps had replaced the 9-line default, and delta, reminder and owner turns re-saved lane records with no correction after reading the footer. Tests now assert that the default comes first and that turn content has no save instruction.
+- Still fails: not live-verified until redeployed; records that copied default lines repeat them under the correction line.
+
+### Owner corrections are applied now and consolidated (2026-09-28)
+
+- Result: a correction changes the affected work items and board before the reply and is then saved. Owner turns list every lane's current corrections, and a new correction is merged with them; one marked as for this time only is not saved.
+- Evidence: all 10 live owner turns called memory.save and mostly replied with a promise, with no tool failure. The owner-answer record was rewritten 12 times in 30 minutes, and reminder corrections landed in the owner-answer lane.
+- Still fails: not live-verified until redeployed. The duplicate tasks the owner saw are cancelled merged records shown by the Tasks page's default "All" filter, which also shows only the first 50 items.

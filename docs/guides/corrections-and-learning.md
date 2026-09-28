@@ -53,7 +53,8 @@ corrections, which every owner turn shows for all four lanes, and saves the
 consolidated set in the same turn: earlier corrections you have not withdrawn or
 replaced stay, and overlapping ones are merged. It does not save a separate
 lesson. A request about reporting, formatting, or
-notification counts as a correction even when you phrase it for one time. The
+notification counts as a correction even when you phrase it casually; one you mark
+as for this time only is applied to that answer and not saved. The
 reply format markers, security rules, and board layout are not part of a lane
 and stay fixed.
 

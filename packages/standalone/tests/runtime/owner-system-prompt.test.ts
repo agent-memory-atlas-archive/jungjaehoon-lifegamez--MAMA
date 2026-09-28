@@ -48,7 +48,7 @@ describe('owner standing prompt', () => {
       'When the owner corrects how a lane reports, formats or notifies, compare the correction'
     );
     expect(prompt).toContain(
-      'A request about reporting, formatting, or notification is a lane correction'
+      'A request about reporting, formatting, or notification is a lane correction even when phrased casually; one the owner marks as for this time only is applied in the turn and not saved.'
     );
     expect(prompt).toContain(
       'Then save it as a scoped lesson, preference or constraint with appliesWhen'
