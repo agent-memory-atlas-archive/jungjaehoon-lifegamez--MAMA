@@ -280,6 +280,7 @@ export function workListTitleTextScore(query: string, title: string): number {
 }
 
 function workListStatus(item: CommitmentView): PublicWorkStatus {
+  if (item.withdrawn) return 'cancelled';
   const value = workListValueObject(item.values).status;
   if (typeof value === 'string' && WORK_LIST_STATUSES.includes(value as PublicWorkStatus)) {
     return value as PublicWorkStatus;
@@ -289,7 +290,7 @@ function workListStatus(item: CommitmentView): PublicWorkStatus {
       `work.list encountered a status outside the contract: ${JSON.stringify(value)}`
     );
   }
-  return item.withdrawn ? 'cancelled' : 'pending';
+  return 'pending';
 }
 
 function workListPriority(item: CommitmentView): string {
@@ -508,7 +509,7 @@ export function readOpenWorkCandidates(
   const basisIds = [...new Set(openItems.flatMap((item) => item.basis.map((ref) => ref.id)))];
   const channelRows = ctx.adapter
     .prepare(
-      `SELECT edge.subject_id AS judgment_id, observation.channel
+      `SELECT edge.subject_id AS judgment_id, observation.source, observation.channel
              FROM twin_edges edge
              JOIN observation_versions observation ON observation.observation_id = edge.object_id
             WHERE edge.subject_kind = 'memory'
@@ -518,12 +519,14 @@ export function readOpenWorkCandidates(
     )
     .all(JSON.stringify(basisIds)) as Array<{
     judgment_id: string;
+    source: string;
     channel: string | null;
   }>;
   const evidenceByJudgment = new Map<string, Set<string>>();
   for (const row of channelRows) {
     const channels = evidenceByJudgment.get(row.judgment_id) ?? new Set<string>();
-    if (row.channel) channels.add(row.channel);
+    // Qualified by connector: the same channel id on two connectors is two channels.
+    if (row.channel) channels.add(`${row.source}:${row.channel}`);
     evidenceByJudgment.set(row.judgment_id, channels);
   }
   return openItems.flatMap((item) => {

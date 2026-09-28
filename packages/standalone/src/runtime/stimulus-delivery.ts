@@ -491,27 +491,23 @@ function stimulusText(row: MailboxRow): string {
     .join(' ');
 }
 
-/** The delta's channel key and the channel labels its refs carry. */
+/**
+ * The delta's channels qualified by connector (`connector:channel`), the same form the host reads
+ * from each work item's evidence; the same channel id on two connectors is two channels.
+ */
 function stimulusChannels(row: MailboxRow): Set<string> {
   const payload = sourcePayloadObject(row);
   if (!payload) return new Set();
-  return new Set(
-    [
-      row.channelKey,
-      textField(payload.channel),
-      ...payloadRefs(payload).flatMap((ref) => {
-        const metadata =
-          ref.metadata && typeof ref.metadata === 'object' && !Array.isArray(ref.metadata)
-            ? (ref.metadata as Record<string, JsonValue>)
-            : {};
-        return [
-          textField(ref.channel),
-          textField(ref.channelName),
-          textField(metadata.channelName),
-        ];
-      }),
-    ].filter(Boolean)
-  );
+  const channel = textField(payload.channel);
+  const collector = textField(payload.collector);
+  const keys = new Set<string>();
+  if (collector && channel) keys.add(`${collector}:${channel}`);
+  for (const ref of payloadRefs(payload)) {
+    const connector = textField(ref.connector);
+    const refChannel = textField(ref.channel) || channel;
+    if (connector && refChannel) keys.add(`${connector}:${refChannel}`);
+  }
+  return keys;
 }
 
 function pipelineText(value: unknown): string {
@@ -736,7 +732,10 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
               );
             }
             const board = await options.boardSnapshot?.();
-            if (board !== undefined) sessionBlocks.push(renderCurrentBoard(board));
+            // Board slots quote source content; they reach the model as untrusted evidence, as
+            // report.read results do.
+            if (board !== undefined)
+              sessionBlocks.push(wrapUntrustedContent('report.read', renderCurrentBoard(board)));
             const exchanges = renderRecentOwnerExchanges(
               (await options.recentOwnerExchanges?.(row)) ?? []
             );

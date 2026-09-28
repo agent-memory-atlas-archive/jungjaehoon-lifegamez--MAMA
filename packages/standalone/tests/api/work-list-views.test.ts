@@ -125,6 +125,16 @@ describe('progressive work.list views', () => {
     expect(JSON.stringify(result).length).toBeLessThanOrEqual(6_000);
   });
 
+  it('reads a withdrawn commitment as cancelled whatever its last status value', async () => {
+    // index 2 has status "pending"; withdrawn work is not open work.
+    const reader = makeReader([view(2, { withdrawn: true }), view(4)]);
+
+    const result = await runWorkListView({ view: 'pipeline' }, context(reader.readWork));
+
+    expect(result).toMatchObject({ view: 'pipeline', total: 1 });
+    expect(JSON.stringify(result)).not.toContain('commitment-2');
+  });
+
   it('filters status, stage, project, and title or description before paging', async () => {
     const reader = makeReader([
       view(1, {

@@ -841,8 +841,8 @@ export class NodeSQLiteAdapter implements DatabaseInstance {
           this.exec('BEGIN TRANSACTION');
           backfillCommitmentRevisionGraph(this);
           this.exec(fs.readFileSync(path.join(migrationsDir, file), 'utf8'));
-          this.exec('COMMIT');
           this.stampMigration(sourceName, version);
+          this.exec('COMMIT');
           info(`[node-sqlite-adapter] Migration ${file} applied successfully`);
         } catch (err) {
           this.exec('ROLLBACK');

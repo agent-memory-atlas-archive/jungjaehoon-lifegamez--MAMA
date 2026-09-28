@@ -236,7 +236,7 @@ describe('one stimulus intake and delivery', () => {
           title: 'Design review',
           stage: 'doing',
           assignee: '',
-          evidenceChannels: ['synthetic-room'],
+          evidenceChannels: ['collector:synthetic-room'],
           updatedAt: now - 1_000,
         },
       ],
@@ -256,7 +256,7 @@ describe('one stimulus intake and delivery', () => {
         attempts: 1,
         createdAt: now,
         coalesceKey: null,
-        payload: { channel: 'synthetic-room', refs: [], preview: ['📎'] },
+        payload: { collector: 'collector', channel: 'synthetic-room', refs: [], preview: ['📎'] },
       } as never,
       {
         nativeInputId: 'symbol-delta',
@@ -277,6 +277,64 @@ describe('one stimulus intake and delivery', () => {
       } as never
     );
     expect(prompt.split('candidates (you decide):')[1] ?? '').toContain('commitment-same-channel');
+  });
+
+  it('does not match the same channel id from another connector', async () => {
+    const now = Date.parse('2026-09-28T00:00:00.000Z');
+    const delivery = createDelivery({
+      guidanceResolver: async () => [],
+      openWorkCandidates: async () => [
+        {
+          commitmentId: 'commitment-same-channel',
+          title: 'Design review',
+          stage: 'doing',
+          assignee: '',
+          evidenceChannels: ['collector:synthetic-room'],
+          updatedAt: now - 1_000,
+        },
+      ],
+    });
+    let prompt = '';
+    await delivery.deliver(
+      {
+        id: 'other-connector-delta',
+        stimulusId: 'other-connector-delta',
+        principalId: 'owner',
+        kind: 'source_delta',
+        channelKey: 'synthetic-room',
+        occurredAt: now,
+        refs: [{ sourceAt: new Date(now).toISOString() }],
+        preview: [],
+        status: 'claimed',
+        attempts: 1,
+        createdAt: now,
+        coalesceKey: null,
+        payload: {
+          collector: 'other-connector',
+          channel: 'synthetic-room',
+          refs: [],
+          preview: ['📎'],
+        },
+      } as never,
+      {
+        nativeInputId: 'other-connector-delta',
+        resultForReceipt: () => null,
+        run: async (content: Array<{ text?: string }>, request?: NativeInvocationOptions) => {
+          content =
+            (await request?.prepareSessionContent?.({
+              sessionId: 'symbol-session',
+              isNewSession: false,
+            })) ?? content;
+          prompt = content[0]?.text ?? '';
+          return {} as never;
+        },
+        steer: vi.fn(),
+        wasDispatched: () => false,
+        onInputDispatch: vi.fn(),
+        onAccepted: vi.fn(),
+      } as never
+    );
+    expect(prompt).not.toContain('commitment-same-channel');
   });
 
   it('omits the candidate heading when no open work is relevant', async () => {
@@ -624,6 +682,7 @@ describe('one stimulus intake and delivery', () => {
         coalesceKey: null,
         payload: {
           kind: 'source_delta',
+          collector: 'synthetic',
           channel: 'channel-a',
           preview: ['unrelated update'],
           refs: [],
@@ -637,7 +696,7 @@ describe('one stimulus intake and delivery', () => {
       expect.arrayContaining([
         expect.objectContaining({
           title: 'Evidence-backed task',
-          evidenceChannels: ['channel-a'],
+          evidenceChannels: ['synthetic:channel-a'],
         }),
       ])
     );
