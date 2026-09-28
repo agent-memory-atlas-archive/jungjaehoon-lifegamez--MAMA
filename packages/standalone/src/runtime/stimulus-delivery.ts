@@ -539,11 +539,16 @@ function guidanceVersion(entry: GuidanceEntry): string {
   return `${String(entry.updated_at)}\0${entry.kind}\0${entry.status}`;
 }
 
+/** Active corrections oldest first, so a later correction reads after the one it refines. */
 function activeGuidance(entries: readonly GuidanceEntry[]): GuidanceEntry[] {
   return entries
     .filter((entry) => entry.status === 'active')
     .slice()
-    .sort((left, right) => left.id.localeCompare(right.id));
+    .sort(
+      (left, right) =>
+        String(left.updated_at).localeCompare(String(right.updated_at)) ||
+        left.id.localeCompare(right.id)
+    );
 }
 
 function renderGuidanceIndex(entries: readonly GuidanceEntry[]): string {
@@ -575,7 +580,7 @@ function renderGuidanceDelta(
       changes.push(`${before === undefined ? 'added' : 'revised'}: ${guidanceBlock(entry)}`);
     } else if (before?.endsWith('\0active')) {
       changes.push(
-        `retired: ${oneLine(entry.id)} | ${entry.kind} | ${oneLine(entry.topic)} | status: ${entry.status}`
+        `${entry.status === 'superseded' ? 'replaced' : 'retired'}: ${oneLine(entry.id)} | ${entry.kind} | ${oneLine(entry.topic)} | status: ${entry.status}`
       );
     }
   }

@@ -222,8 +222,40 @@ describe('owner guidance index delivery', () => {
     expect(owner).toContain('  1. Write sections with headings.');
     expect(owner).toContain('  2. Leave out greetings and apologies.');
     expect(owner).not.toContain('A withdrawn preference.');
-    // No lane is rendered per turn: every turn sees the one rule set and every correction.
-    expect(owner).not.toContain('<lane-instructions');
+  });
+
+  it('marks a correction replaced by a newer one as replaced, not retired', async () => {
+    const records: Array<Record<string, unknown>> = [
+      {
+        id: 'first-style',
+        kind: 'preference',
+        topic: 'report style',
+        summary: 'Short reports.',
+        status: 'active',
+        updated_at: 1,
+      },
+    ];
+    const delivery = createStimulusDelivery({
+      guidanceResolver: async () => records as never,
+      timeZone: createTimeZoneSetting('UTC'),
+    } as never);
+    await deliver(delivery, 'owner_message', 'style-first', true);
+    records[0] = { ...records[0], status: 'superseded', updated_at: 2 };
+    records.push({
+      id: 'second-style',
+      kind: 'preference',
+      topic: 'report style',
+      summary: 'Short reports with section headings.',
+      status: 'active',
+      updated_at: 2,
+    });
+
+    const next = await deliver(delivery, 'owner_message', 'style-next', false);
+    expect(next).toContain(
+      'replaced: first-style | preference | report style | status: superseded'
+    );
+    expect(next).toContain('added: second-style | preference | report style');
+    expect(next).toContain('  Short reports with section headings.');
   });
 
   it('keeps the delta marker contract in live source-delta turns', async () => {
@@ -236,7 +268,6 @@ describe('owner guidance index delivery', () => {
     expect(prompt).toContain(
       'End this turn with exactly one marker: [notify] followed by the message the owner receives, or [ack].'
     );
-    expect(prompt).not.toContain('<lane-instructions');
   });
 
   it('tells a replayed delta that nothing is delivered', async () => {

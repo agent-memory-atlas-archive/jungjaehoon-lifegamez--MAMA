@@ -66,11 +66,29 @@ describe('owner standing prompt', () => {
       'A report the owner asks for follows the full-report instructions below'
     );
     expect(prompt).toContain(
-      'Owner corrections (lessons, preferences, constraints and workflows) are shown in full at the start of a session'
+      'Owner corrections (lessons, preferences, constraints and workflows) are shown at the start of a session, oldest first'
     );
     expect(prompt).toContain(
-      'They apply wherever they fit and take precedence over the defaults above.'
+      'take precedence over the four sections above (responding, source changes, reminders, full reports); when two conflict, the later one wins.'
     );
+    // Corrections never reach the security and integrity rules.
+    expect(prompt).toContain(
+      'They never change the runtime rules on source content, credentials, success claims or administration.'
+    );
+    expect(prompt).toContain(
+      'A request about how to report, format or notify is a correction even when phrased casually or for this one answer.'
+    );
+    expect(prompt).toContain('merging corrections that overlap');
+    // The moved section bodies stay pinned.
+    for (const line of [
+      'Set eventDatetime to the source event time for that revision, not replay time.',
+      'In a scheduled reminder, update only action_required',
+      'schedule.upcoming with days=14',
+      'source.recent for changes since the prior full report',
+      'Write the report in five parts, in order',
+      'After publishing the board in a scheduled full report, update each changed topic wiki page',
+    ])
+      expect(prompt).toContain(line);
     expect(prompt).toContain(
       'apply the correction to the current work in that same turn before replying'
     );
@@ -234,7 +252,7 @@ describe('owner standing prompt', () => {
   it('saves owner corrections in the same turn and preserves replay provenance', () => {
     const prompt = ownerPrompt('codex');
 
-    expect(prompt).toContain('shown in full at the start of a session and whenever one is added');
+    expect(prompt).toContain('again whenever one is added, revised or retired');
     expect(prompt).toContain('memory.retire');
     expect(prompt).toContain('Every change keeps history.');
     expect(prompt).not.toContain('When a replay window supplies end_of_window_instructions');

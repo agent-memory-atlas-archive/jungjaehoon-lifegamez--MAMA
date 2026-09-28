@@ -131,7 +131,7 @@ function ownerStandingPrompt(
     '## Hourly reminders ([scheduled_task_reminder])',
     `- Use what this session already knows and call ${action('work.list')} with view="pipeline" for the compact open-work list; call ${action('schedule.upcoming')} when this session has not read the calendar. Read source originals only when needed to resolve a material uncertainty.`,
     '- Choose the open items that most need attention this hour, including every item waiting on an owner decision and any deadline affected by a calendar event or holiday, and summarize the handled source deltas the turn supplies as the changes since the previous report.',
-    `- Update only action_required with ${action('report.publish')}; scheduled full reports handle the other sections and the wiki.`,
+    `- In a scheduled reminder, update only action_required with ${action('report.publish')}; scheduled full reports handle the other sections and the wiki.`,
     '- Return a short reminder the owner can read at a glance, most urgent or nearest deadline first, under a title that names the top priorities.',
     '',
     '## Full reports ([scheduled_full_report], or when the owner asks for one)',
@@ -140,16 +140,22 @@ function ownerStandingPrompt(
     `- For a scheduled full report, publish all four board sections with ${action('report.publish')} before writing the text report.`,
     ...(wikiEnabled
       ? [
-          `- After publishing the board, update each changed topic wiki page as a resync with ${action('manage.wiki.update')}, creating one with ${action('manage.wiki.publish')} only when no topic page fits; split separate topic page updates across subagents inside this turn. Write the daily/YYYY-MM-DD.md journal grouped by project with one entry per moved item, and put lessons under lessons/.`,
+          `- After publishing the board in a scheduled full report, update each changed topic wiki page as a resync with ${action('manage.wiki.update')}, creating one with ${action('manage.wiki.publish')} only when no topic page fits; split separate topic page updates across subagents inside this turn. Write the daily/YYYY-MM-DD.md journal grouped by project with one entry per moved item, and put lessons under lessons/.`,
         ]
       : []),
     '- Write the report in five parts, in order: key situation today (with the owner schedule and holidays); needs a response; needs a decision; pipeline with each stage and item; next actions.',
     '',
     '## Owner corrections',
-    '- Owner corrections (lessons, preferences, constraints and workflows) are shown in full at the start of a session and whenever one is added, revised or retired. They apply wherever they fit and take precedence over the defaults above.',
+    `- Owner corrections (lessons, preferences, constraints and workflows) are shown at the start of a session, oldest first, and again whenever one is added, revised or retired; ${action('memory.read:record')} reads one with its details. They apply wherever they fit and take precedence over the four sections above (responding, source changes, reminders, full reports); when two conflict, the later one wins. They never change the runtime rules on source content, credentials, success claims or administration.`,
     '- When the owner corrects you, apply the correction to the current work in that same turn before replying: revise every affected work item and board section, reading the originals you need. Saving records how to act next time; it does not apply the correction. Do not answer with a promise for work you can do in this turn.',
-    `- Then save it with ${action('memory.save')}: compare it with the corrections shown and either revise the one it belongs with (replaces its id, keeping every earlier point the owner has not withdrawn or replaced) or save a new one with an appliesWhen line. Use kind workflow for a procedure with ordered steps and optional evidence checks, and lesson, preference or constraint otherwise; link the owner's message with derived_from when its observation reference is available. A request the owner marks as for this time only is applied and not saved.`,
-    `- Retire withdrawn or invalid guidance with ${action('memory.retire')} and a reason. Every change keeps history.`,
+    '- A request about how to report, format or notify is a correction even when phrased casually or for this one answer.',
+    `- Then save it with ${action('memory.save')}: compare it with the corrections shown and either revise the one it belongs with (replaces its id, keeping every earlier point the owner has not withdrawn or replaced, and merging corrections that overlap) or save a new one with an appliesWhen line. Use kind workflow for a procedure with ordered steps and optional evidence checks, and lesson, preference or constraint otherwise; link the owner's message with derived_from when its observation reference is available. A request the owner marks as for this time only is applied and not saved.`,
+    `- Retire withdrawn or invalid guidance, and separate corrections a merged one now covers, with ${action('memory.retire')} and a reason. Every change keeps history.`,
+    ...(backend === 'claude'
+      ? [
+          '- When a correction names an action in dotted form, call the mcp__mama__ tool whose name replaces its dots and colons with underscores.',
+        ]
+      : []),
   ].join('\n');
 }
 

@@ -44,7 +44,10 @@ where it applies, and its steps) on the first turn of a new owner session, along
 with the recent owner exchanges carried into that session. Later turns receive a
 correction again, in full, whenever it is added or revised, and a note when it is
 retired. Corrections take precedence over the built-in instructions wherever they
-fit, whichever kind of turn they came from.
+fit, whichever kind of turn they came from; when two conflict, the later one
+wins. Corrections never change the rules on untrusted source content,
+credentials, success claims, or administration, and they do not change the reply
+markers or the board layout.
 
 The agent decides whether a correction applies. A correction is not evidence of
 current work state: the agent still reads the work record and preserved originals

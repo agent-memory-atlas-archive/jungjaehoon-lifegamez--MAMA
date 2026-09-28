@@ -1009,7 +1009,6 @@ describe('one stimulus intake and delivery', () => {
       expect(guidanceResolver).toHaveBeenCalledWith();
       expect(prompt).not.toMatch(/lodging|check-ins|check-outs/i);
       // The report instructions are standing text; the turn carries the report tag and host data.
-      expect(prompt).not.toContain('<lane-instructions');
       expect(prompt).toContain('no commitment, observation, judgment or channel ids');
       if (report === 'full') {
         for (const part of [

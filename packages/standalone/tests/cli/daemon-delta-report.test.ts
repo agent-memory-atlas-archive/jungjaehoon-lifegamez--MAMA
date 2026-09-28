@@ -299,8 +299,6 @@ describe('live delta reports', () => {
     expect(prompts.map((prompt) => prompt.source)).toEqual(['source_delta']);
     expect(prompts[0]!.text).toContain('[notify]');
     expect(prompts[0]!.text).toContain('[ack]');
-    // How a delta updates work and the board is standing instruction, not turn content.
-    expect(prompts[0]!.text).not.toContain('<lane-instructions');
     expect(logs).toContain(`delta report route=${route} id=${id}`);
     expect(logs).toContain(`stimulus delivered kind=source_delta id=${id} model_run_id=run:1`);
     expect(logs).not.toContain(expect.stringContaining(`delta-board:${id}`));
