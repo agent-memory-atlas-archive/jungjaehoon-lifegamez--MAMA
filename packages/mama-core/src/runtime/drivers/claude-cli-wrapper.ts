@@ -29,6 +29,7 @@ import * as debugLogger from '@jungjaehoon/mama-core/debug-logger';
 import type { PromptCallbacks, PromptResult, ToolUseBlock } from './types.js';
 import { claudeConfiguredSecrets, SecretRedactingStream } from './cli-secret-redaction.js';
 import { formatCliArgsForLog } from './cli-arg-redaction.js';
+import { claudeEffortArgs, type ThinkingEffort } from './claude-effort.js';
 
 const { DebugLogger } = debugLogger as {
   DebugLogger: new (context?: string) => {
@@ -40,29 +41,6 @@ const { DebugLogger } = debugLogger as {
 };
 
 const logger = new DebugLogger('ClaudeCLI');
-
-type ThinkingEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-
-function supportsThinkingEffortModel(model: string | undefined): boolean {
-  if (!model) {
-    return false;
-  }
-  // --effort: Opus/Sonnet 4.6, Opus 4.7/4.8, and the Claude 5 family (Opus, Sonnet, Fable, Mythos).
-  return /^claude-(?:(?:opus|sonnet)-4-6|opus-4-[78]|(?:opus|sonnet|fable|mythos)-5)(?:\b|-)/.test(
-    model
-  );
-}
-
-function normalizeThinkingEffort(
-  model: string | undefined,
-  effort: ThinkingEffort
-): ThinkingEffort {
-  // xhigh arrived with Opus 4.7; the 4.6 models take low through max.
-  if (effort === 'xhigh' && model && /^claude-(?:opus|sonnet)-4-6(?:\b|-)/.test(model)) {
-    return 'high';
-  }
-  return effort;
-}
 
 export interface ClaudeCLIWrapperOptions {
   /** The isolated workspace this CLI runs in; the product states where. */
@@ -178,11 +156,7 @@ export class ClaudeCLIWrapper {
         args.push('--model', model);
       }
 
-      if (this.options.effort && supportsThinkingEffortModel(model)) {
-        const effort = normalizeThinkingEffort(model, this.options.effort);
-        args.push('--effort', effort);
-        logger.debug('Effort level:', effort);
-      }
+      args.push(...claudeEffortArgs(model, this.options.effort));
 
       // System prompt: first turn only (session persistence keeps it across turns)
       if (this.options.systemPrompt && this.turnCount === 0) {

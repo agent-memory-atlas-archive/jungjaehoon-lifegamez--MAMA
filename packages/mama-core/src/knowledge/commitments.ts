@@ -640,7 +640,7 @@ function workTopic(adapter: DatabaseAdapter, commitmentId: string): string {
        LIMIT 1`
     )
     .get(commitmentId) as { topic: string } | undefined;
-  if (!row || typeof row.topic !== 'string' || row.topic.trim() === '') {
+  if (!row) {
     throw new JudgmentError('REFERENCE_NOT_FOUND', `Commitment is unavailable: ${commitmentId}`);
   }
   return row.topic;

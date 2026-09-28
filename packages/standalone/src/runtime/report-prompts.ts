@@ -41,7 +41,7 @@ export function scheduledReport(payload: JsonValue | undefined): ScheduledReport
 export function buildScheduledReportPrompt(
   payload: JsonValue | undefined,
   now: Date,
-  options: { wikiEnabled?: boolean; messenger?: string; timeZone: string }
+  options: { messenger?: string; timeZone: string }
 ): string {
   const { report, previousFullReportAt } = scheduledReport(payload);
   const timeZone = options.timeZone;
@@ -54,17 +54,12 @@ export function buildScheduledReportPrompt(
             timeZone
           )
         ).toISOString();
-  const instructions =
-    report === 'full' ? ['[scheduled_full_report]'] : ['[scheduled_task_reminder]'];
-  const hostData = [
-    `Current time: ${now.toLocaleString('ko-KR', { timeZone })} (${timeZone})`,
-    ...(report === 'full' ? [`Previous full report boundary: ${recentSince}`] : []),
-    ...(report === 'full' ? buildBoardHtmlVocabulary(timeZone) : []),
-    ...(report === 'reminder' ? acknowledgedDeltaLines(payload, timeZone) : []),
-  ];
   return [
-    ...instructions,
-    ...hostData,
+    report === 'full' ? '[scheduled_full_report]' : '[scheduled_task_reminder]',
+    `Current time: ${now.toLocaleString('ko-KR', { timeZone })} (${timeZone})`,
+    ...(report === 'full'
+      ? [`Previous full report boundary: ${recentSince}`, ...buildBoardHtmlVocabulary(timeZone)]
+      : acknowledgedDeltaLines(payload, timeZone)),
     'Owner-facing text carries no commitment, observation, judgment or channel ids; use readable work titles and sentences.',
     `Messenger: ${options.messenger ?? 'telegram'}. Format the final output for this messenger: Telegram HTML subset with no Markdown; Discord Markdown; Slack mrkdwn. Board div/span/CSS belongs only in report.publish. No code-block wrapper, working notes or [notify]/[ack] tags.`,
   ].join('\n');

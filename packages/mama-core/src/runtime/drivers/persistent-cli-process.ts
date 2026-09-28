@@ -43,6 +43,7 @@ import {
 import * as debugLogger from '@jungjaehoon/mama-core/debug-logger';
 import { claudeConfiguredSecrets, SecretRedactingStream } from './cli-secret-redaction.js';
 import { formatCliArgsForLog } from './cli-arg-redaction.js';
+import { claudeEffortArgs, type ThinkingEffort } from './claude-effort.js';
 
 const { DebugLogger } = debugLogger as {
   DebugLogger: new (context?: string) => {
@@ -54,29 +55,6 @@ const { DebugLogger } = debugLogger as {
 };
 const persistentLogger = new DebugLogger('PersistentCLI');
 const poolLogger = new DebugLogger('ProcessPool');
-
-type ThinkingEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-
-function supportsThinkingEffortModel(model: string | undefined): boolean {
-  if (!model) {
-    return false;
-  }
-  // --effort: Opus/Sonnet 4.6, Opus 4.7/4.8, and the Claude 5 family (Opus, Sonnet, Fable, Mythos).
-  return /^claude-(?:(?:opus|sonnet)-4-6|opus-4-[78]|(?:opus|sonnet|fable|mythos)-5)(?:\b|-)/.test(
-    model
-  );
-}
-
-function normalizeThinkingEffort(
-  model: string | undefined,
-  effort: ThinkingEffort
-): ThinkingEffort {
-  // xhigh arrived with Opus 4.7; the 4.6 models take low through max.
-  if (effort === 'xhigh' && model && /^claude-(?:opus|sonnet)-4-6(?:\b|-)/.test(model)) {
-    return 'high';
-  }
-  return effort;
-}
 
 /**
  * Regex to strip lone Unicode surrogates that cause API 400 errors.
@@ -570,9 +548,7 @@ export class PersistentClaudeProcess extends EventEmitter {
       persistentLogger.info('Gateway Tools mode enabled');
     }
 
-    if (this.options.effort && supportsThinkingEffortModel(this.options.model)) {
-      args.push('--effort', normalizeThinkingEffort(this.options.model, this.options.effort));
-    }
+    args.push(...claudeEffortArgs(this.options.model, this.options.effort));
 
     if (this.options.permissionMode) {
       args.push('--permission-mode', this.options.permissionMode);

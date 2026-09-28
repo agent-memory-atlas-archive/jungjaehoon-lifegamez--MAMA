@@ -100,12 +100,7 @@ export function createReportScheduler(options: ReportSchedulerOptions) {
       payload.acknowledgedDeltas = {
         total: acknowledgedDeltas.total,
         cap: ACKNOWLEDGED_DELTA_CAP,
-        items: acknowledgedDeltas.items.map((item) => ({
-          channelLabel: item.channelLabel,
-          sourceAt: item.sourceAt,
-          preview: item.preview,
-          observationRef: item.observationRef,
-        })),
+        items: acknowledgedDeltas.items,
       };
     }
     // A failed accepted turn is uncertain in the mailbox. R5 explicitly asks for

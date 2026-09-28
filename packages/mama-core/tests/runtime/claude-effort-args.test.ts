@@ -1,25 +1,5 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
-import { PersistentClaudeProcess } from '../../src/runtime/drivers/persistent-cli-process.js';
-
-const workspace = mkdtempSync(join(tmpdir(), 'claude-effort-args-'));
-
-function effortArg(model: string, effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max') {
-  const process = new PersistentClaudeProcess({
-    sessionId: 'effort-args',
-    workspaceDir: workspace,
-    model,
-    effort,
-  } as ConstructorParameters<typeof PersistentClaudeProcess>[0]);
-  // Inspect the real launch arguments without starting Claude.
-  const args = (process as unknown as { buildArgs(): string[] }).buildArgs();
-  const index = args.indexOf('--effort');
-  return index === -1 ? null : args[index + 1];
-}
-
-afterAll(() => rmSync(workspace, { recursive: true, force: true }));
+import { describe, expect, it } from 'vitest';
+import { claudeEffortArgs } from '../../src/runtime/drivers/claude-effort.js';
 
 describe('Claude --effort', () => {
   it.each([
@@ -32,10 +12,12 @@ describe('Claude --effort', () => {
     ['claude-sonnet-4-6', 'xhigh', 'high'],
     ['claude-opus-4-6', 'max', 'max'],
   ] as const)('passes the level %s accepts (%s → %s)', (model, effort, expected) => {
-    expect(effortArg(model, effort)).toBe(expected);
+    expect(claudeEffortArgs(model, effort)).toEqual(['--effort', expected]);
   });
 
-  it('passes no effort to a model without effort support', () => {
-    expect(effortArg('claude-haiku-4-5', 'high')).toBeNull();
+  it('passes no effort to a model without effort support or without a level', () => {
+    expect(claudeEffortArgs('claude-haiku-4-5', 'high')).toEqual([]);
+    expect(claudeEffortArgs(undefined, 'high')).toEqual([]);
+    expect(claudeEffortArgs('claude-opus-5', undefined)).toEqual([]);
   });
 });

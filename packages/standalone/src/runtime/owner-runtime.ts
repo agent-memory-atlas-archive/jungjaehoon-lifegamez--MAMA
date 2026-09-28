@@ -317,16 +317,7 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
           access,
           timeZone: options.timeZone.get(),
         }),
-      boardSnapshot: async () =>
-        Object.fromEntries(
-          Object.entries(reportStore.getAll()).map(([slotId, slot]) => [
-            slotId,
-            {
-              html: slot.html,
-              updatedAt: slot.updatedAt,
-            },
-          ])
-        ),
+      boardSnapshot: async () => reportStore.getAll(),
       ...(options.onOwnerResult === undefined ? {} : { onOwnerResult: options.onOwnerResult }),
       ...(options.onSourceResult === undefined ? {} : { onSourceResult: options.onSourceResult }),
       ...(options.onScheduledResult === undefined

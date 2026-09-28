@@ -105,9 +105,9 @@ describe('migration 099: commitment revision graph', () => {
     expect(topicsAfterSecondRun).toEqual(topicsAfterFirstRun);
     expect(firstRun).toHaveLength(2);
     expect(
-      (
-        firstRun as Array<{ edge_id: string; edge_idempotency_key: string; hash_length: number }>
-      ).every((edge) => edge.edge_idempotency_key === edge.edge_id && edge.hash_length === 32)
+      (firstRun as Array<{ edge_idempotency_key: string | null; hash_length: number }>).every(
+        (edge) => edge.edge_idempotency_key === null && edge.hash_length === 32
+      )
     ).toBe(true);
     const page = knowledge.queryGraph(
       {

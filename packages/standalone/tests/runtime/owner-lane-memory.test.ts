@@ -4,11 +4,11 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createKnowledge, readMemoryRecordsInScopes } from '@jungjaehoon/mama-core';
 import type { MailboxRow } from '@jungjaehoon/mama-core/runtime/mailbox';
-import type { NativeInvocationOptions } from '@jungjaehoon/mama-core/runtime/runtime';
 import { createActionSurface, ownerMemoryScopes } from '../../src/runtime/action-surface.js';
 import { openCoreDatabase } from '../../src/runtime/core-db.js';
 import { createStimulusDelivery } from '../../src/runtime/stimulus-delivery.js';
 import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
+import { deliveredPrompt } from '../helpers/delivered-prompt.js';
 
 const roots: string[] = [];
 
@@ -108,23 +108,7 @@ describe('editable owner lane workflows', () => {
                 : { text: 'owner question' },
           coalesceKey: null,
         } as MailboxRow;
-        let prompt = '';
-        await delivery.deliver(row, {
-          nativeInputId: row.stimulusId,
-          resultForReceipt: () => null,
-          run: async (content, request?: NativeInvocationOptions) => {
-            const prepared = await request?.prepareSessionContent?.({
-              sessionId: 'owner-session',
-              isNewSession: false,
-            } as never);
-            prompt = (prepared ?? content).map((block) => block.text ?? '').join('\n');
-            return {} as never;
-          },
-          steer: vi.fn(),
-          wasDispatched: () => false,
-          onInputDispatch: vi.fn(),
-          onAccepted: vi.fn(),
-        } as never);
+        const prompt = await deliveredPrompt(delivery, row, false);
 
         expect(prompt).toContain(
           `<lane-instructions lane="${lane}" record="${replacement.data?.id}">`

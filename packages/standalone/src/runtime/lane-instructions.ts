@@ -3,14 +3,9 @@ import type { GuidanceEntry } from './stimulus-delivery.js';
 import { actionName, type OwnerRuntimeBackend } from './owner-system-prompt.js';
 import { scheduledReport } from './report-prompts.js';
 
-export type OwnerLane = 'source-delta' | 'hourly-reminder' | 'full-report' | 'owner-answer';
+const LANES = ['source-delta', 'hourly-reminder', 'full-report', 'owner-answer'] as const;
 
-const LANES: readonly OwnerLane[] = [
-  'source-delta',
-  'hourly-reminder',
-  'full-report',
-  'owner-answer',
-];
+export type OwnerLane = (typeof LANES)[number];
 
 /** A lane's editable instruction is a workflow record at topic lane/<name>. */
 export function isLaneRecord(entry: Pick<GuidanceEntry, 'kind' | 'topic'>): boolean {
@@ -62,7 +57,7 @@ function laneDefault(lane: OwnerLane, wikiEnabled: boolean): string[] {
     case 'owner-answer':
       return [
         'Answer owner questions from what this session already knows. Read only what is needed to confirm a fact or learn something not yet known.',
-        'An owner-requested report is text. Publish the board only when the owner turn changed work.',
+        'An owner-requested report is text. Publish the board only when the owner turn changed work; then update every board section the item appears in or leaves, preserving every card that remains true.',
         'Keep the answer concise, with no working notes, narration about answering, or record or observation ids.',
       ];
   }

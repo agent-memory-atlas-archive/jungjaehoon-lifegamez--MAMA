@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { ensureMemoryScope, insertPreparedDecision } from '../db-manager.js';
 import type { DatabaseAdapter, DatabaseInstance } from '../db-manager.js';
 import { canonicalizeJSON } from '../canonicalize.js';
+import { judgmentEdgeContentHash, judgmentEdgeId } from './judgment-edge.js';
 import {
   TWIN_EDGE_SOURCES,
   TWIN_EDGE_TYPES,
@@ -511,14 +512,6 @@ function assertReplay(
   return parseReceipt(row.receipt_json);
 }
 
-function edgeId(commandId: string, index: number, relation: string, target: WorkReference): string {
-  return `edge_${crypto
-    .createHash('sha256')
-    .update(canonicalizeJSON({ commandId, index, relation, target }))
-    .digest('hex')
-    .slice(0, 24)}`;
-}
-
 function insertLink(
   adapter: Pick<DatabaseAdapter, 'prepare'>,
   command: JudgmentCommand,
@@ -528,12 +521,9 @@ function insertLink(
   access: JudgmentAccess,
   now: number
 ): string {
-  const id = edgeId(command.commandId, index, link.relation, link.target);
+  const id = judgmentEdgeId(command.commandId, index, link.relation, link.target);
   const attrs = link.attrs ?? {};
-  const contentHash = crypto
-    .createHash('sha256')
-    .update(canonicalizeJSON({ id, recordId, link }))
-    .digest();
+  const contentHash = judgmentEdgeContentHash(id, recordId, link);
   insertTwinEdge(adapter, {
     edge_id: id,
     edge_type: link.relation,
@@ -547,7 +537,6 @@ function insertLink(
     reason_text:
       typeof link.attrs?.reason === 'string' ? link.attrs.reason : (command.reasoning ?? undefined),
     evidence_refs: command.replaces?.length ? command.replaces : undefined,
-    edge_idempotency_key: id,
     content_hash: contentHash,
     created_at: now,
   });
@@ -868,7 +857,7 @@ async function appendJudgmentOnAdapter(
         edgeIds.push(
           insertLink(
             adapter,
-            { ...command, links: [] },
+            command,
             recordId,
             { relation: 'builds_on', target: { kind: 'memory', id: current.head_record_id } },
             command.links?.length ?? 0,

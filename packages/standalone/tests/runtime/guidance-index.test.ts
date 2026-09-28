@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { NativeInvocationOptions } from '@jungjaehoon/mama-core/runtime/runtime';
 import { createStimulusDelivery } from '../../src/runtime/stimulus-delivery.js';
 import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
+import { deliveredPrompt } from '../helpers/delivered-prompt.js';
 
 function row(kind: string, id: string) {
   return {
@@ -34,35 +34,14 @@ function row(kind: string, id: string) {
   };
 }
 
-async function deliver(
+function deliver(
   delivery: ReturnType<typeof createStimulusDelivery>,
   kind: string,
   id: string,
   isNewSession: boolean,
   failAfterPreparation = false
 ): Promise<string> {
-  let prompt = '';
-  await delivery.deliver(
-    row(kind, id) as never,
-    {
-      nativeInputId: id,
-      resultForReceipt: () => null,
-      run: async (content, request?: NativeInvocationOptions) => {
-        const prepared = await request?.prepareSessionContent?.({
-          sessionId: 'owner-session',
-          isNewSession,
-        } as never);
-        prompt = (prepared ?? content).map((block) => block.text ?? '').join('\n');
-        if (failAfterPreparation) throw new Error('model turn did not complete');
-        return {} as never;
-      },
-      steer: vi.fn(),
-      wasDispatched: () => false,
-      onInputDispatch: vi.fn(),
-      onAccepted: vi.fn(),
-    } as never
-  );
-  return prompt;
+  return deliveredPrompt(delivery, row(kind, id) as never, isNewSession, failAfterPreparation);
 }
 
 describe('owner guidance index delivery', () => {
@@ -261,6 +240,10 @@ describe('owner guidance index delivery', () => {
         'owner-answer': 'Keep the answer concise, with no working notes',
       }[lane];
       expect(prompt).toContain(defaultText);
+      if (lane === 'owner-answer') {
+        // An owner turn that changes work keeps every still-true card on the board.
+        expect(prompt).toContain('preserving every card that remains true');
+      }
       if (lane === 'source-delta') {
         expect(prompt).toContain('Set eventDatetime to the source event time');
         expect(prompt).toContain('assignee and roles the evidence points to');

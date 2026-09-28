@@ -492,16 +492,19 @@ function workListReadSnapshot(ctx: WorkListViewContext, filter: WorkListFilter):
   return { items: Object.freeze(items), readVersion: workListReadVersion(items), observedAt };
 }
 
-export function readOpenWorkCandidates(
-  ctx: WorkListViewContext & { adapter: Pick<DatabaseAdapter, 'prepare'> }
-): Array<{
+export interface OpenWorkCandidate {
   commitmentId: string;
   title: string;
   stage: string;
   assignee: string;
+  /** `connector:channel` of each observation the item's revisions derive from. */
   evidenceChannels: string[];
   updatedAt: number;
-}> {
+}
+
+export function readOpenWorkCandidates(
+  ctx: WorkListViewContext & { adapter: Pick<DatabaseAdapter, 'prepare'> }
+): OpenWorkCandidate[] {
   const snapshot = workListReadSnapshot(ctx, {});
   const openItems = snapshot.items.filter(
     (item) => !['done', 'cancelled'].includes(workListStatus(item))

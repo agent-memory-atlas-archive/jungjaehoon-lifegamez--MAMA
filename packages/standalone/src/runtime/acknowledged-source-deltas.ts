@@ -2,12 +2,13 @@ import type { DatabaseAdapter } from '@jungjaehoon/mama-core/db-manager';
 
 export const ACKNOWLEDGED_DELTA_CAP = 50;
 
-export interface AcknowledgedSourceDelta {
+// A type alias, not an interface, so a batch fits a JSON mailbox payload as it is.
+export type AcknowledgedSourceDelta = {
   channelLabel: string;
   sourceAt: string;
   preview: string;
   observationRef: string;
-}
+};
 
 export interface AcknowledgedSourceDeltaBatch {
   total: number;

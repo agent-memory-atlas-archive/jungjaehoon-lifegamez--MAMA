@@ -1,7 +1,6 @@
-import { createHash } from 'node:crypto';
-
-import { canonicalizeJSON } from '../canonicalize.js';
 import type { DatabaseAdapter } from '../db-manager.js';
+import type { RecordLink } from '../memory/judgment-types.js';
+import { judgmentEdgeContentHash, judgmentEdgeId } from './judgment-edge.js';
 
 interface AssignmentRow {
   commitment_id: string;
@@ -15,21 +14,6 @@ interface AssignmentRow {
 
 interface DecisionRow {
   topic: string;
-}
-
-interface RevisionLink {
-  relation: 'builds_on';
-  target: { kind: 'memory'; id: string };
-}
-
-function sha256(value: string): Buffer {
-  return createHash('sha256').update(value).digest();
-}
-
-function edgeId(commandId: string, relation: string, target: RevisionLink['target']): string {
-  return `edge_${sha256(canonicalizeJSON({ commandId, index: 0, relation, target }))
-    .toString('hex')
-    .slice(0, 24)}`;
 }
 
 /** Restore the topic and graph relation for every pre-migration commitment history. */
@@ -62,16 +46,15 @@ export function backfillCommitmentRevisionGraph(adapter: DatabaseAdapter): void 
   const insertEdge = adapter.prepare(
     `INSERT OR IGNORE INTO twin_edges (
        edge_id, edge_type, subject_kind, subject_id, object_kind, object_id,
-       relation_attrs_json, confidence, source, agent_id, model_run_id,
-       edge_idempotency_key, content_hash, created_at
-     ) VALUES (?, 'builds_on', 'memory', ?, 'memory', ?, '{}', 1.0, 'code', ?, ?, ?, ?, ?)`
+       relation_attrs_json, confidence, source, agent_id, model_run_id, content_hash, created_at
+     ) VALUES (?, 'builds_on', 'memory', ?, 'memory', ?, '{}', 1.0, 'code', ?, ?, ?, ?)`
   );
 
   for (const [commitmentId, revisions] of byCommitment) {
     const first = revisions.find((revision) => revision.operation === 'create');
     if (!first) throw new Error(`Commitment ${commitmentId} has no create assignment`);
     const firstDecision = getDecision.get(first.record_id) as DecisionRow | undefined;
-    if (!firstDecision || typeof firstDecision.topic !== 'string') {
+    if (!firstDecision) {
       throw new Error(`Commitment ${commitmentId} create record is unavailable`);
     }
 
@@ -94,18 +77,23 @@ export function backfillCommitmentRevisionGraph(adapter: DatabaseAdapter): void 
       }
       if (hasEdge.get(current.record_id, previous.record_id)) continue;
 
-      const target = { kind: 'memory' as const, id: previous.record_id };
-      const link: RevisionLink = { relation: 'builds_on', target };
-      const id = edgeId(`migration:099:${commitmentId}:${current.revision}`, link.relation, target);
-      const contentHash = sha256(canonicalizeJSON({ id, recordId: current.record_id, link }));
+      const link: RecordLink = {
+        relation: 'builds_on',
+        target: { kind: 'memory', id: previous.record_id },
+      };
+      const id = judgmentEdgeId(
+        `migration:099:${commitmentId}:${current.revision}`,
+        0,
+        link.relation,
+        link.target
+      );
       insertEdge.run(
         id,
         current.record_id,
         previous.record_id,
         current.agent_id,
         current.model_run_id,
-        id,
-        contentHash,
+        judgmentEdgeContentHash(id, current.record_id, link),
         current.created_at
       );
     }

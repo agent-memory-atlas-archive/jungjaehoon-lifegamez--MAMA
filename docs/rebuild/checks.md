@@ -1247,3 +1247,9 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Still open: a live owner correction/response is not verified because this change was required to leave `~/.mama` and `~/.claude` untouched; full stimulus-delivery cases that open IPC sockets remain sandbox-blocked with `listen EPERM`.
 - Review fixes: the general correction rule and four deleted instructions (roles and "unconfirmed", work.show on a stale revise, restating a topic page's current state, splitting topic pages across subagents) are back; the `[notify]`-then-message format is fixed host text; lane records render unchanged, with replay and a disabled wiki stated as host facts instead of line filters; only workflow records at the four lane topics leave the index; reminders keep the newest 50 handled deltas inside one untrusted block.
 - Still open: the mailbox does not record whether a delta was notified, so a reminder may repeat a delta the owner already received.
+
+### PR 327 code-quality pass (2026-09-28)
+
+- Result: an owner answer that changes work keeps the board merge rule again (it had been left only in the delta lane); duplicated code is shared (Claude effort gating, judgment edge id and hash, the test delivery helper); host data is typed instead of re-parsed (open-work candidates, board slots); an unexplained `edge_idempotency_key` on every agent link and several insurance guards are gone; dead code removed (an unused guidance field, the report prompt's wiki option, two helpers, a duplicate test).
+- Evidence: +111/−421 lines; build, typecheck and lint pass; core 966, standalone 1,157 (also under `TZ=UTC`), MCP server 139, plugin 170. One core graph-browse test failed once under the parallel root run and passed alone and in five reruns; the PR does not touch it.
+- Still open: the live checks after deploy.

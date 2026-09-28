@@ -20,7 +20,8 @@ import type { OwnerRuntimeBackend } from './owner-system-prompt.js';
 import { buildScheduledReportPrompt } from './report-prompts.js';
 import { isLaneRecord, laneForStimulus, renderLaneInstructions } from './lane-instructions.js';
 import { localStamp, type TimeZoneSetting } from './timezone.js';
-import { workListTitleTextScore } from '../api/work-actions.js';
+import { workListTitleTextScore, type OpenWorkCandidate } from '../api/work-actions.js';
+import type { ReportSlot } from '../api/report-handler.js';
 
 export const OWNER_RUNTIME_SESSION_KEY = 'owner:runtime';
 
@@ -60,8 +61,8 @@ export interface StimulusDeliveryOptions {
   guidanceResolver: GuidanceResolver;
   backend?: OwnerRuntimeBackend;
   openWorkPipeline?: () => Promise<unknown>;
-  openWorkCandidates?: () => Promise<unknown>;
-  boardSnapshot?: () => Promise<Record<string, { html: string; updatedAt: number | string }>>;
+  openWorkCandidates?: () => Promise<readonly OpenWorkCandidate[]>;
+  boardSnapshot?: () => Promise<Record<string, ReportSlot>>;
   wikiEnabled?: boolean;
   formattingRoutes?: { reports: string; notifications: string };
   timeZone: TimeZoneSetting;
@@ -83,7 +84,6 @@ export interface GuidanceEntry {
   kind: Extract<MemoryKind, 'lesson' | 'preference' | 'constraint' | 'workflow'>;
   topic: string;
   summary: string;
-  details?: string;
   status: MemoryStatus;
   updated_at: number | string;
   applies_when?: string;
@@ -352,22 +352,14 @@ function boundedStimulus(
     StimulusDeliveryOptions,
     'wikiEnabled' | 'formattingRoutes' | 'backend' | 'timeZone'
   >,
-  candidates: readonly string[] = [],
-  laneInstruction = ''
+  candidates: readonly string[] = []
 ): string {
   if (row.kind === 'scheduled')
-    return [
-      laneInstruction,
-      buildScheduledReportPrompt(row.payload, new Date(row.occurredAt), {
-        wikiEnabled: options.wikiEnabled,
-        messenger: options.formattingRoutes?.reports,
-        timeZone: options.timeZone.get(),
-      }),
-    ]
-      .filter(Boolean)
-      .join('\n\n');
+    return buildScheduledReportPrompt(row.payload, new Date(row.occurredAt), {
+      messenger: options.formattingRoutes?.reports,
+      timeZone: options.timeZone.get(),
+    });
   const lines = [
-    ...(laneInstruction === '' ? [] : [laneInstruction]),
     '## Bounded stimulus',
     `owner timezone: ${options.timeZone.get()}`,
     `kind: ${row.kind ?? 'unknown'}`,
@@ -505,46 +497,28 @@ function stimulusChannels(row: MailboxRow): Set<string> {
   return keys;
 }
 
-function pipelineText(value: unknown): string {
-  return typeof value === 'string' ? value : '';
-}
-
-function pipelineTime(value: unknown): string {
-  const time = typeof value === 'number' ? value : Date.parse(pipelineText(value));
-  return Number.isFinite(time) ? new Date(time).toISOString() : '';
-}
-
-function relatedWorkCandidates(row: MailboxRow, workItems: unknown): string[] {
-  const rows: unknown[] = Array.isArray(workItems) ? workItems : [];
+function relatedWorkCandidates(row: MailboxRow, items: readonly OpenWorkCandidate[]): string[] {
   const channels = stimulusChannels(row);
   const query = stimulusText(row);
   const cutoff = row.occurredAt - 14 * 24 * 60 * 60 * 1000;
-  const candidates = rows.flatMap((raw) => {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
-    const item = raw as Record<string, unknown>;
-    const title = pipelineText(item.title);
-    const commitmentId = pipelineText(item.commitmentId);
-    const changedAt = typeof item.updatedAt === 'number' ? item.updatedAt : Number.NaN;
-    if (!title || !commitmentId || !Number.isFinite(changedAt) || changedAt < cutoff) return [];
-    const evidenceChannels = Array.isArray(item.evidenceChannels)
-      ? item.evidenceChannels.filter((channel): channel is string => typeof channel === 'string')
-      : [];
-    const sameChannel = evidenceChannels.some((channel) => channels.has(channel));
-    const overlap = workListTitleTextScore(query, title);
-    if (!sameChannel && overlap === 0) return [];
-    return [{ item, title, commitmentId, overlap, sameChannel, changedAt }];
-  });
-  return candidates
+  return items
+    .filter((item) => item.updatedAt >= cutoff)
+    .map((item) => ({
+      item,
+      sameChannel: item.evidenceChannels.some((channel) => channels.has(channel)),
+      overlap: workListTitleTextScore(query, item.title),
+    }))
+    .filter(({ sameChannel, overlap }) => sameChannel || overlap > 0)
     .sort(
       (a, b) =>
         Number(b.sameChannel) - Number(a.sameChannel) ||
         b.overlap - a.overlap ||
-        b.changedAt - a.changedAt
+        b.item.updatedAt - a.item.updatedAt
     )
     .slice(0, 5)
     .map(
-      ({ item, title, commitmentId }) =>
-        `${title} | ${pipelineText(item.stage) || '-'} | ${pipelineText(item.assignee) || '-'} | ${pipelineTime(item.updatedAt)} | ${commitmentId}`
+      ({ item }) =>
+        `${item.title} | ${item.stage || '-'} | ${item.assignee || '-'} | ${new Date(item.updatedAt).toISOString()} | ${item.commitmentId}`
     );
 }
 
@@ -565,7 +539,7 @@ function guidanceVersion(entry: GuidanceEntry): string {
 
 function activeGuidance(entries: readonly GuidanceEntry[]): GuidanceEntry[] {
   return entries
-    .filter((entry) => entry.status === 'active' && !isLaneRecord(entry))
+    .filter((entry) => entry.status === 'active')
     .slice()
     .sort((left, right) => left.id.localeCompare(right.id));
 }
@@ -578,16 +552,11 @@ function renderGuidanceIndex(entries: readonly GuidanceEntry[]): string {
   ].join('\n');
 }
 
-function renderCurrentBoard(
-  slots: Record<string, { html: string; updatedAt: number | string }>
-): string {
-  const sections = Object.entries(slots).map(([slot, value]) => {
-    const updatedAt =
-      typeof value.updatedAt === 'number'
-        ? new Date(value.updatedAt).toISOString()
-        : value.updatedAt;
-    return `<slot name="${slot}" updatedAt="${updatedAt}">\n${value.html}\n</slot>`;
-  });
+function renderCurrentBoard(slots: Record<string, ReportSlot>): string {
+  const sections = Object.entries(slots).map(
+    ([slot, value]) =>
+      `<slot name="${slot}" updatedAt="${new Date(value.updatedAt).toISOString()}">\n${value.html}\n</slot>`
+  );
   return `<current-board>\n${sections.join('\n')}\n</current-board>`;
 }
 
@@ -597,7 +566,6 @@ function renderGuidanceDelta(
 ): string {
   const changes: string[] = [];
   for (const entry of entries) {
-    if (isLaneRecord(entry)) continue;
     const before = previous.get(entry.id);
     const after = guidanceVersion(entry);
     if (before === after) continue;
@@ -635,7 +603,8 @@ function assembledContent(
       type: 'text',
       text: [
         ...sessionBlocks,
-        boundedStimulus(row, liveSourceDelta, options, candidates, laneInstruction),
+        ...(laneInstruction === '' ? [] : [laneInstruction]),
+        boundedStimulus(row, liveSourceDelta, options, candidates),
       ].join('\n\n'),
     },
   ];
@@ -720,6 +689,8 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
           const sessionBlocks: string[] = [];
           const pipeline = isNewSession ? await options.openWorkPipeline?.() : undefined;
           const entries = await options.guidanceResolver();
+          // Lane records are rendered in full for their lane each turn, not listed as guidance.
+          const guidance = entries.filter((entry) => !isLaneRecord(entry));
           const lane = laneForStimulus(row.kind, row.payload);
           const laneInstruction = lane
             ? renderLaneInstructions(
@@ -732,7 +703,7 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
           const sessionKey = OWNER_RUNTIME_SESSION_KEY;
           const lastDelivered = guidanceBySessionKey.get(sessionKey);
           if (isNewSession) {
-            sessionBlocks.push(renderGuidanceIndex(entries));
+            sessionBlocks.push(renderGuidanceIndex(guidance));
             if (pipeline !== undefined) {
               sessionBlocks.push(
                 `<open-work-pipeline>\n${JSON.stringify(pipeline)}\n</open-work-pipeline>`
@@ -748,22 +719,22 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
             );
             if (exchanges) sessionBlocks.push(exchanges);
           } else if (lastDelivered === undefined) {
-            sessionBlocks.push(renderGuidanceIndex(entries));
+            sessionBlocks.push(renderGuidanceIndex(guidance));
           } else {
-            const delta = renderGuidanceDelta(entries, lastDelivered);
+            const delta = renderGuidanceDelta(guidance, lastDelivered);
             if (delta) sessionBlocks.push(delta);
           }
           pendingGuidanceState = new Map(
-            entries
-              .filter((entry) => !isLaneRecord(entry))
-              .map((entry) => [entry.id, guidanceVersion(entry)])
+            guidance.map((entry) => [entry.id, guidanceVersion(entry)])
           );
           return assembledContent(
             row,
             sessionBlocks,
             liveSourceDelta,
             options,
-            liveSourceDelta ? relatedWorkCandidates(row, await options.openWorkCandidates?.()) : [],
+            liveSourceDelta
+              ? relatedWorkCandidates(row, (await options.openWorkCandidates?.()) ?? [])
+              : [],
             laneInstruction
           );
         },
