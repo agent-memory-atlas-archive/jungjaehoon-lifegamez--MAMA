@@ -459,8 +459,8 @@ Then restart Claude Code.
 ${recentContextText}
 
 🤖 **Greeting:** If the user opens with a greeting and no task, reply in their language. When a
-   checkpoint is shown above, say what it was working on and its next step, and mention a relevant
-   recent decision if one fits; then ask whether to continue or start something new.
+   checkpoint is shown above, say what it was working on and, when one is shown, its next step;
+   mention a relevant recent decision if one fits; then ask whether to continue or start something new.
 
 💡 **Proactive Partner Mode:**
    Save important decisions without being asked.
