@@ -78,20 +78,32 @@ plan keeps one session and removes the growth instead, and records a superseding
 
 - **Delta.** The durable mailbox stays the intake: a connector poll still becomes one
   `source_delta` row per channel, merged with the channel's pending row while the loop is busy;
-  first snapshots and imports never reach it (`polling-scheduler.ts:224–266`). A live row now runs
-  the **notify order** only. Its result enqueues a **record order** as a separate row: kind
-  `scheduled`, channel `operator:record`, no refs (the mailbox dedupes refs, `mailbox.ts:374–411`),
-  id `record:<delta stimulus id>:<attempt>`. The record order is checked from `tool_traces` of its
-  run and child runs (`parent_model_run_id`): a successful `work.create`/`work.revise` citing one
-  of the batch's observations, a `report.publish`, or `work.no_update` citing the batch. A failed
-  check enqueues the next attempt, at most three, then logs the loss loudly. Record replies never
-  reach the owner; the report scheduler's pending check counts only `schedule` rows
-  (`daemon.ts:688`).
+  first snapshots and imports never reach it (`polling-scheduler.ts:224–266`). Lines older than
+  6 h are dropped from the notify order, and a row with only such lines is acked without a turn
+  (Kagemusha's backfill guard; after downtime the first poll reads everything since the last one,
+  `polling-scheduler.ts:203–204`). A live row runs the **notify order** only. Before its reply is
+  routed to the owner, a **record order** is enqueued as its own row: kind `scheduled`, channel
+  `operator:record`, no refs (the mailbox dedupes refs, `mailbox.ts:374–411`), id
+  `record:<delta stimulus id>:<attempt>`, payload built only from the delta's stimulus id,
+  observation refs and channel so a replayed result enqueues the same row. `scheduled` rows branch
+  on `channelKey` in turn assembly, result handling and reconciliation (`stimulus-delivery.ts:384`,
+  `:787–805`, `daemon.ts:468–472`); the report scheduler's pending check counts only `schedule`
+  rows (`daemon.ts:688`).
+- **Record check.** After the record run and its child runs have ended, the ledger decides: a
+  revision written by one of those runs (revisions store `modelRunId`, `work-actions.ts:1240,
+1278`) with a `derived_from` edge to one of the batch's observations, or a successful
+  `work.no_update` call in those runs. A board or wiki write alone does not pass. When the check
+  fails, or the record row fails, goes uncertain or dead (`onFailed`, `onUncertain`, `onDead`), the
+  ledger check runs first and the next attempt is enqueued only if the batch is still unrecorded; at
+  most three attempts, then the loss is logged loudly. Record replies never reach the owner. A
+  `memory.save` in a record order carries `derived_from` links to the batch's observations, since
+  the record row itself has no refs (`provenance-live.ts:504–531`).
 - **Session start.** `[session_start]` ≤2,500 chars on a new session: recent owner exchanges,
   local time, and "read the ledger and sources when you need them". A resumed durable thread gets
   nothing extra.
 - **Lessons.** Top 3 by `memory.search` on the owner message or the notify order's message text,
-  ≤1,200 chars, advisory; a lesson already shown in the session is not shown again.
+  ≤1,200 chars, advisory. A lesson already shown is not repeated until the next local day or a new
+  session, since compactions are not observable.
 - **Tools.** One line per tool and a permissive schema for Codex dynamic tools and the Claude MCP
   list (`native-session.ts:125`, `action-mcp-server.ts:70`); a `help` action returns the full
   contract (summary, schema, examples). The usage guidance shows filtering inside `exec` before
@@ -158,8 +170,8 @@ without a separate check".
 2. Kagemusha's "print a plan block first" is not ported to owner replies (owner correction); the
    checklist stays in the record order, whose reply is never sent.
 3. The mailbox replaces the cursor cycle: a channel's rows merge while pending, the record order is
-   its own row, and retries are new attempts. No 5-minute timer or 6-hour cutoff is needed, since
-   rows exist only for live changes.
+   its own row, and retries are new attempts. The 6-hour backfill guard is ported; the 5-minute
+   timer is not needed because connectors poll on their own intervals.
 4. The 30 s pause after compaction is not ported: neither MAMA driver reports compaction today
    (`codex-app-server-process.ts:1662`). Compactions are measured from the rollouts.
 5. The reminder may end with a silent `[ack]` (owner policy: no mechanical hourly reports).
@@ -167,7 +179,9 @@ without a separate check".
    happens); Kagemusha has no wiki.
 7. `brain.observeTurn` keyword extraction and the contract system are not ported.
 8. Codex keeps its native `exec` as the filter; `code_act` (#332) is not needed for the Codex
-   backend; for Claude it is decided after a Claude-backend run.
+   backend. The Claude backend's tool list changes with W22 and is covered by tests only; it is
+   not run live in this change and is recorded as unverified. Whether Claude needs `code_act` is
+   left open.
 
 ## Owner decisions still open
 
