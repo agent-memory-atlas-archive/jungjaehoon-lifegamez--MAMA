@@ -42,7 +42,8 @@ export function ownerTimeZoneActionRegistrations(
     {
       contract: {
         name: 'owner.timezone.set',
-        summary: "Set the owner's IANA timezone when the owner states or changes it.",
+        summary:
+          "Set the owner's IANA timezone when the owner states or changes it. Allowed only in a turn that answers an owner message; source-delta, scheduled and replay turns and non-owner callers are denied. It rewrites only the timezone line of config.yaml and applies at once to report hours, displayed times and date-only deadlines. Returns the new and previous timezone; a memory preference does not change it.",
         inputSchema: {
           type: 'object',
           additionalProperties: false,

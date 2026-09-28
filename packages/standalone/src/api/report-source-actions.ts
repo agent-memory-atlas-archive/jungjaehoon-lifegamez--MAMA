@@ -99,7 +99,7 @@ function recentAction(ports: ReportReadPorts): ActionRegistration {
     contract: {
       name: 'source.recent',
       summary:
-        'Read recent changes from every granted stored source, grouped by channel, with collection failures visible.',
+        'Read recent changes from every granted stored source, grouped by channel, with collection failures visible. since takes epoch milliseconds, an ISO time or a duration such as "24h ago", and defaults to 24 hours. Each channel reports its total change count and its latest perChannel lines with observation refs to open with source.read; failedConnectors names sources whose last poll failed, so a failure is not read as no change. It reads the stored index, not the live provider; more channels than cap or more than 20,000 changes fails as invalid input, so narrow since.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -259,7 +259,7 @@ function upcomingAction(ports: ReportReadPorts): ActionRegistration {
     contract: {
       name: 'schedule.upcoming',
       summary:
-        'Read upcoming calendar and iCal events from the stored event index, including configured holiday calendars.',
+        "Read upcoming calendar and iCal events from the stored event index, including configured holiday calendars. days sets the window (default 14, at most 90); cancelled and ended events are left out, and all-day events end at their exclusive end in the event's timezone or the owner's. Events come sorted by start time with source, calendar, start, end, title and an observation ref. More events than cap (default 250) is an error; narrow days.",
       inputSchema: {
         type: 'object',
         additionalProperties: false,

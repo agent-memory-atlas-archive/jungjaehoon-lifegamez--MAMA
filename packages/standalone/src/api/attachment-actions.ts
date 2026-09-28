@@ -235,7 +235,7 @@ export function createAttachmentActionRegistrations(
       contract: {
         name: 'source.attachment.list',
         summary:
-          'List files attached to one preserved Chatwork or Slack observation, including the matching rule, provider file id, name, size, and upload time.',
+          'List files attached to one preserved Chatwork or Slack observation, including the matching rule, provider file id, name, size, and upload time. Other sources have no attachment support and fail as invalid input. Download a listed file with source.attachment.download and its fileId.',
         inputSchema: attachmentRefSchema,
         examples: [{ title: 'List message attachments', input: { observationRef: 'obs_test' } }],
       },

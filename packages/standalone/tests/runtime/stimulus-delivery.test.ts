@@ -1168,8 +1168,8 @@ describe('one stimulus intake and delivery', () => {
         for (const part of [
           'what this owner session already knows',
           'view="pipeline"',
-          '5–8',
-          '3–6',
+          'most need attention this hour',
+          'at a glance',
           'action_required',
         ])
           expect(prompt).toContain(part);

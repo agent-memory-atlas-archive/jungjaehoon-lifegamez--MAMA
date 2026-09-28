@@ -18,6 +18,14 @@ All notable changes to this project will be documented in this file.
   stored.
 - The viewer's work list pages past the first 50 items.
 - Asking for attachments from a source that has none is reported as invalid input.
+- The Claude backend passes `--effort` to Opus 4.7 and 4.8 and keeps `max` and `xhigh` on the models
+  that support them; before, Opus 4.7/4.8 ran without an effort setting and `max` fell to `high` on
+  Sonnet 5.
+- Prompt and tool-description cleanup from a prompt audit: `graph.query` no longer shows an example
+  value its schema rejects and states which inputs each view takes; the agent is no longer told to
+  page through every result or search before every decision; reminders and board sections are
+  described by what the reader needs instead of fixed counts; several one-line tool descriptions now
+  state their defaults, limits and failures.
 
 ### Breaking changes
 

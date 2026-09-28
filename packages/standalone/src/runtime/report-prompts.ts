@@ -78,9 +78,9 @@ export function buildScheduledReportPrompt(
           '[scheduled_task_reminder]',
           'Use what this owner session already knows and call work.list with view="pipeline" for the compact open-work list. Read source originals only when needed to resolve a material uncertainty.',
           'Call schedule.upcoming when this session has not read the calendar.',
-          'Select the 5–8 most urgent open items. Include every item waiting on an owner decision and any deadline affected by a calendar event or holiday.',
+          'Choose the open items that most need attention this hour. Include every item waiting on an owner decision and any deadline affected by a calendar event or holiday.',
           'Update only action_required with report.publish({ slots: { action_required: "<html>" } }); scheduled full reports handle the other slots and wiki resync.',
-          'Return only a concise Korean reminder of 3–6 lines, most urgent or nearest deadline first, under a short Korean title that names the top N priorities.',
+          'Return a concise Korean reminder the owner can read at a glance, most urgent or nearest deadline first, under a short Korean title that names the top priorities.',
         ];
   return [
     ...instructions,

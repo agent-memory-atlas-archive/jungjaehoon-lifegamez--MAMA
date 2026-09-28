@@ -82,6 +82,7 @@ class MAMAServer {
 
 **type='decision'** — Save architectural decisions, lessons learned, insights.
   Required: topic, decision, reasoning. Optional: confidence, scopes, event_date.
+  Search for related decisions first, so the reasoning can reference them and the new one is not orphaned.
   Triggers: user says "기억해", "remember", "decided". Topic reuse alone does not create a relationship.
 
 **type='checkpoint'** — Save session state for resumption.
@@ -203,9 +204,7 @@ class MAMAServer {
 
 **type parameter**: 'decision' (choices/lessons only), 'checkpoint' (session states / resume), 'all' (both, default).
 **scopes**: Filter by project/channel. Omit for global search.
-**limit**: Max results (default: 10).
-
-⚠️ REQUIRED: Call search BEFORE save to find related decisions and avoid orphans.`,
+**limit**: Max results (default: 10).`,
         inputSchema: {
           type: 'object',
           properties: {

@@ -23,13 +23,13 @@ describe('scheduled report prompts', () => {
     expect(prompt).toContain('what this owner session already knows');
     expect(prompt).toContain('view="pipeline"');
     expect(prompt).toContain('Update only action_required');
-    expect(prompt).toContain('5–8 most urgent open items');
+    expect(prompt).toContain('most need attention this hour');
     expect(prompt).not.toContain('source.recent');
     expect(prompt).toContain('schedule.upcoming when this session has not read the calendar');
     expect(prompt).not.toContain('report.read');
   });
 
-  it('sets the same action_required card cap for publishers and reminders', () => {
+  it('ranks action_required by urgency for publishers and reminders, without a card count', () => {
     const shape = buildBoardSlotShapeLines().join(' ');
     const reminder = buildScheduledReportPrompt(
       { report: 'reminder', hourKey: '2026-09-27:09' },
@@ -37,7 +37,8 @@ describe('scheduled report prompts', () => {
       { timeZone: 'UTC' }
     );
 
-    expect(shape).toContain('up to 8 report-cards');
-    expect(reminder).toContain('5–8 most urgent open items');
+    expect(shape).toContain('most urgent first');
+    expect(shape).not.toMatch(/up to \d+ report-cards/);
+    expect(reminder).toContain('most need attention this hour');
   });
 });

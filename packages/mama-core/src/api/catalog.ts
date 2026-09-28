@@ -180,7 +180,8 @@ const refSchema: ActionSchemaObject = {
     kind: {
       type: 'string',
       enum: TWIN_REF_KINDS,
-      description: 'Referenced graph kind, e.g. "work".',
+      description:
+        'Referenced graph kind, e.g. "memory" (a work item\'s revision record) or "registry".',
     },
     id: {
       type: 'string',
@@ -281,7 +282,7 @@ const workGraphQuerySchema: ActionSchemaObject = {
     },
     seeds: {
       type: 'array',
-      description: 'Starting graph references, e.g. [{"kind":"work","id":"work_123"}].',
+      description: 'Starting graph references, e.g. [{"kind":"memory","id":"judgment_123"}].',
       items: refSchema,
     },
     search: {
@@ -297,7 +298,7 @@ const workGraphQuerySchema: ActionSchemaObject = {
         },
         kinds: {
           type: 'array',
-          description: 'Kinds to restrict the search, e.g. ["work"].',
+          description: 'Kinds to restrict the search, e.g. ["registry"].',
           items: { type: 'string', enum: TWIN_REF_KINDS },
         },
       },
@@ -319,7 +320,7 @@ const workGraphQuerySchema: ActionSchemaObject = {
     },
     from: {
       ...refSchema,
-      description: 'Path/timeline start reference, e.g. {"kind":"work","id":"work_123"}.',
+      description: 'Path/timeline start reference, e.g. {"kind":"memory","id":"judgment_123"}.',
     },
     to: {
       ...refSchema,
@@ -820,7 +821,7 @@ export function coreActionRegistrations(
       contract: {
         name: 'graph.query',
         summary:
-          'Read the work graph: overview roots, neighbors, paths, timelines, and hydrated details under the caller authority. search resolves a name spelling to its registered node or alias — an empty page with coverage.search_no_match means nothing is registered under that spelling, the signal to graph.node.put it.',
+          'Read the work graph: overview roots, neighbors, paths, timelines, and hydrated details under the caller authority. Each view takes its own inputs: browse pages every visible edge and accepts only history, relations, asOf, limit and cursor; paths requires from and to; neighbors, timeline and detail need seeds or a search. search resolves a name spelling to its registered node or alias; an empty page with coverage.search_no_match means nothing is registered under that spelling. Ref kinds are memory, case, report, edge, raw, registry and observation; a work item is reached through its memory (revision) records.',
         inputSchema: workGraphQuerySchema,
         examples: [
           {

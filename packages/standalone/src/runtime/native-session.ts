@@ -251,7 +251,7 @@ function createDriver(
     env: { CLAUDE_CODE_TMPDIR: join(options.workspaceDir, '.tmp') },
     pluginDir: nativeOptions.pluginDir,
     requestTimeout: nativeOptions.requestTimeout,
-    effort: nativeOptions.effort as 'low' | 'medium' | 'high' | 'max',
+    effort: nativeOptions.effort,
   });
 }
 
