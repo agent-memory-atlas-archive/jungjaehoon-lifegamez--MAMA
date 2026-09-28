@@ -7,7 +7,7 @@ const LANES = ['source-delta', 'hourly-reminder', 'full-report', 'owner-answer']
 
 export type OwnerLane = (typeof LANES)[number];
 
-/** A lane's editable instruction is a workflow record at topic lane/<name>. */
+/** A lane's owner corrections are one workflow record at topic lane/<name>. */
 export function isLaneRecord(entry: Pick<GuidanceEntry, 'kind' | 'topic'>): boolean {
   return entry.kind === 'workflow' && LANES.some((lane) => entry.topic === `lane/${lane}`);
 }
@@ -107,21 +107,28 @@ export function renderLaneInstructions(
       const timeOrder = String(right.updated_at).localeCompare(String(left.updated_at));
       return timeOrder || right.id.localeCompare(left.id);
     })[0];
-  // A workflow's summary and ordered steps are the instruction; its details explain why.
-  const lines = record ? [record.summary, ...(record.steps ?? [])] : laneDefault(lane, wikiEnabled);
+  // The host default always applies. An owner correction record sits on top of it, so saving a
+  // correction never drops a default the correcting turn could not see. A workflow's summary and
+  // ordered steps are its instruction; its details explain why.
+  const lines = [
+    ...laneDefault(lane, wikiEnabled),
+    ...(record
+      ? [
+          `Owner corrections for this lane (record ${record.id}); where they conflict with the lines above, these apply:`,
+          record.summary,
+          ...(record.steps ?? []),
+          ...(wikiEnabled ? [] : ['wiki: disabled; skip any wiki step in these corrections.']),
+        ]
+      : []),
+  ];
   const project = (line: string): string =>
     ACTION_NAMES.reduce(
       (text, action) => text.replaceAll(action, actionName(backend, action)),
       line
     );
-  const replaces = record
-    ? `, replaces=[{id: "${record.id}", reason: "the owner corrected this lane"}]`
-    : '';
   return [
-    `<lane-instructions lane="${lane}" record="${record?.id ?? 'default'}">`,
+    `<lane-instructions lane="${lane}">`,
     ...lines.filter((line) => line.trim() !== '').map(project),
-    ...(record && !wikiEnabled ? ['wiki: disabled; skip any wiki step above.'] : []),
-    `Change this lane by saving a workflow with topic="lane/${lane}", its summary and one step per instruction line${replaces}, using ${actionName(backend, 'memory.save')}.`,
     '</lane-instructions>',
   ].join('\n');
 }

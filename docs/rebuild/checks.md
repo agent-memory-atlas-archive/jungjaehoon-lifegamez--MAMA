@@ -1253,3 +1253,10 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Result: an owner answer that changes work keeps the board merge rule again (it had been left only in the delta lane); duplicated code is shared (Claude effort gating, judgment edge id and hash, the test delivery helper); host data is typed instead of re-parsed (open-work candidates, board slots); an unexplained `edge_idempotency_key` on every agent link and several insurance guards are gone; dead code removed (an unused guidance field, the report prompt's wiki option, two helpers, a duplicate test).
 - Evidence: +111/−421 lines; build, typecheck and lint pass; core 966, standalone 1,157 (also under `TZ=UTC`), MCP server 139, plugin 170. One core graph-browse test failed once under the parallel root run and passed alone and in five reruns; the PR does not touch it.
 - Still open: the live checks after deploy.
+
+### Live check after deploying PR 327 (2026-09-28)
+
+- Result: deltas ran in 29 s with 3 tool calls (80–236 s and 10–18 calls before), each turn carried the lane block and the marker rule once and the related-work candidates; a second delta changed only the pipeline section and kept every other card. Two owner corrections were saved in their turn as lane records.
+- Failed: a lane record replaced the whole default, and the correcting owner turn could not see the source-delta default, so it saved only 4 notification steps and dropped the recording and board rules for new sessions. The lane block's "Change this lane by saving…" footer was also executed as an instruction: a delta turn and an owner turn re-saved identical lane records without any correction.
+- Fix: corrections now sit on top of the lane default and win on conflict, with no change instruction in turn content; the stored records need no change.
+- Observation: the first delta created a pending work item and did not update the pipeline section.

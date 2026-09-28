@@ -230,9 +230,9 @@ describe('owner guidance index delivery', () => {
       ['owner_message', 'lane-default-owner', 'owner-answer'],
     ] as const) {
       const prompt = await deliver(delivery, kind, id, false);
-      expect(prompt).toContain(`<lane-instructions lane="${lane}" record="default">`);
+      expect(prompt).toContain(`<lane-instructions lane="${lane}">`);
+      expect(prompt).not.toContain('Owner corrections for this lane');
       expect(prompt.match(/<lane-instructions /g)).toHaveLength(1);
-      expect(prompt).toContain('Change this lane by saving a workflow');
       const defaultText = {
         'source-delta': 'Decide whether each live source delta is chatter',
         'hourly-reminder': 'Use what this owner session already knows',
@@ -275,7 +275,19 @@ describe('owner guidance index delivery', () => {
         updated_at: 1,
       });
       const prompt = await deliver(delivery, kind, id, false);
-      expect(prompt).toContain(`<lane-instructions lane="${lane}" record="saved-${lane}">`);
+      expect(prompt).toContain(`<lane-instructions lane="${lane}">`);
+      // A correction sits on top of the default: the default lines stay and the correction wins.
+      expect(prompt).toContain(
+        {
+          'source-delta': 'Decide whether each live source delta is chatter',
+          'hourly-reminder': 'Use what this owner session already knows',
+          'full-report': 'Call source.recent for changes since the supplied prior full-report time',
+          'owner-answer': 'Keep the answer concise, with no working notes',
+        }[lane]
+      );
+      expect(prompt).toContain(
+        `Owner corrections for this lane (record saved-${lane}); where they conflict with the lines above, these apply:`
+      );
       expect(prompt).toContain(`Saved summary for ${lane}.`);
       expect(prompt).toContain(`Apply the saved ${lane} instruction.`);
       expect(prompt).not.toContain(`Saved instruction text for ${lane}.`);
@@ -341,20 +353,23 @@ describe('owner guidance index delivery', () => {
     } as never);
 
     const prompt = await deliver(delivery, 'owner_message', 'owner-no-markers', false);
-    expect(prompt).toContain('<lane-instructions lane="owner-answer" record="default">');
+    expect(prompt).toContain('<lane-instructions lane="owner-answer">');
     expect(prompt).not.toContain('[notify]');
     expect(prompt).not.toContain('[ack]');
   });
 
-  it('projects the lane change action to the Claude tool name', async () => {
+  it('projects lane action names to the Claude tool names and gives no change instruction', async () => {
     const delivery = createStimulusDelivery({
       backend: 'claude',
       guidanceResolver: async () => [],
       timeZone: createTimeZoneSetting('UTC'),
     } as never);
 
-    const prompt = await deliver(delivery, 'owner_message', 'claude-lane-actions', false);
-    expect(prompt).toContain('using mcp__mama__memory_save');
+    const prompt = await deliver(delivery, 'source_delta', 'claude-lane-actions', false);
+    expect(prompt).toContain('mcp__mama__report_publish');
+    expect(prompt).not.toContain('report.publish');
+    // Turn content never tells the agent to save a lane; the standing correction rule does.
+    expect(prompt).not.toContain('memory_save');
   });
 
   it('omits topic-page work from delta defaults when the wiki is disabled', async () => {
@@ -391,6 +406,6 @@ describe('owner guidance index delivery', () => {
 
     const prompt = await deliver(delivery, 'source_delta', 'delta-record-no-wiki', false);
     expect(prompt).toContain('Never touch the topic wiki page.');
-    expect(prompt).toContain('wiki: disabled; skip any wiki step above.');
+    expect(prompt).toContain('wiki: disabled; skip any wiki step in these corrections.');
   });
 });

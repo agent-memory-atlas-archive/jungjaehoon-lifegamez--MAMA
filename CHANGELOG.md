@@ -27,10 +27,11 @@ All notable changes to this project will be documented in this file.
   described by what the reader needs instead of fixed counts; several one-line tool descriptions now
   state their defaults, limits and failures.
 - Owner corrections to how MAMA works now change what it does. Source changes, hourly reminders,
-  full reports and owner answers each follow instructions the agent can revise; a correction such as
-  "send routine updates as one hourly summary" revises that instruction instead of being saved as a
-  note the next turn's fixed text outranked. Hourly reminders now list the source changes handled
-  since the previous reminder, so they can summarize them.
+  full reports and owner answers each carry a correction record on top of their built-in
+  instructions; a correction such as "send routine updates as one hourly summary" is saved there and
+  wins where it conflicts, instead of being saved as a note the next turn's fixed text outranked.
+  Hourly reminders now list the source changes handled since the previous reminder, so they can
+  summarize them.
 
 ### Breaking changes
 
