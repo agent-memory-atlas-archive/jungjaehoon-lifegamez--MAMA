@@ -46,7 +46,10 @@ describe('owner standing prompt', () => {
     expect(prompt).not.toContain('Only live source-delta turns end with [notify]');
     expect(prompt).toContain('When the owner corrects a lane, revise that lane’s workflow');
     expect(prompt).toContain(
-      'A request about reporting, formatting, or notification is a correction'
+      'A request about reporting, formatting, or notification is a lane correction'
+    );
+    expect(prompt).toContain(
+      'When the owner corrects you, save the correction in that same turn as a scoped lesson'
     );
     expect(ownerPrompt('claude')).toContain('with mcp__mama__memory_retire');
   });

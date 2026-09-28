@@ -16,7 +16,11 @@ describe('scheduled report prompts', () => {
 
   it('keeps reminders on the session context and one board slot', () => {
     const prompt = buildScheduledReportPrompt(
-      { report: 'reminder', hourKey: '2026-09-27:09' },
+      {
+        report: 'reminder',
+        hourKey: '2026-09-27:09',
+        acknowledgedDeltas: { total: 0, cap: 50, items: [] },
+      },
       new Date('2026-09-27T00:00:00Z'),
       { timeZone: 'UTC' }
     );
@@ -33,7 +37,11 @@ describe('scheduled report prompts', () => {
   it('ranks action_required by urgency for publishers and reminders, without a card count', () => {
     const shape = buildBoardSlotShapeLines().join(' ');
     const reminder = buildScheduledReportPrompt(
-      { report: 'reminder', hourKey: '2026-09-27:09' },
+      {
+        report: 'reminder',
+        hourKey: '2026-09-27:09',
+        acknowledgedDeltas: { total: 0, cap: 50, items: [] },
+      },
       new Date('2026-09-27T00:00:00Z'),
       { timeZone: 'UTC' }
     );
@@ -65,9 +73,20 @@ describe('scheduled report prompts', () => {
       { timeZone: 'Asia/Seoul' }
     );
 
-    expect(prompt).toContain('Acknowledged source deltas (showing 1 of 51; cap 50)');
-    expect(prompt).toContain('Work chat · 09-27 08:42 · preview=');
-    expect(prompt).toContain('A change was submitted');
-    expect(prompt).toContain('· obs_1');
+    expect(prompt).toContain(
+      'Source deltas handled since the previous report (the latest 1 of 51; cap 50; some may already have reached the owner with [notify])'
+    );
+    expect(prompt).toContain('source=source_delta');
+    expect(prompt).toContain('Work chat · 09-27 08:42 · A change was submitted · obs_1');
+  });
+
+  it('refuses a reminder without the handled source deltas', () => {
+    expect(() =>
+      buildScheduledReportPrompt(
+        { report: 'reminder', hourKey: '2026-09-27:09' },
+        new Date('2026-09-27T00:00:00Z'),
+        { timeZone: 'Asia/Seoul' }
+      )
+    ).toThrow('A scheduled reminder needs the handled source deltas from the report scheduler');
   });
 });

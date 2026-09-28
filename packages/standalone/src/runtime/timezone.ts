@@ -50,6 +50,14 @@ function partsAt(ms: number, timeZone: string): Record<string, string> {
   return Object.fromEntries(parts.map(({ type, value }) => [type, value]));
 }
 
+/** A source time as MM-DD HH:mm in the owner's timezone. */
+export function localStamp(iso: string, timeZone: string): string {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) throw new Error(`A source line needs a source time, got ${iso}`);
+  const parts = partsAt(ms, timeZone);
+  return `${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+}
+
 export function localDateKey(ms: number, timeZone: string): string {
   const parts = partsAt(ms, timeZone);
   return `${parts.year}-${parts.month}-${parts.day}`;

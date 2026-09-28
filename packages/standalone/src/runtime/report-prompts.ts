@@ -1,6 +1,6 @@
 import type { JsonValue } from '@jungjaehoon/mama-core/knowledge';
 import { buildBoardHtmlVocabulary } from '../operator/board-slot-instructions.js';
-import { epochAtLocalDateTime } from './timezone.js';
+import { epochAtLocalDateTime, localStamp } from './timezone.js';
 import { wrapUntrustedContent } from '../utils/untrusted-content.js';
 
 export interface ScheduledReport {
@@ -71,37 +71,38 @@ export function buildScheduledReportPrompt(
 }
 
 function acknowledgedDeltaLines(payload: JsonValue | undefined, timeZone: string): string[] {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return [];
-  const value = payload.acknowledgedDeltas;
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
-  const total = typeof value.total === 'number' ? value.total : 0;
-  const cap = typeof value.cap === 'number' ? value.cap : 0;
-  const items = Array.isArray(value.items) ? value.items : [];
-  return [
-    `Acknowledged source deltas (showing ${items.length} of ${total}; cap ${cap}) in ${timeZone}:`,
-    ...items.flatMap((entry): string[] => {
-      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
-      const channelLabel = typeof entry.channelLabel === 'string' ? entry.channelLabel : '';
-      const sourceAt = typeof entry.sourceAt === 'string' ? entry.sourceAt : '';
-      const preview = typeof entry.preview === 'string' ? entry.preview : '';
-      const observationRef = typeof entry.observationRef === 'string' ? entry.observationRef : '';
-      const time = new Intl.DateTimeFormat('en-CA', {
-        timeZone,
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        hourCycle: 'h23',
-      })
-        .formatToParts(new Date(sourceAt))
-        .filter((part) => part.type !== 'literal')
-        .map((part) => part.value);
-      const localTime = `${time[0]}-${time[1]} ${time[2]}:${time[3]}`;
-      const quotedPreview = wrapUntrustedContent('source_delta', JSON.stringify(preview)).replace(
-        /\s+/g,
-        ' '
+  const value =
+    payload && typeof payload === 'object' && !Array.isArray(payload)
+      ? payload.acknowledgedDeltas
+      : undefined;
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    typeof value.total !== 'number' ||
+    typeof value.cap !== 'number' ||
+    !Array.isArray(value.items)
+  )
+    throw new Error(
+      'A scheduled reminder needs the handled source deltas from the report scheduler'
+    );
+  const lines = value.items.map((entry) => {
+    if (
+      !entry ||
+      typeof entry !== 'object' ||
+      Array.isArray(entry) ||
+      typeof entry.channelLabel !== 'string' ||
+      typeof entry.sourceAt !== 'string' ||
+      typeof entry.preview !== 'string' ||
+      typeof entry.observationRef !== 'string'
+    )
+      throw new Error(
+        'A handled source delta needs channelLabel, sourceAt, preview and observationRef'
       );
-      return [`${channelLabel} · ${localTime} · preview=${quotedPreview} · ${observationRef}`];
-    }),
+    return `${entry.channelLabel} · ${localStamp(entry.sourceAt, timeZone)} · ${entry.preview} · ${entry.observationRef}`;
+  });
+  return [
+    `Source deltas handled since the previous report (the latest ${lines.length} of ${value.total}; cap ${value.cap}; some may already have reached the owner with [notify]), times in ${timeZone}:`,
+    lines.length === 0 ? 'none' : wrapUntrustedContent('source_delta', lines.join('\n')),
   ];
 }

@@ -1174,7 +1174,7 @@ describe('one stimulus intake and delivery', () => {
           'most need attention this hour',
           'at a glance',
           'action_required',
-          'Acknowledged source deltas (showing 0 of 0; cap 50)',
+          'Source deltas handled since the previous report (the latest 0 of 0; cap 50;',
         ])
           expect(prompt).toContain(part);
         expect(prompt).not.toContain('source.recent');

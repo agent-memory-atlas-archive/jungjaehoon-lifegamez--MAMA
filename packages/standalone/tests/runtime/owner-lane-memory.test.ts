@@ -80,8 +80,7 @@ describe('editable owner lane workflows', () => {
         const delivery = createStimulusDelivery({
           guidanceResolver: async () =>
             readMemoryRecordsInScopes(database.adapter, surface.ownerAccess.scopes, {
-              kind: 'workflow',
-              status: 'active',
+              kind: ['lesson', 'preference', 'constraint', 'workflow'],
             }) as never,
           timeZone: createTimeZoneSetting('UTC'),
         });
@@ -133,8 +132,11 @@ describe('editable owner lane workflows', () => {
         expect(prompt).toContain(
           `replaces=[{id: "${replacement.data?.id}", reason: "the owner corrected this lane"}]`
         );
-        expect(prompt).toContain(`Replacement instruction text for ${lane}.`);
+        expect(prompt).toContain(`Replacement summary for ${lane}.`);
         expect(prompt).toContain(`Apply the replacement instruction for ${lane}.`);
+        // details explain the record; only the summary and steps are the instruction.
+        expect(prompt).not.toContain(`Replacement instruction text for ${lane}.`);
+        expect(prompt).not.toContain(`Apply the saved instruction for ${lane}.`);
       }
     } finally {
       await database.close();

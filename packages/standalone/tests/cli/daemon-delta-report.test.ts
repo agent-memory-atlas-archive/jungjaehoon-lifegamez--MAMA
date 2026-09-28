@@ -392,7 +392,10 @@ describe('live delta reports', () => {
       );
       await daemon.owner.runtime.drainOnce();
       expect(prompts).toHaveLength(1);
-      expect(prompts[0]!.text).not.toContain('[notify]');
+      expect(prompts[0]!.text).toContain(
+        'This replay window is history and is not delivered to the owner'
+      );
+      expect(prompts[0]!.text).not.toContain('End this turn with exactly one marker');
       expect(telegram.sendMessage).not.toHaveBeenCalled();
       expect(logs.some((line) => line.startsWith('delta report'))).toBe(false);
     }

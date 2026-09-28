@@ -35,7 +35,7 @@ interface StoredSourceDelta {
   preview: string[];
 }
 
-/** Read acknowledged live deltas in the report window, with a separate total count. */
+/** Read the latest acknowledged live deltas in the report window, with a separate total count. */
 export function readAcknowledgedSourceDeltas(
   adapter: DatabaseAdapter,
   sinceAt: number,
@@ -49,9 +49,11 @@ export function readAcknowledgedSourceDeltas(
   const rows = adapter
     .prepare(
       `SELECT preview_json, payload_json
-       FROM mailbox_inputs WHERE ${where} ORDER BY acked_at, id LIMIT ?`
+       FROM mailbox_inputs WHERE ${where} ORDER BY acked_at DESC, id DESC LIMIT ?`
     )
     .all(sinceAt, throughAt, ACKNOWLEDGED_DELTA_CAP) as AcknowledgedDeltaRow[];
+  // Past the cap the newest deltas matter most; the reminder reads them oldest first.
+  rows.reverse();
   const items = rows.map((row) => {
     const payload = JSON.parse(row.payload_json) as StoredSourceDelta;
     const refs = payload.refs;

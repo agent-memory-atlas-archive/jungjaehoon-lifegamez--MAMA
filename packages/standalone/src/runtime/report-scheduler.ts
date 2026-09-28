@@ -100,7 +100,7 @@ export function createReportScheduler(options: ReportSchedulerOptions) {
       payload.acknowledgedDeltas = {
         total: acknowledgedDeltas.total,
         cap: ACKNOWLEDGED_DELTA_CAP,
-        items: acknowledgedDeltas.items.slice(0, ACKNOWLEDGED_DELTA_CAP).map((item) => ({
+        items: acknowledgedDeltas.items.map((item) => ({
           channelLabel: item.channelLabel,
           sourceAt: item.sourceAt,
           preview: item.preview,

@@ -18,8 +18,8 @@ import type { QueueCandidateScore, QueueLine, WindowQueue } from '../replay/wind
 import { renderRecentOwnerExchanges, type OwnerExchange } from './recent-owner-exchanges.js';
 import type { OwnerRuntimeBackend } from './owner-system-prompt.js';
 import { buildScheduledReportPrompt } from './report-prompts.js';
-import { laneForStimulus, renderLaneInstructions } from './lane-instructions.js';
-import type { TimeZoneSetting } from './timezone.js';
+import { isLaneRecord, laneForStimulus, renderLaneInstructions } from './lane-instructions.js';
+import { localStamp, type TimeZoneSetting } from './timezone.js';
 import { workListTitleTextScore } from '../api/work-actions.js';
 
 export const OWNER_RUNTIME_SESSION_KEY = 'owner:runtime';
@@ -243,24 +243,6 @@ function payloadCarriesMessageText(payload: MailboxRow['payload']): boolean {
   );
 }
 
-function localStamp(iso: string, timeZone: string): string {
-  const ms = Date.parse(iso);
-  if (!Number.isFinite(ms)) throw new Error(`A message line needs a source time, got ${iso}`);
-  const values = Object.fromEntries(
-    new Intl.DateTimeFormat('en-CA', {
-      timeZone,
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      hourCycle: 'h23',
-    })
-      .formatToParts(new Date(ms))
-      .map((part) => [part.type, part.value])
-  );
-  return `${values.month}-${values.day} ${values.hour}:${values.minute}`;
-}
-
 function textField(value: JsonValue | undefined): string {
   return typeof value === 'string' ? value : '';
 }
@@ -421,10 +403,14 @@ function boundedStimulus(
   if (row.kind === 'source_delta') {
     if (liveSourceDelta) {
       lines.push(
-        'Only live source-delta turns end with exactly one [notify] or [ack] marker; owner-answer turns never carry these markers.'
+        'End this turn with exactly one marker: [notify] followed by the message the owner receives, or [ack]. Owner-answer turns never carry these markers.'
       );
       lines.push(`formatting: ${options.formattingRoutes?.notifications ?? 'telegram'}`);
       if (candidates.length > 0) lines.push('candidates (you decide):', ...candidates);
+    } else {
+      lines.push(
+        'This replay window is history and is not delivered to the owner: notification instructions do not apply, and the turn ends without [notify] or [ack].'
+      );
     }
     lines.push(
       row.refs.length === 0
@@ -579,7 +565,7 @@ function guidanceVersion(entry: GuidanceEntry): string {
 
 function activeGuidance(entries: readonly GuidanceEntry[]): GuidanceEntry[] {
   return entries
-    .filter((entry) => entry.status === 'active' && !entry.topic.startsWith('lane/'))
+    .filter((entry) => entry.status === 'active' && !isLaneRecord(entry))
     .slice()
     .sort((left, right) => left.id.localeCompare(right.id));
 }
@@ -611,7 +597,7 @@ function renderGuidanceDelta(
 ): string {
   const changes: string[] = [];
   for (const entry of entries) {
-    if (entry.topic.startsWith('lane/')) continue;
+    if (isLaneRecord(entry)) continue;
     const before = previous.get(entry.id);
     const after = guidanceVersion(entry);
     if (before === after) continue;
@@ -740,9 +726,7 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
                 lane,
                 entries,
                 options.backend ?? 'codex',
-                options.wikiEnabled ?? true,
-                // A replayed delta is history: it keeps the lane's recording rules but never notifies.
-                row.kind === 'source_delta' && !liveSourceDelta
+                options.wikiEnabled ?? true
               )
             : '';
           const sessionKey = OWNER_RUNTIME_SESSION_KEY;
@@ -771,7 +755,7 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
           }
           pendingGuidanceState = new Map(
             entries
-              .filter((entry) => !entry.topic.startsWith('lane/'))
+              .filter((entry) => !isLaneRecord(entry))
               .map((entry) => [entry.id, guidanceVersion(entry)])
           );
           return assembledContent(
