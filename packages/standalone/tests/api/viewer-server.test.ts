@@ -8,7 +8,11 @@ import type {
   WorkGraphPage,
 } from '@jungjaehoon/mama-core';
 import type { JudgmentAccess } from '@jungjaehoon/mama-core/knowledge';
-import { createViewerServer, type ViewerServer } from '../../src/api/viewer-server.js';
+import {
+  createViewerServer,
+  listOperatorTasks,
+  type ViewerServer,
+} from '../../src/api/viewer-server.js';
 import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 
 const ownerAccess: JudgmentAccess = {
@@ -180,6 +184,40 @@ describe('viewer HTTP server', () => {
         expect(calls).toHaveLength(1);
       }
     );
+  });
+
+  it('continues operator task pagination with the request cursor', async () => {
+    const cursor = 'cursor-page-two';
+    const calls: Array<Record<string, unknown>> = [];
+    const callAction = async (_action: string, input: Record<string, unknown>) => {
+      calls.push(input);
+      return input.cursor === cursor
+        ? {
+            view: 'items',
+            tasks: [
+              { ...workItems().tasks[0], commitmentId: 'commitment-2', title: 'second task' },
+            ],
+            nextCursor: null,
+            total: 2,
+            returned: 1,
+            observedAt: new Date(3).toISOString(),
+            readVersion: 'page-two',
+          }
+        : { ...workItems(), nextCursor: cursor };
+    };
+    const first = (await listOperatorTasks(new URLSearchParams('limit=1'), callAction)) as {
+      nextCursor: string;
+    };
+    const second = await listOperatorTasks(
+      new URLSearchParams(`limit=1&cursor=${encodeURIComponent(first.nextCursor)}`),
+      callAction
+    );
+
+    expect(calls[1]).toMatchObject({ view: 'items', limit: 1, cursor });
+    expect(second).toMatchObject({
+      tasks: [{ commitment_id: 'commitment-2', title: 'second task' }],
+    });
+    expect(second).not.toHaveProperty('nextCursor');
   });
 
   it('counts report-card class tokens despite quoting and additional classes', async () => {

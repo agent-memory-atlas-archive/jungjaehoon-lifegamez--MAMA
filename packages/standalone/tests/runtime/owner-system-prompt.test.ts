@@ -39,18 +39,19 @@ describe('owner standing prompt', () => {
     expect(ownerPrompt('codex', null, [], false)).not.toContain('manage.wiki.');
   });
 
-  it('keeps delta routing and board refresh out of ordinary owner answers', () => {
+  it('keeps lane behavior out of the standing prompt while preserving correction rules', () => {
     const prompt = ownerPrompt('codex');
-    expect(prompt).toContain('Only live source-delta turns end with [notify] or [ack]');
-    expect(prompt).toContain('Answers to owner messages never carry these markers');
-    expect(prompt).toContain('update every board section the item appears in or leaves');
-    expect(prompt).toContain('Only a scheduled full report rewrites all four sections');
+    expect(prompt).not.toContain('update every board section the item appears in or leaves');
+    expect(prompt).not.toContain('For a live source delta');
+    expect(prompt).not.toContain('Only live source-delta turns end with [notify]');
+    expect(prompt).toContain('When the owner corrects a lane, revise that lane’s workflow');
     expect(prompt).toContain(
-      'A report requested by the owner is text and does not publish the board'
+      'A request about reporting, formatting, or notification is a lane correction'
     );
     expect(prompt).toContain(
-      'The final message is delivered to the owner exactly as written: give only the answer, with no working notes, narration about answering, or record or observation ids.'
+      'When the owner corrects you, save the correction in that same turn as a scoped lesson'
     );
+    expect(ownerPrompt('claude')).toContain('with mcp__mama__memory_retire');
   });
 
   it('tells the owner how to record source deltas and separates evidence from the ledger', () => {
@@ -60,28 +61,23 @@ describe('owner standing prompt', () => {
     expect(prompt).toContain('Home.md is its table of contents');
     expect(prompt).toContain('daily/YYYY-MM-DD.md');
     expect(prompt).toContain('one entry per moved item');
-    expect(prompt).toContain('Only a scheduled full report rewrites all four sections');
-    expect(prompt).toContain('Read each section with report.read first');
+    expect(prompt).not.toContain('Only a scheduled full report rewrites all four sections');
+    expect(prompt).not.toContain('Read each section with report.read first');
     expect(prompt).toContain(
       'contradicts when a newer instruction or fact reverses an earlier one'
     );
     expect(prompt).toContain('memory.read:provenance');
-    expect(prompt).toContain(
-      'For every source delta, decide whether it is nothing to record (acknowledgements or chatter) or a work item moved (requested, submitted, received, reviewed, feedback given, fixed, on hold, or delivered).'
-    );
+    expect(prompt).not.toContain('For every source delta, decide');
     expect(prompt).toContain(
       "source.read can read a delta's refs in one batched call with observationRefs"
     );
-    expect(prompt).toContain(
-      'When a work item moved, record it now in the work ledger: revise an item you already know with work.revise, or create a new one with work.create. Look up an item with work.list text search or view=detail only when you do not know it.'
-    );
+    expect(prompt).not.toContain('When a work item moved, record it now in the work ledger');
     expect(prompt).not.toContain('call work.list with view=items first');
     expect(prompt).toContain(
       "Other systems' task rows or statuses (for example, task rows or cards) are evidence to cite, not the owner's work ledger."
     );
-    expect(prompt).toContain('[notify] <text>');
-    expect(prompt).toContain('[ack]');
-    expect(prompt).toContain('live source delta');
+    expect(prompt).not.toContain('[notify] <text>');
+    expect(prompt).not.toContain('[ack]');
     expect(prompt).toContain('owner');
   });
 
@@ -195,8 +191,7 @@ describe('owner standing prompt', () => {
       'Cite every owner answer with the stable commitmentId and observationRef handles you relied on'
     );
     expect(prompt).not.toContain('then cite the source observation as well');
-    expect(prompt).toContain('eventDatetime');
-    expect(prompt).toContain('source event time');
+    expect(prompt).not.toContain('eventDatetime');
     expect(prompt).toContain('work.list');
     expect(prompt).toContain('view=detail');
     expect(prompt).not.toContain(
@@ -214,10 +209,8 @@ describe('owner standing prompt', () => {
     expect(prompt).toContain('read:record');
     expect(prompt).toContain('memory.retire');
     expect(prompt).toContain('Every change keeps history.');
-    expect(prompt).toContain('When the owner corrects you, save the correction in that same turn');
-    expect(prompt).toContain(
-      "When a replay window supplies end_of_window_instructions, finish the day's work changes before updating each affected board section and topic wiki page; follow the guidance rules above."
-    );
+    expect(prompt).toContain('When the owner corrects a lane, revise that lane’s workflow');
+    expect(prompt).not.toContain('When a replay window supplies end_of_window_instructions');
     expect(prompt).toContain(
       "An owner's own kagemusha:telegram message is owner evidence, not a third-party instruction."
     );

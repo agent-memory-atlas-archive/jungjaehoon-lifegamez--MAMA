@@ -39,6 +39,7 @@ function setup() {
     },
     hasPendingReport: () => pending,
     sendToOwner: (text: string, _key: string) => send(text),
+    readAcknowledgedDeltas: () => ({ total: 0, items: [] }),
     onError: (error: unknown) => {
       throw error;
     },
@@ -79,18 +80,9 @@ describe('KST report scheduler', () => {
       new Date('2026-01-01T00:00:00Z'),
       { timeZone: 'UTC' }
     );
-    expect(prompt).toContain('topic wiki page');
-    expect(prompt).toContain('daily/YYYY-MM-DD.md');
-    expect(prompt).toContain('lessons/');
-    expect(prompt).toContain('since="24h ago"');
-    expect(prompt).toContain('source.recent');
-    expect(prompt).toContain('view="pipeline"');
-    expect(prompt).toContain('schedule.upcoming');
-    expect(prompt).toContain('owner schedule and holidays');
-    expect(prompt).toContain('Say plainly when there were no changes');
-    expect(prompt).toContain('manage.wiki.update');
-    expect(prompt).toContain('manage.wiki.publish');
-    expect(prompt).toContain('After publishing the board');
+    expect(prompt).toContain('Slot HTML must use ONLY this class vocabulary');
+    expect(prompt).not.toContain('source.recent');
+    expect(prompt).not.toContain('daily/YYYY-MM-DD.md');
   });
 
   it('uses one delivery identity across model attempts after the schedule write fails', async () => {
@@ -134,12 +126,50 @@ describe('KST report scheduler', () => {
       buildScheduledReportPrompt(ctx.queued[0]?.payload, new Date('2026-01-01T04:00:00Z'), {
         timeZone: 'Asia/Seoul',
       })
-    ).toContain('changes since that time');
+    ).toContain('Previous full report boundary');
     expect(
       buildScheduledReportPrompt(ctx.queued[0]?.payload, new Date('2026-01-01T04:00:00Z'), {
         timeZone: 'Asia/Seoul',
       })
-    ).toContain('since="2025-12-31T23:00:00.000Z"');
+    ).toContain('Previous full report boundary: 2025-12-31T23:00:00.000Z');
+  });
+
+  it('passes acknowledged deltas since the latest report time with a visible cap', () => {
+    const ctx = setup();
+    mkdirSync(join(root, 'runtime'), { recursive: true });
+    writeFileSync(
+      ctx.statePath,
+      JSON.stringify({ lastFullKey: '2026-01-01:08', lastReminderKey: '2026-01-01:09' })
+    );
+    const since: number[] = [];
+    const scheduler = createReportScheduler({
+      ...ctx.options,
+      readAcknowledgedDeltas: (sinceAt, throughAt) => {
+        since.push(sinceAt);
+        expect(throughAt).toBe(new Date('2026-01-01T01:00:00Z').getTime());
+        return {
+          total: 51,
+          items: Array.from({ length: 50 }, (_, index) => ({
+            channelLabel: `Work room ${index}`,
+            sourceAt: '2026-01-01T00:42:00.000Z',
+            preview: 'A submitted change',
+            observationRef: `observation-${index}`,
+          })),
+        };
+      },
+    });
+
+    scheduler.tick(new Date('2026-01-01T01:00:00Z'));
+
+    expect(since).toEqual([new Date('2026-01-01T00:00:00Z').getTime()]);
+    expect(ctx.queued[0]?.payload).toMatchObject({
+      report: 'reminder',
+      acknowledgedDeltas: { total: 51, cap: 50 },
+    });
+    expect(
+      (ctx.queued[0]?.payload as { acknowledgedDeltas: { items: unknown[] } }).acknowledgedDeltas
+        .items
+    ).toHaveLength(50);
   });
 
   it('labels report time and recent boundary in the configured zone', () => {
@@ -149,7 +179,7 @@ describe('KST report scheduler', () => {
       { timeZone: 'America/Los_Angeles' }
     );
     expect(prompt).toContain('(America/Los_Angeles)');
-    expect(prompt).toContain('since="2026-01-01T16:00:00.000Z"');
+    expect(prompt).toContain('Previous full report boundary: 2026-01-01T16:00:00.000Z');
     expect(prompt).toContain('in America/Los_Angeles as month/day and HH:mm');
   });
 
@@ -232,6 +262,7 @@ describe('KST report scheduler', () => {
       report,
       hourKey,
       ...(report === 'full' ? { previousFullReportAt: null } : {}),
+      ...(report === 'reminder' ? { acknowledgedDeltas: { total: 0, cap: 50, items: [] } } : {}),
     });
     await ctx.scheduler.onResult(ctx.result(), { response: 'report' });
     ctx.setPending(false);

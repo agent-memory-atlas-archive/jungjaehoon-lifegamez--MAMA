@@ -35,6 +35,33 @@ describe('report.* action registrations', () => {
     expect(publish.summary).not.toContain('basis');
     expect(publish.inputSchema.properties).not.toHaveProperty('basis_revision');
     expect(catalog.describe('report.read').summary).toContain('dated presentation snapshot');
+    expect(catalog.describe('report.read').inputSchema.properties?.limit).toMatchObject({
+      maximum: 6000,
+    });
+  });
+
+  it('reads a production-sized html slot in one default action call', async () => {
+    const html = `<div class="report-card">${'x'.repeat(5_000)}</div>`;
+    const store = createReportStore();
+    store.update('action_required', html, 1);
+    const result = await dispatch({
+      reader: () =>
+        Object.fromEntries(
+          Object.entries(store.getAll()).map(([name, slot]) => [
+            name,
+            {
+              html: slot.html,
+              updatedAt: new Date(slot.updatedAt).toISOString(),
+            },
+          ])
+        ),
+      timeZone,
+    })({ action: 'report.read', input: { slot: 'action_required', format: 'html' } }, { access });
+
+    expect(result).toMatchObject({
+      status: 'completed',
+      data: { content: html, complete: true, nextOffset: null },
+    });
   });
 
   it('rejects the removed basis_revision input', async () => {

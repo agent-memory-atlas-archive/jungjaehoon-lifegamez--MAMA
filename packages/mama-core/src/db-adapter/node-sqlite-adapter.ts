@@ -12,6 +12,7 @@ import { NodeSQLiteStatement } from './node-sqlite-statement.js';
 import { type Statement } from './statement.js';
 import { info, warn, error as logError } from '../debug-logger.js';
 import { cosineSimilarity } from '../embedding/embedder.js';
+import { backfillCommitmentRevisionGraph } from '../knowledge/commitment-revision-migration.js';
 
 const SQLITE_IDENTIFIER_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -832,6 +833,22 @@ export class NodeSQLiteAdapter implements DatabaseInstance {
 
       const version = parseInt(versionMatch[1], 10);
       if (version <= currentVersion) {
+        continue;
+      }
+
+      if (isCore && version === 99) {
+        try {
+          this.exec('BEGIN TRANSACTION');
+          backfillCommitmentRevisionGraph(this);
+          this.exec(fs.readFileSync(path.join(migrationsDir, file), 'utf8'));
+          this.stampMigration(sourceName, version);
+          this.exec('COMMIT');
+          info(`[node-sqlite-adapter] Migration ${file} applied successfully`);
+        } catch (err) {
+          this.exec('ROLLBACK');
+          const message = err instanceof Error ? err.message : String(err);
+          throw new Error(`Migration ${file} failed: ${message}`);
+        }
         continue;
       }
 

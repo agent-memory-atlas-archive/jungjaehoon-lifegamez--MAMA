@@ -395,8 +395,6 @@ export interface WorkCommand {
   commandId: string;
   /** Native run that authored this work, when it was written during a model turn. */
   modelRunId?: string | null;
-  /** What this commitment is about; becomes the record topic. */
-  topic: string;
   /** What the caller is committing to, in its own words. */
   summary: string;
   reasoning?: string;
@@ -425,6 +423,8 @@ export interface WorkCommand {
 }
 
 export interface CreateWorkCommand extends WorkCommand {
+  /** What this new commitment is about; becomes the record topic. */
+  topic: string;
   set: OwnerWorkPatch;
   /**
    * Import vocabulary: the identity this work already had in a predecessor
@@ -464,7 +464,7 @@ export interface WorkWriteResult {
  * present with no value and a key absent are different payloads and must not
  * hash alike.
  */
-function recordFields(command: WorkCommand): {
+function recordFields(command: WorkCommand & { topic: string }): {
   commandId: string;
   modelRunId?: string | null;
   topic: string;
@@ -572,9 +572,10 @@ export async function reviseWork(
       `Commitment is unavailable: ${command.commitmentId}`
     );
   }
+  const topic = workTopic(options.adapter, command.commitmentId);
   const receipt = await appendJudgment(
     {
-      ...recordFields(command),
+      ...recordFields({ ...command, topic }),
       work: {
         operation: 'revise',
         commitmentId: command.commitmentId,
@@ -612,9 +613,10 @@ export async function withdrawWork(
       `Commitment is unavailable: ${command.commitmentId}`
     );
   }
+  const topic = workTopic(options.adapter, command.commitmentId);
   const receipt = await appendJudgment(
     {
-      ...recordFields(command),
+      ...recordFields({ ...command, topic }),
       work: {
         operation: 'withdraw',
         commitmentId: command.commitmentId,
@@ -625,4 +627,21 @@ export async function withdrawWork(
     options
   );
   return requireWorkReceipt(receipt);
+}
+
+function workTopic(adapter: DatabaseAdapter, commitmentId: string): string {
+  const row = adapter
+    .prepare(
+      `SELECT decision.topic
+       FROM commitment_assignments AS assignment
+       JOIN decisions AS decision ON decision.id = assignment.record_id
+       WHERE assignment.commitment_id = ? AND assignment.operation = 'create'
+       ORDER BY assignment.revision
+       LIMIT 1`
+    )
+    .get(commitmentId) as { topic: string } | undefined;
+  if (!row) {
+    throw new JudgmentError('REFERENCE_NOT_FOUND', `Commitment is unavailable: ${commitmentId}`);
+  }
+  return row.topic;
 }

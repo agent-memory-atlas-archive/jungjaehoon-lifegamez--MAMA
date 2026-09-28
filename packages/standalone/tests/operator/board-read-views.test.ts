@@ -66,6 +66,18 @@ describe('Task B: board_read descriptors (default)', () => {
 });
 
 describe('Task B: board_read selected content', () => {
+  it('returns a production-sized board slot as html in one default read', () => {
+    const html = `<div class="report-card">${'x'.repeat(5_000)}</div>`;
+    const page = readBoardView(
+      { slot: 'action_required', format: 'html' },
+      {
+        action_required: { html },
+      }
+    ) as { content: string; complete: boolean; nextOffset: number | null };
+
+    expect(page).toMatchObject({ content: html, complete: true, nextOffset: null });
+  });
+
   it('pages a long slot as html by code points and reconstructs it with no lost tail', () => {
     const slots = makeSlots();
     let assembled = '';
@@ -172,8 +184,8 @@ describe('Task B: board_read selected content', () => {
   it('rejects an unknown format and out-of-range bounds, never clamping', () => {
     const slots = makeSlots();
     expect(() => readBoardView({ slot: 'briefing', format: 'pdf' }, slots)).toThrow(/format/);
-    expect(() => readBoardView({ slot: 'briefing', limit: 0 }, slots)).toThrow(/1 to 4000/);
-    expect(() => readBoardView({ slot: 'briefing', limit: 4001 }, slots)).toThrow(/1 to 4000/);
+    expect(() => readBoardView({ slot: 'briefing', limit: 0 }, slots)).toThrow(/1 to 6000/);
+    expect(() => readBoardView({ slot: 'briefing', limit: 6001 }, slots)).toThrow(/1 to 6000/);
     expect(() => readBoardView({ slot: 'briefing', offset: -1 }, slots)).toThrow(/non-negative/);
   });
 

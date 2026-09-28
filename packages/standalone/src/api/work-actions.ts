@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto';
-import type { ActionContext, ActionRegistration, ActionSchemaObject } from '@jungjaehoon/mama-core';
+import type {
+  ActionContext,
+  ActionRegistration,
+  ActionSchemaObject,
+  DatabaseAdapter,
+} from '@jungjaehoon/mama-core';
 import type { TimeZoneSetting } from '../runtime/timezone.js';
 import { epochAtLocalDateTime, localDateKey } from '../runtime/timezone.js';
 import { recordLinkSchema, scopeRefSchema } from '@jungjaehoon/mama-core/api/catalog';
@@ -275,6 +280,7 @@ export function workListTitleTextScore(query: string, title: string): number {
 }
 
 function workListStatus(item: CommitmentView): PublicWorkStatus {
+  if (item.withdrawn) return 'cancelled';
   const value = workListValueObject(item.values).status;
   if (typeof value === 'string' && WORK_LIST_STATUSES.includes(value as PublicWorkStatus)) {
     return value as PublicWorkStatus;
@@ -284,7 +290,7 @@ function workListStatus(item: CommitmentView): PublicWorkStatus {
       `work.list encountered a status outside the contract: ${JSON.stringify(value)}`
     );
   }
-  return item.withdrawn ? 'cancelled' : 'pending';
+  return 'pending';
 }
 
 function workListPriority(item: CommitmentView): string {
@@ -486,17 +492,47 @@ function workListReadSnapshot(ctx: WorkListViewContext, filter: WorkListFilter):
   return { items: Object.freeze(items), readVersion: workListReadVersion(items), observedAt };
 }
 
-export function readOpenWorkCandidates(ctx: WorkListViewContext): Array<{
+export interface OpenWorkCandidate {
   commitmentId: string;
   title: string;
   stage: string;
   assignee: string;
-  sourceChannel: string;
+  /** `connector:channel` of each observation the item's revisions derive from. */
+  evidenceChannels: string[];
   updatedAt: number;
-}> {
+}
+
+export function readOpenWorkCandidates(
+  ctx: WorkListViewContext & { adapter: Pick<DatabaseAdapter, 'prepare'> }
+): OpenWorkCandidate[] {
   const snapshot = workListReadSnapshot(ctx, {});
-  return snapshot.items.flatMap((item) => {
-    if (['done', 'cancelled'].includes(workListStatus(item))) return [];
+  const openItems = snapshot.items.filter(
+    (item) => !['done', 'cancelled'].includes(workListStatus(item))
+  );
+  const basisIds = [...new Set(openItems.flatMap((item) => item.basis.map((ref) => ref.id)))];
+  const channelRows = ctx.adapter
+    .prepare(
+      `SELECT edge.subject_id AS judgment_id, observation.source, observation.channel
+             FROM twin_edges edge
+             JOIN observation_versions observation ON observation.observation_id = edge.object_id
+            WHERE edge.subject_kind = 'memory'
+              AND edge.edge_type = 'derived_from'
+              AND edge.object_kind = 'observation'
+              AND edge.subject_id IN (SELECT value FROM json_each(?))`
+    )
+    .all(JSON.stringify(basisIds)) as Array<{
+    judgment_id: string;
+    source: string;
+    channel: string | null;
+  }>;
+  const evidenceByJudgment = new Map<string, Set<string>>();
+  for (const row of channelRows) {
+    const channels = evidenceByJudgment.get(row.judgment_id) ?? new Set<string>();
+    // Qualified by connector: the same channel id on two connectors is two channels.
+    if (row.channel) channels.add(`${row.source}:${row.channel}`);
+    evidenceByJudgment.set(row.judgment_id, channels);
+  }
+  return openItems.flatMap((item) => {
     const values = workListValueObject(item.values);
     const title = workListText(values.title);
     if (!title) return [];
@@ -507,8 +543,9 @@ export function readOpenWorkCandidates(ctx: WorkListViewContext): Array<{
         stage: workListText(values.stage) ?? 'Unstaged',
         assignee:
           workListText(values.assignee ?? values.assigneeText ?? values.assignee_text) ?? '',
-        sourceChannel:
-          workListText(values.sourceChannel ?? values.source_channel ?? values.channel) ?? '',
+        evidenceChannels: [
+          ...new Set(item.basis.flatMap((ref) => [...(evidenceByJudgment.get(ref.id) ?? [])])),
+        ],
         updatedAt: typeof item.updatedAt === 'number' ? item.updatedAt : Date.parse(item.updatedAt),
       },
     ];
@@ -1033,7 +1070,6 @@ const workPatchSchema: ActionSchemaObject = {
 };
 
 const commandFields: Record<string, ActionSchemaObject> = {
-  topic: { type: 'string', minLength: 1, description: 'Work topic key, e.g. "release".' },
   summary: {
     type: 'string',
     minLength: 1,
@@ -1078,6 +1114,7 @@ const createSchema: ActionSchemaObject = {
   additionalProperties: false,
   properties: {
     ...commandFields,
+    topic: { type: 'string', minLength: 1, description: 'Work topic key, e.g. "release".' },
     set: {
       ...workPatchSchema,
       description: 'Fields to set on the new work item, e.g. {"title":"Prepare release"}.',
@@ -1087,7 +1124,7 @@ const createSchema: ActionSchemaObject = {
 
 const reviseSchema: ActionSchemaObject = {
   type: 'object',
-  required: ['commitmentId', 'topic', 'summary'],
+  required: ['commitmentId', 'summary'],
   additionalProperties: false,
   properties: {
     ...commandFields,
@@ -1211,7 +1248,7 @@ export function minimalWorkActionRegistrations(ports: WorkPorts): ActionRegistra
         name: 'work.revise',
         recallableWrite: true,
         summary:
-          'Append a revision to owner work. expectedRevision is optional for the single owner writer; when supplied it rejects a stale write. The required summary states what changed and why. Links with relation derived_from cite the observations the revision rests on.',
+          'Append a revision to owner work while keeping its original topic. expectedRevision is optional for the single owner writer; when supplied it rejects a stale write. The required summary states what changed and why. Links with relation derived_from cite the observations the revision rests on.',
         inputSchema: reviseSchema,
         examples: [
           {
@@ -1219,7 +1256,6 @@ export function minimalWorkActionRegistrations(ports: WorkPorts): ActionRegistra
             input: {
               commitmentId: 'commitment-reference',
               expectedRevision: 1,
-              topic: 'work topic',
               summary: 'what changed and why',
               set: { assignee: null, roles: [] },
             },

@@ -1223,3 +1223,33 @@ The implementation writes raw/index data during import only. Replay is the owner
   64-character version and succeeded on an append without it.
 - Still open: deploy and live checks (iCal re-snapshot, timezone change from chat, board-section
   updates on a live delta); RRULE is not expanded.
+
+### Board lanes, candidates and revision continuity (2026-09-28)
+
+- Result: live monitoring found lanes shrinking (a delta read the 7-card action_required and wrote one
+  card; briefing stayed at 08:01 through 24 deltas), same-channel candidates never matching (0 of 29
+  open items had sourceChannel), a feedback revision appearing in memory as a new unlinked record
+  (one item: 13 revisions, 7 topics, no edges between them), and the viewer task list stuck at 50 of 111. Fixed: merge rule for sections and briefing on deltas (owner decision), action_required up to 8,
+  whole-slot report.read, board in new sessions; candidates from evidence channels; revisions keep the
+  item's topic and get a host `builds_on` edge (source `code`), migration 099 links stored revisions;
+  viewer cursor; attachment errors as invalid input.
+- Evidence: build, typecheck, lint and the full suites pass; migration 099 on a backup copy of the live
+  database: 33 ms, 385 `builds_on` edges (496 revisions minus 111 creates), every work item down to one
+  topic.
+- Still open: after deploy, confirm on live deltas that sections keep their cards, candidates appear,
+  and the memory view shows revision chains.
+
+### Editable owner lane instructions (2026-09-28)
+
+- Result: four per-turn lanes now use active `workflow` records at `lane/<name>` or their source defaults; lane records stay out of the guidance index and delta.
+- Evidence: real `memory.save` plus scoped database reads render and replace all four records; 45 affected tests and two scheduled-stimulus tests pass, with root build/typecheck and changed-file lint/format checks passing.
+- Deleted: 83 existing source lines (35 from the standing prompt, 15 from stimulus assembly, 28 from fixed report prompts, and 5 from scheduler assembly); their lane behavior now comes from defaults or scoped workflow records.
+- Still open: a live owner correction/response is not verified because this change was required to leave `~/.mama` and `~/.claude` untouched; full stimulus-delivery cases that open IPC sockets remain sandbox-blocked with `listen EPERM`.
+- Review fixes: the general correction rule and four deleted instructions (roles and "unconfirmed", work.show on a stale revise, restating a topic page's current state, splitting topic pages across subagents) are back; the `[notify]`-then-message format is fixed host text; lane records render unchanged, with replay and a disabled wiki stated as host facts instead of line filters; only workflow records at the four lane topics leave the index; reminders keep the newest 50 handled deltas inside one untrusted block.
+- Still open: the mailbox does not record whether a delta was notified, so a reminder may repeat a delta the owner already received.
+
+### PR 327 code-quality pass (2026-09-28)
+
+- Result: an owner answer that changes work keeps the board merge rule again (it had been left only in the delta lane); duplicated code is shared (Claude effort gating, judgment edge id and hash, the test delivery helper); host data is typed instead of re-parsed (open-work candidates, board slots); an unexplained `edge_idempotency_key` on every agent link and several insurance guards are gone; dead code removed (an unused guidance field, the report prompt's wiki option, two helpers, a duplicate test).
+- Evidence: +111/−421 lines; build, typecheck and lint pass; core 966, standalone 1,157 (also under `TZ=UTC`), MCP server 139, plugin 170. One core graph-browse test failed once under the parallel root run and passed alone and in five reruns; the PR does not touch it.
+- Still open: the live checks after deploy.

@@ -98,7 +98,6 @@ describe('Story R1/TG-03/TG-04/TG-05/TG-06: atomic agent judgment writes', () =>
         commandId: 'run-work-revision',
         commitmentId: work.commitmentId,
         expectedRevision: 1,
-        topic: 'source-review',
         summary: 'Follow-up evidence reviewed',
         set: { status: 'done' },
         modelRunId: nextRunId,

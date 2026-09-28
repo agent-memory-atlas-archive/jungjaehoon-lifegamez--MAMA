@@ -327,7 +327,6 @@ describe('minimal work actions', () => {
         input: {
           commitmentId: 'commitment-test',
           expectedRevision: 1,
-          topic: 'work-topic',
           summary: 'clear the assignee after review',
           set: { assignee: null, roles: [] },
         },
@@ -377,7 +376,6 @@ describe('minimal work actions', () => {
           input: {
             commitmentId,
             expectedRevision: 1,
-            topic: 'work-topic',
             summary: 'remove the assignee because the assignment ended',
             scopes: access.scopes,
             clear: ['assignee'],
@@ -425,7 +423,6 @@ describe('minimal work actions', () => {
             input: {
               commitmentId,
               ...(expectedRevision === undefined ? {} : { expectedRevision }),
-              topic: 'work-topic',
               summary: 'record another change',
               scopes: access.scopes,
               set: { latestEvent: operationId },
@@ -497,7 +494,6 @@ describe('minimal work actions', () => {
             operationId,
             input: {
               commitmentId,
-              topic: 'race topic',
               summary: 'record concurrent change',
               scopes: access.scopes,
               set: { latestEvent: operationId },
@@ -616,7 +612,6 @@ describe('minimal work actions', () => {
         input: {
           commitmentId: 'commitment-test',
           expectedRevision: 1,
-          topic: 'topic',
           summary: 'summary',
           eventDatetime: 1_001,
           set: { title: 'work' },
@@ -653,6 +648,8 @@ describe('minimal work actions', () => {
     expect(file?.properties?.hash?.description).toContain('hash');
     expect(role?.properties?.confirmed?.description).toContain('unconfirmed');
     expect(revise.inputSchema.properties?.commitmentId?.description).toContain('stable');
+    expect(revise.inputSchema.properties).not.toHaveProperty('topic');
+    expect(revise.inputSchema.required).not.toContain('topic');
     expect(create.inputSchema.properties?.sourceRefs?.description).toContain('observationRef');
   });
 });

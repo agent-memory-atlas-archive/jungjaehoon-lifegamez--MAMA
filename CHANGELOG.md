@@ -2,6 +2,43 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Fixed
+
+- Board sections keep the whole picture. A source change used to replace a section with only its own
+  item (a seven-card list became one card); now each section keeps every card that is still true and
+  changes only the moved items. The briefing section also updates when the day's key situation
+  changes, not only at scheduled reports.
+- A new owner session starts with the current board, so it edits sections it can see.
+- Related work is found by the channels of each item's evidence, so a message from the same room
+  finds the work it continues without the agent recording a channel.
+- Feedback that continues a work item now shows as that item's history in memory: every revision
+  keeps the item's topic and links to the revision it follows. A migration links revisions already
+  stored.
+- The viewer's work list pages past the first 50 items.
+- Asking for attachments from a source that has none is reported as invalid input.
+- The Claude backend passes `--effort` to Opus 4.7 and 4.8 and keeps `max` and `xhigh` on the models
+  that support them; before, Opus 4.7/4.8 ran without an effort setting and `max` fell to `high` on
+  Sonnet 5.
+- Prompt and tool-description cleanup from a prompt audit: `graph.query` no longer shows an example
+  value its schema rejects and states which inputs each view takes; the agent is no longer told to
+  page through every result or search before every decision; reminders and board sections are
+  described by what the reader needs instead of fixed counts; several one-line tool descriptions now
+  state their defaults, limits and failures.
+- Owner corrections to how MAMA works now change what it does. Source changes, hourly reminders,
+  full reports and owner answers each follow instructions the agent can revise; a correction such as
+  "send routine updates as one hourly summary" revises that instruction instead of being saved as a
+  note the next turn's fixed text outranked. Hourly reminders now list the source changes handled
+  since the previous reminder, so they can summarize them.
+
+### Breaking changes
+
+- **work.revise:** `topic` is no longer accepted; the work item's topic is kept. Core
+  `reviseWork`/`withdrawWork` commands no longer take a topic either.
+- **Database migration 099** links existing revisions and sets their topic to the work item's topic.
+  Let MAMA apply it.
+
 ## mama-os [0.57.0] / mama-core [4.0.0] / mcp-server [2.2.1] / plugin [2.0.1] - 2026-09-27
 
 This is the first npm release since mama-os 0.53.1, mama-core 2.4.1 and mcp-server 1.15.0: versions

@@ -311,7 +311,13 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
           { knowledge, access, timeZone: options.timeZone.get() }
         ),
       openWorkCandidates: async () =>
-        readOpenWorkCandidates({ knowledge, access, timeZone: options.timeZone.get() }),
+        readOpenWorkCandidates({
+          knowledge,
+          adapter: database.adapter,
+          access,
+          timeZone: options.timeZone.get(),
+        }),
+      boardSnapshot: async () => reportStore.getAll(),
       ...(options.onOwnerResult === undefined ? {} : { onOwnerResult: options.onOwnerResult }),
       ...(options.onSourceResult === undefined ? {} : { onSourceResult: options.onSourceResult }),
       ...(options.onScheduledResult === undefined

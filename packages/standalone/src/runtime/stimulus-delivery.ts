@@ -16,10 +16,12 @@ import type { NativeTurnResultRecord } from '@jungjaehoon/mama-core/runtime/nati
 import type { SourceDelta } from '../connectors/framework/polling-scheduler.js';
 import type { QueueCandidateScore, QueueLine, WindowQueue } from '../replay/window-queue.js';
 import { renderRecentOwnerExchanges, type OwnerExchange } from './recent-owner-exchanges.js';
-import { liveDeltaRoutingInstruction, type OwnerRuntimeBackend } from './owner-system-prompt.js';
+import type { OwnerRuntimeBackend } from './owner-system-prompt.js';
 import { buildScheduledReportPrompt } from './report-prompts.js';
-import type { TimeZoneSetting } from './timezone.js';
-import { workListTitleTextScore } from '../api/work-actions.js';
+import { isLaneRecord, laneForStimulus, renderLaneInstructions } from './lane-instructions.js';
+import { localStamp, type TimeZoneSetting } from './timezone.js';
+import { workListTitleTextScore, type OpenWorkCandidate } from '../api/work-actions.js';
+import type { ReportSlot } from '../api/report-handler.js';
 
 export const OWNER_RUNTIME_SESSION_KEY = 'owner:runtime';
 
@@ -59,7 +61,8 @@ export interface StimulusDeliveryOptions {
   guidanceResolver: GuidanceResolver;
   backend?: OwnerRuntimeBackend;
   openWorkPipeline?: () => Promise<unknown>;
-  openWorkCandidates?: () => Promise<unknown>;
+  openWorkCandidates?: () => Promise<readonly OpenWorkCandidate[]>;
+  boardSnapshot?: () => Promise<Record<string, ReportSlot>>;
   wikiEnabled?: boolean;
   formattingRoutes?: { reports: string; notifications: string };
   timeZone: TimeZoneSetting;
@@ -240,24 +243,6 @@ function payloadCarriesMessageText(payload: MailboxRow['payload']): boolean {
   );
 }
 
-function localStamp(iso: string, timeZone: string): string {
-  const ms = Date.parse(iso);
-  if (!Number.isFinite(ms)) throw new Error(`A message line needs a source time, got ${iso}`);
-  const values = Object.fromEntries(
-    new Intl.DateTimeFormat('en-CA', {
-      timeZone,
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      hourCycle: 'h23',
-    })
-      .formatToParts(new Date(ms))
-      .map((part) => [part.type, part.value])
-  );
-  return `${values.month}-${values.day} ${values.hour}:${values.minute}`;
-}
-
 function textField(value: JsonValue | undefined): string {
   return typeof value === 'string' ? value : '';
 }
@@ -371,7 +356,6 @@ function boundedStimulus(
 ): string {
   if (row.kind === 'scheduled')
     return buildScheduledReportPrompt(row.payload, new Date(row.occurredAt), {
-      wikiEnabled: options.wikiEnabled,
       messenger: options.formattingRoutes?.reports,
       timeZone: options.timeZone.get(),
     });
@@ -411,10 +395,14 @@ function boundedStimulus(
   if (row.kind === 'source_delta') {
     if (liveSourceDelta) {
       lines.push(
-        `response_routing: ${liveDeltaRoutingInstruction(options.backend ?? 'codex', options.wikiEnabled)}`
+        'End this turn with exactly one marker: [notify] followed by the message the owner receives, or [ack]. Owner-answer turns never carry these markers.'
       );
       lines.push(`formatting: ${options.formattingRoutes?.notifications ?? 'telegram'}`);
       if (candidates.length > 0) lines.push('candidates (you decide):', ...candidates);
+    } else {
+      lines.push(
+        'This replay window is history and is not delivered to the owner: notification instructions do not apply, and the turn ends without [notify] or [ack].'
+      );
     }
     lines.push(
       row.refs.length === 0
@@ -490,65 +478,47 @@ function stimulusText(row: MailboxRow): string {
     .join(' ');
 }
 
-/** The delta's channel key and the channel labels its refs carry. */
+/**
+ * The delta's channels qualified by connector (`connector:channel`), the same form the host reads
+ * from each work item's evidence; the same channel id on two connectors is two channels.
+ */
 function stimulusChannels(row: MailboxRow): Set<string> {
   const payload = sourcePayloadObject(row);
   if (!payload) return new Set();
-  return new Set(
-    [
-      textField(payload.channel),
-      ...payloadRefs(payload).flatMap((ref) => {
-        const metadata =
-          ref.metadata && typeof ref.metadata === 'object' && !Array.isArray(ref.metadata)
-            ? (ref.metadata as Record<string, JsonValue>)
-            : {};
-        return [
-          textField(ref.channel),
-          textField(ref.channelName),
-          textField(metadata.channelName),
-        ];
-      }),
-    ].filter(Boolean)
-  );
+  const channel = textField(payload.channel);
+  const collector = textField(payload.collector);
+  const keys = new Set<string>();
+  if (collector && channel) keys.add(`${collector}:${channel}`);
+  for (const ref of payloadRefs(payload)) {
+    const connector = textField(ref.connector);
+    const refChannel = textField(ref.channel) || channel;
+    if (connector && refChannel) keys.add(`${connector}:${refChannel}`);
+  }
+  return keys;
 }
 
-function pipelineText(value: unknown): string {
-  return typeof value === 'string' ? value : '';
-}
-
-function pipelineTime(value: unknown): string {
-  const time = typeof value === 'number' ? value : Date.parse(pipelineText(value));
-  return Number.isFinite(time) ? new Date(time).toISOString() : '';
-}
-
-function relatedWorkCandidates(row: MailboxRow, workItems: unknown): string[] {
-  const rows: unknown[] = Array.isArray(workItems) ? workItems : [];
+function relatedWorkCandidates(row: MailboxRow, items: readonly OpenWorkCandidate[]): string[] {
   const channels = stimulusChannels(row);
   const query = stimulusText(row);
   const cutoff = row.occurredAt - 14 * 24 * 60 * 60 * 1000;
-  const candidates = rows.flatMap((raw) => {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
-    const item = raw as Record<string, unknown>;
-    const title = pipelineText(item.title);
-    const commitmentId = pipelineText(item.commitmentId);
-    const changedAt = typeof item.updatedAt === 'number' ? item.updatedAt : Number.NaN;
-    if (!title || !commitmentId || !Number.isFinite(changedAt) || changedAt < cutoff) return [];
-    const sameChannel = channels.has(pipelineText(item.sourceChannel));
-    const overlap = workListTitleTextScore(query, title);
-    if (!sameChannel && overlap === 0) return [];
-    return [{ item, title, commitmentId, overlap, sameChannel, changedAt }];
-  });
-  return candidates
+  return items
+    .filter((item) => item.updatedAt >= cutoff)
+    .map((item) => ({
+      item,
+      sameChannel: item.evidenceChannels.some((channel) => channels.has(channel)),
+      overlap: workListTitleTextScore(query, item.title),
+    }))
+    .filter(({ sameChannel, overlap }) => sameChannel || overlap > 0)
     .sort(
       (a, b) =>
         Number(b.sameChannel) - Number(a.sameChannel) ||
         b.overlap - a.overlap ||
-        b.changedAt - a.changedAt
+        b.item.updatedAt - a.item.updatedAt
     )
     .slice(0, 5)
     .map(
-      ({ item, title, commitmentId }) =>
-        `${title} | ${pipelineText(item.stage) || '-'} | ${pipelineText(item.assignee) || '-'} | ${pipelineTime(item.updatedAt)} | ${commitmentId}`
+      ({ item }) =>
+        `${item.title} | ${item.stage || '-'} | ${item.assignee || '-'} | ${new Date(item.updatedAt).toISOString()} | ${item.commitmentId}`
     );
 }
 
@@ -580,6 +550,14 @@ function renderGuidanceIndex(entries: readonly GuidanceEntry[]): string {
     ...activeGuidance(entries).map(guidanceLine),
     '</guidance-index>',
   ].join('\n');
+}
+
+function renderCurrentBoard(slots: Record<string, ReportSlot>): string {
+  const sections = Object.entries(slots).map(
+    ([slot, value]) =>
+      `<slot name="${slot}" updatedAt="${new Date(value.updatedAt).toISOString()}">\n${value.html}\n</slot>`
+  );
+  return `<current-board>\n${sections.join('\n')}\n</current-board>`;
 }
 
 function renderGuidanceDelta(
@@ -617,14 +595,17 @@ function assembledContent(
     StimulusDeliveryOptions,
     'wikiEnabled' | 'formattingRoutes' | 'backend' | 'timeZone'
   >,
-  candidates: readonly string[] = []
+  candidates: readonly string[] = [],
+  laneInstruction = ''
 ): ContentBlock[] {
   return [
     {
       type: 'text',
-      text: [...sessionBlocks, boundedStimulus(row, liveSourceDelta, options, candidates)].join(
-        '\n\n'
-      ),
+      text: [
+        ...sessionBlocks,
+        ...(laneInstruction === '' ? [] : [laneInstruction]),
+        boundedStimulus(row, liveSourceDelta, options, candidates),
+      ].join('\n\n'),
     },
   ];
 }
@@ -708,34 +689,53 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
           const sessionBlocks: string[] = [];
           const pipeline = isNewSession ? await options.openWorkPipeline?.() : undefined;
           const entries = await options.guidanceResolver();
+          // Lane records are rendered in full for their lane each turn, not listed as guidance.
+          const guidance = entries.filter((entry) => !isLaneRecord(entry));
+          const lane = laneForStimulus(row.kind, row.payload);
+          const laneInstruction = lane
+            ? renderLaneInstructions(
+                lane,
+                entries,
+                options.backend ?? 'codex',
+                options.wikiEnabled ?? true
+              )
+            : '';
           const sessionKey = OWNER_RUNTIME_SESSION_KEY;
           const lastDelivered = guidanceBySessionKey.get(sessionKey);
           if (isNewSession) {
-            sessionBlocks.push(renderGuidanceIndex(entries));
+            sessionBlocks.push(renderGuidanceIndex(guidance));
             if (pipeline !== undefined) {
               sessionBlocks.push(
                 `<open-work-pipeline>\n${JSON.stringify(pipeline)}\n</open-work-pipeline>`
               );
             }
+            const board = await options.boardSnapshot?.();
+            // Board slots quote source content; they reach the model as untrusted evidence, as
+            // report.read results do.
+            if (board !== undefined)
+              sessionBlocks.push(wrapUntrustedContent('report.read', renderCurrentBoard(board)));
             const exchanges = renderRecentOwnerExchanges(
               (await options.recentOwnerExchanges?.(row)) ?? []
             );
             if (exchanges) sessionBlocks.push(exchanges);
           } else if (lastDelivered === undefined) {
-            sessionBlocks.push(renderGuidanceIndex(entries));
+            sessionBlocks.push(renderGuidanceIndex(guidance));
           } else {
-            const delta = renderGuidanceDelta(entries, lastDelivered);
+            const delta = renderGuidanceDelta(guidance, lastDelivered);
             if (delta) sessionBlocks.push(delta);
           }
           pendingGuidanceState = new Map(
-            entries.map((entry) => [entry.id, guidanceVersion(entry)])
+            guidance.map((entry) => [entry.id, guidanceVersion(entry)])
           );
           return assembledContent(
             row,
             sessionBlocks,
             liveSourceDelta,
             options,
-            liveSourceDelta ? relatedWorkCandidates(row, await options.openWorkCandidates?.()) : []
+            liveSourceDelta
+              ? relatedWorkCandidates(row, (await options.openWorkCandidates?.()) ?? [])
+              : [],
+            laneInstruction
           );
         },
         sessionKey: OWNER_RUNTIME_SESSION_KEY,

@@ -44,8 +44,8 @@ export function buildBoardHtmlVocabulary(timeZone: string): string[] {
 export function buildBoardSlotShapeLines(): string[] {
   return [
     '- pipeline: the agent-written current workflow table; update it together with the other slots.',
-    '- briefing: one report-summary block (title + stat highlights), then up to 4 report-cards for the key situations.',
-    '- action_required: a report-section-title, then up to 5 report-cards; every card-action states the concrete next step.',
+    '- briefing: one report-summary block (title + stat highlights), then report-cards for the key situations only.',
+    '- action_required: a report-section-title, then report-cards for what needs action now, most urgent first; every card-action states the concrete next step.',
     '- decisions: report-cards for items waiting on an owner decision or confirmation; omit filler when none exist,',
     '  but still publish the slot with a one-line quiet note.',
   ];
@@ -69,19 +69,6 @@ export function buildReportPublishToolContract(timeZone: string): string {
     'is still published, but the result reports it back as a',
     'warning because the board renders it as plain text.',
   ]);
-}
-
-/** Instruction block that makes a report run also publish the board slots. */
-export function buildBoardPublishLines(timeZone: string): string[] {
-  return [
-    'BEFORE writing your text report, update the operator board: call the report.publish',
-    'gateway tool EXACTLY once with all FOUR board slots:',
-    '  report.publish({ slots: { briefing: "<html>", action_required: "<html>", decisions: "<html>", pipeline: "<html>" } })',
-    ...buildBoardSlotShapeLines(),
-    ...buildBoardHtmlVocabulary(timeZone),
-    "Write all slot CONTENT in the owner's language (match the channels); keep each slot under 6KB.",
-    'The plain-text report you write afterwards is a separate output: no HTML in it.',
-  ];
 }
 
 /**

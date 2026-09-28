@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { ensureMemoryScope, insertPreparedDecision } from '../db-manager.js';
 import type { DatabaseAdapter, DatabaseInstance } from '../db-manager.js';
 import { canonicalizeJSON } from '../canonicalize.js';
+import { judgmentEdgeContentHash, judgmentEdgeId } from './judgment-edge.js';
 import {
   TWIN_EDGE_SOURCES,
   TWIN_EDGE_TYPES,
@@ -511,14 +512,6 @@ function assertReplay(
   return parseReceipt(row.receipt_json);
 }
 
-function edgeId(commandId: string, index: number, relation: string, target: WorkReference): string {
-  return `edge_${crypto
-    .createHash('sha256')
-    .update(canonicalizeJSON({ commandId, index, relation, target }))
-    .digest('hex')
-    .slice(0, 24)}`;
-}
-
 function insertLink(
   adapter: Pick<DatabaseAdapter, 'prepare'>,
   command: JudgmentCommand,
@@ -528,12 +521,9 @@ function insertLink(
   access: JudgmentAccess,
   now: number
 ): string {
-  const id = edgeId(command.commandId, index, link.relation, link.target);
+  const id = judgmentEdgeId(command.commandId, index, link.relation, link.target);
   const attrs = link.attrs ?? {};
-  const contentHash = crypto
-    .createHash('sha256')
-    .update(canonicalizeJSON({ id, recordId, link }))
-    .digest();
+  const contentHash = judgmentEdgeContentHash(id, recordId, link);
   insertTwinEdge(adapter, {
     edge_id: id,
     edge_type: link.relation,
@@ -819,8 +809,12 @@ async function appendJudgmentOnAdapter(
         workReceipt = { commitmentId, revision };
       } else {
         const current = adapter
-          .prepare('SELECT current_revision, withdrawn FROM commitments WHERE commitment_id = ?')
-          .get(work.commitmentId) as { current_revision: number; withdrawn: number } | undefined;
+          .prepare(
+            'SELECT current_revision, head_record_id, withdrawn FROM commitments WHERE commitment_id = ?'
+          )
+          .get(work.commitmentId) as
+          | { current_revision: number; head_record_id: string; withdrawn: number }
+          | undefined;
         if (!current) {
           throw new JudgmentError(
             'REFERENCE_NOT_FOUND',
@@ -860,6 +854,18 @@ async function appendJudgmentOnAdapter(
             access.agentId,
             command.modelRunId ?? null
           );
+        edgeIds.push(
+          insertLink(
+            adapter,
+            command,
+            recordId,
+            { relation: 'builds_on', target: { kind: 'memory', id: current.head_record_id } },
+            command.links?.length ?? 0,
+            // The host links a revision to the record it revises; the agent did not judge it.
+            { ...access, edgeSource: 'code' },
+            now
+          )
+        );
         adapter
           .prepare(
             'UPDATE commitments SET current_revision = ?, head_record_id = ?, withdrawn = ?, updated_at = ?, agent_id = ?, model_run_id = ? WHERE commitment_id = ?'

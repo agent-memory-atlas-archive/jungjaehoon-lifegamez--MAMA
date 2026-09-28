@@ -43,6 +43,7 @@ import {
 import * as debugLogger from '@jungjaehoon/mama-core/debug-logger';
 import { claudeConfiguredSecrets, SecretRedactingStream } from './cli-secret-redaction.js';
 import { formatCliArgsForLog } from './cli-arg-redaction.js';
+import { claudeEffortArgs, type ThinkingEffort } from './claude-effort.js';
 
 const { DebugLogger } = debugLogger as {
   DebugLogger: new (context?: string) => {
@@ -54,24 +55,6 @@ const { DebugLogger } = debugLogger as {
 };
 const persistentLogger = new DebugLogger('PersistentCLI');
 const poolLogger = new DebugLogger('ProcessPool');
-
-function supportsThinkingEffortModel(model: string | undefined): boolean {
-  if (!model) {
-    return false;
-  }
-  // Adaptive thinking effort: Claude 4.6 and every Claude 5 family model accept --effort.
-  return /^claude-(opus|sonnet|haiku|fable)-(4-6|5)(\b|-)/.test(model);
-}
-
-function normalizeThinkingEffort(
-  model: string | undefined,
-  effort: 'low' | 'medium' | 'high' | 'max'
-): 'low' | 'medium' | 'high' | 'max' {
-  if (effort === 'max' && !(model && /^claude-(opus-4-6|opus-5|fable-5)(\b|-)/.test(model))) {
-    return 'high';
-  }
-  return effort;
-}
 
 /**
  * Regex to strip lone Unicode surrogates that cause API 400 errors.
@@ -148,8 +131,8 @@ export interface PersistentProcessOptions {
   channelKey?: string;
   /** Agent ID for token usage tracking */
   agentId?: string;
-  /** Effort level for Claude 4.6 adaptive thinking */
-  effort?: 'low' | 'medium' | 'high' | 'max';
+  /** Thinking effort passed as --effort on models that accept it. */
+  effort?: ThinkingEffort;
 }
 
 export interface PersistentProcessAcquireResult {
@@ -565,9 +548,7 @@ export class PersistentClaudeProcess extends EventEmitter {
       persistentLogger.info('Gateway Tools mode enabled');
     }
 
-    if (this.options.effort && supportsThinkingEffortModel(this.options.model)) {
-      args.push('--effort', normalizeThinkingEffort(this.options.model, this.options.effort));
-    }
+    args.push(...claudeEffortArgs(this.options.model, this.options.effort));
 
     if (this.options.permissionMode) {
       args.push('--permission-mode', this.options.permissionMode);

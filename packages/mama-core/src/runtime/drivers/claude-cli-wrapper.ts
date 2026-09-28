@@ -29,6 +29,7 @@ import * as debugLogger from '@jungjaehoon/mama-core/debug-logger';
 import type { PromptCallbacks, PromptResult, ToolUseBlock } from './types.js';
 import { claudeConfiguredSecrets, SecretRedactingStream } from './cli-secret-redaction.js';
 import { formatCliArgsForLog } from './cli-arg-redaction.js';
+import { claudeEffortArgs, type ThinkingEffort } from './claude-effort.js';
 
 const { DebugLogger } = debugLogger as {
   DebugLogger: new (context?: string) => {
@@ -41,24 +42,6 @@ const { DebugLogger } = debugLogger as {
 
 const logger = new DebugLogger('ClaudeCLI');
 
-function supportsThinkingEffortModel(model: string | undefined): boolean {
-  if (!model) {
-    return false;
-  }
-  // Adaptive thinking effort: Claude 4.6 and every Claude 5 family model accept --effort.
-  return /^claude-(opus|sonnet|haiku|fable)-(4-6|5)(\b|-)/.test(model);
-}
-
-function normalizeThinkingEffort(
-  model: string | undefined,
-  effort: 'low' | 'medium' | 'high' | 'max'
-): 'low' | 'medium' | 'high' | 'max' {
-  if (effort === 'max' && !(model && /^claude-(opus-4-6|opus-5|fable-5)(\b|-)/.test(model))) {
-    return 'high';
-  }
-  return effort;
-}
-
 export interface ClaudeCLIWrapperOptions {
   /** The isolated workspace this CLI runs in; the product states where. */
   /**
@@ -67,12 +50,8 @@ export interface ClaudeCLIWrapperOptions {
    */
   workspaceDir: string;
   model?: string;
-  /**
-   * Effort level for Claude 4.6 adaptive thinking
-   * Applies to claude-opus-4-6 and claude-sonnet-4-6
-   * 'max' is only available on Opus 4.6
-   */
-  effort?: 'low' | 'medium' | 'high' | 'max';
+  /** Thinking effort passed as --effort on models that accept it. */
+  effort?: ThinkingEffort;
   sessionId?: string;
   systemPrompt?: string;
   mcpConfigPath?: string;
@@ -177,12 +156,7 @@ export class ClaudeCLIWrapper {
         args.push('--model', model);
       }
 
-      // Add effort level for Claude 4.6 adaptive thinking.
-      if (this.options.effort && supportsThinkingEffortModel(model)) {
-        const effort = normalizeThinkingEffort(model, this.options.effort);
-        args.push('--effort', effort);
-        logger.debug('Effort level:', effort);
-      }
+      args.push(...claudeEffortArgs(model, this.options.effort));
 
       // System prompt: first turn only (session persistence keeps it across turns)
       if (this.options.systemPrompt && this.turnCount === 0) {

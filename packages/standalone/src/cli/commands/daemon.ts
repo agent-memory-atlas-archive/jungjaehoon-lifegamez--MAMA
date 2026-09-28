@@ -48,6 +48,7 @@ import { resolvePackageVersion } from '../../package-version.js';
 import { readViewerMemoryStats } from '../../api/viewer-data.js';
 import type { OwnerFileDeliveryResult } from '../../api/file-delivery.js';
 import { createReportScheduler, type ReportScheduler } from '../../runtime/report-scheduler.js';
+import { readAcknowledgedSourceDeltas } from '../../runtime/acknowledged-source-deltas.js';
 import { createTimeZoneSetting } from '../../runtime/timezone.js';
 
 const OWNER_PRINCIPAL_ID = 'owner';
@@ -401,7 +402,12 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
       logger.info(`delta report route=${route} id=${row.stimulusId}`);
       if (route !== 'notify') return;
       const content = routed.slice('[notify]'.length).trim();
-      if (!content) return;
+      if (!content) {
+        logger.error(
+          `delta report route=notify has no message after the marker id=${row.stimulusId}`
+        );
+        return;
+      }
       const selected = gateways.get(config.delivery?.notifications ?? 'telegram');
       if (!selected) throw new Error('Notification delivery messenger is not available');
       await selected.sendToOwner(content, row.stimulusId);
@@ -687,6 +693,8 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
               )
               .get(OWNER_PRINCIPAL_ID)
           ),
+        readAcknowledgedDeltas: (sinceAt, throughAt) =>
+          readAcknowledgedSourceDeltas(owner!.database.adapter, sinceAt, throughAt),
         sendToOwner: (text, key) => gateways.get(reportRoute)!.sendToOwner(text, key),
         onError: (error) =>
           logger.error(`report scheduler failed reason=${stimulusFailureReason(error)}`),

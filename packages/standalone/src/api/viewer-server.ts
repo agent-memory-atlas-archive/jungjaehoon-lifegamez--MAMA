@@ -213,6 +213,29 @@ function actionFailureStatus(
   return 502;
 }
 
+export async function listOperatorTasks(
+  params: URLSearchParams,
+  callAction: (action: string, input: Record<string, unknown>) => Promise<unknown>
+): Promise<unknown> {
+  const limit = parseLimit(params, 50, 50);
+  const status = params.get('status') ?? undefined;
+  const sourceChannel = params.get('source_channel') ?? undefined;
+  const cursor = params.get('cursor') ?? undefined;
+  const page = await callAction('work.list', {
+    view: 'items',
+    limit,
+    ...(cursor === undefined ? {} : { cursor }),
+    ...(status === undefined ? {} : { status }),
+  });
+  const shaped = shapeOperatorTasksFromItems(page, { status: undefined, sourceChannel });
+  return {
+    tasks: shaped.tasks,
+    ...(shaped.nextCursor === null
+      ? {}
+      : { nextCursor: shaped.nextCursor, coverage: shaped.coverage }),
+  };
+}
+
 function graphRef(value: string): { kind: string; id: string } | null {
   const split = value.indexOf(':');
   if (split < 1 || split === value.length - 1) return null;
@@ -506,23 +529,8 @@ export function createViewerServer(options: ViewerServerOptions): ViewerServer {
     throw new ViewerHttpError(status, 'VIEWER_INTERNAL_ERROR', 'Internal server error');
   };
 
-  const listTasks = async (params: URLSearchParams): Promise<unknown> => {
-    const limit = parseLimit(params, 50, 50);
-    const status = params.get('status') ?? undefined;
-    const sourceChannel = params.get('source_channel') ?? undefined;
-    const page = await callAction('work.list', {
-      view: 'items',
-      limit,
-      ...(status === undefined ? {} : { status }),
-    });
-    const shaped = shapeOperatorTasksFromItems(page, { status: undefined, sourceChannel });
-    return {
-      tasks: shaped.tasks,
-      ...(shaped.nextCursor === null
-        ? {}
-        : { nextCursor: shaped.nextCursor, coverage: shaped.coverage }),
-    };
-  };
+  const listTasks = (params: URLSearchParams): Promise<unknown> =>
+    listOperatorTasks(params, callAction);
 
   const legacyTaskList = async (params: URLSearchParams): Promise<unknown> => {
     const page = await callAction('work.list', {
