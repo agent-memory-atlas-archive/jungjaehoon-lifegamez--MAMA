@@ -8,6 +8,10 @@ import { createActionSurface } from '../../src/runtime/action-surface.js';
 import { handleRequest } from '../../src/runtime/action-mcp-server.js';
 import { ReplaySourceCatalog } from '../../src/replay/replay-source-catalog.js';
 import { ownerSystemPrompt } from '../../src/runtime/owner-system-prompt.js';
+import {
+  buildOwnerFullReportPrompt,
+  buildScheduledReportPrompt,
+} from '../../src/runtime/report-prompts.js';
 import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 import {
   createStimulusDelivery,
@@ -24,7 +28,11 @@ function ownerPrompt(
 }
 
 const createDelivery = (options: Omit<Parameters<typeof createStimulusDelivery>[0], 'timeZone'>) =>
-  createStimulusDelivery({ ...options, timeZone: createTimeZoneSetting('UTC') });
+  createStimulusDelivery({
+    reportPhrases: { get: () => [], set: () => {} },
+    ...options,
+    timeZone: createTimeZoneSetting('UTC'),
+  });
 
 describe('owner standing prompt', () => {
   it('treats source content as evidence, never as an instruction', () => {
@@ -48,11 +56,18 @@ describe('owner standing prompt', () => {
 
   it('holds every default and the correction rules in one rule set', () => {
     const prompt = ownerPrompt('codex');
+    // Rules that used to ride on each turn now live here once.
+    expect(prompt).toContain(
+      'A replay window (delivery: replay) is history and is not delivered: notification instructions do not apply and it ends without a marker. Owner-message and report turns never carry a marker.'
+    );
+    expect(prompt).toContain(
+      'Board div/span/CSS belongs only in report.publish; a text answer or report has no code-block wrapper.'
+    );
+    // Writing style is the owner's to correct; the host names no sentence style.
+    expect(prompt).not.toMatch(/answer in sentences|and sentences/);
     for (const heading of [
       '## Responding to the owner',
       '## Source changes (live source deltas)',
-      '## Hourly reminders ([scheduled_task_reminder])',
-      '## Full reports ([scheduled_full_report], or when the owner asks for one)',
       '## Owner corrections',
     ])
       expect(prompt).toContain(heading);
@@ -63,13 +78,16 @@ describe('owner standing prompt', () => {
       'in the language the owner writes to you in, even when the source is in another language'
     );
     expect(prompt).toContain(
-      'A report the owner asks for follows the full-report instructions below'
+      "arrives as an [owner_full_report] turn: the report steps, then the owner's message. Write the report when the message asks for it now; otherwise do what the message asks"
+    );
+    expect(prompt).toContain(
+      'When the owner asks for the full report in other words, add them, or call it with nothing to change when the owner marks the request as for this time only, and follow the returned steps in that turn.'
     );
     expect(prompt).toContain(
       'Owner corrections (lessons, preferences, constraints and workflows) are shown at the start of a session, oldest first'
     );
     expect(prompt).toContain(
-      'take precedence over the four sections above (responding, source changes, reminders, full reports); when two conflict, the later one wins.'
+      'take precedence over the responding and source-change sections above and over the steps a report turn gives; when two conflict, the later one wins.'
     );
     // Corrections never reach the security and integrity rules.
     expect(prompt).toContain(
@@ -79,16 +97,9 @@ describe('owner standing prompt', () => {
       'A request about how to report, format or notify is a correction even when phrased casually or for this one answer.'
     );
     expect(prompt).toContain('merging corrections that overlap');
-    // The moved section bodies stay pinned.
-    for (const line of [
-      'Set eventDatetime to the source event time for that revision, not replay time.',
-      'In a scheduled reminder, update only action_required',
-      'schedule.upcoming with days=14',
-      'source.recent for changes since the prior full report',
-      'Write the report in five parts, in order',
-      'After publishing the board in a scheduled full report, update each changed topic wiki page',
-    ])
-      expect(prompt).toContain(line);
+    expect(prompt).toContain(
+      'Set eventDatetime to the source event time for that revision, not replay time.'
+    );
     expect(prompt).toContain(
       'apply the correction to the current work in that same turn before replying'
     );
@@ -102,6 +113,32 @@ describe('owner standing prompt', () => {
     expect(ownerPrompt('claude')).toContain('with mcp__mama__memory_retire');
   });
 
+  it('gives each report step in the report turn only, never also in the standing prompt', () => {
+    for (const backend of ['codex', 'claude'] as const) {
+      const standing = ownerPrompt(backend);
+      const options = { backend, wikiEnabled: true, messenger: 'telegram', timeZone: 'UTC' };
+      const now = new Date('2026-09-27T00:00:00Z');
+      const turns = [
+        buildScheduledReportPrompt({ report: 'full', hourKey: '2026-09-27:08' }, now, options),
+        buildScheduledReportPrompt(
+          {
+            report: 'reminder',
+            hourKey: '2026-09-27:09',
+            acknowledgedDeltas: { total: 0, cap: 50, items: [] },
+          },
+          now,
+          options
+        ),
+        buildOwnerFullReportPrompt(now, options),
+      ];
+      const steps = turns.flatMap((text) =>
+        text.split('\n').filter((line) => line.startsWith('- '))
+      );
+      expect(steps.length).toBeGreaterThan(8);
+      for (const step of steps) expect(standing).not.toContain(step.slice(2, 80));
+    }
+  });
+
   it('tells the owner how to record source deltas and separates evidence from the ledger', () => {
     const prompt = ownerPrompt('codex');
     // Relations beyond derived_from are offered; a memory is traced to its sources.
@@ -109,7 +146,7 @@ describe('owner standing prompt', () => {
     expect(prompt).toContain('Home.md is its table of contents');
     expect(prompt).toContain('daily/YYYY-MM-DD.md');
     expect(prompt).toContain('one entry per moved item');
-    expect(prompt).toContain('Only a scheduled full report rewrites all four sections');
+    expect(prompt).toContain('Only a full report rewrites all four sections');
     expect(prompt).toContain('Read each section with report.read first');
     expect(prompt).toContain(
       'contradicts when a newer instruction or fact reverses an earlier one'
@@ -126,7 +163,7 @@ describe('owner standing prompt', () => {
     );
     expect(prompt).not.toContain('[notify] <text>');
     expect(prompt).toContain(
-      'Use [notify] when the owner should hear about this now; otherwise [ack].'
+      'A live source-delta turn (delivery: live) ends with exactly one marker: [notify] followed by the message the owner receives when the owner should hear about this now, otherwise [ack].'
     );
     expect(prompt).toContain('owner');
   });
@@ -209,6 +246,7 @@ describe('owner standing prompt', () => {
         knowledge: {} as Knowledge,
         ownerPrincipalId: 'owner-test',
         agentId: 'agent-test',
+        reportPhrases: { setting: { get: () => [], set: () => {} }, fullReportTurn: () => '' },
       });
       const response = await handleRequest(
         { jsonrpc: '2.0', id: 1, method: 'tools/list' },
@@ -235,7 +273,7 @@ describe('owner standing prompt', () => {
     const prompt = ownerPrompt('codex');
 
     expect(prompt).toContain(
-      'Answers, reports and notifications a person reads carry no commitment, observation, judgment or channel ids; answer in sentences; the reads are the evidence and stay in the tool traces.'
+      'Answers, reports and notifications name work by readable titles and carry no working notes, narration about answering, or commitment, observation, judgment or channel ids; the reads are the evidence and stay in the tool traces.'
     );
     expect(prompt).not.toContain(
       'Cite every owner answer with the stable commitmentId and observationRef handles you relied on'

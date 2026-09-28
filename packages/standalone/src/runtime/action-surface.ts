@@ -22,6 +22,10 @@ import {
 } from '../api/attachment-actions.js';
 import { sourceActionRegistrations } from '../api/source-actions.js';
 import { ownerTimeZoneActionRegistrations } from '../api/owner-timezone-actions.js';
+import {
+  ownerReportPhraseActionRegistrations,
+  type OwnerReportPhraseActionPorts,
+} from '../api/owner-report-phrase-actions.js';
 import type { TimeZoneSetting } from './timezone.js';
 import { reportSourceActionRegistrations } from '../api/report-source-actions.js';
 import {
@@ -39,6 +43,7 @@ const OWNER_ACTIONS = [
   'source.recent',
   'schedule.upcoming',
   'source.read',
+  'owner.report_phrases.set',
   'owner.timezone.set',
   'memory.checkpoint.list',
   'work.create',
@@ -83,6 +88,7 @@ export interface ActionSurfaceOptions {
   timeZone: TimeZoneSetting;
   configPath: string;
   isOwnerMessageTurn: (sourceMessageRef: string) => boolean;
+  reportPhrases: Pick<OwnerReportPhraseActionPorts, 'setting' | 'fullReportTurn'>;
 }
 
 export interface ActionSurface {
@@ -131,7 +137,6 @@ export function createActionSurface(options: ActionSurfaceOptions): ActionSurfac
   );
   const reportSseClients = options.reportSseClients ?? new Set<ServerResponse>();
   const reportPorts = {
-    timeZone: options.timeZone,
     ...(options.reportStore === undefined || options.reportStore === null
       ? {}
       : {
@@ -166,6 +171,11 @@ export function createActionSurface(options: ActionSurfaceOptions): ActionSurfac
       configPath: options.configPath,
       ownerPrincipalId: options.ownerPrincipalId,
       setting: options.timeZone,
+      isOwnerMessageTurn: options.isOwnerMessageTurn,
+    }),
+    ...ownerReportPhraseActionRegistrations({
+      ...options.reportPhrases,
+      ownerPrincipalId: options.ownerPrincipalId,
       isOwnerMessageTurn: options.isOwnerMessageTurn,
     }),
     ...createAttachmentActionRegistrations({

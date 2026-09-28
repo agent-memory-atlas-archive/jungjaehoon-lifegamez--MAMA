@@ -78,6 +78,7 @@ describe('owner corrections saved with memory.save', () => {
       ] as const;
       for (const [index, [kind, report]] of turns.entries()) {
         const delivery = createStimulusDelivery({
+          reportPhrases: { get: () => [], set: () => {} },
           guidanceResolver: async () =>
             readMemoryRecordsInScopes(database.adapter, surface.ownerAccess.scopes, {
               kind: ['lesson', 'preference', 'constraint', 'workflow'],

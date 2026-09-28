@@ -8,7 +8,6 @@ import { reportActionRegistrations } from '../../src/api/report-actions.js';
 import { createReportPublisher, createReportStore } from '../../src/api/report-handler.js';
 import { ObsidianWriter } from '../../src/wiki/obsidian-writer.js';
 import { readWikiPageContent } from '../../src/wiki/wiki-read.js';
-import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 
 const access = {
   principalId: 'owner',
@@ -39,7 +38,6 @@ describe('recallable wiki and report writes', () => {
         }),
         ...reportActionRegistrations({
           publisher: createReportPublisher(store, new Set()),
-          timeZone: createTimeZoneSetting('UTC'),
         }),
       ])
     );

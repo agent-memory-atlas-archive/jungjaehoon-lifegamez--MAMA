@@ -24,7 +24,11 @@ import {
 import { deliveredPrompt } from '../helpers/delivered-prompt.js';
 
 const createDelivery = (options: Omit<Parameters<typeof createStimulusDelivery>[0], 'timeZone'>) =>
-  createStimulusDelivery({ ...options, timeZone: createTimeZoneSetting('Asia/Seoul') });
+  createStimulusDelivery({
+    reportPhrases: { get: () => [], set: () => {} },
+    ...options,
+    timeZone: createTimeZoneSetting('Asia/Seoul'),
+  });
 
 const homes: string[] = [];
 const runtimes: RuntimeHandle[] = [];
@@ -277,6 +281,54 @@ describe('one stimulus intake and delivery', () => {
       } as never
     );
     expect(prompt.split('candidates (you decide):')[1] ?? '').toContain('commitment-same-channel');
+  });
+
+  it('gives an owner message with a registered phrase the full report turn itself', async () => {
+    const delivery = createDelivery({
+      backend: 'codex',
+      wikiEnabled: true,
+      guidanceResolver: async () => [],
+      reportPhrases: { get: () => ['full report'], set: vi.fn() },
+    });
+    const ownerRow = (id: string, text: string, input?: unknown) =>
+      ({
+        id,
+        stimulusId: id,
+        principalId: 'owner',
+        kind: 'owner_message',
+        channelKey: 'synthetic-channel',
+        occurredAt: Date.parse('2026-09-28T00:00:00.000Z'),
+        refs: [],
+        preview: [],
+        status: 'claimed',
+        attempts: 1,
+        createdAt: 1,
+        payload: input === undefined ? { text } : { text, input },
+        coalesceKey: null,
+      }) as never;
+
+    const report = await deliveredPrompt(
+      delivery,
+      ownerRow('telegram:1:10', 'send the Full Report please', {
+        attachments: [{ name: 'notes.pdf', path: '/downloads/notes.pdf', size: 12 }],
+      }),
+      false
+    );
+    expect(report.split('\n')).toContain('[owner_full_report]');
+    expect(report).toContain('Changes since: 24h ago');
+    expect(report).toContain('schedule.upcoming with days=14');
+    expect(report).toContain('Messenger: telegram');
+    expect(report).not.toContain('manage.wiki.');
+    expect(report).not.toContain('## Bounded stimulus');
+    // The owner's own words and files still reach the agent, which decides what was asked.
+    expect(report).toContain('Owner message payload: {"text":"send the Full Report please"');
+    expect(report).toContain(
+      'attachment: name="notes.pdf" path="/downloads/notes.pdf" size=12 bytes'
+    );
+
+    const chat = await deliveredPrompt(delivery, ownerRow('telegram:1:11', 'what changed?'), false);
+    expect(chat).toContain('## Bounded stimulus');
+    expect(chat).not.toContain('[owner_full_report]');
   });
 
   it('does not match the same channel id from another connector', async () => {
@@ -1008,19 +1060,21 @@ describe('one stimulus intake and delivery', () => {
       expect(prompt).toContain('<owner-corrections>');
       expect(guidanceResolver).toHaveBeenCalledWith();
       expect(prompt).not.toMatch(/lodging|check-ins|check-outs/i);
-      // The report instructions are standing text; the turn carries the report tag and host data.
-      expect(prompt).toContain('no commitment, observation, judgment or channel ids');
+      // The report turn carries that report's steps; messenger formats stay standing rules.
+      expect(prompt).not.toContain('Format the final output');
       if (report === 'full') {
         for (const part of [
           '[scheduled_full_report]',
-          'Previous full report boundary:',
-          'Slot HTML must use ONLY this class vocabulary',
+          'Changes since: 24h ago',
+          'schedule.upcoming with days=14',
+          'Write the report in five parts, in order',
         ])
           expect(prompt).toContain(part);
       } else {
         for (const part of [
           '[scheduled_task_reminder]',
           'Source deltas handled since the previous report (the latest 0 of 0; cap 50;',
+          'Update only action_required with report.publish',
         ])
           expect(prompt).toContain(part);
         expect(prompt).not.toContain('source.recent');

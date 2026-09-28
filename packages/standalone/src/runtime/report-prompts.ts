@@ -1,5 +1,5 @@
 import type { JsonValue } from '@jungjaehoon/mama-core/knowledge';
-import { buildBoardHtmlVocabulary } from '../operator/board-slot-instructions.js';
+import { actionName, type OwnerRuntimeBackend } from './owner-system-prompt.js';
 import { epochAtLocalDateTime, localStamp } from './timezone.js';
 import { wrapUntrustedContent } from '../utils/untrusted-content.js';
 
@@ -37,31 +37,73 @@ export function scheduledReport(payload: JsonValue | undefined): ScheduledReport
   };
 }
 
-/** Port the report instructions using the product's current actions and board slots. */
+export interface ReportTurnOptions {
+  backend: OwnerRuntimeBackend;
+  wikiEnabled: boolean;
+  messenger: string;
+  timeZone: string;
+}
+
+/** A scheduled report turn: its data and the steps for that report, as Kagemusha's report prompts carry them. */
 export function buildScheduledReportPrompt(
   payload: JsonValue | undefined,
   now: Date,
-  options: { messenger?: string; timeZone: string }
+  options: ReportTurnOptions
 ): string {
   const { report, previousFullReportAt } = scheduledReport(payload);
-  const timeZone = options.timeZone;
-  const recentSince =
+  if (report === 'full') return fullReportTurn(true, previousFullReportAt, now, options);
+  const action = (name: string): string => actionName(options.backend, name);
+  return [
+    '[scheduled_task_reminder]',
+    currentTime(now, options.timeZone),
+    ...acknowledgedDeltaLines(payload, options.timeZone),
+    `- Use what this session already knows and call ${action('work.list')} with view="pipeline" for the compact open-work list; call ${action('schedule.upcoming')} when this session has not read the calendar. Read source originals only when needed to resolve a material uncertainty.`,
+    '- Choose the open items that most need attention this hour, including every item waiting on an owner decision and any deadline affected by a calendar event or holiday, and summarize the handled source deltas above as the changes since the previous report.',
+    `- Update only action_required with ${action('report.publish')}; scheduled full reports handle the other sections${options.wikiEnabled ? ' and the wiki' : ''}.`,
+    '- Return a short reminder the owner can read at a glance, most urgent or nearest deadline first, under a title that names the top priorities.',
+    `Messenger: ${options.messenger}`,
+  ].join('\n');
+}
+
+/** The full report turn an owner message receives when it contains a registered phrase. */
+export function buildOwnerFullReportPrompt(now: Date, options: ReportTurnOptions): string {
+  return fullReportTurn(false, null, now, options);
+}
+
+function currentTime(now: Date, timeZone: string): string {
+  return `Current time: ${now.toLocaleString('ko-KR', { timeZone })} (${timeZone})`;
+}
+
+function fullReportTurn(
+  scheduled: boolean,
+  previousFullReportAt: string | null,
+  now: Date,
+  options: ReportTurnOptions
+): string {
+  const action = (name: string): string => actionName(options.backend, name);
+  const since =
     previousFullReportAt === null
       ? '24h ago'
       : new Date(
           epochAtLocalDateTime(
             `${previousFullReportAt.slice(0, 10)}T${previousFullReportAt.slice(11)}:00:00`,
-            timeZone
+            options.timeZone
           )
         ).toISOString();
   return [
-    report === 'full' ? '[scheduled_full_report]' : '[scheduled_task_reminder]',
-    `Current time: ${now.toLocaleString('ko-KR', { timeZone })} (${timeZone})`,
-    ...(report === 'full'
-      ? [`Previous full report boundary: ${recentSince}`, ...buildBoardHtmlVocabulary(timeZone)]
-      : acknowledgedDeltaLines(payload, timeZone)),
-    'Owner-facing text carries no commitment, observation, judgment or channel ids; use readable work titles and sentences.',
-    `Messenger: ${options.messenger ?? 'telegram'}. Format the final output for this messenger: Telegram HTML subset with no Markdown; Discord Markdown; Slack mrkdwn. Board div/span/CSS belongs only in report.publish. No code-block wrapper, working notes or [notify]/[ack] tags.`,
+    scheduled ? '[scheduled_full_report]' : '[owner_full_report]',
+    currentTime(now, options.timeZone),
+    `Changes since: ${since}${previousFullReportAt === null ? '' : ' (the previous full report)'}`,
+    `- Call ${action('source.recent')} with since set to that time, ${action('work.list')} with view="pipeline", and ${action('schedule.upcoming')} with days=14. Read originals with ${action('source.read')} when a recent line changes the report; distinguish an empty result from failed or stale collection.`,
+    '- Compare every open deadline with the event and holiday calendar, using event end times when deciding whether a booking overlaps. Name work items under each stage and list every item waiting on an owner decision with the decision requested. Say plainly when there were no changes.',
+    `- Publish all four board sections with ${action('report.publish')} before writing the text report.`,
+    ...(scheduled && options.wikiEnabled
+      ? [
+          `- After publishing the board, update each changed topic wiki page as a resync with ${action('manage.wiki.update')}, creating one with ${action('manage.wiki.publish')} only when no topic page fits; split separate topic page updates across subagents inside this turn. Write the daily/YYYY-MM-DD.md journal grouped by project with one entry per moved item, and put lessons under lessons/.`,
+        ]
+      : []),
+    '- Write the report in five parts, in order: key situation today (with the owner schedule and holidays); needs a response; needs a decision; pipeline with each stage and item; next actions.',
+    `Messenger: ${options.messenger}`,
   ].join('\n');
 }
 

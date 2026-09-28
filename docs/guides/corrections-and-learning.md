@@ -34,10 +34,12 @@ keeps the record. `memory.read:provenance` reads the record's source links.
 
 ## When corrections reach the agent
 
-MAMA's built-in instructions for source changes, hourly reminders, full reports,
-and answers form one rule set that the agent holds for every kind of turn,
-together with the messenger's formatting rules. A report you ask for in chat
-follows the same instructions as the scheduled full report.
+MAMA's built-in instructions for source changes and answers, together with the
+messenger's formatting rules, are held by the agent for every kind of turn. Each
+report brings its own steps: the full report and the hourly reminder say what to
+read, publish and write. When you ask for a full report in chat in words you have
+told MAMA to use, you get the same report as the scheduled one. The first time you
+ask in new words, MAMA saves them and writes the report in that reply.
 
 Every active correction is shown to the agent in full (its summary, the situation
 where it applies, and its steps) on the first turn of a new owner session, along

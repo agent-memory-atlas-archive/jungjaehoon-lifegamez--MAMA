@@ -1,50 +1,93 @@
 import { describe, expect, it } from 'vitest';
-import { buildScheduledReportPrompt } from '../../src/runtime/report-prompts.js';
+import {
+  buildOwnerFullReportPrompt,
+  buildScheduledReportPrompt,
+  type ReportTurnOptions,
+} from '../../src/runtime/report-prompts.js';
 import { buildBoardSlotShapeLines } from '../../src/operator/board-slot-instructions.js';
+
+const turn = (overrides: Partial<ReportTurnOptions> = {}): ReportTurnOptions => ({
+  backend: 'codex',
+  wikiEnabled: true,
+  messenger: 'telegram',
+  timeZone: 'UTC',
+  ...overrides,
+});
+
+const noDeltas = {
+  report: 'reminder',
+  hourKey: '2026-09-27:09',
+  acknowledgedDeltas: { total: 0, cap: 50, items: [] },
+};
 
 describe('scheduled report prompts', () => {
   it('omits wiki actions when wiki is disabled and names the delivery messenger', () => {
     const prompt = buildScheduledReportPrompt(
       { report: 'full', hourKey: '2026-09-27:08' },
       new Date('2026-09-27T00:00:00Z'),
-      { wikiEnabled: false, messenger: 'slack', timeZone: 'UTC' }
+      turn({ wikiEnabled: false, messenger: 'slack' })
     );
     expect(prompt).not.toContain('manage.wiki.');
     expect(prompt).toContain('Messenger: slack');
-    expect(prompt).toContain('Slack mrkdwn');
+    // Messenger formats are standing rules; the report turn names the messenger only.
+    expect(prompt).not.toContain('Slack mrkdwn');
   });
 
-  it('keeps reminders on the session context and one board slot', () => {
-    const prompt = buildScheduledReportPrompt(
-      {
-        report: 'reminder',
-        hourKey: '2026-09-27:09',
-        acknowledgedDeltas: { total: 0, cap: 50, items: [] },
-      },
-      new Date('2026-09-27T00:00:00Z'),
-      { timeZone: 'UTC' }
+  it('carries the reminder steps in the reminder turn: session context and one board slot', () => {
+    const prompt = buildScheduledReportPrompt(noDeltas, new Date('2026-09-27T00:00:00Z'), turn());
+    expect(prompt.split('\n')[0]).toBe('[scheduled_task_reminder]');
+    expect(prompt).toContain('Use what this session already knows');
+    expect(prompt).toContain('work.list with view="pipeline"');
+    expect(prompt).toContain('schedule.upcoming when this session has not read the calendar');
+    expect(prompt).toContain(
+      'Update only action_required with report.publish; scheduled full reports handle the other sections and the wiki.'
     );
-    expect(prompt).not.toContain('what this owner session already knows');
-    expect(prompt).not.toContain('view="pipeline"');
-    expect(prompt).not.toContain('Update only action_required');
-    expect(prompt).not.toContain('5–8 most urgent open items');
-    expect(prompt).not.toContain('Select the');
     expect(prompt).not.toContain('source.recent');
-    expect(prompt).not.toContain('schedule.upcoming when this session has not read the calendar');
     expect(prompt).not.toContain('report.read');
+  });
+
+  it('carries the full report steps in the scheduled full report turn', () => {
+    const prompt = buildScheduledReportPrompt(
+      { report: 'full', hourKey: '2026-09-27:08' },
+      new Date('2026-09-27T00:00:00Z'),
+      turn()
+    );
+    expect(prompt.split('\n')[0]).toBe('[scheduled_full_report]');
+    expect(prompt).toContain('Changes since: 24h ago\n');
+    expect(prompt).toContain(
+      'Call source.recent with since set to that time, work.list with view="pipeline", and schedule.upcoming with days=14.'
+    );
+    expect(prompt).toContain('Publish all four board sections with report.publish');
+    expect(prompt).toContain('manage.wiki.update');
+    expect(prompt).toContain('daily/YYYY-MM-DD.md');
+    expect(prompt).toContain('Write the report in five parts, in order');
+    // The class vocabulary is the report.publish contract's, not repeated per turn.
+    expect(prompt).not.toContain('Slot HTML must use ONLY this class vocabulary');
+  });
+
+  it('gives an owner-requested full report the same steps over 24 hours, without the wiki resync', () => {
+    const prompt = buildOwnerFullReportPrompt(new Date('2026-09-27T00:00:00Z'), turn());
+    expect(prompt.split('\n')[0]).toBe('[owner_full_report]');
+    expect(prompt).toContain('Changes since: 24h ago\n');
+    expect(prompt).toContain('schedule.upcoming with days=14');
+    expect(prompt).toContain('Publish all four board sections with report.publish');
+    expect(prompt).toContain('Write the report in five parts, in order');
+    expect(prompt).not.toContain('manage.wiki.');
+  });
+
+  it('names actions the way the Claude CLI exposes them', () => {
+    const prompt = buildOwnerFullReportPrompt(
+      new Date('2026-09-27T00:00:00Z'),
+      turn({ backend: 'claude' })
+    );
+    expect(prompt).toContain('mcp__mama__source_recent');
+    expect(prompt).toContain('mcp__mama__report_publish');
+    expect(prompt).not.toMatch(/\bsource\.recent\b/);
   });
 
   it('ranks action_required by urgency for publishers and reminders, without a card count', () => {
     const shape = buildBoardSlotShapeLines().join(' ');
-    const reminder = buildScheduledReportPrompt(
-      {
-        report: 'reminder',
-        hourKey: '2026-09-27:09',
-        acknowledgedDeltas: { total: 0, cap: 50, items: [] },
-      },
-      new Date('2026-09-27T00:00:00Z'),
-      { timeZone: 'UTC' }
-    );
+    const reminder = buildScheduledReportPrompt(noDeltas, new Date('2026-09-27T00:00:00Z'), turn());
 
     expect(shape).toContain('most urgent first');
     expect(shape).not.toMatch(/up to \d+ report-cards/);
@@ -70,7 +113,7 @@ describe('scheduled report prompts', () => {
         },
       },
       new Date('2026-09-27T00:00:00Z'),
-      { timeZone: 'Asia/Seoul' }
+      turn({ timeZone: 'Asia/Seoul' })
     );
 
     expect(prompt).toContain(
@@ -85,7 +128,7 @@ describe('scheduled report prompts', () => {
       buildScheduledReportPrompt(
         { report: 'reminder', hourKey: '2026-09-27:09' },
         new Date('2026-09-27T00:00:00Z'),
-        { timeZone: 'Asia/Seoul' }
+        turn({ timeZone: 'Asia/Seoul' })
       )
     ).toThrow('A scheduled reminder needs the handled source deltas from the report scheduler');
   });

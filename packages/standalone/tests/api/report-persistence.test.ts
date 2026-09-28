@@ -11,7 +11,6 @@ import { createPersistentReportStore } from '../../src/api/report-persistence.js
 import { createReportPublisher } from '../../src/api/report-handler.js';
 import { createCatalog, createDispatcher } from '@jungjaehoon/mama-core';
 import { reportActionRegistrations } from '../../src/api/report-actions.js';
-import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 
 const flushDebounce = () => new Promise((resolve) => setTimeout(resolve, 350));
 
@@ -44,7 +43,6 @@ describe('createPersistentReportStore', () => {
       createCatalog(
         reportActionRegistrations({
           publisher: createReportPublisher(store, new Set()),
-          timeZone: createTimeZoneSetting('UTC'),
         })
       )
     );
