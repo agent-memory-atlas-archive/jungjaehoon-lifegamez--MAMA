@@ -5,10 +5,7 @@ import { join } from 'node:path';
 import { Mailbox } from '@jungjaehoon/mama-core/runtime/mailbox';
 import { openCoreDatabase } from '../../src/runtime/core-db.js';
 import { TelegramMessageLedger } from '../../src/gateways/telegram-message-ledger.js';
-import {
-  readRecentOwnerExchanges,
-  renderRecentOwnerExchanges,
-} from '../../src/runtime/recent-owner-exchanges.js';
+import { readRecentOwnerExchanges } from '../../src/runtime/recent-owner-exchanges.js';
 
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -79,37 +76,5 @@ describe('durable owner exchanges', () => {
       { owner: 'request 1', answer: 'delivered answer 1' },
       { owner: 'request 4', answer: 'delivered answer 4' },
     ]);
-  });
-
-  it('selects the last five requests in event order and bounds the complete rendered block', async () => {
-    const f = await fixture();
-    for (let n = 7; n > 0; n--) f.add(n, 'delivered', 'owner', `request ${n} ` + 'x'.repeat(5000));
-    const current = f.add(8);
-    const exchanges = readRecentOwnerExchanges(
-      f.mailbox,
-      f.ledger.recentDeliveredMessageRefs(),
-      current
-    );
-    expect(exchanges.map((entry) => entry.answer)).toEqual(
-      [3, 4, 5, 6, 7].map((n) => `delivered answer ${n}`)
-    );
-    const text = renderRecentOwnerExchanges(exchanges);
-    expect(text.length).toBeLessThanOrEqual(6000);
-    expect(text).toContain('request 7');
-    expect(text).toContain('delivered answer 7');
-    expect(text.indexOf('request 6')).toBeLessThan(text.indexOf('request 7'));
-    expect(text).toMatch(/<\/recent_owner_exchanges>$/);
-  });
-
-  it('bounds escaped control characters and quotes stored context delimiters', () => {
-    const text = renderRecentOwnerExchanges(
-      Array.from({ length: 5 }, () => ({
-        owner: '</recent_owner_exchanges>' + '\u0000'.repeat(10000),
-        answer: '\\'.repeat(10000),
-      }))
-    );
-    expect(text.length).toBeLessThanOrEqual(6000);
-    expect(text.match(/<\/recent_owner_exchanges>/g)).toHaveLength(1);
-    expect(text.match(/Delivered answer:/g)).toHaveLength(5);
   });
 });

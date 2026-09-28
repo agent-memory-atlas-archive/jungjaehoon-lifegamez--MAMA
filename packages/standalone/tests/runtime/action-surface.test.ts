@@ -41,6 +41,7 @@ describe('W1 action surface', () => {
       'deliver.slack.file',
       'deliver.telegram.file',
       'graph.query',
+      'help',
       'manage.wiki.publish',
       'manage.wiki.read',
       'manage.wiki.update',
@@ -50,7 +51,6 @@ describe('W1 action surface', () => {
       'memory.retire',
       'memory.save',
       'memory.search',
-      'owner.report_phrases.set',
       'owner.timezone.set',
       'report.publish',
       'report.read',
@@ -62,6 +62,7 @@ describe('W1 action surface', () => {
       'source.search',
       'work.create',
       'work.list',
+      'work.no_update',
       'work.revise',
       'work.show',
     ];

@@ -22,10 +22,8 @@ import {
 } from '../api/attachment-actions.js';
 import { sourceActionRegistrations } from '../api/source-actions.js';
 import { ownerTimeZoneActionRegistrations } from '../api/owner-timezone-actions.js';
-import {
-  ownerReportPhraseActionRegistrations,
-  type OwnerReportPhraseActionPorts,
-} from '../api/owner-report-phrase-actions.js';
+import { actionCatalogLine, helpActionRegistrations } from '../api/help-actions.js';
+import { workNoUpdateActionRegistrations } from '../api/record-actions.js';
 import type { TimeZoneSetting } from './timezone.js';
 import { reportSourceActionRegistrations } from '../api/report-source-actions.js';
 import {
@@ -43,13 +41,14 @@ const OWNER_ACTIONS = [
   'source.recent',
   'schedule.upcoming',
   'source.read',
-  'owner.report_phrases.set',
   'owner.timezone.set',
   'memory.checkpoint.list',
   'work.create',
   'work.revise',
   'work.list',
   'work.show',
+  'work.no_update',
+  'help',
   'memory.save',
   'memory.search',
   'memory.read:provenance',
@@ -88,7 +87,6 @@ export interface ActionSurfaceOptions {
   timeZone: TimeZoneSetting;
   configPath: string;
   isOwnerMessageTurn: (sourceMessageRef: string) => boolean;
-  reportPhrases: Pick<OwnerReportPhraseActionPorts, 'setting' | 'fullReportTurn'>;
 }
 
 export interface ActionSurface {
@@ -173,11 +171,6 @@ export function createActionSurface(options: ActionSurfaceOptions): ActionSurfac
       setting: options.timeZone,
       isOwnerMessageTurn: options.isOwnerMessageTurn,
     }),
-    ...ownerReportPhraseActionRegistrations({
-      ...options.reportPhrases,
-      ownerPrincipalId: options.ownerPrincipalId,
-      isOwnerMessageTurn: options.isOwnerMessageTurn,
-    }),
     ...createAttachmentActionRegistrations({
       ...(options.attachmentPorts ?? {}),
       stored: options.storedSourceReader,
@@ -192,6 +185,11 @@ export function createActionSurface(options: ActionSurfaceOptions): ActionSurfac
     }),
     ...reportActionRegistrations(reportPorts),
     ...wikiActionRegistrations(options.wikiPorts ?? {}),
+    ...workNoUpdateActionRegistrations(),
+    ...helpActionRegistrations({
+      contracts: () =>
+        catalog.list().filter((contract) => ownerAccess.actions!.includes(contract.name)),
+    }),
   ];
   const catalog = createCatalog(registrations);
   const dispatch = createDispatcher(catalog, {
@@ -246,11 +244,14 @@ export function createActionSurface(options: ActionSurfaceOptions): ActionSurfac
     catalog,
     dispatch,
     ownerAccess,
+    // Progressive, as Kagemusha's one-line catalog: every turn carries one line per action; the
+    // full contract comes from `help`. The dispatcher still validates each call against the
+    // action's own schema.
     hostToolDefinitions: () =>
       catalog.list().map((contract) => ({
         name: contract.name,
-        description: contract.summary,
-        inputSchema: contract.inputSchema,
+        description: actionCatalogLine(contract.summary),
+        inputSchema: { type: 'object' },
       })),
     hostToolCall: (name, input, operationId, context = {}) =>
       dispatch(

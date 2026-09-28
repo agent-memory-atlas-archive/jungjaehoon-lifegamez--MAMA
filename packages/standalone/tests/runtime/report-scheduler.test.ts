@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createReportScheduler } from '../../src/runtime/report-scheduler.js';
-import { buildScheduledReportPrompt } from '../../src/runtime/report-prompts.js';
+import { scheduledReportOrder } from '../../src/runtime/turn-orders.js';
 import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 import type { ScheduledInput } from '../../src/runtime/stimulus-delivery.js';
 
@@ -39,7 +39,6 @@ function setup() {
     },
     hasPendingReport: () => pending,
     sendToOwner: (text: string, _key: string) => send(text),
-    readAcknowledgedDeltas: () => ({ total: 0, items: [] }),
     onError: (error: unknown) => {
       throw error;
     },
@@ -74,17 +73,16 @@ describe('KST report scheduler', () => {
     expect(ctx.queued).toHaveLength(2);
   });
 
-  it('asks full reports to update topic pages and journal from the previous full report', () => {
-    const prompt = buildScheduledReportPrompt(
+  it('gives the full report order its data and leaves the steps to the standing prompt', () => {
+    const order = scheduledReportOrder(
       { report: 'full', hourKey: '2026-01-01:08' },
       new Date('2026-01-01T00:00:00Z'),
-      { backend: 'codex', wikiEnabled: true, messenger: 'telegram', timeZone: 'UTC' }
+      { backend: 'codex', messenger: 'telegram', timeZone: 'UTC' }
     );
-    // The board vocabulary lives in the report.publish contract, not in each report turn.
-    expect(prompt).not.toContain('Slot HTML must use ONLY this class vocabulary');
-    expect(prompt).toContain('source.recent');
-    expect(prompt).toContain('manage.wiki.update');
-    expect(prompt).toContain('daily/YYYY-MM-DD.md');
+    expect(order).not.toContain('Slot HTML must use ONLY this class vocabulary');
+    expect(order).not.toContain('manage.wiki.update');
+    expect(order).not.toContain('daily/YYYY-MM-DD.md');
+    expect(order).toContain('full-report procedure');
   });
 
   it('uses one delivery identity across model attempts after the schedule write fails', async () => {
@@ -125,71 +123,39 @@ describe('KST report scheduler', () => {
     scheduler.tick(new Date('2026-01-01T04:00:00Z'));
     expect(ctx.queued[0]?.payload).toMatchObject({ previousFullReportAt: '2026-01-01:08' });
     expect(
-      buildScheduledReportPrompt(ctx.queued[0]?.payload, new Date('2026-01-01T04:00:00Z'), {
+      scheduledReportOrder(ctx.queued[0]?.payload, new Date('2026-01-01T04:00:00Z'), {
         backend: 'codex',
-        wikiEnabled: true,
         messenger: 'telegram',
         timeZone: 'Asia/Seoul',
       })
     ).toContain('Changes since: ');
     expect(
-      buildScheduledReportPrompt(ctx.queued[0]?.payload, new Date('2026-01-01T04:00:00Z'), {
+      scheduledReportOrder(ctx.queued[0]?.payload, new Date('2026-01-01T04:00:00Z'), {
         backend: 'codex',
-        wikiEnabled: true,
         messenger: 'telegram',
         timeZone: 'Asia/Seoul',
       })
     ).toContain('Changes since: 2025-12-31T23:00:00.000Z (the previous full report)');
   });
 
-  it('passes acknowledged deltas since the latest report time with a visible cap', () => {
+  it('does not send a reminder that ends with [ack], and still marks its hour', async () => {
     const ctx = setup();
-    mkdirSync(join(root, 'runtime'), { recursive: true });
-    writeFileSync(
-      ctx.statePath,
-      JSON.stringify({ lastFullKey: '2026-01-01:08', lastReminderKey: '2026-01-01:09' })
-    );
-    const since: number[] = [];
-    const scheduler = createReportScheduler({
-      ...ctx.options,
-      readAcknowledgedDeltas: (sinceAt, throughAt) => {
-        since.push(sinceAt);
-        expect(throughAt).toBe(new Date('2026-01-01T01:00:00Z').getTime());
-        return {
-          total: 51,
-          items: Array.from({ length: 50 }, (_, index) => ({
-            channelLabel: `Work room ${index}`,
-            sourceAt: '2026-01-01T00:42:00.000Z',
-            preview: 'A submitted change',
-            observationRef: `observation-${index}`,
-          })),
-        };
-      },
+    const now = new Date('2026-01-01T01:00:00Z');
+    ctx.scheduler.tick(now);
+    expect(ctx.queued[0]?.payload).toMatchObject({ report: 'reminder' });
+    expect(ctx.queued[0]?.payload).not.toHaveProperty('acknowledgedDeltas');
+    await ctx.scheduler.onResult(ctx.result(), { response: '[ack]' });
+    expect(ctx.sent).toEqual([]);
+    expect(JSON.parse(readFileSync(ctx.statePath, 'utf8'))).toMatchObject({
+      lastReminderKey: '2026-01-01:10',
     });
-
-    scheduler.tick(new Date('2026-01-01T01:00:00Z'));
-
-    expect(since).toEqual([new Date('2026-01-01T00:00:00Z').getTime()]);
-    expect(ctx.queued[0]?.payload).toMatchObject({
-      report: 'reminder',
-      acknowledgedDeltas: { total: 51, cap: 50 },
-    });
-    expect(
-      (ctx.queued[0]?.payload as { acknowledgedDeltas: { items: unknown[] } }).acknowledgedDeltas
-        .items
-    ).toHaveLength(50);
   });
 
   it('labels report time and recent boundary in the configured zone', () => {
-    const prompt = buildScheduledReportPrompt(
+    const prompt = scheduledReportOrder(
       { report: 'full', hourKey: '2026-01-01:08', previousFullReportAt: '2026-01-01:08' },
       new Date('2026-01-01T16:00:00Z'),
-      {
-        backend: 'codex',
-        wikiEnabled: true,
-        messenger: 'telegram',
-        timeZone: 'America/Los_Angeles',
-      }
+      { backend: 'codex', messenger: 'telegram', timeZone: 'America/Los_Angeles' }
     );
     expect(prompt).toContain('(America/Los_Angeles)');
     expect(prompt).toContain('Changes since: 2026-01-01T16:00:00.000Z (the previous full report)');
@@ -274,7 +240,6 @@ describe('KST report scheduler', () => {
       report,
       hourKey,
       ...(report === 'full' ? { previousFullReportAt: null } : {}),
-      ...(report === 'reminder' ? { acknowledgedDeltas: { total: 0, cap: 50, items: [] } } : {}),
     });
     await ctx.scheduler.onResult(ctx.result(), { response: 'report' });
     ctx.setPending(false);

@@ -143,7 +143,7 @@ describe('mama action MCP server — handleRequest unit surface', () => {
     },
   };
 
-  it('tools/list renders the catalog contracts verbatim — name, summary, schema', async () => {
+  it('tools/list gives each action one line and a permissive schema; help carries the contract', async () => {
     const response = await handleRequest(
       { jsonrpc: '2.0', id: 1, method: 'tools/list' },
       { client: client as never }
@@ -152,8 +152,8 @@ describe('mama action MCP server — handleRequest unit surface', () => {
     expect(tools).toHaveLength(2);
     expect(tools[0].name).toBe('work.create');
     expect(tools[0].description).toContain('Create a work item');
-    expect(tools[0].description).toContain('Examples:');
-    expect(tools[0].inputSchema).toEqual(contracts[0].inputSchema);
+    expect(tools[0].description).not.toContain('Examples:');
+    expect(tools[0].inputSchema).toEqual({ type: 'object' });
     expect(tools[1].description).toBe('Query the graph');
   });
 

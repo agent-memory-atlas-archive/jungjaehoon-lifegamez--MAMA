@@ -78,9 +78,6 @@ async function setup() {
     onSourceResult: async (_row: MailboxRow, answer: NativeTurnResult) => {
       delivered.push(answer.response);
     },
-    onNativeEventResult: async (_row: MailboxRow, answer: NativeTurnResult) => {
-      delivered.push(answer.response);
-    },
     onStimulusFailed: async (_row: MailboxRow, reason: string) => {
       failures.push(reason);
     },
@@ -90,7 +87,13 @@ async function setup() {
   };
   let owner = await createOwnerRuntime(options);
   owners.push(owner);
+  // Turns other than the record orders a delta leaves behind.
+  const inputTurns = () =>
+    runTurn.mock.calls.filter(
+      ([content]) => !(content[0]?.type === 'text' && content[0].text?.includes('[delta_record]'))
+    ).length;
   return {
+    inputTurns,
     get owner() {
       return owner;
     },
@@ -108,8 +111,19 @@ async function setup() {
   };
 }
 
+const deltaPayload = () => ({
+  refs: [
+    {
+      connector: 'fixture',
+      observationRef: 'obs-1',
+      contentPreview: 'the files arrived',
+      sourceAt: new Date().toISOString(),
+    },
+  ],
+});
+
 describe('owner input recovery', () => {
-  it.each(['source_delta', 'native_event'] as const)(
+  it.each(['source_delta'] as const)(
     'redelivers a claimed %s with no native dispatch after restart',
     async (kind) => {
       const ctx = await setup();
@@ -119,6 +133,7 @@ describe('owner input recovery', () => {
         principalId: 'owner',
         channelKey: 'fixture',
         occurredAt: 1,
+        payload: deltaPayload(),
       });
       expect(ctx.owner.runtime.mailbox!.claimNext()).toMatchObject({
         stimulusId: 'input',
@@ -128,8 +143,13 @@ describe('owner input recovery', () => {
 
       await ctx.restart();
 
-      expect(ctx.runTurn).toHaveBeenCalledOnce();
+      expect(ctx.inputTurns()).toBe(1);
       expect(ctx.delivered).toEqual(['Stored answer']);
+      // The record order is durable before the notify reply is routed.
+      expect(ctx.owner.runtime.mailbox!.readInput('record:input:1', 'owner')).toMatchObject({
+        kind: 'scheduled',
+        channelKey: 'operator:record',
+      });
       expect(ctx.owner.runtime.mailbox!.readInput('input', 'owner')).toMatchObject({
         status: 'acked',
         nativeDelivery: { state: 'settled' },
@@ -137,7 +157,7 @@ describe('owner input recovery', () => {
     }
   );
 
-  it.each(['owner_message', 'source_delta', 'native_event'] as const)(
+  it.each(['owner_message', 'source_delta'] as const)(
     'delivers the stored %s result after restart without rerunning the model',
     async (kind) => {
       const ctx = await setup();
@@ -147,7 +167,7 @@ describe('owner input recovery', () => {
         principalId: 'owner',
         channelKey: 'fixture',
         occurredAt: 1,
-        payload: { text: 'request' },
+        payload: kind === 'source_delta' ? deltaPayload() : { text: 'request' },
       });
       const mailbox = ctx.owner.runtime.mailbox!;
       const row = mailbox.claimNext()!;
@@ -169,11 +189,11 @@ describe('owner input recovery', () => {
       expect(ctx.owner.runtime.mailbox!.readInput('input', 'owner')?.nativeDelivery?.state).toBe(
         'settled'
       );
-      expect(ctx.runTurn).not.toHaveBeenCalled();
+      expect(ctx.inputTurns()).toBe(0);
     }
   );
 
-  it.each(['owner_message', 'source_delta', 'native_event'] as const)(
+  it.each(['owner_message', 'source_delta'] as const)(
     'parks and logs an orphaned %s with no result',
     async (kind) => {
       const ctx = await setup();
@@ -207,8 +227,7 @@ describe('owner input recovery', () => {
 describe('row-owned replay ceiling', () => {
   it('takes each ceiling from its durable payload when an owner input runs first', async () => {
     const delivery = createStimulusDelivery({
-      reportPhrases: { get: () => [], set: () => {} },
-      guidanceResolver: async () => [],
+      backend: 'codex',
       timeZone: createTimeZoneSetting('UTC'),
     });
     const seen: Array<number | undefined> = [];

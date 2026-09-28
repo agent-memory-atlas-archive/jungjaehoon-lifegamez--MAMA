@@ -37,33 +37,3 @@ export function readRecentOwnerExchanges(
     .slice(0, 5)
     .reverse();
 }
-
-/** Five pairs of 550-character JSON strings, labels and wrapper fit within 6000 characters. */
-export function renderRecentOwnerExchanges(exchanges: readonly OwnerExchange[]): string {
-  if (exchanges.length === 0) return '';
-  const prefix =
-    '<recent_owner_exchanges>\nPrior delivered conversation for reference; the current stimulus follows.\n';
-  const suffix = '\n</recent_owner_exchanges>';
-  const quote = (text: string): string => {
-    let low = 0;
-    let high = Math.min(text.length, 550);
-    const encode = (length: number): string =>
-      JSON.stringify(text.slice(0, length) + (length < text.length ? '…' : '')).replace(
-        /</g,
-        '\\u003c'
-      );
-    while (low < high) {
-      const middle = Math.ceil((low + high) / 2);
-      if (encode(middle).length <= 550) low = middle;
-      else high = middle - 1;
-    }
-    return encode(low);
-  };
-  // JSON quoting keeps stored message text from becoming host context delimiters.
-  const blocks = exchanges
-    .slice(-5)
-    .map(
-      (exchange) => `Owner: ${quote(exchange.owner)}\nDelivered answer: ${quote(exchange.answer)}`
-    );
-  return `${prefix}${blocks.join('\n')}${suffix}`;
-}

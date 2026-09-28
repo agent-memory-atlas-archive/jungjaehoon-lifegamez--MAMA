@@ -81,6 +81,7 @@ describe('one owner native session', () => {
         'deliver.slack.file',
         'deliver.telegram.file',
         'graph.query',
+        'help',
         'manage.wiki.publish',
         'manage.wiki.read',
         'manage.wiki.update',
@@ -90,7 +91,6 @@ describe('one owner native session', () => {
         'memory.retire',
         'memory.save',
         'memory.search',
-        'owner.report_phrases.set',
         'owner.timezone.set',
         'report.publish',
         'report.read',
@@ -102,6 +102,7 @@ describe('one owner native session', () => {
         'source.search',
         'work.create',
         'work.list',
+        'work.no_update',
         'work.revise',
         'work.show',
       ]);

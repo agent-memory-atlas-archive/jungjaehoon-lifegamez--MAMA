@@ -1,3 +1,4 @@
+import { deltaRecordOrder, recordOrderPayload } from '../../src/runtime/turn-orders.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -486,7 +487,7 @@ describe('connector runtime', () => {
       }),
       'utf8'
     );
-    const now = Date.parse('2024-01-02T00:00:00.000Z');
+    const now = Date.now();
     const items: NormalizedItem[] = [
       {
         source: 'slack',
@@ -525,43 +526,26 @@ describe('connector runtime', () => {
       const row = mailbox.claimNext();
       expect(row).not.toBeNull();
       expect(row?.kind).toBe('source_delta');
+      let recordRow: typeof row = null;
       const delivery = createStimulusDelivery({
-        reportPhrases: { get: () => [], set: () => {} },
-        guidanceResolver: async () => [],
+        backend: 'codex',
         timeZone: createTimeZoneSetting('UTC'),
+        recordOrders: {
+          enqueueFirst: (delta) => {
+            recordRow = delta;
+          },
+          onResult: () => {},
+          onLost: () => {},
+        },
       });
-      const reads: string[] = [];
+      let notifyText = '';
       const context: NativeDeliveryContext = {
         nativeInputId: 'native-input',
         resultForReceipt: () => null,
         run: async (content): Promise<NativeTurnResult> => {
-          const text = content[0]?.type === 'text' ? (content[0].text ?? '') : '';
-          const quoted = text.slice(text.indexOf('payload: '));
-          expect(quoted).toContain('<<<UNTRUSTED-CONTENT source=source_delta>>>');
-          // The agent reads the quoted JSON body; source handles remain intact inside the boundary.
-          const payloadLine = quoted.split('\n').find((line) => line.startsWith('{'));
-          if (!payloadLine) throw new Error('rendered source delta omitted payload');
-          const payload = JSON.parse(payloadLine) as {
-            refs?: Array<{ connector?: unknown; observationRef?: unknown }>;
-          };
-          if (!Array.isArray(payload.refs)) throw new Error('rendered source delta omitted refs');
-          for (const [index, ref] of payload.refs.entries()) {
-            if (typeof ref.connector !== 'string' || typeof ref.observationRef !== 'string') {
-              throw new Error('rendered source delta omitted a source.read handle');
-            }
-            const result = await dispatch(
-              {
-                action: 'source.read',
-                input: { source: ref.connector, observationRef: ref.observationRef },
-                operationId: `read-${index}`,
-              },
-              { access }
-            );
-            expect(result.status).toBe('completed');
-            reads.push(ref.observationRef);
-          }
+          notifyText = content[0]?.type === 'text' ? (content[0].text ?? '') : '';
           return {
-            response: 'read every source delta ref',
+            response: '[ack]',
             turns: 1,
             history: [],
             totalUsage: { input_tokens: 1, output_tokens: 1 },
@@ -579,8 +563,27 @@ describe('connector runtime', () => {
       };
 
       await delivery.deliver(row!, context);
-      expect(row?.refs.map((ref) => ref.observationRef)).toEqual(reads);
-      expect(reads).toHaveLength(2);
+      // The notify order carries the message bodies; the record order carries every ref.
+      expect(notifyText).toContain('<<<UNTRUSTED-CONTENT source=source_delta>>>');
+      expect(notifyText).toContain('second source body');
+      const recordText = deltaRecordOrder(recordOrderPayload(recordRow!, 1), new Date(), {
+        backend: 'codex',
+        timeZone: 'UTC',
+        wikiEnabled: false,
+      });
+      const listed = recordText
+        .split('\n')
+        .find((line) => line.startsWith('observations: '))!
+        .slice('observations: '.length)
+        .split(', ');
+      expect(listed.slice().sort()).toEqual(row!.refs.map((ref) => ref.observationRef).sort());
+      const result = await dispatch(
+        { action: 'source.read', input: { observationRefs: listed }, operationId: 'read-all' },
+        { access }
+      );
+      expect(result.status).toBe('completed');
+      const reads = (result as { data: { results: Array<{ status: string }> } }).data.results;
+      expect(reads.map((read) => read.status)).toEqual(['completed', 'completed']);
     } finally {
       await connectorRuntime.stop();
       rawStore.close();

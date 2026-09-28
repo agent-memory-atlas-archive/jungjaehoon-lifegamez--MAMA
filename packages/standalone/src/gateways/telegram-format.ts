@@ -88,7 +88,7 @@ export const TELEGRAM_FORMAT_GUIDE = [
   '- Close every tag you open. Nothing may nest inside <code> or <pre>, and <code> and <pre>',
   '  must not appear inside any other tag (no <pre> inside <blockquote>, no <code> inside a link).',
   '- Links must be http, https or mailto.',
-  '- Keep emphasis for headings and key actions; unstyled prose reads better than styled prose.',
+  '- Keep emphasis for headings and key actions.',
   '- Never write entity JSON, offsets or lengths. The sender converts this HTML into Telegram',
   '  entities and splits long messages for you.',
 ].join('\n');

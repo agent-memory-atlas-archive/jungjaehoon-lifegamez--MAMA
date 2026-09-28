@@ -52,9 +52,11 @@ function delta(): SourceDelta {
         observationRef: 'fixture-observation',
         sourceId: 'fixture-source',
         sourceEntityId: 'fixture-entity',
-        sourceAt: '2026-01-01T00:00:00.000Z',
-        observedAt: '2026-01-01T00:00:01.000Z',
+        sourceAt: new Date(Date.now() - 60_000).toISOString(),
+        observedAt: new Date(Date.now() - 59_000).toISOString(),
         contentHash: null,
+        author: 'fixture-author',
+        contentPreview: 'The revised file arrived.',
       },
     ],
   };
@@ -81,6 +83,7 @@ async function boot(
   telegram.sendMessage.mockReset().mockResolvedValue({ message_id: 101 });
   const logs: string[] = [];
   const prompts: Array<{ source: string | undefined; text: string }> = [];
+  const records: string[] = [];
   const failures = vi.fn();
   let ownerOptions!: OwnerRuntimeOptions;
   let ownerRuntime!: Awaited<ReturnType<typeof createOwnerRuntime>>;
@@ -130,6 +133,7 @@ async function boot(
         ownerRuntime = await createOwnerRuntime({
           ...options,
           embedder: { embed: async () => new Float32Array(1024).fill(0.25) },
+          lessons: async () => [],
           onStimulusFailed: (row, reason, modelRunId) => {
             failures(row, reason, modelRunId);
             return options.onStimulusFailed?.(row, reason, modelRunId);
@@ -142,8 +146,12 @@ async function boot(
                   sessionId: 'fixture-session',
                   isNewSession: false,
                 })) ?? content;
-              prompts.push({ source: request?.source, text: JSON.stringify(content) });
-              request?.onModelRunStarted?.(`run:${prompts.length}`);
+              const text = JSON.stringify(content);
+              // Record orders follow each live delta; these tests count the delta turns.
+              if (text.includes('[delta_record]')) records.push(text);
+              else prompts.push({ source: request?.source, text });
+              const turn = prompts.length + records.length;
+              request?.onModelRunStarted?.(`run:${turn}`);
               request?.streamCallbacks?.onInputDispatch?.({
                 backend: 'codex',
                 sessionId: 'fixture-session',
@@ -152,7 +160,7 @@ async function boot(
               request?.streamCallbacks?.onAccepted?.({
                 backend: 'codex',
                 sessionId: 'fixture-session',
-                turnId: `turn-${prompts.length}`,
+                turnId: `turn-${turn}`,
               });
               if (failTurn) throw new Error('native model failed');
               return {
@@ -161,7 +169,7 @@ async function boot(
                 history: [],
                 totalUsage: { input_tokens: 0, output_tokens: 0 },
                 stopReason: 'end_turn',
-                modelRunId: `run:${prompts.length}`,
+                modelRunId: `run:${turn}`,
                 modelRunProvenance: 'available',
               } as NativeTurnResult;
             },
@@ -194,7 +202,16 @@ async function boot(
     },
   });
   daemons.push(daemon);
-  return { root, daemon, logs, prompts, failures, ownerOptions, promptsBeforeGatewayStart };
+  return {
+    root,
+    daemon,
+    logs,
+    prompts,
+    records,
+    failures,
+    ownerOptions,
+    promptsBeforeGatewayStart,
+  };
 }
 
 describe('live delta reports', () => {
@@ -298,7 +315,7 @@ describe('live delta reports', () => {
     await vi.waitFor(() => expect(prompts).toHaveLength(1));
     expect(prompts.map((prompt) => prompt.source)).toEqual(['source_delta']);
     // The marker rule is standing text; the turn states that its result is delivered.
-    expect(prompts[0]!.text).toContain('delivery: live');
+    expect(prompts[0]!.text).toContain('[delta slack');
     expect(logs).toContain(`delta report route=${route} id=${id}`);
     expect(logs).toContain(`stimulus delivered kind=source_delta id=${id} model_run_id=run:1`);
     expect(logs).not.toContain(expect.stringContaining(`delta-board:${id}`));

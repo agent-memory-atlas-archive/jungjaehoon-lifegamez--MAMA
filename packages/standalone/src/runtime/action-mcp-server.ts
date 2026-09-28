@@ -18,6 +18,7 @@ import { createClient, type Client } from '@jungjaehoon/mama-core/client/client'
 import { readSessionCredential } from './session-credential.js';
 import { CLAUDE_CALLER_FIELD } from './claude-caller-hook.js';
 import type { NativeToolCaller } from '@jungjaehoon/mama-core/action-contracts';
+import { actionCatalogLine } from '../api/help-actions.js';
 
 export interface JsonRpcRequest {
   jsonrpc: '2.0';
@@ -61,14 +62,12 @@ function runtimeClient(home: string): Client {
   });
 }
 
+/** One line per action, as for the Codex session; `help` returns the full contract. */
 function describeTool(contract: ActionContract) {
-  const examples = (contract.examples ?? [])
-    .map((example) => `- ${example.title}: ${JSON.stringify(example.input)}`)
-    .join('\n');
   return {
     name: contract.name,
-    description: examples ? `${contract.summary}\nExamples:\n${examples}` : contract.summary,
-    inputSchema: contract.inputSchema,
+    description: actionCatalogLine(contract.summary),
+    inputSchema: { type: 'object' },
   };
 }
 
