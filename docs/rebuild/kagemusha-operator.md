@@ -89,7 +89,9 @@ plan keeps one session and removes the growth instead, and records a superseding
   on `channelKey` in turn assembly, result handling and reconciliation (`stimulus-delivery.ts:384`,
   `:787–805`, `daemon.ts:468–472`); the report scheduler's pending check counts only `schedule`
   rows (`daemon.ts:688`).
-- **Record check.** After the record run and its child runs have ended, the ledger decides: a
+- **Record check.** After the record run and its child runs have ended, the ledger decides (runs
+  started before the current daemon process count as ended, since a killed process leaves them
+  `running`; `model-run-store.ts:542, 581`): a
   revision written by one of those runs (revisions store `modelRunId`, `work-actions.ts:1240,
 1278`) with a `derived_from` edge to one of the batch's observations, or a successful
   `work.no_update` call in those runs. A board or wiki write alone does not pass. When the check
