@@ -383,10 +383,11 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
             kind: [...GUIDANCE_KINDS],
             status: 'active',
           });
+          // Ten in search order: the session filter drops lessons already shown and keeps three.
           return guidanceInSearchOrder(
             hits.map((hit) => hit.id),
             active,
-            3
+            10
           );
         }),
       recordOrders,
