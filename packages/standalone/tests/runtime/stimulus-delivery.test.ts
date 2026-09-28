@@ -1128,7 +1128,13 @@ describe('one stimulus intake and delivery', () => {
           attempts: 1,
           createdAt: 1,
           coalesceKey: null,
-          payload: { report, hourKey: '2026-01-01:13' },
+          payload: {
+            report,
+            hourKey: '2026-01-01:13',
+            ...(report === 'reminder'
+              ? { acknowledgedDeltas: { total: 0, cap: 50, items: [] } }
+              : {}),
+          },
         },
         {
           run: async (content, request) => {
@@ -1146,22 +1152,19 @@ describe('one stimulus intake and delivery', () => {
       expect(prompt).toContain('<guidance-index>');
       expect(guidanceResolver).toHaveBeenCalledWith();
       expect(prompt).not.toMatch(/lodging|check-ins|check-outs/i);
+      expect(prompt).toContain(
+        `<lane-instructions lane="${report === 'full' ? 'full-report' : 'hourly-reminder'}" record="default">`
+      );
+      expect(prompt).toContain('Change this lane by saving a workflow');
       expect(prompt).toContain('work.list');
-      expect(prompt).toContain('report.publish');
       expect(prompt).toContain('no commitment, observation, judgment or channel ids');
       if (report === 'full') {
         for (const part of [
-          'briefing',
-          'action_required',
-          'decisions',
-          'pipeline',
-          'key situation today',
-          'needs a response',
-          'needs a decision',
-          'next actions',
+          'Publish all four board sections with report.publish',
           'source.recent',
           'work.list with view="pipeline"',
           'schedule.upcoming with days=14',
+          'Slot HTML must use ONLY this class vocabulary',
         ])
           expect(prompt).toContain(part);
       } else {
@@ -1171,6 +1174,7 @@ describe('one stimulus intake and delivery', () => {
           'most need attention this hour',
           'at a glance',
           'action_required',
+          'Acknowledged source deltas (showing 0 of 0; cap 50)',
         ])
           expect(prompt).toContain(part);
         expect(prompt).not.toContain('source.recent');

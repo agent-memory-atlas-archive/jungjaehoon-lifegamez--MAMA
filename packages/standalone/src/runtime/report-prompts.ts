@@ -1,6 +1,7 @@
 import type { JsonValue } from '@jungjaehoon/mama-core/knowledge';
-import { buildBoardPublishLines } from '../operator/board-slot-instructions.js';
+import { buildBoardHtmlVocabulary } from '../operator/board-slot-instructions.js';
 import { epochAtLocalDateTime } from './timezone.js';
+import { wrapUntrustedContent } from '../utils/untrusted-content.js';
 
 export interface ScheduledReport {
   report: 'full' | 'reminder';
@@ -53,38 +54,54 @@ export function buildScheduledReportPrompt(
             timeZone
           )
         ).toISOString();
-  const fullReportChecklist = [
-    `Current time: ${now.toLocaleString('ko-KR', { timeZone })} (${timeZone})`,
-    `Checklist: call source.recent with since="${recentSince}" for changes since that time, work.list with view="pipeline", and schedule.upcoming with days=14.`,
-    'Read originals with source.read when a recent line changes the report; distinguish an empty result from failed or stale collection.',
-    'Compare every open deadline with the event and holiday calendar; use event end times when deciding whether a booking overlaps.',
-    'Name work items under each stage. List every item waiting on an owner decision, with the decision requested.',
-    'Say plainly when there were no changes. Include the owner schedule section and list its upcoming events and holidays.',
-  ];
   const instructions =
-    report === 'full'
-      ? [
-          '[scheduled_full_report]',
-          ...fullReportChecklist,
-          ...buildBoardPublishLines(timeZone),
-          ...(options.wikiEnabled === false
-            ? []
-            : [
-                'After publishing the board, update each affected topic wiki page with manage.wiki.update, creating one with manage.wiki.publish only when no topic page fits; split separate topic page updates across subagents inside this turn. Write the daily/YYYY-MM-DD.md journal grouped by project with one entry per moved item, and put lessons under lessons/.',
-              ]),
-          'Write the Korean report in five parts, in order: key situation today; needs a response; needs a decision; pipeline with each stage and item; next actions. Put the owner schedule and holidays under key situation today.',
-        ]
-      : [
-          '[scheduled_task_reminder]',
-          'Use what this owner session already knows and call work.list with view="pipeline" for the compact open-work list. Read source originals only when needed to resolve a material uncertainty.',
-          'Call schedule.upcoming when this session has not read the calendar.',
-          'Choose the open items that most need attention this hour. Include every item waiting on an owner decision and any deadline affected by a calendar event or holiday.',
-          'Update only action_required with report.publish({ slots: { action_required: "<html>" } }); scheduled full reports handle the other slots and wiki resync.',
-          'Return a concise Korean reminder the owner can read at a glance, most urgent or nearest deadline first, under a short Korean title that names the top priorities.',
-        ];
+    report === 'full' ? ['[scheduled_full_report]'] : ['[scheduled_task_reminder]'];
+  const hostData = [
+    `Current time: ${now.toLocaleString('ko-KR', { timeZone })} (${timeZone})`,
+    ...(report === 'full' ? [`Previous full report boundary: ${recentSince}`] : []),
+    ...(report === 'full' ? buildBoardHtmlVocabulary(timeZone) : []),
+    ...(report === 'reminder' ? acknowledgedDeltaLines(payload, timeZone) : []),
+  ];
   return [
     ...instructions,
+    ...hostData,
     'Owner-facing text carries no commitment, observation, judgment or channel ids; use readable work titles and sentences.',
     `Messenger: ${options.messenger ?? 'telegram'}. Format the final output for this messenger: Telegram HTML subset with no Markdown; Discord Markdown; Slack mrkdwn. Board div/span/CSS belongs only in report.publish. No code-block wrapper, working notes or [notify]/[ack] tags.`,
   ].join('\n');
+}
+
+function acknowledgedDeltaLines(payload: JsonValue | undefined, timeZone: string): string[] {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return [];
+  const value = payload.acknowledgedDeltas;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+  const total = typeof value.total === 'number' ? value.total : 0;
+  const cap = typeof value.cap === 'number' ? value.cap : 0;
+  const items = Array.isArray(value.items) ? value.items : [];
+  return [
+    `Acknowledged source deltas (showing ${items.length} of ${total}; cap ${cap}) in ${timeZone}:`,
+    ...items.flatMap((entry): string[] => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+      const channelLabel = typeof entry.channelLabel === 'string' ? entry.channelLabel : '';
+      const sourceAt = typeof entry.sourceAt === 'string' ? entry.sourceAt : '';
+      const preview = typeof entry.preview === 'string' ? entry.preview : '';
+      const observationRef = typeof entry.observationRef === 'string' ? entry.observationRef : '';
+      const time = new Intl.DateTimeFormat('en-CA', {
+        timeZone,
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23',
+      })
+        .formatToParts(new Date(sourceAt))
+        .filter((part) => part.type !== 'literal')
+        .map((part) => part.value);
+      const localTime = `${time[0]}-${time[1]} ${time[2]}:${time[3]}`;
+      const quotedPreview = wrapUntrustedContent('source_delta', JSON.stringify(preview)).replace(
+        /\s+/g,
+        ' '
+      );
+      return [`${channelLabel} · ${localTime} · preview=${quotedPreview} · ${observationRef}`];
+    }),
+  ];
 }

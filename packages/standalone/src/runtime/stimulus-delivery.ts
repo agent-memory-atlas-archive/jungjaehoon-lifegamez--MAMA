@@ -16,8 +16,9 @@ import type { NativeTurnResultRecord } from '@jungjaehoon/mama-core/runtime/nati
 import type { SourceDelta } from '../connectors/framework/polling-scheduler.js';
 import type { QueueCandidateScore, QueueLine, WindowQueue } from '../replay/window-queue.js';
 import { renderRecentOwnerExchanges, type OwnerExchange } from './recent-owner-exchanges.js';
-import { liveDeltaRoutingInstruction, type OwnerRuntimeBackend } from './owner-system-prompt.js';
+import type { OwnerRuntimeBackend } from './owner-system-prompt.js';
 import { buildScheduledReportPrompt } from './report-prompts.js';
+import { laneForStimulus, renderLaneInstructions } from './lane-instructions.js';
 import type { TimeZoneSetting } from './timezone.js';
 import { workListTitleTextScore } from '../api/work-actions.js';
 
@@ -82,6 +83,7 @@ export interface GuidanceEntry {
   kind: Extract<MemoryKind, 'lesson' | 'preference' | 'constraint' | 'workflow'>;
   topic: string;
   summary: string;
+  details?: string;
   status: MemoryStatus;
   updated_at: number | string;
   applies_when?: string;
@@ -368,15 +370,22 @@ function boundedStimulus(
     StimulusDeliveryOptions,
     'wikiEnabled' | 'formattingRoutes' | 'backend' | 'timeZone'
   >,
-  candidates: readonly string[] = []
+  candidates: readonly string[] = [],
+  laneInstruction = ''
 ): string {
   if (row.kind === 'scheduled')
-    return buildScheduledReportPrompt(row.payload, new Date(row.occurredAt), {
-      wikiEnabled: options.wikiEnabled,
-      messenger: options.formattingRoutes?.reports,
-      timeZone: options.timeZone.get(),
-    });
+    return [
+      laneInstruction,
+      buildScheduledReportPrompt(row.payload, new Date(row.occurredAt), {
+        wikiEnabled: options.wikiEnabled,
+        messenger: options.formattingRoutes?.reports,
+        timeZone: options.timeZone.get(),
+      }),
+    ]
+      .filter(Boolean)
+      .join('\n\n');
   const lines = [
+    ...(laneInstruction === '' ? [] : [laneInstruction]),
     '## Bounded stimulus',
     `owner timezone: ${options.timeZone.get()}`,
     `kind: ${row.kind ?? 'unknown'}`,
@@ -412,7 +421,7 @@ function boundedStimulus(
   if (row.kind === 'source_delta') {
     if (liveSourceDelta) {
       lines.push(
-        `response_routing: ${liveDeltaRoutingInstruction(options.backend ?? 'codex', options.wikiEnabled)}`
+        'Only live source-delta turns end with exactly one [notify] or [ack] marker; owner-answer turns never carry these markers.'
       );
       lines.push(`formatting: ${options.formattingRoutes?.notifications ?? 'telegram'}`);
       if (candidates.length > 0) lines.push('candidates (you decide):', ...candidates);
@@ -570,7 +579,7 @@ function guidanceVersion(entry: GuidanceEntry): string {
 
 function activeGuidance(entries: readonly GuidanceEntry[]): GuidanceEntry[] {
   return entries
-    .filter((entry) => entry.status === 'active')
+    .filter((entry) => entry.status === 'active' && !entry.topic.startsWith('lane/'))
     .slice()
     .sort((left, right) => left.id.localeCompare(right.id));
 }
@@ -602,6 +611,7 @@ function renderGuidanceDelta(
 ): string {
   const changes: string[] = [];
   for (const entry of entries) {
+    if (entry.topic.startsWith('lane/')) continue;
     const before = previous.get(entry.id);
     const after = guidanceVersion(entry);
     if (before === after) continue;
@@ -631,14 +641,16 @@ function assembledContent(
     StimulusDeliveryOptions,
     'wikiEnabled' | 'formattingRoutes' | 'backend' | 'timeZone'
   >,
-  candidates: readonly string[] = []
+  candidates: readonly string[] = [],
+  laneInstruction = ''
 ): ContentBlock[] {
   return [
     {
       type: 'text',
-      text: [...sessionBlocks, boundedStimulus(row, liveSourceDelta, options, candidates)].join(
-        '\n\n'
-      ),
+      text: [
+        ...sessionBlocks,
+        boundedStimulus(row, liveSourceDelta, options, candidates, laneInstruction),
+      ].join('\n\n'),
     },
   ];
 }
@@ -722,6 +734,17 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
           const sessionBlocks: string[] = [];
           const pipeline = isNewSession ? await options.openWorkPipeline?.() : undefined;
           const entries = await options.guidanceResolver();
+          const lane = laneForStimulus(row.kind, row.payload);
+          const laneInstruction = lane
+            ? renderLaneInstructions(
+                lane,
+                entries,
+                options.backend ?? 'codex',
+                options.wikiEnabled ?? true,
+                // A replayed delta is history: it keeps the lane's recording rules but never notifies.
+                row.kind === 'source_delta' && !liveSourceDelta
+              )
+            : '';
           const sessionKey = OWNER_RUNTIME_SESSION_KEY;
           const lastDelivered = guidanceBySessionKey.get(sessionKey);
           if (isNewSession) {
@@ -747,14 +770,17 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
             if (delta) sessionBlocks.push(delta);
           }
           pendingGuidanceState = new Map(
-            entries.map((entry) => [entry.id, guidanceVersion(entry)])
+            entries
+              .filter((entry) => !entry.topic.startsWith('lane/'))
+              .map((entry) => [entry.id, guidanceVersion(entry)])
           );
           return assembledContent(
             row,
             sessionBlocks,
             liveSourceDelta,
             options,
-            liveSourceDelta ? relatedWorkCandidates(row, await options.openWorkCandidates?.()) : []
+            liveSourceDelta ? relatedWorkCandidates(row, await options.openWorkCandidates?.()) : [],
+            laneInstruction
           );
         },
         sessionKey: OWNER_RUNTIME_SESSION_KEY,

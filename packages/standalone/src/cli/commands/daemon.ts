@@ -48,6 +48,7 @@ import { resolvePackageVersion } from '../../package-version.js';
 import { readViewerMemoryStats } from '../../api/viewer-data.js';
 import type { OwnerFileDeliveryResult } from '../../api/file-delivery.js';
 import { createReportScheduler, type ReportScheduler } from '../../runtime/report-scheduler.js';
+import { readAcknowledgedSourceDeltas } from '../../runtime/acknowledged-source-deltas.js';
 import { createTimeZoneSetting } from '../../runtime/timezone.js';
 
 const OWNER_PRINCIPAL_ID = 'owner';
@@ -687,6 +688,8 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
               )
               .get(OWNER_PRINCIPAL_ID)
           ),
+        readAcknowledgedDeltas: (sinceAt, throughAt) =>
+          readAcknowledgedSourceDeltas(owner!.database.adapter, sinceAt, throughAt),
         sendToOwner: (text, key) => gateways.get(reportRoute)!.sendToOwner(text, key),
         onError: (error) =>
           logger.error(`report scheduler failed reason=${stimulusFailureReason(error)}`),

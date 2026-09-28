@@ -71,18 +71,6 @@ export function buildReportPublishToolContract(timeZone: string): string {
   ]);
 }
 
-/** Instruction block that makes a report run also publish the board slots. */
-export function buildBoardPublishLines(timeZone: string): string[] {
-  return [
-    'Before writing the text report, publish all four board slots in one report.publish call:',
-    '  report.publish({ slots: { briefing: "<html>", action_required: "<html>", decisions: "<html>", pipeline: "<html>" } })',
-    ...buildBoardSlotShapeLines(),
-    ...buildBoardHtmlVocabulary(timeZone),
-    "Write all slot CONTENT in the owner's language (match the channels); keep each slot under 6KB.",
-    'The plain-text report you write afterwards is a separate output: no HTML in it.',
-  ];
-}
-
 /**
  * The STRUCTURAL block classes: the ones the board stylesheet needs in order to
  * render a slot as a board block rather than plain text. Sub-element classes

@@ -9,7 +9,7 @@ All notable changes to this project will be documented in this file.
 - Board sections keep the whole picture. A source change used to replace a section with only its own
   item (a seven-card list became one card); now each section keeps every card that is still true and
   changes only the moved items. The briefing section also updates when the day's key situation
-  changes, not only at scheduled reports. The action section holds up to eight cards.
+  changes, not only at scheduled reports.
 - A new owner session starts with the current board, so it edits sections it can see.
 - Related work is found by the channels of each item's evidence, so a message from the same room
   finds the work it continues without the agent recording a channel.
@@ -26,6 +26,11 @@ All notable changes to this project will be documented in this file.
   page through every result or search before every decision; reminders and board sections are
   described by what the reader needs instead of fixed counts; several one-line tool descriptions now
   state their defaults, limits and failures.
+- Owner corrections to how MAMA works now change what it does. Source changes, hourly reminders,
+  full reports and owner answers each follow instructions the agent can revise; a correction such as
+  "send routine updates as one hourly summary" revises that instruction instead of being saved as a
+  note the next turn's fixed text outranked. Hourly reminders now list the source changes handled
+  since the previous reminder, so they can summarize them.
 
 ### Breaking changes
 

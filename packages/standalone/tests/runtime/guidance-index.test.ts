@@ -20,7 +20,7 @@ function row(kind: string, id: string) {
       kind === 'source_delta'
         ? { refs: [] }
         : kind === 'scheduled'
-          ? { report: 'full', hourKey: '2026-09-27:15' }
+          ? { report: id.includes('reminder') ? 'reminder' : 'full', hourKey: '2026-09-27:15' }
           : { text: `${kind} stimulus` },
     coalesceKey: null,
   };
@@ -194,5 +194,137 @@ describe('owner guidance index delivery', () => {
     const retry = await deliver(delivery, 'owner_message', 'retry-input', false);
     expect(retry).toContain('<guidance-delta>');
     expect(retry).toContain('added: memory-guidance-pending');
+  });
+
+  it('keeps lane workflows out of the session guidance index and delta', async () => {
+    const records: Array<Record<string, unknown>> = [];
+    const delivery = createStimulusDelivery({
+      guidanceResolver: async () => records as never,
+      timeZone: createTimeZoneSetting('UTC'),
+    } as never);
+
+    const initial = await deliver(delivery, 'owner_message', 'lane-index-first', true);
+    expect(initial).not.toContain('<guidance-index>\nlane-record');
+    records.push({
+      id: 'lane-record',
+      kind: 'workflow',
+      topic: 'lane/source-delta',
+      applies_when: 'For live source deltas',
+      steps: ['Replace this lane instruction.'],
+      summary: 'Editable lane workflow',
+      status: 'active',
+      updated_at: 1,
+    });
+    const next = await deliver(delivery, 'scheduled', 'lane-index-next', false);
+    expect(next).not.toContain('<guidance-delta>\nadded: lane-record');
+    expect(next).not.toContain('<guidance-index>\nlane-record');
+  });
+
+  it('renders each lane default and the current workflow once in turn content', async () => {
+    const current: Array<Record<string, unknown>> = [];
+    const delivery = createStimulusDelivery({
+      guidanceResolver: async () => current as never,
+      timeZone: createTimeZoneSetting('UTC'),
+    } as never);
+
+    for (const [kind, id, lane] of [
+      ['source_delta', 'lane-default-delta', 'source-delta'],
+      ['scheduled', 'lane-default-reminder', 'hourly-reminder'],
+      ['scheduled', 'lane-default-full', 'full-report'],
+      ['owner_message', 'lane-default-owner', 'owner-answer'],
+    ] as const) {
+      const prompt = await deliver(delivery, kind, id, false);
+      expect(prompt).toContain(`<lane-instructions lane="${lane}" record="default">`);
+      expect(prompt.match(/<lane-instructions /g)).toHaveLength(1);
+      expect(prompt).toContain('Change this lane by saving a workflow');
+      const defaultText = {
+        'source-delta': 'Decide whether each live source delta is chatter',
+        'hourly-reminder': 'Use what this owner session already knows',
+        'full-report': 'Call source.recent for changes since the supplied prior full-report time',
+        'owner-answer': 'Keep the answer concise, with no working notes',
+      }[lane];
+      expect(prompt).toContain(defaultText);
+      if (lane === 'source-delta') {
+        expect(prompt).toContain('Set eventDatetime to the source event time');
+        expect(prompt).toContain('assignee and roles supported by the evidence');
+        expect(prompt).toContain('end_of_window_instructions');
+        expect(
+          prompt.match(/Update every board section the item appears in or leaves/g)
+        ).toHaveLength(1);
+      }
+    }
+
+    for (const [kind, id, lane] of [
+      ['source_delta', 'lane-saved-delta', 'source-delta'],
+      ['scheduled', 'lane-saved-reminder', 'hourly-reminder'],
+      ['scheduled', 'lane-saved-full', 'full-report'],
+      ['owner_message', 'lane-saved-owner', 'owner-answer'],
+    ] as const) {
+      current.length = 0;
+      current.push({
+        id: `saved-${lane}`,
+        kind: 'workflow',
+        topic: `lane/${lane}`,
+        summary: `Saved summary for ${lane}.`,
+        details: `Saved instruction text for ${lane}.`,
+        applies_when: `For ${lane}`,
+        steps: [`Apply the saved ${lane} instruction.`],
+        status: 'active',
+        updated_at: 1,
+      });
+      const prompt = await deliver(delivery, kind, id, false);
+      expect(prompt).toContain(`<lane-instructions lane="${lane}" record="saved-${lane}">`);
+      expect(prompt).toContain(`Saved instruction text for ${lane}.`);
+      expect(prompt).toContain(`Apply the saved ${lane} instruction.`);
+      expect(prompt.match(/<lane-instructions /g)).toHaveLength(1);
+    }
+  });
+
+  it('keeps the fixed delta marker contract when its lane workflow omits markers', async () => {
+    const delivery = createStimulusDelivery({
+      guidanceResolver: async () =>
+        [
+          {
+            id: 'delta-without-markers',
+            kind: 'workflow',
+            topic: 'lane/source-delta',
+            summary: 'Handle the change.',
+            applies_when: 'For deltas',
+            steps: ['Record changed work.'],
+            status: 'active',
+            updated_at: 1,
+          },
+        ] as never,
+      timeZone: createTimeZoneSetting('UTC'),
+    } as never);
+
+    const prompt = await deliver(delivery, 'source_delta', 'delta-marker-contract', false);
+    expect(prompt).toContain(
+      'Only live source-delta turns end with exactly one [notify] or [ack] marker; owner-answer turns never carry these markers.'
+    );
+    expect(prompt.match(/<lane-instructions /g)).toHaveLength(1);
+  });
+
+  it('projects the lane change action to the Claude tool name', async () => {
+    const delivery = createStimulusDelivery({
+      backend: 'claude',
+      guidanceResolver: async () => [],
+      timeZone: createTimeZoneSetting('UTC'),
+    } as never);
+
+    const prompt = await deliver(delivery, 'owner_message', 'claude-lane-actions', false);
+    expect(prompt).toContain('using mcp__mama__memory_save');
+  });
+
+  it('omits topic-page work from delta defaults when the wiki is disabled', async () => {
+    const delivery = createStimulusDelivery({
+      guidanceResolver: async () => [],
+      timeZone: createTimeZoneSetting('UTC'),
+      wikiEnabled: false,
+    } as never);
+
+    const prompt = await deliver(delivery, 'source_delta', 'delta-no-wiki', false);
+    expect(prompt).not.toContain('manage.wiki.');
+    expect(prompt).not.toContain('topic wiki page');
   });
 });

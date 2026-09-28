@@ -20,12 +20,13 @@ describe('scheduled report prompts', () => {
       new Date('2026-09-27T00:00:00Z'),
       { timeZone: 'UTC' }
     );
-    expect(prompt).toContain('what this owner session already knows');
-    expect(prompt).toContain('view="pipeline"');
-    expect(prompt).toContain('Update only action_required');
-    expect(prompt).toContain('most need attention this hour');
+    expect(prompt).not.toContain('what this owner session already knows');
+    expect(prompt).not.toContain('view="pipeline"');
+    expect(prompt).not.toContain('Update only action_required');
+    expect(prompt).not.toContain('5–8 most urgent open items');
+    expect(prompt).not.toContain('Select the');
     expect(prompt).not.toContain('source.recent');
-    expect(prompt).toContain('schedule.upcoming when this session has not read the calendar');
+    expect(prompt).not.toContain('schedule.upcoming when this session has not read the calendar');
     expect(prompt).not.toContain('report.read');
   });
 
@@ -39,6 +40,34 @@ describe('scheduled report prompts', () => {
 
     expect(shape).toContain('most urgent first');
     expect(shape).not.toMatch(/up to \d+ report-cards/);
-    expect(reminder).toContain('most need attention this hour');
+    expect(reminder).not.toContain('5–8 most urgent open items');
+  });
+
+  it('lists acknowledged deltas with the host supplied cap and total', () => {
+    const prompt = buildScheduledReportPrompt(
+      {
+        report: 'reminder',
+        hourKey: '2026-09-27:09',
+        acknowledgedDeltas: {
+          total: 51,
+          cap: 50,
+          items: [
+            {
+              channelLabel: 'Work chat',
+              sourceAt: '2026-09-26T23:42:00.000Z',
+              preview: 'A change was submitted',
+              observationRef: 'obs_1',
+            },
+          ],
+        },
+      },
+      new Date('2026-09-27T00:00:00Z'),
+      { timeZone: 'Asia/Seoul' }
+    );
+
+    expect(prompt).toContain('Acknowledged source deltas (showing 1 of 51; cap 50)');
+    expect(prompt).toContain('Work chat · 09-27 08:42 · preview=');
+    expect(prompt).toContain('A change was submitted');
+    expect(prompt).toContain('· obs_1');
   });
 });

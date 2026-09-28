@@ -1238,3 +1238,10 @@ The implementation writes raw/index data during import only. Replay is the owner
   topic.
 - Still open: after deploy, confirm on live deltas that sections keep their cards, candidates appear,
   and the memory view shows revision chains.
+
+### Editable owner lane instructions (2026-09-28)
+
+- Result: four per-turn lanes now use active `workflow` records at `lane/<name>` or their source defaults; lane records stay out of the guidance index and delta.
+- Evidence: real `memory.save` plus scoped database reads render and replace all four records; 45 affected tests and two scheduled-stimulus tests pass, with root build/typecheck and changed-file lint/format checks passing.
+- Deleted: 83 existing source lines (35 from the standing prompt, 15 from stimulus assembly, 28 from fixed report prompts, and 5 from scheduler assembly); their lane behavior now comes from defaults or scoped workflow records.
+- Still open: a live owner correction/response is not verified because this change was required to leave `~/.mama` and `~/.claude` untouched; full stimulus-delivery cases that open IPC sockets remain sandbox-blocked with `listen EPERM`.
