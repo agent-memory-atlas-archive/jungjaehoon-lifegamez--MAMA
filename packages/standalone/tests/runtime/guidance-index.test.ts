@@ -241,6 +241,9 @@ describe('owner guidance index delivery', () => {
       }[lane];
       expect(prompt).toContain(defaultText);
       if (lane === 'owner-answer') {
+        expect(prompt).toContain(
+          'When the owner asks for work to be done or corrects the state of work, do it in this turn for every affected item'
+        );
         // An owner turn that changes work keeps every still-true card on the board.
         expect(prompt).toContain('preserving every card that remains true');
       }
@@ -277,20 +280,24 @@ describe('owner guidance index delivery', () => {
       const prompt = await deliver(delivery, kind, id, false);
       expect(prompt).toContain(`<lane-instructions lane="${lane}">`);
       // A correction sits on top of the default: the default lines stay and the correction wins.
+      const defaultLine = {
+        'source-delta': 'Decide whether each live source delta is chatter',
+        'hourly-reminder': 'Use what this owner session already knows',
+        'full-report': 'Call source.recent for changes since the supplied prior full-report time',
+        'owner-answer': 'Keep the answer concise, with no working notes',
+      }[lane];
+      expect(prompt).toContain(defaultLine);
       expect(prompt).toContain(
-        {
-          'source-delta': 'Decide whether each live source delta is chatter',
-          'hourly-reminder': 'Use what this owner session already knows',
-          'full-report': 'Call source.recent for changes since the supplied prior full-report time',
-          'owner-answer': 'Keep the answer concise, with no working notes',
-        }[lane]
-      );
-      expect(prompt).toContain(
-        `Owner corrections for this lane (record saved-${lane}); where they conflict with the lines above, these apply:`
+        `Owner corrections for this lane (record saved-${lane}); where they conflict with the default lines above, these apply:`
       );
       expect(prompt).toContain(`Saved summary for ${lane}.`);
       expect(prompt).toContain(`Apply the saved ${lane} instruction.`);
       expect(prompt).not.toContain(`Saved instruction text for ${lane}.`);
+      // The default comes first, the correction under it, and nothing tells the turn to save.
+      expect(prompt.indexOf(defaultLine)).toBeLessThan(
+        prompt.indexOf('Owner corrections for this lane')
+      );
+      expect(prompt).not.toContain('memory.save');
       expect(prompt.match(/<lane-instructions /g)).toHaveLength(1);
     }
   });

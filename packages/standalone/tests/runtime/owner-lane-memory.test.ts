@@ -112,7 +112,7 @@ describe('editable owner lane workflows', () => {
 
         expect(prompt).toContain(`<lane-instructions lane="${lane}">`);
         expect(prompt).toContain(
-          `Owner corrections for this lane (record ${replacement.data?.id}); where they conflict with the lines above, these apply:`
+          `Owner corrections for this lane (record ${replacement.data?.id}); where they conflict with the default lines above, these apply:`
         );
         expect(prompt).toContain(`Replacement summary for ${lane}.`);
         expect(prompt).toContain(`Apply the replacement instruction for ${lane}.`);

@@ -56,7 +56,8 @@ function laneDefault(lane: OwnerLane, wikiEnabled: boolean): string[] {
       ];
     case 'owner-answer':
       return [
-        'Answer owner questions from what this session already knows. Read only what is needed to confirm a fact or learn something not yet known.',
+        'Answer questions from what this session already knows, reading what is needed to confirm a fact.',
+        'When the owner asks for work to be done or corrects the state of work, do it in this turn for every affected item: read the originals it needs, revise the work items and update the board, then report what changed.',
         'An owner-requested report is text. Publish the board only when the owner turn changed work; then update every board section the item appears in or leaves, preserving every card that remains true.',
         'Keep the answer concise, with no working notes, narration about answering, or record or observation ids.',
       ];
@@ -88,8 +89,6 @@ const ACTION_NAMES = [
   'schedule.upcoming',
   'manage.wiki.update',
   'manage.wiki.publish',
-  'memory.save',
-  'memory.retire',
 ];
 
 export function renderLaneInstructions(
@@ -114,7 +113,7 @@ export function renderLaneInstructions(
     ...laneDefault(lane, wikiEnabled),
     ...(record
       ? [
-          `Owner corrections for this lane (record ${record.id}); where they conflict with the lines above, these apply:`,
+          `Owner corrections for this lane (record ${record.id}); where they conflict with the default lines above, these apply:`,
           record.summary,
           ...(record.steps ?? []),
           ...(wikiEnabled ? [] : ['wiki: disabled; skip any wiki step in these corrections.']),

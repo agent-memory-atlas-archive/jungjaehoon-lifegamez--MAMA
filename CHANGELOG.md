@@ -16,7 +16,8 @@ All notable changes to this project will be documented in this file.
 - Feedback that continues a work item now shows as that item's history in memory: every revision
   keeps the item's topic and links to the revision it follows. A migration links revisions already
   stored.
-- The viewer's work list pages past the first 50 items.
+- The viewer's work-list API returns the next page for a cursor; the Tasks page itself still shows
+  the first 50 items.
 - Asking for attachments from a source that has none is reported as invalid input.
 - The Claude backend passes `--effort` to Opus 4.7 and 4.8 and keeps `max` and `xhigh` on the models
   that support them; before, Opus 4.7/4.8 ran without an effort setting and `max` fell to `high` on
@@ -29,7 +30,9 @@ All notable changes to this project will be documented in this file.
 - Owner corrections to how MAMA works now change what it does. Source changes, hourly reminders,
   full reports and owner answers each carry a correction record on top of their built-in
   instructions; a correction such as "send routine updates as one hourly summary" is saved there and
-  wins where it conflicts, instead of being saved as a note the next turn's fixed text outranked.
+  wins where it conflicts, instead of being saved as a note the next turn's fixed text outranked. A
+  correction about the current work is applied to the work items and board in the same turn before
+  it is saved.
   Hourly reminders now list the source changes handled since the previous reminder, so they can
   summarize them.
 
