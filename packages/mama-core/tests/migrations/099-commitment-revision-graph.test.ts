@@ -34,7 +34,7 @@ describe('migration 099: commitment revision graph', () => {
 
   afterAll(async () => cleanupTestDB(dbPath));
 
-  it('backfills consecutive edges and create topics idempotently', async () => {
+  it("backfills consecutive edges idempotently and keeps each record's topic", async () => {
     const knowledge = createKnowledge({ adapter: getAdapter() });
     const created = await knowledge.createWork(
       {
@@ -123,15 +123,11 @@ describe('migration 099: commitment revision graph', () => {
         expect.objectContaining({ from: third.recordRef, to: second.recordRef }),
       ])
     );
-    const topics = db
-      .prepare('SELECT topic FROM decisions WHERE id IN (?, ?, ?)')
-      .all(created.recordRef.id, second.recordRef.id, third.recordRef.id) as Array<{
-      topic: string;
-    }>;
-    expect(topics.map((row) => row.topic)).toEqual([
-      'create-topic',
-      'create-topic',
-      'create-topic',
-    ]);
+    const topicOf = (id: string) =>
+      (db.prepare('SELECT topic FROM decisions WHERE id = ?').get(id) as { topic: string }).topic;
+    // The migration links revisions; it does not rewrite a consumer's stored topics.
+    expect(topicOf(created.recordRef.id)).toBe('create-topic');
+    expect(topicOf(second.recordRef.id)).toBe('authored-topic-two');
+    expect(topicOf(third.recordRef.id)).toBe('authored-topic-three');
   });
 });

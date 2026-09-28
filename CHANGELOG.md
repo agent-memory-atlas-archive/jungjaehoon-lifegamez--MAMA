@@ -14,8 +14,9 @@ All notable changes to this project will be documented in this file.
 - Related work is found by the channels of each item's evidence, so a message from the same room
   finds the work it continues without the agent recording a channel.
 - Feedback that continues a work item now shows as that item's history in memory: every revision
-  keeps the item's topic and links to the revision it follows. A migration links revisions already
-  stored.
+  links to the revision it follows, and MAMA OS revisions keep the item's topic. Migration 099 links
+  revisions already stored; it leaves their topics as they are. In mama-core, `reviseWork` and
+  `withdrawWork` take `topic` as optional; without it a revision keeps the item's topic.
 - The viewer's work-list API returns the next page for a cursor; the Tasks page itself still shows
   the first 50 items.
 - Asking for attachments from a source that has none is reported as invalid input.
@@ -39,10 +40,8 @@ All notable changes to this project will be documented in this file.
 
 ### Breaking changes
 
-- **work.revise:** `topic` is no longer accepted; the work item's topic is kept. Core
-  `reviseWork`/`withdrawWork` commands no longer take a topic either.
-- **Database migration 099** links existing revisions and sets their topic to the work item's topic.
-  Let MAMA apply it.
+- **MAMA OS `work.revise` action:** `topic` is no longer accepted; a revision keeps the work item's
+  topic. The mama-core API is unchanged for existing callers.
 
 ## mama-os [0.57.0] / mama-core [4.0.0] / mcp-server [2.2.1] / plugin [2.0.1] - 2026-09-27
 

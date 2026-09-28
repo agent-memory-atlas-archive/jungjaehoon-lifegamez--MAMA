@@ -337,6 +337,36 @@ describe('knowledge/commitments: committing owner work', () => {
     ]);
   });
 
+  it('a revision keeps a topic the caller supplies', async () => {
+    const knowledge = createKnowledge({ adapter: getAdapter() });
+    const created = await knowledge.createWork(
+      {
+        commandId: 'work-topic-create',
+        topic: 'item-topic',
+        summary: 'created work',
+        set: { title: 'Topic choice' },
+        scopes: access.scopes,
+      },
+      access
+    );
+    const revised = await knowledge.reviseWork(
+      {
+        commandId: 'work-topic-revise',
+        commitmentId: created.commitmentId,
+        expectedRevision: 1,
+        topic: 'caller-topic',
+        summary: 'revised with its own topic',
+        set: { feedback: 'first' },
+        scopes: access.scopes,
+      },
+      access
+    );
+    const row = getAdapter()
+      .prepare('SELECT topic FROM decisions WHERE id = ?')
+      .get(revised.recordRef.id) as { topic: string };
+    expect(row.topic).toBe('caller-topic');
+  });
+
   it('a link to a record the caller cannot see is refused', async () => {
     const created = await createWork(
       {

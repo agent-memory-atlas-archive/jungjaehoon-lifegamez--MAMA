@@ -1271,3 +1271,9 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Result: a correction changes the affected work items and board before the reply and is then saved. Owner turns list every lane's current corrections, and a new correction is merged with them; one marked as for this time only is not saved.
 - Evidence: all 10 live owner turns called memory.save and mostly replied with a promise, with no tool failure. The owner-answer record was rewritten 12 times in 30 minutes, and reminder corrections landed in the owner-answer lane.
 - Still fails: not live-verified until redeployed. The duplicate tasks the owner saw are cancelled merged records shown by the Tasks page's default "All" filter, which also shows only the first 50 items.
+
+### Core revision change made additive (2026-09-28)
+
+- Result: mama-core keeps `topic` as an optional field on `reviseWork`/`withdrawWork` (the item's topic when omitted), and migration 099 only links stored revisions and leaves their topics alone. The revision-topic policy stays in MAMA OS, whose `work.revise` action takes no topic.
+- Evidence: C6. A packed core installed outside the workspace, with its own database and public exports, created work, revised it without a topic (inherited) and with one (kept), read two `builds_on` edges and the current revision, and reported schema 99. A caller that passes `topic`, as 4.0.0 required, type-checks against the packed types. Core 967 tests pass.
+- Still fails: the live testbed already ran the earlier 099, which rewrote its revision topics; it is disposable and needs no change.
