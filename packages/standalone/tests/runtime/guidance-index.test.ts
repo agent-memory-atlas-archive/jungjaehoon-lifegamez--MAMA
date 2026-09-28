@@ -397,6 +397,35 @@ describe('owner guidance index delivery', () => {
     expect(delta).not.toContain('Current owner corrections of the other lanes');
   });
 
+  it('shows every active correction record of a lane, oldest first', async () => {
+    const records = ['first', 'second'].map((name, index) => ({
+      id: `${name}-reminder-correction`,
+      kind: 'workflow',
+      topic: 'lane/hourly-reminder',
+      summary: `The ${name} reminder correction.`,
+      applies_when: 'For reminders',
+      steps: [`Apply the ${name} correction.`],
+      status: 'active',
+      updated_at: index + 1,
+    }));
+    const delivery = createStimulusDelivery({
+      guidanceResolver: async () => records.slice().reverse() as never,
+      timeZone: createTimeZoneSetting('UTC'),
+    } as never);
+
+    const reminder = await deliver(delivery, 'scheduled', 'two-corrections-reminder', false);
+    expect(reminder).toContain(
+      'Owner corrections for this lane (record first-reminder-correction, second-reminder-correction); where they conflict with the default lines above, these apply, and a later record wins over an earlier one:'
+    );
+    expect(reminder.indexOf('The first reminder correction.')).toBeLessThan(
+      reminder.indexOf('The second reminder correction.')
+    );
+
+    const owner = await deliver(delivery, 'owner_message', 'two-corrections-owner', false);
+    expect(owner).toContain('lane/hourly-reminder (record first-reminder-correction)');
+    expect(owner).toContain('lane/hourly-reminder (record second-reminder-correction)');
+  });
+
   it('gives owner-answer turns no delta marker contract', async () => {
     const delivery = createStimulusDelivery({
       guidanceResolver: async () => [],

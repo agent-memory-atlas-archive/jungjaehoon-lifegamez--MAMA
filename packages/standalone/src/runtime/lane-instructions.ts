@@ -91,19 +91,21 @@ const ACTION_NAMES = [
   'manage.wiki.publish',
 ];
 
-function activeLaneRecord(
-  lane: OwnerLane,
-  entries: readonly GuidanceEntry[]
-): GuidanceEntry | undefined {
+/** Every active correction record of a lane, oldest first; a save without replaces adds one. */
+function activeLaneRecords(lane: OwnerLane, entries: readonly GuidanceEntry[]): GuidanceEntry[] {
   return entries
     .filter(
       (entry) =>
         entry.kind === 'workflow' && entry.topic === `lane/${lane}` && entry.status === 'active'
     )
     .sort((left, right) => {
-      const timeOrder = String(right.updated_at).localeCompare(String(left.updated_at));
-      return timeOrder || right.id.localeCompare(left.id);
-    })[0];
+      const timeOrder = String(left.updated_at).localeCompare(String(right.updated_at));
+      return timeOrder || left.id.localeCompare(right.id);
+    });
+}
+
+function correctionLines(records: readonly GuidanceEntry[]): string[] {
+  return records.flatMap((record) => [record.summary, ...(record.steps ?? [])]);
 }
 
 export function renderLaneInstructions(
@@ -112,17 +114,16 @@ export function renderLaneInstructions(
   backend: OwnerRuntimeBackend = 'codex',
   wikiEnabled = true
 ): string {
-  const record = activeLaneRecord(lane, entries);
+  const records = activeLaneRecords(lane, entries);
   // The host default always applies. An owner correction record sits on top of it, so saving a
   // correction never drops a default the correcting turn could not see. A workflow's summary and
   // ordered steps are its instruction; its details explain why.
   const lines = [
     ...laneDefault(lane, wikiEnabled),
-    ...(record
+    ...(records.length > 0
       ? [
-          `Owner corrections for this lane (record ${record.id}); where they conflict with the default lines above, these apply:`,
-          record.summary,
-          ...(record.steps ?? []),
+          `Owner corrections for this lane (record ${records.map((record) => record.id).join(', ')}); where they conflict with the default lines above, these apply${records.length > 1 ? ', and a later record wins over an earlier one' : ''}:`,
+          ...correctionLines(records),
           ...(wikiEnabled ? [] : ['wiki: disabled; skip any wiki step in these corrections.']),
         ]
       : []),
@@ -132,12 +133,12 @@ export function renderLaneInstructions(
       ? [
           'Current owner corrections of the other lanes (they apply in those lanes, not in this answer):',
           ...LANES.filter((other) => other !== lane).flatMap((other) => {
-            const current = activeLaneRecord(other, entries);
-            return current
-              ? [
-                  `lane/${other} (record ${current.id}): ${current.summary}`,
-                  ...(current.steps ?? []).map((step) => `- ${step}`),
-                ]
+            const current = activeLaneRecords(other, entries);
+            return current.length > 0
+              ? current.flatMap((record) => [
+                  `lane/${other} (record ${record.id}): ${record.summary}`,
+                  ...(record.steps ?? []).map((step) => `- ${step}`),
+                ])
               : [`lane/${other}: none`];
           }),
         ]

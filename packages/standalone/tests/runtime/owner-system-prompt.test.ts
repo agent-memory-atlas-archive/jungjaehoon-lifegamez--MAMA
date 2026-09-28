@@ -64,6 +64,7 @@ describe('owner standing prompt', () => {
     expect(prompt).toContain(
       'keep every earlier correction the owner has not withdrawn or replaced, and merge overlapping ones'
     );
+    expect(prompt).toContain('replacing every current record of that lane');
     // A correction is applied to the current work before it is saved as guidance.
     expect(prompt).toContain(
       'apply the correction to the current work in that same turn before replying'
