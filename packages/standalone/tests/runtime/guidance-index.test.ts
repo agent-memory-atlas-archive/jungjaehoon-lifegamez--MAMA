@@ -353,6 +353,50 @@ describe('owner guidance index delivery', () => {
     expect(prompt).not.toContain('End this turn with exactly one marker');
   });
 
+  it("shows owner turns the other lanes' current corrections to compare with", async () => {
+    const records = [
+      {
+        id: 'delta-correction',
+        kind: 'workflow',
+        topic: 'lane/source-delta',
+        summary: 'Bundle routine changes into the hourly reminder.',
+        applies_when: 'For deltas',
+        steps: ['Notify only urgent changes.'],
+        status: 'active',
+        updated_at: 2,
+      },
+      {
+        id: 'old-reminder-correction',
+        kind: 'workflow',
+        topic: 'lane/hourly-reminder',
+        summary: 'Superseded reminder correction.',
+        applies_when: 'For reminders',
+        steps: ['Old step.'],
+        status: 'superseded',
+        updated_at: 1,
+      },
+    ];
+    const delivery = createStimulusDelivery({
+      guidanceResolver: async () => records as never,
+      timeZone: createTimeZoneSetting('UTC'),
+    } as never);
+
+    const owner = await deliver(delivery, 'owner_message', 'owner-sees-corrections', false);
+    expect(owner).toContain(
+      'Current owner corrections of the other lanes (they apply in those lanes, not in this answer):'
+    );
+    expect(owner).toContain(
+      'lane/source-delta (record delta-correction): Bundle routine changes into the hourly reminder.'
+    );
+    expect(owner).toContain('- Notify only urgent changes.');
+    expect(owner).toContain('lane/hourly-reminder: none');
+    expect(owner).toContain('lane/full-report: none');
+    expect(owner).not.toContain('Superseded reminder correction.');
+
+    const delta = await deliver(delivery, 'source_delta', 'delta-no-other-lanes', false);
+    expect(delta).not.toContain('Current owner corrections of the other lanes');
+  });
+
   it('gives owner-answer turns no delta marker contract', async () => {
     const delivery = createStimulusDelivery({
       guidanceResolver: async () => [],

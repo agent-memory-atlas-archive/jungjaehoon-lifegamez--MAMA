@@ -45,7 +45,7 @@ describe('owner standing prompt', () => {
     expect(prompt).not.toContain('For a live source delta');
     expect(prompt).not.toContain('Only live source-delta turns end with [notify]');
     expect(prompt).toContain(
-      'When the owner corrects how a lane reports, formats or notifies, save it in the same turn'
+      'When the owner corrects how a lane reports, formats or notifies, compare the correction'
     );
     expect(prompt).toContain(
       'A request about reporting, formatting, or notification is a lane correction'
@@ -54,11 +54,16 @@ describe('owner standing prompt', () => {
       'Then save it as a scoped lesson, preference or constraint with appliesWhen'
     );
     expect(ownerPrompt('claude')).toContain('with mcp__mama__memory_retire');
-    expect(ownerPrompt('claude')).toContain('mcp__mama__memory_search topicPrefix=<that topic>');
+    expect(ownerPrompt('claude')).toContain('with mcp__mama__memory_save kind=workflow');
     expect(prompt).toContain(
       'topics lane/source-delta, lane/hourly-reminder, lane/full-report and lane/owner-answer'
     );
-    expect(prompt).toContain("carry forward every correction in the lane's active record");
+    expect(prompt).toContain(
+      "compare the correction with that lane's current corrections and save the consolidated set"
+    );
+    expect(prompt).toContain(
+      'keep every earlier correction the owner has not withdrawn or replaced, and merge overlapping ones'
+    );
     // A correction is applied to the current work before it is saved as guidance.
     expect(prompt).toContain(
       'apply the correction to the current work in that same turn before replying'
@@ -222,7 +227,7 @@ describe('owner standing prompt', () => {
     expect(prompt).toContain('memory.retire');
     expect(prompt).toContain('Every change keeps history.');
     expect(prompt).toContain(
-      'When the owner corrects how a lane reports, formats or notifies, save it in the same turn'
+      'When the owner corrects how a lane reports, formats or notifies, compare the correction'
     );
     expect(prompt).not.toContain('When a replay window supplies end_of_window_instructions');
     expect(prompt).toContain(

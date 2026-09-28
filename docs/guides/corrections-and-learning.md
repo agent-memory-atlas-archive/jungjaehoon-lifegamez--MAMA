@@ -48,9 +48,11 @@ the two conflict, so a correction never removes an instruction it does not
 mention.
 
 When you correct how a lane works, such as how reminders are formatted or when
-MAMA should notify you, the agent updates that lane's correction record in the
-same turn, keeping the earlier corrections that still apply, instead of saving a
-separate lesson. A request about reporting, formatting, or
+MAMA should notify you, the agent compares it with that lane's current
+corrections, which every owner turn shows for all four lanes, and saves the
+consolidated set in the same turn: earlier corrections you have not withdrawn or
+replaced stay, and overlapping ones are merged. It does not save a separate
+lesson. A request about reporting, formatting, or
 notification counts as a correction even when you phrase it for one time. The
 reply format markers, security rules, and board layout are not part of a lane
 and stay fixed.

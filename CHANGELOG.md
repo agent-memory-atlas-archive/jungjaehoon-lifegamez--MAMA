@@ -30,7 +30,8 @@ All notable changes to this project will be documented in this file.
 - Owner corrections to how MAMA works now change what it does. Source changes, hourly reminders,
   full reports and owner answers each carry a correction record on top of their built-in
   instructions; a correction such as "send routine updates as one hourly summary" is saved there and
-  wins where it conflicts, instead of being saved as a note the next turn's fixed text outranked. A
+  wins where it conflicts, instead of being saved as a note the next turn's fixed text outranked.
+  Owner turns see every lane's current corrections, so a new one is merged with the earlier ones. A
   correction about the current work is applied to the work items and board in the same turn before
   it is saved.
   Hourly reminders now list the source changes handled since the previous reminder, so they can

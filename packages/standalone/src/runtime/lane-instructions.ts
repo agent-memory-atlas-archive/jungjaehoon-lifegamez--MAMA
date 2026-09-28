@@ -91,13 +91,11 @@ const ACTION_NAMES = [
   'manage.wiki.publish',
 ];
 
-export function renderLaneInstructions(
+function activeLaneRecord(
   lane: OwnerLane,
-  entries: readonly GuidanceEntry[],
-  backend: OwnerRuntimeBackend = 'codex',
-  wikiEnabled = true
-): string {
-  const record = entries
+  entries: readonly GuidanceEntry[]
+): GuidanceEntry | undefined {
+  return entries
     .filter(
       (entry) =>
         entry.kind === 'workflow' && entry.topic === `lane/${lane}` && entry.status === 'active'
@@ -106,6 +104,15 @@ export function renderLaneInstructions(
       const timeOrder = String(right.updated_at).localeCompare(String(left.updated_at));
       return timeOrder || right.id.localeCompare(left.id);
     })[0];
+}
+
+export function renderLaneInstructions(
+  lane: OwnerLane,
+  entries: readonly GuidanceEntry[],
+  backend: OwnerRuntimeBackend = 'codex',
+  wikiEnabled = true
+): string {
+  const record = activeLaneRecord(lane, entries);
   // The host default always applies. An owner correction record sits on top of it, so saving a
   // correction never drops a default the correcting turn could not see. A workflow's summary and
   // ordered steps are its instruction; its details explain why.
@@ -117,6 +124,22 @@ export function renderLaneInstructions(
           record.summary,
           ...(record.steps ?? []),
           ...(wikiEnabled ? [] : ['wiki: disabled; skip any wiki step in these corrections.']),
+        ]
+      : []),
+    // Owner corrections arrive in owner turns, which show only this lane; the other lanes'
+    // current corrections are listed so a new correction is compared with them, not written blind.
+    ...(lane === 'owner-answer'
+      ? [
+          'Current owner corrections of the other lanes (they apply in those lanes, not in this answer):',
+          ...LANES.filter((other) => other !== lane).flatMap((other) => {
+            const current = activeLaneRecord(other, entries);
+            return current
+              ? [
+                  `lane/${other} (record ${current.id}): ${current.summary}`,
+                  ...(current.steps ?? []).map((step) => `- ${step}`),
+                ]
+              : [`lane/${other}: none`];
+          }),
         ]
       : []),
   ];
