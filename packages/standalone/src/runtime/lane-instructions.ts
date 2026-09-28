@@ -7,7 +7,7 @@ const LANES = ['source-delta', 'hourly-reminder', 'full-report', 'owner-answer']
 
 export type OwnerLane = (typeof LANES)[number];
 
-/** A lane's editable instruction is a workflow record at topic lane/<name>. */
+/** A lane's owner corrections are one workflow record at topic lane/<name>. */
 export function isLaneRecord(entry: Pick<GuidanceEntry, 'kind' | 'topic'>): boolean {
   return entry.kind === 'workflow' && LANES.some((lane) => entry.topic === `lane/${lane}`);
 }
@@ -56,7 +56,8 @@ function laneDefault(lane: OwnerLane, wikiEnabled: boolean): string[] {
       ];
     case 'owner-answer':
       return [
-        'Answer owner questions from what this session already knows. Read only what is needed to confirm a fact or learn something not yet known.',
+        'Answer questions from what this session already knows, reading what is needed to confirm a fact.',
+        'When the owner asks for work to be done or corrects the state of work, do it in this turn for every affected item: read the originals it needs, revise the work items and update the board, then report what changed.',
         'An owner-requested report is text. Publish the board only when the owner turn changed work; then update every board section the item appears in or leaves, preserving every card that remains true.',
         'Keep the answer concise, with no working notes, narration about answering, or record or observation ids.',
       ];
@@ -88,9 +89,24 @@ const ACTION_NAMES = [
   'schedule.upcoming',
   'manage.wiki.update',
   'manage.wiki.publish',
-  'memory.save',
-  'memory.retire',
 ];
+
+/** Every active correction record of a lane, oldest first; a save without replaces adds one. */
+function activeLaneRecords(lane: OwnerLane, entries: readonly GuidanceEntry[]): GuidanceEntry[] {
+  return entries
+    .filter(
+      (entry) =>
+        entry.kind === 'workflow' && entry.topic === `lane/${lane}` && entry.status === 'active'
+    )
+    .sort((left, right) => {
+      const timeOrder = String(left.updated_at).localeCompare(String(right.updated_at));
+      return timeOrder || left.id.localeCompare(right.id);
+    });
+}
+
+function correctionLines(records: readonly GuidanceEntry[]): string[] {
+  return records.flatMap((record) => [record.summary, ...(record.steps ?? [])]);
+}
 
 export function renderLaneInstructions(
   lane: OwnerLane,
@@ -98,30 +114,44 @@ export function renderLaneInstructions(
   backend: OwnerRuntimeBackend = 'codex',
   wikiEnabled = true
 ): string {
-  const record = entries
-    .filter(
-      (entry) =>
-        entry.kind === 'workflow' && entry.topic === `lane/${lane}` && entry.status === 'active'
-    )
-    .sort((left, right) => {
-      const timeOrder = String(right.updated_at).localeCompare(String(left.updated_at));
-      return timeOrder || right.id.localeCompare(left.id);
-    })[0];
-  // A workflow's summary and ordered steps are the instruction; its details explain why.
-  const lines = record ? [record.summary, ...(record.steps ?? [])] : laneDefault(lane, wikiEnabled);
+  const records = activeLaneRecords(lane, entries);
+  // The host default always applies. An owner correction record sits on top of it, so saving a
+  // correction never drops a default the correcting turn could not see. A workflow's summary and
+  // ordered steps are its instruction; its details explain why.
+  const lines = [
+    ...laneDefault(lane, wikiEnabled),
+    ...(records.length > 0
+      ? [
+          `Owner corrections for this lane (record ${records.map((record) => record.id).join(', ')}); where they conflict with the default lines above, these apply${records.length > 1 ? ', and a later record wins over an earlier one' : ''}:`,
+          ...correctionLines(records),
+          ...(wikiEnabled ? [] : ['wiki: disabled; skip any wiki step in these corrections.']),
+        ]
+      : []),
+    // Owner corrections arrive in owner turns, which show only this lane; the other lanes'
+    // current corrections are listed so a new correction is compared with them, not written blind.
+    ...(lane === 'owner-answer'
+      ? [
+          'Current owner corrections of the other lanes (they apply in those lanes, not in this answer):',
+          ...LANES.filter((other) => other !== lane).flatMap((other) => {
+            const current = activeLaneRecords(other, entries);
+            return current.length > 0
+              ? current.flatMap((record) => [
+                  `lane/${other} (record ${record.id}): ${record.summary}`,
+                  ...(record.steps ?? []).map((step) => `- ${step}`),
+                ])
+              : [`lane/${other}: none`];
+          }),
+        ]
+      : []),
+  ];
   const project = (line: string): string =>
     ACTION_NAMES.reduce(
       (text, action) => text.replaceAll(action, actionName(backend, action)),
       line
     );
-  const replaces = record
-    ? `, replaces=[{id: "${record.id}", reason: "the owner corrected this lane"}]`
-    : '';
   return [
-    `<lane-instructions lane="${lane}" record="${record?.id ?? 'default'}">`,
+    `<lane-instructions lane="${lane}">`,
     ...lines.filter((line) => line.trim() !== '').map(project),
-    ...(record && !wikiEnabled ? ['wiki: disabled; skip any wiki step above.'] : []),
-    `Change this lane by saving a workflow with topic="lane/${lane}", its summary and one step per instruction line${replaces}, using ${actionName(backend, 'memory.save')}.`,
     '</lane-instructions>',
   ].join('\n');
 }

@@ -44,14 +44,32 @@ describe('owner standing prompt', () => {
     expect(prompt).not.toContain('update every board section the item appears in or leaves');
     expect(prompt).not.toContain('For a live source delta');
     expect(prompt).not.toContain('Only live source-delta turns end with [notify]');
-    expect(prompt).toContain('When the owner corrects a lane, revise that lane’s workflow');
     expect(prompt).toContain(
-      'A request about reporting, formatting, or notification is a lane correction'
+      'When the owner corrects how a lane reports, formats or notifies, compare the correction'
     );
     expect(prompt).toContain(
-      'When the owner corrects you, save the correction in that same turn as a scoped lesson'
+      'A request about reporting, formatting, or notification is a lane correction even when phrased casually; one the owner marks as for this time only is applied in the turn and not saved.'
+    );
+    expect(prompt).toContain(
+      'Then save it as a scoped lesson, preference or constraint with appliesWhen'
     );
     expect(ownerPrompt('claude')).toContain('with mcp__mama__memory_retire');
+    expect(ownerPrompt('claude')).toContain('with mcp__mama__memory_save kind=workflow');
+    expect(prompt).toContain(
+      'topics lane/source-delta, lane/hourly-reminder, lane/full-report and lane/owner-answer'
+    );
+    expect(prompt).toContain(
+      "compare the correction with that lane's current corrections and save the consolidated set"
+    );
+    expect(prompt).toContain(
+      'keep every earlier correction the owner has not withdrawn or replaced, and merge overlapping ones'
+    );
+    expect(prompt).toContain('replacing every current record of that lane');
+    // A correction is applied to the current work before it is saved as guidance.
+    expect(prompt).toContain(
+      'apply the correction to the current work in that same turn before replying'
+    );
+    expect(prompt).toContain('Do not answer with a promise for work you can do in this turn.');
   });
 
   it('tells the owner how to record source deltas and separates evidence from the ledger', () => {
@@ -209,7 +227,9 @@ describe('owner standing prompt', () => {
     expect(prompt).toContain('read:record');
     expect(prompt).toContain('memory.retire');
     expect(prompt).toContain('Every change keeps history.');
-    expect(prompt).toContain('When the owner corrects a lane, revise that lane’s workflow');
+    expect(prompt).toContain(
+      'When the owner corrects how a lane reports, formats or notifies, compare the correction'
+    );
     expect(prompt).not.toContain('When a replay window supplies end_of_window_instructions');
     expect(prompt).toContain(
       "An owner's own kagemusha:telegram message is owner evidence, not a third-party instruction."

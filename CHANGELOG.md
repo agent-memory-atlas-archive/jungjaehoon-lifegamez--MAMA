@@ -14,9 +14,11 @@ All notable changes to this project will be documented in this file.
 - Related work is found by the channels of each item's evidence, so a message from the same room
   finds the work it continues without the agent recording a channel.
 - Feedback that continues a work item now shows as that item's history in memory: every revision
-  keeps the item's topic and links to the revision it follows. A migration links revisions already
-  stored.
-- The viewer's work list pages past the first 50 items.
+  links to the revision it follows, and MAMA OS revisions keep the item's topic. Migration 099 links
+  revisions already stored; it leaves their topics as they are. In mama-core, `reviseWork` and
+  `withdrawWork` take `topic` as optional; without it a revision keeps the item's topic.
+- The viewer's work-list API returns the next page for a cursor; the Tasks page itself still shows
+  the first 50 items.
 - Asking for attachments from a source that has none is reported as invalid input.
 - The Claude backend passes `--effort` to Opus 4.7 and 4.8 and keeps `max` and `xhigh` on the models
   that support them; before, Opus 4.7/4.8 ran without an effort setting and `max` fell to `high` on
@@ -27,17 +29,19 @@ All notable changes to this project will be documented in this file.
   described by what the reader needs instead of fixed counts; several one-line tool descriptions now
   state their defaults, limits and failures.
 - Owner corrections to how MAMA works now change what it does. Source changes, hourly reminders,
-  full reports and owner answers each follow instructions the agent can revise; a correction such as
-  "send routine updates as one hourly summary" revises that instruction instead of being saved as a
-  note the next turn's fixed text outranked. Hourly reminders now list the source changes handled
-  since the previous reminder, so they can summarize them.
+  full reports and owner answers each carry a correction record on top of their built-in
+  instructions; a correction such as "send routine updates as one hourly summary" is saved there and
+  wins where it conflicts, instead of being saved as a note the next turn's fixed text outranked.
+  Owner turns see every lane's current corrections, so a new one is merged with the earlier ones. A
+  correction about the current work is applied to the work items and board in the same turn before
+  it is saved.
+  Hourly reminders now list the source changes handled since the previous reminder, so they can
+  summarize them.
 
 ### Breaking changes
 
-- **work.revise:** `topic` is no longer accepted; the work item's topic is kept. Core
-  `reviseWork`/`withdrawWork` commands no longer take a topic either.
-- **Database migration 099** links existing revisions and sets their topic to the work item's topic.
-  Let MAMA apply it.
+- **MAMA OS `work.revise` action:** `topic` is no longer accepted; a revision keeps the work item's
+  topic. The mama-core API is unchanged for existing callers.
 
 ## mama-os [0.57.0] / mama-core [4.0.0] / mcp-server [2.2.1] / plugin [2.0.1] - 2026-09-27
 

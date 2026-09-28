@@ -230,9 +230,9 @@ describe('owner guidance index delivery', () => {
       ['owner_message', 'lane-default-owner', 'owner-answer'],
     ] as const) {
       const prompt = await deliver(delivery, kind, id, false);
-      expect(prompt).toContain(`<lane-instructions lane="${lane}" record="default">`);
+      expect(prompt).toContain(`<lane-instructions lane="${lane}">`);
+      expect(prompt).not.toContain('Owner corrections for this lane');
       expect(prompt.match(/<lane-instructions /g)).toHaveLength(1);
-      expect(prompt).toContain('Change this lane by saving a workflow');
       const defaultText = {
         'source-delta': 'Decide whether each live source delta is chatter',
         'hourly-reminder': 'Use what this owner session already knows',
@@ -241,6 +241,9 @@ describe('owner guidance index delivery', () => {
       }[lane];
       expect(prompt).toContain(defaultText);
       if (lane === 'owner-answer') {
+        expect(prompt).toContain(
+          'When the owner asks for work to be done or corrects the state of work, do it in this turn for every affected item'
+        );
         // An owner turn that changes work keeps every still-true card on the board.
         expect(prompt).toContain('preserving every card that remains true');
       }
@@ -275,10 +278,26 @@ describe('owner guidance index delivery', () => {
         updated_at: 1,
       });
       const prompt = await deliver(delivery, kind, id, false);
-      expect(prompt).toContain(`<lane-instructions lane="${lane}" record="saved-${lane}">`);
+      expect(prompt).toContain(`<lane-instructions lane="${lane}">`);
+      // A correction sits on top of the default: the default lines stay and the correction wins.
+      const defaultLine = {
+        'source-delta': 'Decide whether each live source delta is chatter',
+        'hourly-reminder': 'Use what this owner session already knows',
+        'full-report': 'Call source.recent for changes since the supplied prior full-report time',
+        'owner-answer': 'Keep the answer concise, with no working notes',
+      }[lane];
+      expect(prompt).toContain(defaultLine);
+      expect(prompt).toContain(
+        `Owner corrections for this lane (record saved-${lane}); where they conflict with the default lines above, these apply:`
+      );
       expect(prompt).toContain(`Saved summary for ${lane}.`);
       expect(prompt).toContain(`Apply the saved ${lane} instruction.`);
       expect(prompt).not.toContain(`Saved instruction text for ${lane}.`);
+      // The default comes first, the correction under it, and nothing tells the turn to save.
+      expect(prompt.indexOf(defaultLine)).toBeLessThan(
+        prompt.indexOf('Owner corrections for this lane')
+      );
+      expect(prompt).not.toContain('memory.save');
       expect(prompt.match(/<lane-instructions /g)).toHaveLength(1);
     }
   });
@@ -334,6 +353,79 @@ describe('owner guidance index delivery', () => {
     expect(prompt).not.toContain('End this turn with exactly one marker');
   });
 
+  it("shows owner turns the other lanes' current corrections to compare with", async () => {
+    const records = [
+      {
+        id: 'delta-correction',
+        kind: 'workflow',
+        topic: 'lane/source-delta',
+        summary: 'Bundle routine changes into the hourly reminder.',
+        applies_when: 'For deltas',
+        steps: ['Notify only urgent changes.'],
+        status: 'active',
+        updated_at: 2,
+      },
+      {
+        id: 'old-reminder-correction',
+        kind: 'workflow',
+        topic: 'lane/hourly-reminder',
+        summary: 'Superseded reminder correction.',
+        applies_when: 'For reminders',
+        steps: ['Old step.'],
+        status: 'superseded',
+        updated_at: 1,
+      },
+    ];
+    const delivery = createStimulusDelivery({
+      guidanceResolver: async () => records as never,
+      timeZone: createTimeZoneSetting('UTC'),
+    } as never);
+
+    const owner = await deliver(delivery, 'owner_message', 'owner-sees-corrections', false);
+    expect(owner).toContain(
+      'Current owner corrections of the other lanes (they apply in those lanes, not in this answer):'
+    );
+    expect(owner).toContain(
+      'lane/source-delta (record delta-correction): Bundle routine changes into the hourly reminder.'
+    );
+    expect(owner).toContain('- Notify only urgent changes.');
+    expect(owner).toContain('lane/hourly-reminder: none');
+    expect(owner).toContain('lane/full-report: none');
+    expect(owner).not.toContain('Superseded reminder correction.');
+
+    const delta = await deliver(delivery, 'source_delta', 'delta-no-other-lanes', false);
+    expect(delta).not.toContain('Current owner corrections of the other lanes');
+  });
+
+  it('shows every active correction record of a lane, oldest first', async () => {
+    const records = ['first', 'second'].map((name, index) => ({
+      id: `${name}-reminder-correction`,
+      kind: 'workflow',
+      topic: 'lane/hourly-reminder',
+      summary: `The ${name} reminder correction.`,
+      applies_when: 'For reminders',
+      steps: [`Apply the ${name} correction.`],
+      status: 'active',
+      updated_at: index + 1,
+    }));
+    const delivery = createStimulusDelivery({
+      guidanceResolver: async () => records.slice().reverse() as never,
+      timeZone: createTimeZoneSetting('UTC'),
+    } as never);
+
+    const reminder = await deliver(delivery, 'scheduled', 'two-corrections-reminder', false);
+    expect(reminder).toContain(
+      'Owner corrections for this lane (record first-reminder-correction, second-reminder-correction); where they conflict with the default lines above, these apply, and a later record wins over an earlier one:'
+    );
+    expect(reminder.indexOf('The first reminder correction.')).toBeLessThan(
+      reminder.indexOf('The second reminder correction.')
+    );
+
+    const owner = await deliver(delivery, 'owner_message', 'two-corrections-owner', false);
+    expect(owner).toContain('lane/hourly-reminder (record first-reminder-correction)');
+    expect(owner).toContain('lane/hourly-reminder (record second-reminder-correction)');
+  });
+
   it('gives owner-answer turns no delta marker contract', async () => {
     const delivery = createStimulusDelivery({
       guidanceResolver: async () => [],
@@ -341,20 +433,23 @@ describe('owner guidance index delivery', () => {
     } as never);
 
     const prompt = await deliver(delivery, 'owner_message', 'owner-no-markers', false);
-    expect(prompt).toContain('<lane-instructions lane="owner-answer" record="default">');
+    expect(prompt).toContain('<lane-instructions lane="owner-answer">');
     expect(prompt).not.toContain('[notify]');
     expect(prompt).not.toContain('[ack]');
   });
 
-  it('projects the lane change action to the Claude tool name', async () => {
+  it('projects lane action names to the Claude tool names and gives no change instruction', async () => {
     const delivery = createStimulusDelivery({
       backend: 'claude',
       guidanceResolver: async () => [],
       timeZone: createTimeZoneSetting('UTC'),
     } as never);
 
-    const prompt = await deliver(delivery, 'owner_message', 'claude-lane-actions', false);
-    expect(prompt).toContain('using mcp__mama__memory_save');
+    const prompt = await deliver(delivery, 'source_delta', 'claude-lane-actions', false);
+    expect(prompt).toContain('mcp__mama__report_publish');
+    expect(prompt).not.toContain('report.publish');
+    // Turn content never tells the agent to save a lane; the standing correction rule does.
+    expect(prompt).not.toContain('memory_save');
   });
 
   it('omits topic-page work from delta defaults when the wiki is disabled', async () => {
@@ -391,6 +486,6 @@ describe('owner guidance index delivery', () => {
 
     const prompt = await deliver(delivery, 'source_delta', 'delta-record-no-wiki', false);
     expect(prompt).toContain('Never touch the topic wiki page.');
-    expect(prompt).toContain('wiki: disabled; skip any wiki step above.');
+    expect(prompt).toContain('wiki: disabled; skip any wiki step in these corrections.');
   });
 });

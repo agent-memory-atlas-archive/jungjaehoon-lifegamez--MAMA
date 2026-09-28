@@ -438,6 +438,8 @@ export interface CreateWorkCommand extends WorkCommand {
 
 export interface ReviseWorkCommand extends WorkCommand {
   commitmentId: string;
+  /** The revision record's topic; the work item's topic when omitted. */
+  topic?: string;
   expectedRevision?: number;
   set?: OwnerWorkPatch;
   clear?: Array<keyof OwnerWorkPatch>;
@@ -445,6 +447,8 @@ export interface ReviseWorkCommand extends WorkCommand {
 
 export interface WithdrawWorkCommand extends WorkCommand {
   commitmentId: string;
+  /** The withdrawal record's topic; the work item's topic when omitted. */
+  topic?: string;
   expectedRevision: number;
 }
 
@@ -572,7 +576,7 @@ export async function reviseWork(
       `Commitment is unavailable: ${command.commitmentId}`
     );
   }
-  const topic = workTopic(options.adapter, command.commitmentId);
+  const topic = command.topic ?? workTopic(options.adapter, command.commitmentId);
   const receipt = await appendJudgment(
     {
       ...recordFields({ ...command, topic }),
@@ -613,7 +617,7 @@ export async function withdrawWork(
       `Commitment is unavailable: ${command.commitmentId}`
     );
   }
-  const topic = workTopic(options.adapter, command.commitmentId);
+  const topic = command.topic ?? workTopic(options.adapter, command.commitmentId);
   const receipt = await appendJudgment(
     {
       ...recordFields({ ...command, topic }),

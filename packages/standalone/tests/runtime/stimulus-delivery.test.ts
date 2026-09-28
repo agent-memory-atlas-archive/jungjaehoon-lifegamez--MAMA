@@ -1011,9 +1011,8 @@ describe('one stimulus intake and delivery', () => {
       expect(guidanceResolver).toHaveBeenCalledWith();
       expect(prompt).not.toMatch(/lodging|check-ins|check-outs/i);
       expect(prompt).toContain(
-        `<lane-instructions lane="${report === 'full' ? 'full-report' : 'hourly-reminder'}" record="default">`
+        `<lane-instructions lane="${report === 'full' ? 'full-report' : 'hourly-reminder'}">`
       );
-      expect(prompt).toContain('Change this lane by saving a workflow');
       expect(prompt).toContain('work.list');
       expect(prompt).toContain('no commitment, observation, judgment or channel ids');
       if (report === 'full') {

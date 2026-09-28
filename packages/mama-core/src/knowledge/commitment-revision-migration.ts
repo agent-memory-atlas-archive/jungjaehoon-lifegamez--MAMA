@@ -12,11 +12,7 @@ interface AssignmentRow {
   created_at: number;
 }
 
-interface DecisionRow {
-  topic: string;
-}
-
-/** Restore the topic and graph relation for every pre-migration commitment history. */
+/** Link every stored commitment revision to the revision it follows. */
 export function backfillCommitmentRevisionGraph(adapter: DatabaseAdapter): void {
   const assignments = adapter
     .prepare(
@@ -35,8 +31,6 @@ export function backfillCommitmentRevisionGraph(adapter: DatabaseAdapter): void 
     byCommitment.set(assignment.commitment_id, rows);
   }
 
-  const getDecision = adapter.prepare('SELECT topic FROM decisions WHERE id = ?');
-  const setTopic = adapter.prepare('UPDATE decisions SET topic = ? WHERE id = ?');
   const hasEdge = adapter.prepare(
     `SELECT 1 FROM twin_edges
      WHERE edge_type = 'builds_on'
@@ -51,22 +45,8 @@ export function backfillCommitmentRevisionGraph(adapter: DatabaseAdapter): void 
   );
 
   for (const [commitmentId, revisions] of byCommitment) {
-    const first = revisions.find((revision) => revision.operation === 'create');
-    if (!first) throw new Error(`Commitment ${commitmentId} has no create assignment`);
-    const firstDecision = getDecision.get(first.record_id) as DecisionRow | undefined;
-    if (!firstDecision) {
-      throw new Error(`Commitment ${commitmentId} create record is unavailable`);
-    }
-
     for (let index = 0; index < revisions.length; index += 1) {
       const current = revisions[index]!;
-      const currentDecision = getDecision.get(current.record_id) as DecisionRow | undefined;
-      if (!currentDecision) {
-        throw new Error(
-          `Commitment ${commitmentId} revision ${current.revision} record is unavailable`
-        );
-      }
-      setTopic.run(firstDecision.topic, current.record_id);
       if (current.operation === 'create') continue;
 
       const previous = revisions[index - 1];

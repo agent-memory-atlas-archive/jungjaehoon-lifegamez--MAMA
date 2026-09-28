@@ -40,15 +40,21 @@ clear.
 ## Correct how a lane works
 
 MAMA works in four lanes: source changes, hourly reminders, full reports, and
-owner answers. Each lane follows an instruction the agent can revise. The
-instruction is a `workflow` record with topic `lane/source-delta`,
-`lane/hourly-reminder`, `lane/full-report`, or `lane/owner-answer`; until one
-exists, the lane uses MAMA's built-in default.
+owner answers. Each lane follows MAMA's built-in instructions plus your
+corrections for that lane. The corrections are one `workflow` record with topic
+`lane/source-delta`, `lane/hourly-reminder`, `lane/full-report`, or
+`lane/owner-answer`. They sit on top of the built-in instructions and win where
+the two conflict, so a correction never removes an instruction it does not
+mention.
 
 When you correct how a lane works, such as how reminders are formatted or when
-MAMA should notify you, the agent revises that lane's record in the same turn
-instead of saving a separate lesson. A request about reporting, formatting, or
-notification counts as a correction even when you phrase it for one time. The
+MAMA should notify you, the agent compares it with that lane's current
+corrections, which every owner turn shows for all four lanes, and saves the
+consolidated set in the same turn: earlier corrections you have not withdrawn or
+replaced stay, and overlapping ones are merged. It does not save a separate
+lesson. A request about reporting, formatting, or
+notification counts as a correction even when you phrase it casually; one you mark
+as for this time only is applied to that answer and not saved. The
 reply format markers, security rules, and board layout are not part of a lane
 and stay fixed.
 
@@ -59,8 +65,7 @@ recent owner exchanges already carried into that session. Later turns in that
 session receive only guidance added, revised, or retired since the last index.
 Scheduled reports, source changes, and native events follow the same rule. An
 unchanged index produces no extra block. Lane records are left out of the index:
-each turn shows its lane's current instruction in full, with the record id to
-replace.
+each turn shows its lane's built-in instructions and current corrections in full.
 
 The agent decides whether an entry applies. Guidance is not evidence of current
 work state: the agent still reads the work record and preserved originals when

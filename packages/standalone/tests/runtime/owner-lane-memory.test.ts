@@ -110,11 +110,9 @@ describe('editable owner lane workflows', () => {
         } as MailboxRow;
         const prompt = await deliveredPrompt(delivery, row, false);
 
+        expect(prompt).toContain(`<lane-instructions lane="${lane}">`);
         expect(prompt).toContain(
-          `<lane-instructions lane="${lane}" record="${replacement.data?.id}">`
-        );
-        expect(prompt).toContain(
-          `replaces=[{id: "${replacement.data?.id}", reason: "the owner corrected this lane"}]`
+          `Owner corrections for this lane (record ${replacement.data?.id}); where they conflict with the default lines above, these apply:`
         );
         expect(prompt).toContain(`Replacement summary for ${lane}.`);
         expect(prompt).toContain(`Apply the replacement instruction for ${lane}.`);

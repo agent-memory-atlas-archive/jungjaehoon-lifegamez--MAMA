@@ -1253,3 +1253,27 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Result: an owner answer that changes work keeps the board merge rule again (it had been left only in the delta lane); duplicated code is shared (Claude effort gating, judgment edge id and hash, the test delivery helper); host data is typed instead of re-parsed (open-work candidates, board slots); an unexplained `edge_idempotency_key` on every agent link and several insurance guards are gone; dead code removed (an unused guidance field, the report prompt's wiki option, two helpers, a duplicate test).
 - Evidence: +111/−421 lines; build, typecheck and lint pass; core 966, standalone 1,157 (also under `TZ=UTC`), MCP server 139, plugin 170. One core graph-browse test failed once under the parallel root run and passed alone and in five reruns; the PR does not touch it.
 - Still open: the live checks after deploy.
+
+### Live check after deploying PR 327 (2026-09-28)
+
+- Result: delta turns got faster and kept the board: 29 s and 3 tool calls (80–236 s and 10–18 calls before), with the lane block, the marker rule and candidates present, and a later delta changing only the pipeline section.
+- Evidence: daemon.log routes, tool_traces per model run, turn inputs counted in the session log, and report-slots.json before and after.
+- Still fails: the first delta created a pending item and left the pipeline section unchanged.
+
+### Lane corrections sit on the default (2026-09-28)
+
+- Result: a correction record now renders under the lane default and wins where they conflict, and turn content no longer tells the agent to save a lane.
+- Evidence: live, an owner-saved source-delta correction of 4 steps had replaced the 9-line default, and delta, reminder and owner turns re-saved lane records with no correction after reading the footer. Tests now assert that the default comes first and that turn content has no save instruction.
+- Still fails: not live-verified until redeployed; records that copied default lines repeat them under the correction line.
+
+### Owner corrections are applied now and consolidated (2026-09-28)
+
+- Result: a correction changes the affected work items and board before the reply and is then saved. Owner turns list every lane's current corrections, and a new correction is merged with them; one marked as for this time only is not saved.
+- Evidence: all 10 live owner turns called memory.save and mostly replied with a promise, with no tool failure. The owner-answer record was rewritten 12 times in 30 minutes, and reminder corrections landed in the owner-answer lane.
+- Still fails: not live-verified until redeployed. The duplicate tasks the owner saw are cancelled merged records shown by the Tasks page's default "All" filter, which also shows only the first 50 items.
+
+### Core revision change made additive (2026-09-28)
+
+- Result: mama-core keeps `topic` as an optional field on `reviseWork`/`withdrawWork` (the item's topic when omitted), and migration 099 only links stored revisions and leaves their topics alone. The revision-topic policy stays in MAMA OS, whose `work.revise` action takes no topic.
+- Evidence: C6. A packed core installed outside the workspace, with its own database and public exports, created work, revised it without a topic (inherited) and with one (kept), read two `builds_on` edges and the current revision, and reported schema 99. A caller that passes `topic`, as 4.0.0 required, type-checks against the packed types. Core 967 tests pass.
+- Still fails: the live testbed already ran the earlier 099, which rewrote its revision topics; it is disposable and needs no change.
