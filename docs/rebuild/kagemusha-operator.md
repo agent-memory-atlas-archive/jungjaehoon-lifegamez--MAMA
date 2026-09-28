@@ -187,9 +187,10 @@ without a separate check".
 
 ## Implementation notes (code review round 1)
 
-- Lessons are searched per guidance kind (lesson, preference, constraint, workflow; three each)
-  and the best three are kept: a whole-memory search returns work records first (597 active work
-  records against 32 guidance records on 2026-09-29).
+- Lessons come from one `memory.search` ranking (40 deep), keeping active guidance in the
+  search's order. `retrieval_score` is rank within one search, so separate per-kind searches would
+  put each kind's first hit on every turn; reading deep keeps the few dozen guidance records
+  reachable among hundreds of work records (597 against 32 on 2026-09-29).
 - The record order carries the delta's last five lines, each up to 300 characters, as Kagemusha's
   record prompt does, so a retry or a record order that runs after other turns still has them.
 - The backfill guard is measured from when the row was accepted, and a skipped row is logged.

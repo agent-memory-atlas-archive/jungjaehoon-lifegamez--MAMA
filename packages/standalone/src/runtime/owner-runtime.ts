@@ -182,6 +182,34 @@ function isOwnerGuidanceRecord(record: MemoryRecord): boolean {
   return (GUIDANCE_KINDS as readonly string[]).includes(record.kind);
 }
 
+/** Active guidance among the search hits, in the search's own order. */
+export function guidanceInSearchOrder(
+  hitIds: readonly string[],
+  records: readonly MemoryRecord[],
+  limit: number
+): TurnLesson[] {
+  const active = new Map(
+    records
+      .filter((record) => isOwnerGuidanceRecord(record) && record.status === 'active')
+      .map((record) => [record.id, record])
+  );
+  return hitIds
+    .flatMap((id) => {
+      const record = active.get(id);
+      return record
+        ? [
+            {
+              id: record.id,
+              topic: record.topic,
+              summary: record.summary,
+              ...(record.applies_when ? { appliesWhen: record.applies_when } : {}),
+            },
+          ]
+        : [];
+    })
+    .slice(0, limit);
+}
+
 /** Assemble the one owner database, catalog, native session and mailbox runtime. */
 export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<OwnerRuntime> {
   // The session's system prompt is composed at its first turn; counting it before the tokenizer
@@ -337,52 +365,29 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       lessons:
         options.lessons ??
         (async (text): Promise<TurnLesson[]> => {
-          // Guidance is a few dozen records among hundreds of work records: search each guidance
-          // kind on its own so work items never crowd the corrections out.
-          const searches = await Promise.all(
-            GUIDANCE_KINDS.map((kind) =>
-              surface.hostToolCall(
-                'memory.search',
-                { query: text.slice(0, 2_000), kind, limit: 3 },
-                `turn-lessons:${randomUUID()}`
-              )
-            )
+          // One ranking: retrieval_score is rank within one search, so separate searches per kind
+          // would put each kind's first hit on every turn. Guidance is a few dozen records among
+          // hundreds of work records, so the search reads deep and keeps guidance in its order.
+          const search = await surface.hostToolCall(
+            'memory.search',
+            { query: text.slice(0, 2_000), limit: 40 },
+            `turn-lessons:${randomUUID()}`
           );
-          const failed = searches.filter((search) => search.status !== 'completed');
-          if (failed.length > 0)
-            options.onLessonSearchFailed?.(
-              `${failed.length} of ${searches.length} lesson searches failed`
-            );
-          const hits = searches.flatMap((search) =>
-            search.status === 'completed' ? searchHits(search.data) : []
-          );
+          if (search.status !== 'completed') {
+            options.onLessonSearchFailed?.(`memory.search ${search.status}`);
+            return [];
+          }
+          const hits = searchHits(search.data);
           if (hits.length === 0) return [];
-          const active = new Map(
-            (
-              await readMemoryRecordsInScopes(database.adapter, [...access.scopes], {
-                kind: [...GUIDANCE_KINDS],
-                status: 'active',
-              })
-            )
-              .filter(isOwnerGuidanceRecord)
-              .map((record) => [record.id, record])
+          const active = await readMemoryRecordsInScopes(database.adapter, [...access.scopes], {
+            kind: [...GUIDANCE_KINDS],
+            status: 'active',
+          });
+          return guidanceInSearchOrder(
+            hits.map((hit) => hit.id),
+            active,
+            3
           );
-          return hits
-            .sort((left, right) => right.score - left.score)
-            .flatMap((hit) => {
-              const record = active.get(hit.id);
-              return record
-                ? [
-                    {
-                      id: record.id,
-                      topic: record.topic,
-                      summary: record.summary,
-                      ...(record.applies_when ? { appliesWhen: record.applies_when } : {}),
-                    },
-                  ]
-                : [];
-            })
-            .slice(0, 3);
         }),
       recordOrders,
       ...(options.onOwnerResult === undefined ? {} : { onOwnerResult: options.onOwnerResult }),
