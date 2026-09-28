@@ -547,6 +547,7 @@ function insertLink(
     reason_text:
       typeof link.attrs?.reason === 'string' ? link.attrs.reason : (command.reasoning ?? undefined),
     evidence_refs: command.replaces?.length ? command.replaces : undefined,
+    edge_idempotency_key: id,
     content_hash: contentHash,
     created_at: now,
   });
@@ -819,8 +820,12 @@ async function appendJudgmentOnAdapter(
         workReceipt = { commitmentId, revision };
       } else {
         const current = adapter
-          .prepare('SELECT current_revision, withdrawn FROM commitments WHERE commitment_id = ?')
-          .get(work.commitmentId) as { current_revision: number; withdrawn: number } | undefined;
+          .prepare(
+            'SELECT current_revision, head_record_id, withdrawn FROM commitments WHERE commitment_id = ?'
+          )
+          .get(work.commitmentId) as
+          | { current_revision: number; head_record_id: string; withdrawn: number }
+          | undefined;
         if (!current) {
           throw new JudgmentError(
             'REFERENCE_NOT_FOUND',
@@ -860,6 +865,18 @@ async function appendJudgmentOnAdapter(
             access.agentId,
             command.modelRunId ?? null
           );
+        edgeIds.push(
+          insertLink(
+            adapter,
+            { ...command, links: [] },
+            recordId,
+            { relation: 'builds_on', target: { kind: 'memory', id: current.head_record_id } },
+            command.links?.length ?? 0,
+            // The host links a revision to the record it revises; the agent did not judge it.
+            { ...access, edgeSource: 'code' },
+            now
+          )
+        );
         adapter
           .prepare(
             'UPDATE commitments SET current_revision = ?, head_record_id = ?, withdrawn = ?, updated_at = ?, agent_id = ?, model_run_id = ? WHERE commitment_id = ?'

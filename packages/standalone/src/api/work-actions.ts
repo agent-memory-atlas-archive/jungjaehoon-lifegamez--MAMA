@@ -1064,7 +1064,6 @@ const workPatchSchema: ActionSchemaObject = {
 };
 
 const commandFields: Record<string, ActionSchemaObject> = {
-  topic: { type: 'string', minLength: 1, description: 'Work topic key, e.g. "release".' },
   summary: {
     type: 'string',
     minLength: 1,
@@ -1109,6 +1108,7 @@ const createSchema: ActionSchemaObject = {
   additionalProperties: false,
   properties: {
     ...commandFields,
+    topic: { type: 'string', minLength: 1, description: 'Work topic key, e.g. "release".' },
     set: {
       ...workPatchSchema,
       description: 'Fields to set on the new work item, e.g. {"title":"Prepare release"}.',
@@ -1118,7 +1118,7 @@ const createSchema: ActionSchemaObject = {
 
 const reviseSchema: ActionSchemaObject = {
   type: 'object',
-  required: ['commitmentId', 'topic', 'summary'],
+  required: ['commitmentId', 'summary'],
   additionalProperties: false,
   properties: {
     ...commandFields,
@@ -1242,7 +1242,7 @@ export function minimalWorkActionRegistrations(ports: WorkPorts): ActionRegistra
         name: 'work.revise',
         recallableWrite: true,
         summary:
-          'Append a revision to owner work. expectedRevision is optional for the single owner writer; when supplied it rejects a stale write. The required summary states what changed and why. Links with relation derived_from cite the observations the revision rests on.',
+          'Append a revision to owner work while keeping its original topic. expectedRevision is optional for the single owner writer; when supplied it rejects a stale write. The required summary states what changed and why. Links with relation derived_from cite the observations the revision rests on.',
         inputSchema: reviseSchema,
         examples: [
           {
@@ -1250,7 +1250,6 @@ export function minimalWorkActionRegistrations(ports: WorkPorts): ActionRegistra
             input: {
               commitmentId: 'commitment-reference',
               expectedRevision: 1,
-              topic: 'work topic',
               summary: 'what changed and why',
               set: { assignee: null, roles: [] },
             },

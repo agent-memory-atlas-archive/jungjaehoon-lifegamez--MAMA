@@ -1224,8 +1224,17 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Still open: deploy and live checks (iCal re-snapshot, timezone change from chat, board-section
   updates on a live delta); RRULE is not expanded.
 
-### Review fixes — board lanes, candidates, viewer and attachments (2026-09-28)
+### Board lanes, candidates and revision continuity (2026-09-28)
 
-- Board lanes: the delta prompt now preserves true cards and updates briefing selectively; action_required allows up to eight cards, HTML reads cover the slot cap, and new sessions receive all saved slots. Prompt, report, session-start and 5KB HTML tests pass.
-- Candidates: one query derives channel/source values from each open item's basis edges; the real SQLite evidence-to-delta test passes without `sourceChannel`. Viewer pagination passes through the route's list handler; both attachment actions classify unsupported connectors as `invalid_input`.
-- Verification: root build/typecheck, changed-file ESLint/Prettier and focused tests pass; affected files report 79 passed and 8 listener `EPERM` failures in viewer and native-socket tests. Still open: deploy and confirm lane preservation/candidate routing in a live owner delta; no live homes were read or changed.
+- Result: live monitoring found lanes shrinking (a delta read the 7-card action_required and wrote one
+  card; briefing stayed at 08:01 through 24 deltas), same-channel candidates never matching (0 of 29
+  open items had sourceChannel), a feedback revision appearing in memory as a new unlinked record
+  (one item: 13 revisions, 7 topics, no edges between them), and the viewer task list stuck at 50 of 111. Fixed: merge rule for sections and briefing on deltas (owner decision), action_required up to 8,
+  whole-slot report.read, board in new sessions; candidates from evidence channels; revisions keep the
+  item's topic and get a host `builds_on` edge (source `code`), migration 099 links stored revisions;
+  viewer cursor; attachment errors as invalid input.
+- Evidence: build, typecheck, lint and the full suites pass; migration 099 on a backup copy of the live
+  database: 33 ms, 385 `builds_on` edges (496 revisions minus 111 creates), every work item down to one
+  topic.
+- Still open: after deploy, confirm on live deltas that sections keep their cards, candidates appear,
+  and the memory view shows revision chains.

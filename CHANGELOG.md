@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Fixed
+
+- Board sections keep the whole picture. A source change used to replace a section with only its own
+  item (a seven-card list became one card); now each section keeps every card that is still true and
+  changes only the moved items. The briefing section also updates when the day's key situation
+  changes, not only at scheduled reports. The action section holds up to eight cards.
+- A new owner session starts with the current board, so it edits sections it can see.
+- Related work is found by the channels of each item's evidence, so a message from the same room
+  finds the work it continues without the agent recording a channel.
+- Feedback that continues a work item now shows as that item's history in memory: every revision
+  keeps the item's topic and links to the revision it follows. A migration links revisions already
+  stored.
+- The viewer's work list pages past the first 50 items.
+- Asking for attachments from a source that has none is reported as invalid input.
+
+### Breaking changes
+
+- **work.revise:** `topic` is no longer accepted; the work item's topic is kept. Core
+  `reviseWork`/`withdrawWork` commands no longer take a topic either.
+- **Database migration 099** links existing revisions and sets their topic to the work item's topic.
+  Let MAMA apply it.
+
 ## mama-os [0.57.0] / mama-core [4.0.0] / mcp-server [2.2.1] / plugin [2.0.1] - 2026-09-27
 
 This is the first npm release since mama-os 0.53.1, mama-core 2.4.1 and mcp-server 1.15.0: versions

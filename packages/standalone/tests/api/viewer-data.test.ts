@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { CommitmentPage } from '@jungjaehoon/mama-core/knowledge';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { createKnowledge, type CommitmentPage } from '@jungjaehoon/mama-core/knowledge';
 import type { WorkGraphPage } from '@jungjaehoon/mama-core';
 import Database from 'better-sqlite3';
 import { GraphModule } from '../../public/viewer/src/modules/graph.js';
@@ -7,12 +10,14 @@ import {
   mapArchiveGraphNode,
   readViewerMemoryStats,
   shapeGraphPage,
+  shapeArchiveGraph,
   shapeMemorySearch,
   shapeOperatorTasks,
   shapeTaskDetail,
   shapeTaskList,
   type RevisionGraphRead,
 } from '../../src/api/viewer-data.js';
+import { openCoreDatabase } from '../../src/runtime/core-db.js';
 
 const page = (items: CommitmentPage['items']): CommitmentPage => ({
   items,
@@ -21,6 +26,69 @@ const page = (items: CommitmentPage['items']): CommitmentPage => ({
 });
 
 describe('viewer data shaping', () => {
+  it('shapes real commitment revision edges into the viewer memory graph', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'mama-viewer-graph-data-'));
+    const handle = await openCoreDatabase({ path: join(root, 'memory.db') });
+    try {
+      const knowledge = createKnowledge({ adapter: handle.adapter });
+      const access = {
+        principalId: 'principal-viewer',
+        agentId: 'agent-viewer',
+        scopes: [{ kind: 'global' as const, id: 'system' }],
+      };
+      const created = await knowledge.createWork(
+        {
+          commandId: 'viewer-data-create',
+          topic: 'viewer-work-topic',
+          summary: 'created work',
+          set: { title: 'Feedback history' },
+          scopes: access.scopes,
+        },
+        access
+      );
+      const revised = await knowledge.reviseWork(
+        {
+          commandId: 'viewer-data-revise-one',
+          commitmentId: created.commitmentId,
+          expectedRevision: 1,
+          summary: 'first feedback',
+          set: { feedback: 'first' },
+          scopes: access.scopes,
+        },
+        access
+      );
+      const revisedAgain = await knowledge.reviseWork(
+        {
+          commandId: 'viewer-data-revise-two',
+          commitmentId: created.commitmentId,
+          expectedRevision: 2,
+          summary: 'second feedback',
+          set: { feedback: 'second' },
+          scopes: access.scopes,
+        },
+        access
+      );
+
+      const page = knowledge.queryGraph({ view: 'browse', history: 'all', limit: 10 }, access);
+      const graph = shapeArchiveGraph(page, 0, ['memory'], 'UTC');
+      expect(graph.edges.filter((edge) => edge.relationship === 'builds_on')).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            from: `memory:${revised.recordRef.id}`,
+            to: `memory:${created.recordRef.id}`,
+          }),
+          expect.objectContaining({
+            from: `memory:${revisedAgain.recordRef.id}`,
+            to: `memory:${revised.recordRef.id}`,
+          }),
+        ])
+      );
+    } finally {
+      await handle.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('keeps fixed kind colours and counts only visible kinds and relationships in the legend', () => {
     const graph = new GraphModule();
     graph.graphData = {

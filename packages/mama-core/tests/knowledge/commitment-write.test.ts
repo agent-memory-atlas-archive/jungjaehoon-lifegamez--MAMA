@@ -9,6 +9,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { getAdapter } from '../../src/db-manager.js';
 import { createWork, readWork, reviseWork, withdrawWork } from '../../src/knowledge/commitments.js';
+import type { ReviseWorkCommand } from '../../src/knowledge/commitments.js';
+import { createKnowledge } from '../../src/knowledge/index.js';
 import { cleanupTestDB, initTestDB } from '../helpers/test-utils.js';
 
 const access = {
@@ -16,6 +18,15 @@ const access = {
   agentId: 'agent-work',
   scopes: [{ kind: 'project' as const, id: 'scope-work' }],
 };
+
+const reviseTopicIsHostSupplied: ReviseWorkCommand = {
+  commandId: 'type-check-revision',
+  commitmentId: 'commitment-type-check',
+  summary: 'record a change',
+  // @ts-expect-error Revisions inherit the create record topic.
+  topic: 'agent-supplied-topic',
+};
+void reviseTopicIsHostSupplied;
 
 describe('knowledge/commitments: committing owner work', () => {
   let dbPath = '';
@@ -136,7 +147,6 @@ describe('knowledge/commitments: committing owner work', () => {
     await reviseWork(
       {
         commandId: 'work-cas-2',
-        topic: 'cas',
         summary: 'someone else got here first',
         commitmentId: created.commitmentId,
         expectedRevision: 1,
@@ -151,7 +161,6 @@ describe('knowledge/commitments: committing owner work', () => {
       reviseWork(
         {
           commandId: 'work-cas-3',
-          topic: 'cas',
           summary: 'writing from a stale read',
           commitmentId: created.commitmentId,
           expectedRevision: 1,
@@ -186,7 +195,6 @@ describe('knowledge/commitments: committing owner work', () => {
       reviseWork(
         {
           commandId: 'work-empty-2',
-          topic: 'empty',
           summary: 'no fields',
           commitmentId: created.commitmentId,
           expectedRevision: 1,
@@ -247,7 +255,6 @@ describe('knowledge/commitments: committing owner work', () => {
     const revised = await reviseWork(
       {
         commandId: 'work-link-revise',
-        topic: 'link-second',
         summary: 'marking it as the thing the report must not block',
         commitmentId: second.commitmentId,
         expectedRevision: 1,
@@ -264,7 +271,70 @@ describe('knowledge/commitments: committing owner work', () => {
     const allEdges = adapter.prepare('SELECT COUNT(*) AS n FROM twin_edges').get() as {
       n: number;
     };
-    expect(allEdges.n).toBe(2);
+    expect(allEdges.n).toBe(3);
+  });
+
+  it('revisions inherit the create topic and form a builds_on chain in graph reads', async () => {
+    const knowledge = createKnowledge({ adapter: getAdapter() });
+    const created = await knowledge.createWork(
+      {
+        commandId: 'work-chain-create',
+        topic: 'stable-work-topic',
+        summary: 'created work',
+        set: { title: 'Work history' },
+        scopes: access.scopes,
+      },
+      access
+    );
+    const revised = await knowledge.reviseWork(
+      {
+        commandId: 'work-chain-revise',
+        commitmentId: created.commitmentId,
+        expectedRevision: 1,
+        summary: 'first feedback',
+        set: { feedback: 'first' },
+        scopes: access.scopes,
+      },
+      access
+    );
+    const revisedAgain = await knowledge.reviseWork(
+      {
+        commandId: 'work-chain-revise-again',
+        commitmentId: created.commitmentId,
+        expectedRevision: 2,
+        summary: 'second feedback',
+        set: { feedback: 'second' },
+        scopes: access.scopes,
+      },
+      access
+    );
+
+    const page = knowledge.queryGraph(
+      {
+        view: 'timeline',
+        seeds: [created.recordRef, revised.recordRef, revisedAgain.recordRef],
+        history: 'all',
+      },
+      access
+    );
+    expect(page.edges.filter((edge) => edge.relation === 'builds_on')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ from: revised.recordRef, to: created.recordRef }),
+        expect.objectContaining({ from: revisedAgain.recordRef, to: revised.recordRef }),
+      ])
+    );
+    const topicRows = getAdapter()
+      .prepare('SELECT id, topic FROM decisions WHERE id IN (?, ?, ?) ORDER BY id')
+      .all(created.recordRef.id, revised.recordRef.id, revisedAgain.recordRef.id) as Array<{
+      id: string;
+      topic: string;
+    }>;
+    expect(topicRows).toHaveLength(3);
+    expect(topicRows.map((row) => row.topic)).toEqual([
+      'stable-work-topic',
+      'stable-work-topic',
+      'stable-work-topic',
+    ]);
   });
 
   it('a link to a record the caller cannot see is refused', async () => {
@@ -284,7 +354,6 @@ describe('knowledge/commitments: committing owner work', () => {
       reviseWork(
         {
           commandId: 'work-link-missing-2',
-          topic: 'link-missing',
           summary: 'the target does not exist',
           commitmentId: created.commitmentId,
           expectedRevision: 1,
@@ -313,7 +382,6 @@ describe('knowledge/commitments: committing owner work', () => {
       withdrawWork(
         {
           commandId: 'work-withdraw-norev-2',
-          topic: 'withdraw',
           summary: 'dropped without a revision',
           commitmentId: created.commitmentId,
           scopes: access.scopes,
@@ -336,10 +404,9 @@ describe('knowledge/commitments: committing owner work', () => {
       access,
       { adapter: getAdapter() }
     );
-    await withdrawWork(
+    const withdrawn = await withdrawWork(
       {
         commandId: 'work-withdraw-2',
-        topic: 'withdraw',
         summary: 'the owner dropped it',
         commitmentId: created.commitmentId,
         expectedRevision: 1,
@@ -349,6 +416,18 @@ describe('knowledge/commitments: committing owner work', () => {
       { adapter: getAdapter() }
     );
 
+    expect(
+      getAdapter()
+        .prepare(
+          `SELECT edge_type, object_id FROM twin_edges
+           WHERE subject_kind = 'memory' AND subject_id = ?`
+        )
+        .all(withdrawn.recordRef.id)
+    ).toContainEqual({ edge_type: 'builds_on', object_id: created.recordRef.id });
+    expect(
+      getAdapter().prepare('SELECT topic FROM decisions WHERE id = ?').get(withdrawn.recordRef.id)
+    ).toEqual({ topic: 'withdraw' });
+
     const view = readWork(getAdapter(), { commitmentId: created.commitmentId }, access).items[0];
     expect(view.withdrawn).toBe(true);
     expect(view.values).toMatchObject({ title: 'Dropped work', status: 'pending' });
@@ -357,7 +436,6 @@ describe('knowledge/commitments: committing owner work', () => {
       reviseWork(
         {
           commandId: 'work-withdraw-3',
-          topic: 'withdraw',
           summary: 'reviving it',
           commitmentId: created.commitmentId,
           expectedRevision: 2,
@@ -403,7 +481,6 @@ describe('knowledge/commitments: committing owner work', () => {
     await reviseWork(
       {
         commandId: 'work-history-2',
-        topic: 'history',
         summary: 'the owner corrected the date',
         commitmentId: created.commitmentId,
         expectedRevision: 1,
@@ -525,7 +602,6 @@ describe('knowledge/commitments: committing owner work', () => {
       reviseWork(
         {
           commandId: 'work-revise-dueat-2',
-          topic: 'revise dueAt',
           summary: 'date-only in the instant slot',
           commitmentId: created.commitmentId,
           expectedRevision: 1,
