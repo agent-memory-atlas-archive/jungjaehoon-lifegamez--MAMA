@@ -1,148 +1,153 @@
 # Operating layer in Kagemusha's structure
 
-Companion to [plan.md](plan.md) W22–W27. This file holds the per-turn comparison, the evidence and
-the decisions; the plan holds only the work items and their checks.
+Companion to [plan.md](plan.md) W22–W26. It holds the evidence, the per-turn comparison and the
+decisions; the plan holds only the work items and their checks. Figures come from Kagemusha's
+`~/.kagemusha/logs/context-cost-current.jsonl` and server log, and from MAMA's Codex rollouts of
+2026-09-28/29. Kagemusha source: `mama-suite/apps/kagemusha/src` (the running working tree). MAMA
+source: `packages/standalone/src` at `6738c6941`.
 
-Kagemusha source: `mama-suite/apps/kagemusha/src` (the running working tree, read 2026-09-29).
-MAMA source: `packages/standalone/src` at `6738c6941`.
+## What differs
 
-## Why
+Both run one model session behind one serial queue. Kagemusha keeps what enters that session
+small, and its host runs each delta through fixed, checked steps. MAMA pours large payloads into the
+session and hands each event to the agent as a whole job.
 
-MAMA OS hands each event to the agent as a whole job. A connector poll becomes a mailbox row, the
-row becomes one turn, and the turn is acked when the model returns. The procedure for every turn
-kind sits in one standing prompt. Corrections and state reach the session once, when it is new.
-Kagemusha's host instead runs an operator loop that decides when to act, issues a complete work
-order for each step, checks the result and only then moves its cursor. The agent judges meaning
-inside each order. Both run one model session and one serial queue; the unit of work is what
-differs.
+| Measure                        | Kagemusha                                                                                  | MAMA                                                             |
+| ------------------------------ | ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------- |
+| Session life                   | one Devin session 09-16 → 09-29: 13 days, 2,484 turns                                      | several a day; 8 compactions on 09-28                            |
+| Turn message                   | median 692 chars, capped at 1,600 (`agent-loop.ts:133–136`)                                | delta turn median 3,563, max 40,242                              |
+| Session start                  | `[session_start]` 2,441 chars, capped at 2,500 (`session-start-context.ts:24–31`)          | first turn 29,773–35,028                                         |
+| Tool text in every turn        | one `code_act` tool, 1,861-char catalog; about 6,300 chars of usage guidance in the prompt | 27 tools: 10,000 description + 38,000 schema                     |
+| Tool result reaching the model | median 37, p90 1,084                                                                       | median 1,553, p90 19,898                                         |
+| Tool result per turn           | small                                                                                      | delta 11,762; owner 15,093; reminder 32,763; full report 130,412 |
+| Input per day                  | about 0.2M chars                                                                           | about 1.5M chars                                                 |
+| Delta notify rate              | 104 of 462 batches (22%), 09-22 → 09-28                                                    | 42 of 98 turns (43%), 09-28                                      |
+| Delta recording checked        | 480 reconciles passed, 0 failed                                                            | not checked; 63 of 98 turns wrote anything                       |
 
-Evidence from 2026-09-28/29 (rollouts under `~/.mama/.codex/sessions`):
+Why the results are small: `code_act` keeps host data in the sandbox and returns only what the
+script returns. `task_list` hands the sandbox a median 43,774 chars and the model gets 636;
+`trello_kanban` 9,028 → 924. MAMA's Codex `exec` works the same way, but the agent prints whole
+results (`text(r)`), and several MAMA actions return very large payloads (`work.list` pipeline
+54,356 chars).
 
-- The same chat request "full report" got 288 chars at 00:21 (second turn of its session) and
-  29,773 chars at 01:40 (first turn). State and corrections are pushed only when `isNewSession`
-  (`runtime/stimulus-delivery.ts:721–741`).
-- The style correction, saved three times, was ignored in the pushed corrections block (13
-  sentence endings) and followed once it became one precise line of `owner-policy.md` in the
-  system prompt (1 sentence ending).
-- Instructions reach a turn from 7 places: the standing prompt, `owner-policy.md`, Codex's built-in
-  developer messages, the corrections block, the session-start data blocks, the turn text and 27
-  tool descriptions (50k chars). Five of their lines contradict each other (see Conflicts).
-- Delta turns on 09-28: 63 of 98 recorded anything; 42 ended in [notify] although the owner rule
-  holds non-urgent changes for the reminder; in sessions mixed with owner chat the replies took 5
-  forms (narration then [ack], [notify] mid-text with Markdown, a reminder-style report, Japanese
-  text, no reply).
-- Subagents: 0 spawns in 476 tool calls. The standing prompt permits delegation; Codex's
-  `<multi_agent_mode>` forbids spawning unless explicitly asked.
-- Kagemusha on 09-28 ran 97 notify, 112 reconcile, 15 feedback and 14 report turns in one Devin
-  session. It does not run fewer turns; its turns are small, single-purpose and checked.
-- Kagemusha's `code_act` ran two or more host calls in 3% of 2,545 executions since 09-15; MAMA's
-  Codex `exec` already batches 31% of its calls. Batching is not a Kagemusha mechanism (#332 is
-  closed on that basis).
+The cycle this creates in MAMA: large results fill the session → it compacts → rules, corrections
+and situation are lost → the host pushes 29k chars at session start to compensate → the session
+fills faster. The owner decision of 2026-07-16 ("autonomous lanes treat the session as a cache",
+measured 146 s → 521 s over three days; `freshSession` in core `native-turn.ts`) was dropped by the
+rebuild.
 
-## Target structure
+## Kagemusha's loop, as it runs
 
-| Part                       | Kagemusha                                                                                                                          | MAMA after W22–W27                                                                                                           |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| Collection                 | channels write `channel_messages` as messages arrive                                                                               | connectors keep polling into `raw_items` and `observation_versions` (unchanged)                                              |
-| Operator loop              | `AgentAwareness` (`runtime/agent-awareness.ts`)                                                                                    | new `runtime/operator.ts`, a port of it                                                                                      |
-| Cursor                     | `lastSeenId` over `channel_messages` rowid, committed only after success                                                           | rowid of `observation_versions`, stored in the operator state file                                                           |
-| Trigger                    | 15 s after a new message (`:322`), every 5 min (`:291`), skipped while a batch runs (`:343`), 30 s pause after compaction (`:317`) | the same, with the connector callback as the trigger                                                                         |
-| One queue                  | in-memory FIFO in `agent-loop.ts:321`                                                                                              | the core mailbox, already serial and owner-message first (`stimulus-delivery.ts:785`); the operator awaits each row's result |
-| Session                    | one Devin session reused (`devin-acp-process.ts:151`)                                                                              | one Codex/Claude session (unchanged)                                                                                         |
-| Turn text                  | a complete work order per kind, current local time included                                                                        | the same, all orders in one file                                                                                             |
-| Check                      | reconcile must write or call `contract_no_update` (`:1082`)                                                                        | the record order must write or call `work.no_update`, read from `tool_traces` by model run                                   |
-| Restore after session loss | last 10 owner turns; automation turns excluded (`agent-loop.ts:352–380, :800`)                                                     | recent owner exchanges only                                                                                                  |
+- **Queue and session.** One `KagemushaAgentLoop` (`agent/agent-loop.ts`), one runner, one
+  in-memory FIFO (`:321`). Telegram chat, every awareness step and the session start all call
+  `chat()` and wait. The Devin session is reused for the process lifetime
+  (`devin-acp-process.ts:151`).
+- **Turn text.** `<context channel>` + optional lesson block + previous turns only after a session
+  loss (≤3,000 chars) + the message (`:343–400`).
+- **Lessons.** None on automation turns. After a new or lost session: top 3 by search, ≤1,200
+  chars. Within a session: only on memory-trigger words, with a cooldown, ≤600 chars (68 of 3,342
+  turns). Blocks say "lessons, not facts; verify current state with tools" (`:185`).
+- **Restore.** Automation turns (`system:`, `delta-taskboard:`, `delta-feedback:`,
+  `delta-contract:`) are left out of the transcript restored after a loss; delta notify turns are
+  kept (`:138–145, :800`).
+- **Session start.** One `[session_start]` turn at startup: 10 owner messages, 10 resumable turns,
+  recent decisions, 3 startup lessons, checkpoint, current time, "use channel_recent for what came
+  after" (`runtime/agent-session.ts`, `session-start-context.ts`).
+- **Delta cycle** (`runtime/agent-awareness.ts:336–540`). A new channel message triggers a flush
+  after 15 s (`:322`); a 5-minute timer also runs (`:291`); a running batch makes the next one skip
+  (`:343`); compaction pauses deltas 30 s (`:317`). All new messages since the cursor are grouped by
+  channel. Per channel: an optional contract turn when a situation pattern matches (21 in 14
+  days); feedback forwarding; the **notify turn** (`formatDelta`, `:554`: header with time, source
+  ids, one line per message ≤500 chars); the **record turn** (`buildTaskboardReconcilePrompt`,
+  `:1050`: read context, tasks and kanban, decide slots, write or `contract_no_update`, "done:"
+  line, reply `[ack]`). The record turn is verified by a before/after snapshot: a task or report
+  change scoped to the batch's source events, or a no-update record
+  (`agent/contracts/action-verifier.ts:231–330`). The cursor advances only over messages whose
+  notify and record both passed (`:520–540`).
+- **Routing.** The host reads the last `[notify]`/`[ack]` in the reply (`:1033`), the same as MAMA
+  (`cli/commands/daemon.ts:395`).
+- **Reports.** Full report at 8/13/18 with its own prompt (`runtime/report-prompts.ts:1–16`);
+  hourly reminder with Kagemusha's steps (`:1434–1470`); chat "full report" swapped by regex
+  (`monitoring-runtime.ts:294`).
+- **Learning.** `brain.observeTurn` extracts lessons from owner messages by keyword
+  (`brain/experience-signal-extractor.ts`), and `mama_save` saves what a tool cannot re-derive.
 
 ## Per-turn table
 
-| Turn                    | Kagemusha                                                                                                                                                                                          | MAMA now                                                                                                                                                           | Port                                                                                                                                                             |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Owner message           | `<context channel>` + top-3 brain lessons + message; the last 10 owner turns only after a session loss (`agent-loop.ts:343–400`, `brain/kagemusha-brain.ts`)                                       | `## Bounded stimulus` block (`stimulus-delivery.ts:410`); on a new session also the corrections block, open-work pipeline, board and recent exchanges (`:721–741`) | channel header, current local time, top-3 relevant lessons (memory.search on the message), message and attachments; recent owner exchanges only on a new session |
-| Chat full report        | `isFullReportRequest` regex swaps the message for the report prompt (`monitoring-runtime.ts:294`, `report-prompts.ts:18–25`); report principles in the fixed prompt (`system-prompt.ts:223, :237`) | swap only for owner-registered phrases, none registered (`stimulus-delivery.ts:400`, `owner-system-prompt.ts:76–77`)                                               | no swap. The full-report procedure lives once in the fixed prompt; the agent recognises the request from context                                                 |
-| Scheduled full report   | `[scheduled_full_report]` + time + reads + `report_publish` of 4 slots + five-part format (`report-prompts.ts:1–16`, `agent-awareness.ts:1407`)                                                    | `fullReportTurn` with steps and a wiki resync and journal (`report-prompts.ts:68–110`)                                                                             | tag, local time and "changes since"; steps are the fixed prompt's procedure; wiki resync and journal removed                                                     |
-| Hourly reminder         | task list, top 5–8, `action_required` only, 3–6 lines "top N priorities" (`agent-awareness.ts:1434–1470`)                                                                                          | own steps plus an acknowledged-delta digest (`report-prompts.ts:52–66`, `acknowledged-source-deltas.ts`)                                                           | Kagemusha's steps; digest removed                                                                                                                                |
-| Delta notify            | `[delta <room> ~time]` + source event ids + message lines (`agent-awareness.ts:554`); reply must start with [notify] or [ack] (`system-prompt.ts:22`)                                              | one all-in-one turn per poll row; marker parsed from the end (`cli/commands/daemon.ts:395`)                                                                        | notify order only: messages inline, decide [notify]/[ack], nothing else; marker must start the reply                                                             |
-| Delta record            | separate `[delta_taskboard_reconcile]` turn: read context, task list and kanban, decide slots, write or `contract_no_update`, "done:" line, reply exactly [ack] (`agent-awareness.ts:1050–1080`)   | none; recording happens (or not) inside the delta turn, procedure in the standing prompt (`owner-system-prompt.ts:115–131`)                                        | record order after each notify, same steps with `work.list`, the Trello source, `report.publish`, the case's wiki line, `work.no_update`; [ack] only; checked    |
-| Lessons and corrections | fixed prompt rules; top-3 lessons (1,200 chars) on owner messages; none on automation turns; save rule "only what a tool cannot re-derive"; compaction recovery (`system-prompt.ts:54–68`)         | every active correction pushed at session start and on change (`stimulus-delivery.ts:583–587, :721–760`)                                                           | standing rules in `owner-policy.md`; top-3 on owner messages; save rule and compaction recovery in the fixed prompt                                              |
-| Fixed system prompt     | one Korean document: role, behaviour rules, routing tags, memory and compaction, tools, report principles, Telegram format (`agent/system-prompt.ts`)                                              | 16k-char standing prompt holding every turn kind's procedure, replay orchestration and delegation (`owner-system-prompt.ts`) + `owner-policy.md`                   | one English host document in Kagemusha's section order + `owner-policy.md`; no per-kind procedures                                                               |
+| Turn                  | Kagemusha                                                      | MAMA now                                                                                                     | After W22–W23                                                                                                                                       |
+| --------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Session start         | `[session_start]` ≤2,500                                       | corrections, pipeline, board and recent exchanges on the first turn, 29–35k (`stimulus-delivery.ts:721–741`) | `[session_start]` block ≤2,500 on a new session: recent owner exchanges, 3 startup lessons, current time, "read the ledger and sources when needed" |
+| Owner message         | channel + message; lessons after a restore or on trigger words | bounded stimulus, 288–900 chars                                                                              | channel, local time, top-3 lessons ≤1,200 (owner rejected keyword triggers), message                                                                |
+| Chat full report      | regex swap to the report prompt                                | swap only for registered phrases; none registered                                                            | no swap; the one full-report procedure is in the fixed prompt and the agent recognises the request                                                  |
+| Scheduled full report | tag, time, reads, publish 4 slots, five parts                  | steps + wiki resync + journal (`report-prompts.ts:68–110`)                                                   | tag, local time, "changes since"; procedure from the fixed prompt; no wiki resync                                                                   |
+| Reminder              | task list, top 5–8, `action_required`, 3–6 lines               | own steps + acknowledged-delta digest                                                                        | Kagemusha's steps; `[ack]` allowed when nothing needs attention                                                                                     |
+| Delta notify          | messages inline, decide `[notify]`/`[ack]`                     | one all-in-one turn per poll row                                                                             | notify order: header with local time, one line per message ≤500 chars                                                                               |
+| Delta record          | fixed 5 steps, `[ack]`, verified                               | none                                                                                                         | record order: 5 steps, `work.no_update` when nothing changed, the case wiki line when a case moved, `[ack]`; verified from `tool_traces`            |
+| Tool results          | filtered in the sandbox                                        | whole results printed                                                                                        | usage guidance with filtering examples; compact default results for the largest reads                                                               |
 
-## Instruction paths (W22)
+## Instruction paths
 
-Every place text reaches the model in a turn, read from the 2026-09-29 01:40 rollout. After W22
-each rule topic has exactly one path; the check is the assembled input of each turn kind, dumped
-from the rollout, with every rule mapped to one path.
+| Path                                           | Size now           | After W22                                                                                                                                                                                                                                                                                                              |
+| ---------------------------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Host prompt (`owner-system-prompt.ts`)         | 13,800             | Kagemusha's section order: role; behaviour (actions over shell, the routing tags, success only on tool success); continuity (session start, compaction recovery, save rule); the full-report procedure; tool usage with filtering examples; messenger syntax. No style, per-kind procedure, replay or delegation lines |
+| Telegram guide (`gateways/telegram-format.ts`) | 1,300              | syntax only; "unstyled prose reads better" removed                                                                                                                                                                                                                                                                     |
+| `owner-policy.md`                              | 2,700              | the only home of language, style and report-content rules; line 62 fixed (data)                                                                                                                                                                                                                                        |
+| Codex skills message                           | 4,700              | the stale `wiki-versioned-publish` skill, which no source produces, is deleted (data)                                                                                                                                                                                                                                  |
+| Codex multi-agent messages                     | 2,700              | unchanged; no longer contradicted once the host delegation line goes                                                                                                                                                                                                                                                   |
+| Session-start blocks                           | 29,000             | `[session_start]` ≤2,500                                                                                                                                                                                                                                                                                               |
+| Turn text                                      | 300–40,000         | the work order, ≤1,600 except message lines the batch carries                                                                                                                                                                                                                                                          |
+| Tool descriptions and schemas                  | 48,000             | one line per tool and the input schema; full contract through a `help` action; board content rules move to the full-report procedure                                                                                                                                                                                   |
+| Lessons                                        | 5,000–7,000 pushed | top 3 ≤1,200, advisory                                                                                                                                                                                                                                                                                                 |
 
-| Path                                                                            | Size (chars)    | Carries now                                                                                                                                       | After W22                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| ------------------------------------------------------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Host standing prompt (`owner-system-prompt.ts`)                                 | 13,800          | runtime rules, every turn kind's procedure, response style, replay orchestration, delegation, correction precedence                               | runtime mechanics and the one full-report procedure only; style goes to `owner-policy.md`, procedures to the orders, replay to W26, delegation and precedence removed                                                                                                                                                                                                                                                                                            |
-| Telegram format guide, inside the host prompt (`gateways/telegram-format.ts`)   | 1,300           | messenger syntax and "unstyled prose reads better"                                                                                                | messenger syntax only                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `owner-policy.md` (owner data)                                                  | 2,700           | the owner's work and style rules; overlaps the host's response and board lines; line 62 conflicts                                                 | the only home for language, style, answer and report-content rules; line 62 fixed                                                                                                                                                                                                                                                                                                                                                                                |
-| Codex skills message                                                            | 4,700           | 5 bundled Codex skills and a stale `wiki-versioned-publish` skill in `~/.mama/.codex/skills` that no source produces                              | stale skill deleted; bundled skills dropped if the app-server has a switch for them (to verify)                                                                                                                                                                                                                                                                                                                                                                  |
-| Codex multi-agent messages (`multi_agent = true`, `codex-home.ts:473`)          | 2,700           | "you can spawn" and "do not spawn unless asked"                                                                                                   | unchanged, and no longer contradicted once the host delegation line goes                                                                                                                                                                                                                                                                                                                                                                                         |
-| Session-start blocks in the first user message (`stimulus-delivery.ts:721–741`) | 29,000          | corrections, open-work pipeline, board, recent exchanges                                                                                          | recent owner exchanges on a new session only                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| Per-turn text                                                                   | 300–3,000       | bounded stimulus; report and reminder steps                                                                                                       | the work order: data and the turn's own constraints only                                                                                                                                                                                                                                                                                                                                                                                                         |
-| Tool descriptions and schemas (27 tools)                                        | 10,000 + 38,000 | every tool's full description and schema in every turn; 14 descriptions carry usage rules; `report_publish` (2,400) holds the board content rules | progressive, as Kagemusha does: one `code_act` tool whose description lists 25 functions in one line each (1,861 chars, `mcp/stdio-server.ts:99`), about 6,300 chars of usage guidance in its fixed prompt, and detail through `help()`/`list_tools()` (`mcp/code-act-sandbox.ts:600–660`). MAMA keeps a one-line catalog and the core usage guidance up front; full schemas and details are read on demand; board content rules go to the full-report procedure |
-| Top-3 lessons (new)                                                             | up to 1,200     | none                                                                                                                                              | situational lessons only, marked advisory ("verify current state with tools"), as Kagemusha does (`system-prompt.ts:48–50`)                                                                                                                                                                                                                                                                                                                                      |
-
-## Known conflicts (all removed in W22)
-
-| Lines in conflict                                                                                        | Resolution                                                   |
-| -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| `owner-policy.md` point-form reports vs "unstyled prose reads better" (`gateways/telegram-format.ts:91`) | drop the prose line                                          |
-| no ids in owner text vs `owner-policy.md` "answer evidence with task and observation ids"                | fix the policy line (owner decision 2026-09-29)              |
-| "no mechanical hourly reports" vs a reminder turn that always writes one                                 | the reminder order allows [ack] when nothing needs attention |
-| "Delegate when it helps" vs Codex "do not spawn unless asked"                                            | drop the delegation line; separation is by host turns        |
-| "read each board section first" vs correction "update the board without a separate check"                | the record order reads the board once and writes             |
+Known conflicts removed: point form vs "unstyled prose reads better"; "no ids" vs policy line 62;
+"no mechanical hourly reports" vs a reminder that always writes; "delegate when it helps" vs Codex
+"do not spawn unless asked"; "read each board section first" vs the correction "update the board
+without a separate check".
 
 ## Removed, and where their knowledge goes
 
-| Removed                                                                                                         | Where it goes                                                        |
-| --------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| session-start corrections block, correction deltas, guidance state (`stimulus-delivery.ts:583–760`)             | top-3 lessons on owner messages; standing rules in `owner-policy.md` |
-| session-start pipeline and board blocks                                                                         | orders read `work.list` and `report.read` themselves                 |
-| report-phrase mechanism (`report-phrases.ts`, `api/owner-report-phrase-actions.ts`, the swap, two prompt lines) | fixed-prompt full-report procedure                                   |
-| one all-in-one turn per poll row; related-work candidates (`relatedWorkCandidates`)                             | notify and record orders; the record order reads the ledger first    |
-| acknowledged-delta digest (`acknowledged-source-deltas.ts`)                                                     | the reminder reads `work.list`                                       |
-| wiki resync and daily journal in the full report                                                                | the case's wiki line in the record order                             |
-| replay orchestration and delegation lines in the standing prompt                                                | the replay turn text (W26)                                           |
-| `acceptNativeEvent` (no producer since 2026-09-27)                                                              | none needed                                                          |
+| Removed                                                                                                 | Where it goes                                                                |
+| ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| corrections block, correction deltas, guidance state (`stimulus-delivery.ts:583–760`)                   | top-3 lessons; standing rules in `owner-policy.md`                           |
+| pipeline and board blocks at session start                                                              | the agent reads `work.list` and `report.read` when needed                    |
+| report-phrase mechanism (`report-phrases.ts`, `api/owner-report-phrase-actions.ts`, swap, prompt lines) | the fixed-prompt full-report procedure                                       |
+| one turn per poll row; related-work candidates                                                          | notify and record orders; the record order reads the ledger when it needs to |
+| acknowledged-delta digest (`acknowledged-source-deltas.ts`)                                             | the reminder reads `work.list`                                               |
+| wiki resync and daily journal in the full report                                                        | the case wiki line in the record order                                       |
+| replay orchestration and delegation lines                                                               | the replay turn text (W26)                                                   |
+| `acceptNativeEvent` (no producer since 2026-09-27)                                                      | none needed                                                                  |
 
 ## Deviations from Kagemusha
 
-1. No keyword swap for chat reports; the procedure is in the fixed prompt once (owner principle
-   2026-09-29: the agent acts from context).
-2. Kagemusha's "print a plan block first" (`system-prompt.ts:17`) is not ported to owner-facing
-   replies; the owner corrected it ("no unrequested checklists"). The checklist stays in the record
-   order, whose reply is never sent.
-3. The durable mailbox replaces the in-memory queue. Operator rows still pending at a restart are
-   quarantined at start and redone from the uncommitted cursor.
-4. The record order carries the batch's observation refs in its payload, because the mailbox
-   deduplicates refs already accepted by the notify order.
-5. Lessons are attached to every owner message, not on trigger words (owner rejected keywords in
-   code; decision `owner_corrections_kagemusha_pull`).
-6. The case's wiki line is written in the record order (INTENT: history is written when the change
+1. No keyword swap for chat reports and no keyword lesson triggers; the agent decides from context
+   (owner, 2026-09-29).
+2. Kagemusha's "print a plan block first" is not ported to owner replies (owner correction); the
+   checklist stays in the record order, whose reply is never sent.
+3. The durable mailbox replaces the in-memory queue. Operator rows pending at a restart are
+   quarantined and redone from the uncommitted cursor.
+4. The case wiki line is written in the record order (INTENT: history is written when the change
    happens); Kagemusha has no wiki.
+5. `brain.observeTurn` keyword extraction and the contract system are not ported: the agent saves
+   lessons itself, and contracts ran 21 times in 14 days.
+6. Codex keeps its native `exec` as the filter; `code_act` (#332) is not needed for the Codex
+   backend. Whether the Claude backend needs it is decided after W22's measurement.
 
-## Owner decisions
+## Owner decisions still open
 
-1. The agent editing `owner-policy.md` when the owner corrects a standing rule: an
-   owner-message-only action (recommended) or a workspace file the agent edits. Until then the
-   developer merges such corrections (W24).
-2. Kagemusha's feedback-forwarding contract routes by a keyword regex, which the owner rejects.
-   Port it with the agent deciding, or leave feedback to the notify order.
-3. Decided 2026-09-29 (owner): tool descriptions are progressive and read when needed, not all
-   injected. The mechanism is chosen in W22 after checking Codex's `tool_search` feature (set to
-   false in `codex-home.ts`) and Claude's deferred MCP tools; otherwise a host `help` action returns
-   a tool's full contract.
-4. Telegram placeholder and streaming (W25).
+1. How the agent edits `owner-policy.md` when a correction is a standing rule (owner-message-only
+   action recommended). Until then the developer merges such corrections.
+2. Feedback forwarding: Kagemusha routes it by keyword. Leave it to the notify order, or port it
+   with the agent deciding.
+3. Telegram placeholder and streaming (W25).
 
-## Baselines for the checks
+## Baselines and targets
 
-| Measure                                                    | Baseline                          | Source                              |
-| ---------------------------------------------------------- | --------------------------------- | ----------------------------------- |
-| record turns that wrote or declared no update              | 63 of 98                          | 2026-09-28 08:00 rollout            |
-| [notify] replies against the hold rule                     | 42 of 98                          | same                                |
-| delta reply forms                                          | 5                                 | 2026-09-28 20:34 and 22:40 rollouts |
-| chat full report: local date, five parts, sentence endings | wrong, no, 13 (00:21) / 1 (01:40) | 2026-09-29 rollouts                 |
-| input of the same owner request by session position        | 288 vs 29,773 chars               | same                                |
-| owner reply wait behind a delta turn                       | not yet measured                  | mailbox claimed/acked times         |
+| Measure                                                    | Baseline        | Target                                 |
+| ---------------------------------------------------------- | --------------- | -------------------------------------- |
+| Compactions of the owner session per day                   | 8               | ≤1                                     |
+| Input chars per day into the owner session                 | about 1.5M      | ≤0.4M                                  |
+| Tool result per turn, median (delta / owner)               | 11,762 / 15,093 | ≤3,000                                 |
+| Session start message                                      | 29,773          | ≤2,500                                 |
+| Record orders that wrote or declared no update             | 63 of 98        | all                                    |
+| `[notify]` share of delta batches                          | 43%             | within the owner policy; Kagemusha 22% |
+| Chat full report: local date, five parts, sentence endings | wrong / no / 13 | right / yes / 0–1                      |
