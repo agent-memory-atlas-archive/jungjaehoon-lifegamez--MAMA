@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## mama-os [0.58.0] / mama-core [4.1.0] / mcp-server [2.2.2] / plugin [2.0.2] - 2026-09-28
 
 ### Fixed
 
@@ -37,6 +37,10 @@ All notable changes to this project will be documented in this file.
   it is saved.
   Hourly reminders now list the source changes handled since the previous reminder, so they can
   summarize them.
+
+- MCP server: `save` asks to search for related decisions first in plain words instead of a
+  "REQUIRED" banner on `search`. Plugin: the session-start greeting mentions a checkpoint's next
+  step only when one is shown.
 
 ### Breaking changes
 
