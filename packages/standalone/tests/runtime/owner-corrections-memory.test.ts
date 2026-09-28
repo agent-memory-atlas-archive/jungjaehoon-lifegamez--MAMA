@@ -17,10 +17,10 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-describe('editable owner lane workflows', () => {
-  it('renders the text saved by memory.save for each lane', async () => {
+describe('owner corrections saved with memory.save', () => {
+  it('shows the current correction in full to every kind of turn', async () => {
     vi.stubEnv('MAMA_FORCE_TIER_3', 'true');
-    const root = mkdtempSync(join(tmpdir(), 'owner-lanes-'));
+    const root = mkdtempSync(join(tmpdir(), 'owner-corrections-'));
     roots.push(root);
     const database = await openCoreDatabase({ path: join(root, 'state.db') });
     const knowledge = createKnowledge({
@@ -38,45 +38,45 @@ describe('editable owner lane workflows', () => {
       isOwnerMessageTurn: () => true,
     });
     try {
-      const lanes = [
-        ['source-delta', 'source_delta', undefined],
-        ['hourly-reminder', 'scheduled', 'reminder'],
-        ['full-report', 'scheduled', 'full'],
-        ['owner-answer', 'owner_message', undefined],
-      ] as const;
-      for (const [index, [lane, kind, report]] of lanes.entries()) {
-        const save = await surface.hostToolCall(
-          'memory.save',
-          {
-            topic: `lane/${lane}`,
-            kind: 'workflow',
-            summary: `Saved summary for ${lane}.`,
-            details: `Saved instruction text for ${lane}.`,
-            appliesWhen: `For ${lane} turns`,
-            steps: [`Apply the saved instruction for ${lane}.`],
-            scopes: [{ kind: 'global', id: 'system' }],
-            source: { package: 'standalone', source_type: 'owner-correction' },
-          },
-          `save-lane-${index}`
-        );
-        expect(save).toMatchObject({ status: 'completed' });
-        const replacement = await surface.hostToolCall(
-          'memory.save',
-          {
-            topic: `lane/${lane}`,
-            kind: 'workflow',
-            summary: `Replacement summary for ${lane}.`,
-            details: `Replacement instruction text for ${lane}.`,
-            appliesWhen: `For corrected ${lane} turns`,
-            steps: [`Apply the replacement instruction for ${lane}.`],
-            scopes: [{ kind: 'global', id: 'system' }],
-            source: { package: 'standalone', source_type: 'owner-correction' },
-            replaces: [{ id: String(save.data?.id), reason: 'the owner corrected this lane' }],
-          },
-          `replace-lane-${index}`
-        );
-        expect(replacement).toMatchObject({ status: 'completed' });
+      const save = await surface.hostToolCall(
+        'memory.save',
+        {
+          topic: 'report style',
+          kind: 'workflow',
+          summary: 'Reports lead with the conclusion.',
+          details: 'The owner asked for it in chat.',
+          appliesWhen: 'When writing a report',
+          steps: ['Open with the conclusion.'],
+          scopes: [{ kind: 'global', id: 'system' }],
+          source: { package: 'standalone', source_type: 'owner-correction' },
+        },
+        'save-correction'
+      );
+      expect(save).toMatchObject({ status: 'completed' });
+      const replacement = await surface.hostToolCall(
+        'memory.save',
+        {
+          topic: 'report style',
+          kind: 'workflow',
+          summary: 'Reports lead with the conclusion and use section headings.',
+          details: 'The owner added headings to the earlier correction.',
+          appliesWhen: 'When writing a report',
+          steps: ['Open with the conclusion.', 'Use a heading for each section.'],
+          scopes: [{ kind: 'global', id: 'system' }],
+          source: { package: 'standalone', source_type: 'owner-correction' },
+          replaces: [{ id: String(save.data?.id), reason: 'the owner extended the correction' }],
+        },
+        'replace-correction'
+      );
+      expect(replacement).toMatchObject({ status: 'completed' });
 
+      const turns = [
+        ['source_delta', undefined],
+        ['scheduled', 'reminder'],
+        ['scheduled', 'full'],
+        ['owner_message', undefined],
+      ] as const;
+      for (const [index, [kind, report]] of turns.entries()) {
         const delivery = createStimulusDelivery({
           guidanceResolver: async () =>
             readMemoryRecordsInScopes(database.adapter, surface.ownerAccess.scopes, {
@@ -108,17 +108,15 @@ describe('editable owner lane workflows', () => {
                 : { text: 'owner question' },
           coalesceKey: null,
         } as MailboxRow;
-        const prompt = await deliveredPrompt(delivery, row, false);
+        const prompt = await deliveredPrompt(delivery, row, true);
 
-        expect(prompt).toContain(`<lane-instructions lane="${lane}">`);
-        expect(prompt).toContain(
-          `Owner corrections for this lane (record ${replacement.data?.id}); where they conflict with the default lines above, these apply:`
-        );
-        expect(prompt).toContain(`Replacement summary for ${lane}.`);
-        expect(prompt).toContain(`Apply the replacement instruction for ${lane}.`);
-        // details explain the record; only the summary and steps are the instruction.
-        expect(prompt).not.toContain(`Replacement instruction text for ${lane}.`);
-        expect(prompt).not.toContain(`Apply the saved instruction for ${lane}.`);
+        // Every kind of turn in a new session sees the current correction in full.
+        expect(prompt).toContain(`${replacement.data?.id} | workflow | report style`);
+        expect(prompt).toContain('  Reports lead with the conclusion and use section headings.');
+        expect(prompt).toContain('  2. Use a heading for each section.');
+        // The replaced record and a record's explanation are not shown.
+        expect(prompt).not.toContain(`${save.data?.id} | workflow`);
+        expect(prompt).not.toContain('The owner added headings to the earlier correction.');
       }
     } finally {
       await database.close();

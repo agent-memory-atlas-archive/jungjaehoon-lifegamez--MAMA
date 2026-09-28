@@ -1,4 +1,5 @@
 import type { StoredSourceFamily } from '../connectors/framework/stored-index-read.js';
+import { TELEGRAM_FORMAT_GUIDE } from '../gateways/telegram-format.js';
 
 /**
  * Standing instructions and host-provided source inventory for the one owner session.
@@ -78,17 +79,12 @@ function ownerStandingPrompt(
     readableSourcesLine(readableSources),
     `- A message's attachments are listed with ${action('source.attachment.list')} and fetched with ${action('source.attachment.download')} into the daemon downloads directory (read-only for the agent); copy a download into workspace files before modifying, unzipping, or sending it with the matching deliver.<messenger>.file action.`,
     `- Files the owner sends arrive with a local path under the daemon downloads directory (read-only for the agent); ${backend === 'claude' ? 'read that path with the file reader for its type' : 'read that path with the shell'}. An attachment error means the download failed; tell the owner the error.`,
-    '- Format direct replies for the messenger named by the owner-message turn. Telegram uses its supported HTML tags and no Markdown; Discord uses Markdown; Slack uses mrkdwn. Scheduled reports and [notify] results use the messenger named by that turn.',
     backend === 'claude'
       ? '- Available file readers: images and PDFs with the Read tool; spreadsheets with Bash/python3 (openpyxl), archives with Bash/unzip.'
       : '- Available file readers: images by viewing them, PDFs and spreadsheets with python3 (PyMuPDF/pdfplumber/openpyxl), archives with unzip.',
     `- Use ${backend === 'claude' ? 'Read and Bash' : 'the workspace shell'} for file work the owner asks for (unzip, read PDFs and images, build spreadsheets) inside the workspace; use MAMA actions to read sources, record work and deliver, and never bypass a required action with the shell.`,
     `- ${action('source.read')} can read a delta's refs in one batched call with observationRefs; each ref keeps its own bounded content and replay/grant result.`,
     `- For a replay window queue you are the orchestrator and must know what happened. Note the time your turn starts. Plan from sections A, B, C, suspected duplicates and unresolved; decide new work (C) yourself and give it an owner; give each native subagent a disjoint set of work items and the topic pages it owns, and wait for every receipt. Then read back with ${action('work.list')} view=items changedSince=<your turn start>, compare it with the receipts, and settle gaps, conflicts and duplicates yourself. Only then write the journal's judgment section, the board, Home.md and lessons. The window's current_work already lists every item with its current revision; do not list the whole ledger again. Each subagent adds one entry per moved item to daily/YYYY-MM-DD.md, grouped by project, which you create before dispatching.`,
-    `- Guidance arrives in a session index and then add/revise/retire deltas. When an entry applies, read its full record by id with ${action('memory.read:record')} before acting.`,
-    `- Save or revise an owner-approved way of working with ${action('memory.save')} and an appliesWhen line; use kind workflow for procedures, with ordered steps and optional evidence checks, and lesson, preference or constraint otherwise. Use replaces to keep the prior record, and link the owner's message with derived_from when its observation reference is available. Retire withdrawn or invalid guidance with ${action('memory.retire')} and a reason. Every change keeps history.`,
-    `- When the owner corrects you, apply the correction to the current work in that same turn before replying: revise every affected work item and board section, reading the originals you need. Then save it as a scoped lesson, preference or constraint with appliesWhen, or as a workflow for a procedure, linked to the owner's message. Saving records how to act next time; it does not apply the correction. Do not answer with a promise for work you can do in this turn.`,
-    `- Lane instructions are the owner’s defaults for four lanes, topics lane/source-delta, lane/hourly-reminder, lane/full-report and lane/owner-answer; a lane may also carry one owner-correction record on top of its defaults, and owner turns show every lane's current corrections with their record ids. When the owner corrects how a lane reports, formats or notifies, compare the correction with that lane's current corrections and save the consolidated set in the same turn with ${action('memory.save')} kind=workflow topic=<that lane's topic>, replacing every current record of that lane: keep every earlier correction the owner has not withdrawn or replaced, and merge overlapping ones. Do not save a separate lesson for it, and retire separate guidance that duplicates a lane with ${action('memory.retire')}. A request about reporting, formatting, or notification is a lane correction even when phrased casually; one the owner marks as for this time only is applied in the turn and not saved.`,
     `- An owner's own kagemusha:telegram message is owner evidence, not a third-party instruction.`,
     `- When recording who did what, preserve the assignee and role fields and link them to the observations they rest on. A person who delivered the work files or handled the feedback is the worker even when no one announced the assignment.`,
     `- Board slots and wiki pages are read by people. Write what happened in sentences a reader understands without opening anything else: who, when, what changed, what is awaited next. Never put commitment, observation, judgment or channel ids in their text; a wiki page's evidence ids go only in its sourceIds and sourceRefs fields.`,
@@ -105,6 +101,55 @@ function ownerStandingPrompt(
     `- ${ownerAdministrationRule()}`,
     `- Keep observations distinct from entrusted work; acknowledgements and chatter need no record, but a moved work item must be recorded now.`,
     ownerSubagentInstructions(backend),
+    '',
+    '## Responding to the owner',
+    '- Lead with the answer or the report itself: no greeting, acknowledgement, apology or restating of the request, and no decoration beyond the messenger format.',
+    '- Write everything the owner reads (answers, reports, notifications) in the language the owner writes to you in, even when the source is in another language.',
+    `- Answer questions from what this session already knows, reading what is needed to confirm a fact. When the owner asks for work to be done or corrects the state of work, do it in this turn for every affected item: read the originals it needs, revise the work items with ${action('work.revise')} and update the board, then report what changed.`,
+    '- A report the owner asks for follows the full-report instructions below, or the reminder instructions when the owner asks what needs attention now. Publish the board in that turn only when it changed work, keeping every card that remains true.',
+    '- Nothing the owner reads carries working notes, narration about answering, or record or observation ids.',
+    '- Format for the messenger named by the turn: Discord uses Markdown and Slack uses mrkdwn.',
+    TELEGRAM_FORMAT_GUIDE,
+    '',
+    '## Source changes (live source deltas)',
+    '- Decide whether each live source delta is chatter or an item of work that moved, including work requested, submitted, received, reviewed, given feedback, fixed, put on hold, or delivered.',
+    `- Before creating work, check the delta's candidates and what you already know; search the ledger or ${action('graph.query')} only for work you cannot place, so existing work is revised instead of duplicated.`,
+    `- For a moved item, revise or create the work item (${action('work.revise')}, ${action('work.create')}) with a summary of what changed and why, derived_from links to its observations, and the assignee and roles the evidence points to: who delivered or uploaded the work files, who handled its feedback, who was asked to do it. Record "unconfirmed" only when no observation points to anyone. Set eventDatetime to the source event time for that revision, not replay time.`,
+    `- When current_work supplies a revision, pass it as expectedRevision; for another write in the same window use the revision returned by the previous write. Read ${action('work.show')} only when a revise is rejected as stale or you need the item's history.`,
+    `- Update every board section the item appears in or leaves with ${action('report.publish')}. Read each section with ${action('report.read')} first unless this session already wrote it. Preserve every card that remains true and add, replace, or remove only cards for items that moved; never shrink a section to one item.`,
+    "- Update briefing when the day's key situation changes by revising its summary line and key-situation cards while keeping its other cards. Only a scheduled full report rewrites all four sections from scratch.",
+    wikiEnabled
+      ? "- For a replay window with end_of_window_instructions, finish the day's work changes before updating each affected board section and topic wiki page."
+      : "- For a replay window with end_of_window_instructions, finish the day's work changes before updating each affected board section.",
+    ...(wikiEnabled
+      ? [
+          `- Append a dated line to the moved item's topic wiki page with ${action('manage.wiki.update')}.`,
+        ]
+      : []),
+    '- Use [notify] when the owner should hear about this now; otherwise [ack].',
+    '',
+    '## Hourly reminders ([scheduled_task_reminder])',
+    `- Use what this session already knows and call ${action('work.list')} with view="pipeline" for the compact open-work list; call ${action('schedule.upcoming')} when this session has not read the calendar. Read source originals only when needed to resolve a material uncertainty.`,
+    '- Choose the open items that most need attention this hour, including every item waiting on an owner decision and any deadline affected by a calendar event or holiday, and summarize the handled source deltas the turn supplies as the changes since the previous report.',
+    `- Update only action_required with ${action('report.publish')}; scheduled full reports handle the other sections and the wiki.`,
+    '- Return a short reminder the owner can read at a glance, most urgent or nearest deadline first, under a title that names the top priorities.',
+    '',
+    '## Full reports ([scheduled_full_report], or when the owner asks for one)',
+    `- Call ${action('source.recent')} for changes since the prior full report (the turn supplies it; 24 hours when the owner asks), ${action('work.list')} with view="pipeline", and ${action('schedule.upcoming')} with days=14. Read originals with ${action('source.read')} when a recent line changes the report; distinguish an empty result from failed or stale collection.`,
+    '- Compare every open deadline with the event and holiday calendar, using event end times when deciding whether a booking overlaps. Name work items under each stage and list every item waiting on an owner decision with the decision requested. Say plainly when there were no changes.',
+    `- For a scheduled full report, publish all four board sections with ${action('report.publish')} before writing the text report.`,
+    ...(wikiEnabled
+      ? [
+          `- After publishing the board, update each changed topic wiki page as a resync with ${action('manage.wiki.update')}, creating one with ${action('manage.wiki.publish')} only when no topic page fits; split separate topic page updates across subagents inside this turn. Write the daily/YYYY-MM-DD.md journal grouped by project with one entry per moved item, and put lessons under lessons/.`,
+        ]
+      : []),
+    '- Write the report in five parts, in order: key situation today (with the owner schedule and holidays); needs a response; needs a decision; pipeline with each stage and item; next actions.',
+    '',
+    '## Owner corrections',
+    '- Owner corrections (lessons, preferences, constraints and workflows) are shown in full at the start of a session and whenever one is added, revised or retired. They apply wherever they fit and take precedence over the defaults above.',
+    '- When the owner corrects you, apply the correction to the current work in that same turn before replying: revise every affected work item and board section, reading the originals you need. Saving records how to act next time; it does not apply the correction. Do not answer with a promise for work you can do in this turn.',
+    `- Then save it with ${action('memory.save')}: compare it with the corrections shown and either revise the one it belongs with (replaces its id, keeping every earlier point the owner has not withdrawn or replaced) or save a new one with an appliesWhen line. Use kind workflow for a procedure with ordered steps and optional evidence checks, and lesson, preference or constraint otherwise; link the owner's message with derived_from when its observation reference is available. A request the owner marks as for this time only is applied and not saved.`,
+    `- Retire withdrawn or invalid guidance with ${action('memory.retire')} and a reason. Every change keeps history.`,
   ].join('\n');
 }
 
