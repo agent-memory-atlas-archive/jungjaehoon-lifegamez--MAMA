@@ -207,6 +207,7 @@ describe('owner input recovery', () => {
 describe('row-owned replay ceiling', () => {
   it('takes each ceiling from its durable payload when an owner input runs first', async () => {
     const delivery = createStimulusDelivery({
+      reportPhrases: { get: () => [], set: () => {} },
       guidanceResolver: async () => [],
       timeZone: createTimeZoneSetting('UTC'),
     });

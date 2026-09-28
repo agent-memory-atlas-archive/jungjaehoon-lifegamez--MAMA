@@ -24,7 +24,11 @@ import {
 import { deliveredPrompt } from '../helpers/delivered-prompt.js';
 
 const createDelivery = (options: Omit<Parameters<typeof createStimulusDelivery>[0], 'timeZone'>) =>
-  createStimulusDelivery({ ...options, timeZone: createTimeZoneSetting('Asia/Seoul') });
+  createStimulusDelivery({
+    reportPhrases: { get: () => [], set: () => {} },
+    ...options,
+    timeZone: createTimeZoneSetting('Asia/Seoul'),
+  });
 
 const homes: string[] = [];
 const runtimes: RuntimeHandle[] = [];
@@ -286,7 +290,7 @@ describe('one stimulus intake and delivery', () => {
       guidanceResolver: async () => [],
       reportPhrases: { get: () => ['full report'], set: vi.fn() },
     });
-    const ownerRow = (id: string, text: string) =>
+    const ownerRow = (id: string, text: string, input?: unknown) =>
       ({
         id,
         stimulusId: id,
@@ -299,13 +303,15 @@ describe('one stimulus intake and delivery', () => {
         status: 'claimed',
         attempts: 1,
         createdAt: 1,
-        payload: { text },
+        payload: input === undefined ? { text } : { text, input },
         coalesceKey: null,
       }) as never;
 
     const report = await deliveredPrompt(
       delivery,
-      ownerRow('telegram:1:10', 'send the Full Report please'),
+      ownerRow('telegram:1:10', 'send the Full Report please', {
+        attachments: [{ name: 'notes.pdf', path: '/downloads/notes.pdf', size: 12 }],
+      }),
       false
     );
     expect(report.split('\n')).toContain('[owner_full_report]');
@@ -314,6 +320,11 @@ describe('one stimulus intake and delivery', () => {
     expect(report).toContain('Messenger: telegram');
     expect(report).not.toContain('manage.wiki.');
     expect(report).not.toContain('## Bounded stimulus');
+    // The owner's own words and files still reach the agent, which decides what was asked.
+    expect(report).toContain('Owner message: "send the Full Report please"');
+    expect(report).toContain(
+      'attachment: name="notes.pdf" path="/downloads/notes.pdf" size=12 bytes'
+    );
 
     const chat = await deliveredPrompt(delivery, ownerRow('telegram:1:11', 'what changed?'), false);
     expect(chat).toContain('## Bounded stimulus');

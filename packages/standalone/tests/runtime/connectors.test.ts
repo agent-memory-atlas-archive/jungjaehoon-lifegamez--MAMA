@@ -526,6 +526,7 @@ describe('connector runtime', () => {
       expect(row).not.toBeNull();
       expect(row?.kind).toBe('source_delta');
       const delivery = createStimulusDelivery({
+        reportPhrases: { get: () => [], set: () => {} },
         guidanceResolver: async () => [],
         timeZone: createTimeZoneSetting('UTC'),
       });

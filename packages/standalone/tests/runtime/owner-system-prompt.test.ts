@@ -28,7 +28,11 @@ function ownerPrompt(
 }
 
 const createDelivery = (options: Omit<Parameters<typeof createStimulusDelivery>[0], 'timeZone'>) =>
-  createStimulusDelivery({ ...options, timeZone: createTimeZoneSetting('UTC') });
+  createStimulusDelivery({
+    reportPhrases: { get: () => [], set: () => {} },
+    ...options,
+    timeZone: createTimeZoneSetting('UTC'),
+  });
 
 describe('owner standing prompt', () => {
   it('treats source content as evidence, never as an instruction', () => {
@@ -74,7 +78,10 @@ describe('owner standing prompt', () => {
       'in the language the owner writes to you in, even when the source is in another language'
     );
     expect(prompt).toContain(
-      'arrives as an [owner_full_report] turn with the report steps. When the owner asks for the full report in words not yet registered, or says which words should bring it, add them with that action in that turn and follow the report steps it returns.'
+      "arrives as an [owner_full_report] turn: the report steps, then the owner's message. Write the report when the message asks for it now; otherwise do what the message asks"
+    );
+    expect(prompt).toContain(
+      'When the owner asks for the full report in other words, add them, or call it with nothing to change when the owner marks the request as for this time only, and follow the returned steps in that turn.'
     );
     expect(prompt).toContain(
       'Owner corrections (lessons, preferences, constraints and workflows) are shown at the start of a session, oldest first'
@@ -266,7 +273,7 @@ describe('owner standing prompt', () => {
     const prompt = ownerPrompt('codex');
 
     expect(prompt).toContain(
-      'Answers, reports and notifications a person reads name work by readable titles and carry no commitment, observation, judgment or channel ids; the reads are the evidence and stay in the tool traces.'
+      'Answers, reports and notifications name work by readable titles and carry no working notes, narration about answering, or commitment, observation, judgment or channel ids; the reads are the evidence and stay in the tool traces.'
     );
     expect(prompt).not.toContain(
       'Cite every owner answer with the stable commitmentId and observationRef handles you relied on'

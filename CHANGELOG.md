@@ -33,17 +33,20 @@ All notable changes to this project will be documented in this file.
   instructions. A correction about the current work is applied to the work items and board in the
   same turn before it is saved, and a new correction is merged with the related earlier one. Hourly
   reminders now list the source changes handled since the previous reminder.
-- Your `owner-policy.md` reaches the agent in full again. When a session started, the prompt was
-  measured before the tokenizer had loaded, so the rough estimate counted Korean text at nearly twice
-  its size and cut the policy down to its first lines.
+- Your `owner-policy.md` reaches the agent in full again. It could be cut whenever the prompt
+  looked too long, and at session start the prompt was measured before the tokenizer had loaded, so
+  Korean text counted at nearly twice its size and the policy was cut to its first lines. The policy
+  is now never cut, and the tokenizer loads before the first prompt.
 - Each report brings its own steps again. The full report and the hourly reminder list what to read,
   what to publish and how the report is laid out; the always-on instructions keep only rules that
   apply everywhere, so the same rule is no longer written in two places.
 - You choose the words that ask for a full report in chat. Tell MAMA which words should bring the
   full report and it saves them (`owner.report_phrases.set`, stored in
   `~/.mama/full-report-phrases.json`). A message with one of those words gets the same report as the
-  scheduled one: changes from the last 24 hours, with the board published and no wiki pass. The first
-  time you ask in new words, MAMA saves them and writes the report in the same reply.
+  scheduled one: changes from the last 24 hours, with the board published and no wiki pass. Your
+  message and any files come with it, so a question about an earlier report is still answered as a
+  question. The first time you ask in new words, MAMA saves them and writes the report in the same
+  reply.
 - The Telegram formatting guide (allowed tags, escaping, lists) reaches the owner agent again; the
   0.57.0 rebuild had dropped it. Everything the owner reads leads with the answer, without greetings,
   acknowledgements or apologies, and is written in the owner's language even when the source is in

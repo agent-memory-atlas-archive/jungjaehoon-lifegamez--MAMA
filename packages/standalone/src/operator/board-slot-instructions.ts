@@ -43,7 +43,7 @@ export function buildBoardHtmlVocabulary(): string[] {
  */
 export function buildBoardSlotShapeLines(): string[] {
   return [
-    '- pipeline: the agent-written current workflow table; update it together with the other slots.',
+    '- pipeline: the agent-written current workflow table.',
     '- briefing: one report-summary block (title + stat highlights), then report-cards for the key situations only.',
     '- action_required: a report-section-title, then report-cards for what needs action now, most urgent first; every card-action states the concrete next step.',
     '- decisions: report-cards for items waiting on an owner decision or confirmation; omit filler when none exist,',

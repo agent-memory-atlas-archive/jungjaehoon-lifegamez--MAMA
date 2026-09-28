@@ -30,7 +30,7 @@ describe('owner report phrases', () => {
     expect(asksForFullReport('full report', [])).toBe(false);
   });
 
-  it('starts empty, persists the owner list and reads it back after a restart', () => {
+  it('starts empty, persists the owner list and reads the file each time', () => {
     const path = phraseFile();
     const setting = createReportPhraseSetting(path);
     expect(setting.get()).toEqual([]);
@@ -38,19 +38,22 @@ describe('owner report phrases', () => {
     expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({
       phrases: ['full report', 'status report'],
     });
-    expect(createReportPhraseSetting(path).get()).toEqual(['full report', 'status report']);
+    // An owner's edit of the file applies at once and is not undone by the next change.
+    writeFileSync(path, JSON.stringify({ phrases: ['weekly summary'] }));
+    expect(setting.get()).toEqual(['weekly summary']);
   });
 
-  it('refuses a malformed phrase file at startup', () => {
+  it('refuses a malformed phrase file', () => {
     const path = phraseFile();
     writeFileSync(path, JSON.stringify({ phrases: ['full report', ''] }));
-    expect(() => createReportPhraseSetting(path)).toThrow('must hold { "phrases"');
+    expect(() => createReportPhraseSetting(path).get()).toThrow('must hold { "phrases"');
   });
 });
 
 describe('owner.report_phrases.set', () => {
   it('changes the list only in an owner message turn and returns the report steps to apply now', () => {
-    const setting = createReportPhraseSetting(phraseFile());
+    const phrasePath = phraseFile();
+    const setting = createReportPhraseSetting(phrasePath);
     const registration = ownerReportPhraseActionRegistrations({
       ownerPrincipalId: 'owner',
       setting,
@@ -76,11 +79,19 @@ describe('owner.report_phrases.set', () => {
       reportSteps: '[owner_full_report] for telegram:1:2',
     });
     expect(
-      registration.exec({ add: ['full report'], remove: ['status report'] }, ownerTurn)
+      registration.exec({ add: ['Full Report'], remove: ['STATUS  report'] }, ownerTurn)
     ).toMatchObject({ phrases: ['full report'], previous: ['full report', 'status report'] });
     expect(() => registration.exec({ add: [' '] }, ownerTurn)).toThrow(
       expect.objectContaining({ name: 'invalid_input' })
     );
+    // A report asked for this time only: the steps, and the list untouched.
+    const written = readFileSync(phrasePath, 'utf8');
+    expect(registration.exec({}, ownerTurn)).toEqual({
+      phrases: ['full report'],
+      previous: ['full report'],
+      reportSteps: '[owner_full_report] for telegram:1:2',
+    });
+    expect(readFileSync(phrasePath, 'utf8')).toBe(written);
   });
 });
 

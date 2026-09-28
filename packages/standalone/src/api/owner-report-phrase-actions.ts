@@ -1,5 +1,5 @@
 import type { ActionContext, ActionRegistration } from '@jungjaehoon/mama-core';
-import type { ReportPhraseSetting } from '../runtime/report-phrases.js';
+import { phraseKey, type ReportPhraseSetting } from '../runtime/report-phrases.js';
 
 export interface OwnerReportPhraseActionPorts {
   ownerPrincipalId: string;
@@ -35,7 +35,7 @@ export function ownerReportPhraseActionRegistrations(
       contract: {
         name: 'owner.report_phrases.set',
         summary:
-          'Add or remove the words that bring the full report when the owner writes them in chat. Allowed only in a turn that answers an owner message; source-delta, scheduled and replay turns and non-owner callers are denied. Returns the registered words before and after, and the full report steps to follow in this turn.',
+          'Add or remove the words that bring the full report when the owner writes them in chat. Allowed only in a turn that answers an owner message; source-delta, scheduled and replay turns and non-owner callers are denied. A call with nothing to add or remove changes nothing. Returns the registered words before and after, and the full report steps to follow when the owner asked for the report in this message.',
         inputSchema: {
           type: 'object',
           additionalProperties: false,
@@ -53,10 +53,15 @@ export function ownerReportPhraseActionRegistrations(
         if (!sourceMessageRef || !ports.isOwnerMessageTurn(sourceMessageRef)) throw denied();
         const request = input as { add?: unknown; remove?: unknown };
         const add = phraseList(request.add, 'add');
-        const remove = new Set(phraseList(request.remove, 'remove'));
+        const remove = new Set(phraseList(request.remove, 'remove').map(phraseKey));
         const previous = [...ports.setting.get()];
-        const phrases = [...new Set([...previous, ...add].filter((phrase) => !remove.has(phrase)))];
-        ports.setting.set(phrases);
+        const kept = new Map<string, string>();
+        for (const phrase of [...previous, ...add]) {
+          const key = phraseKey(phrase);
+          if (!remove.has(key) && !kept.has(key)) kept.set(key, phrase);
+        }
+        const phrases = [...kept.values()];
+        if (add.length > 0 || remove.size > 0) ports.setting.set(phrases);
         return { phrases, previous, reportSteps: ports.fullReportTurn(sourceMessageRef) };
       },
     },

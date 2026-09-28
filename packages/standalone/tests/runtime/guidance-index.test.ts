@@ -59,6 +59,7 @@ describe('owner guidance index delivery', () => {
     ];
     const guidanceResolver = vi.fn(async () => records);
     const delivery = createStimulusDelivery({
+      reportPhrases: { get: () => [], set: () => {} },
       guidanceResolver,
       timeZone: createTimeZoneSetting('UTC'),
       recentOwnerExchanges: async () => [
@@ -105,6 +106,7 @@ describe('owner guidance index delivery', () => {
       },
     ];
     const delivery = createStimulusDelivery({
+      reportPhrases: { get: () => [], set: () => {} },
       guidanceResolver: async () => records,
       timeZone: createTimeZoneSetting('UTC'),
     } as never);
@@ -146,6 +148,7 @@ describe('owner guidance index delivery', () => {
   it('uses the same session index for owner, source-delta, scheduled, and native-event turns', async () => {
     const guidanceResolver = vi.fn(async () => []);
     const delivery = createStimulusDelivery({
+      reportPhrases: { get: () => [], set: () => {} },
       guidanceResolver,
       timeZone: createTimeZoneSetting('UTC'),
     } as never);
@@ -166,6 +169,7 @@ describe('owner guidance index delivery', () => {
   it('does not advance the delivered index when the model turn fails after preparation', async () => {
     const records: Array<Record<string, unknown>> = [];
     const delivery = createStimulusDelivery({
+      reportPhrases: { get: () => [], set: () => {} },
       guidanceResolver: async () => records as never,
       timeZone: createTimeZoneSetting('UTC'),
     } as never);
@@ -210,6 +214,7 @@ describe('owner guidance index delivery', () => {
       },
     ];
     const delivery = createStimulusDelivery({
+      reportPhrases: { get: () => [], set: () => {} },
       guidanceResolver: async () => records as never,
       timeZone: createTimeZoneSetting('UTC'),
     } as never);
@@ -236,6 +241,7 @@ describe('owner guidance index delivery', () => {
       },
     ];
     const delivery = createStimulusDelivery({
+      reportPhrases: { get: () => [], set: () => {} },
       guidanceResolver: async () => records as never,
       timeZone: createTimeZoneSetting('UTC'),
     } as never);
@@ -286,6 +292,7 @@ describe('owner guidance index delivery', () => {
       },
     ];
     const delivery = createStimulusDelivery({
+      reportPhrases: { get: () => [], set: () => {} },
       guidanceResolver: async () => records as never,
       timeZone: createTimeZoneSetting('UTC'),
     } as never);
@@ -297,6 +304,7 @@ describe('owner guidance index delivery', () => {
 
   it('marks a live source-delta turn as delivered', async () => {
     const delivery = createStimulusDelivery({
+      reportPhrases: { get: () => [], set: () => {} },
       guidanceResolver: async () => [],
       timeZone: createTimeZoneSetting('UTC'),
     } as never);
@@ -307,6 +315,7 @@ describe('owner guidance index delivery', () => {
 
   it('tells a replayed delta that nothing is delivered', async () => {
     const delivery = createStimulusDelivery({
+      reportPhrases: { get: () => [], set: () => {} },
       guidanceResolver: async () => [],
       timeZone: createTimeZoneSetting('UTC'),
     } as never);
@@ -318,6 +327,7 @@ describe('owner guidance index delivery', () => {
 
   it('gives owner-message turns no delta marker contract', async () => {
     const delivery = createStimulusDelivery({
+      reportPhrases: { get: () => [], set: () => {} },
       guidanceResolver: async () => [],
       timeZone: createTimeZoneSetting('UTC'),
     } as never);

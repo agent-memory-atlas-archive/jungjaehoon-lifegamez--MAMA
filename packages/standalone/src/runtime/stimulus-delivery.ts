@@ -60,7 +60,7 @@ export interface StimulusIntake {
 export interface StimulusDeliveryOptions {
   guidanceResolver: GuidanceResolver;
   backend: OwnerRuntimeBackend;
-  reportPhrases?: ReportPhraseSetting;
+  reportPhrases: ReportPhraseSetting;
   openWorkPipeline?: () => Promise<unknown>;
   openWorkCandidates?: () => Promise<readonly OpenWorkCandidate[]>;
   boardSnapshot?: () => Promise<Record<string, ReportSlot>>;
@@ -346,6 +346,26 @@ export function renderWindowQueue(queue: WindowQueue): string {
   return wrapUntrustedContent('source_delta', lines.join('\n'));
 }
 
+/** The files an owner message carries, as paths the agent can read or the download error. */
+function attachmentLines(payload: JsonValue | undefined): string[] {
+  const input =
+    payload && typeof payload === 'object' && !Array.isArray(payload) ? payload.input : undefined;
+  const attachments =
+    input && typeof input === 'object' && !Array.isArray(input) ? input.attachments : undefined;
+  if (!Array.isArray(attachments)) return [];
+  const lines: string[] = [];
+  for (const attachment of attachments) {
+    if (!attachment || typeof attachment !== 'object' || Array.isArray(attachment)) continue;
+    const name = JSON.stringify(attachment.name);
+    lines.push(
+      typeof attachment.error === 'string'
+        ? `attachment: name=${name} error=${JSON.stringify(attachment.error)}`
+        : `attachment: name=${name} path=${JSON.stringify(attachment.path)}${typeof attachment.size === 'number' ? ` size=${attachment.size} bytes` : ''}`
+    );
+  }
+  return lines;
+}
+
 function boundedStimulus(
   row: MailboxRow,
   liveSourceDelta: boolean,
@@ -375,16 +395,17 @@ function boundedStimulus(
     typeof row.payload.text === 'string'
       ? row.payload.text
       : null;
-  // Kagemusha's chat report routing: a registered phrase gets the full report turn itself.
-  if (
-    ownerText !== null &&
-    options.reportPhrases !== undefined &&
-    asksForFullReport(ownerText, options.reportPhrases.get())
-  )
-    return buildOwnerFullReportPrompt(
-      new Date(row.occurredAt),
-      reportTurn(row.stimulusId.split(':', 1)[0]!)
-    );
+  // Kagemusha's chat report routing: a registered phrase gets the full report turn, followed by
+  // the owner's own message and attachments so the agent still reads what was asked.
+  if (ownerText !== null && asksForFullReport(ownerText, options.reportPhrases.get()))
+    return [
+      buildOwnerFullReportPrompt(
+        new Date(row.occurredAt),
+        reportTurn(row.stimulusId.split(':', 1)[0]!)
+      ),
+      `Owner message: ${JSON.stringify(ownerText)}`,
+      ...attachmentLines(row.payload),
+    ].join('\n');
   const lines = [
     '## Bounded stimulus',
     `owner timezone: ${options.timeZone.get()}`,
@@ -397,24 +418,7 @@ function boundedStimulus(
   if (row.kind === 'owner_message') {
     const messenger = row.stimulusId.split(':', 1)[0];
     lines.push(`messenger: ${messenger}`);
-    const payload = row.payload;
-    const input =
-      payload && typeof payload === 'object' && !Array.isArray(payload) ? payload.input : undefined;
-    const attachments =
-      input && typeof input === 'object' && !Array.isArray(input) ? input.attachments : undefined;
-    if (Array.isArray(attachments)) {
-      for (const attachment of attachments) {
-        if (!attachment || typeof attachment !== 'object' || Array.isArray(attachment)) continue;
-        const name = JSON.stringify(attachment.name);
-        if (typeof attachment.error === 'string') {
-          lines.push(`attachment: name=${name} error=${JSON.stringify(attachment.error)}`);
-        } else {
-          lines.push(
-            `attachment: name=${name} path=${JSON.stringify(attachment.path)}${typeof attachment.size === 'number' ? ` size=${attachment.size} bytes` : ''}`
-          );
-        }
-      }
-    }
+    lines.push(...attachmentLines(row.payload));
   }
   const messages = row.kind === 'source_delta' ? messageLines(row.payload, options.timeZone) : null;
   if (messages === null) lines.push(`refs: ${JSON.stringify(row.refs)}`);
@@ -625,7 +629,7 @@ function assembledContent(
   liveSourceDelta: boolean,
   options: Pick<
     StimulusDeliveryOptions,
-    'wikiEnabled' | 'formattingRoutes' | 'backend' | 'timeZone'
+    'wikiEnabled' | 'formattingRoutes' | 'backend' | 'timeZone' | 'reportPhrases'
   >,
   candidates: readonly string[] = []
 ): ContentBlock[] {

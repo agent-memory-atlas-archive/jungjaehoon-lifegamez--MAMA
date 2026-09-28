@@ -256,7 +256,6 @@ function createDriver(
   });
 }
 
-/** Build one persistent owner session over the shared core native turn runner. */
 /**
  * The owner session's system prompt: the standing instructions and the owner's policy file.
  * Both reach the agent whole, as Kagemusha's one prompt does; neither is an expendable layer.
@@ -268,6 +267,7 @@ export function ownerSystemLayers(standing: string, ownerPolicy: string | null):
   ];
 }
 
+/** Build one persistent owner session over the shared core native turn runner. */
 export function createNativeSession(options: NativeSessionOptions): NativeSession {
   if (options.agent && options.createAgent) {
     throw new Error('Native session accepts an agent or a driver factory, not both');
