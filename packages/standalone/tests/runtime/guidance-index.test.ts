@@ -258,6 +258,43 @@ describe('owner guidance index delivery', () => {
     expect(next).toContain('  Short reports with section headings.');
   });
 
+  it('lists corrections oldest first even when their times are stored differently', async () => {
+    const records = [
+      {
+        id: 'b-newer',
+        kind: 'lesson',
+        topic: 't',
+        summary: 'Newer.',
+        status: 'active',
+        updated_at: '2026-09-28T10:00:00.000Z',
+      },
+      {
+        id: 'a-older',
+        kind: 'lesson',
+        topic: 't',
+        summary: 'Older.',
+        status: 'active',
+        updated_at: Date.parse('2026-09-28T09:00:00.000Z'),
+      },
+      {
+        id: 'c-oldest',
+        kind: 'lesson',
+        topic: 't',
+        summary: 'Oldest.',
+        status: 'active',
+        updated_at: 999_999_999,
+      },
+    ];
+    const delivery = createStimulusDelivery({
+      guidanceResolver: async () => records as never,
+      timeZone: createTimeZoneSetting('UTC'),
+    } as never);
+
+    const prompt = await deliver(delivery, 'owner_message', 'ordering', true);
+    const order = ['Oldest.', 'Older.', 'Newer.'].map((text) => prompt.indexOf(text));
+    expect(order).toEqual([...order].sort((left, right) => left - right));
+  });
+
   it('keeps the delta marker contract in live source-delta turns', async () => {
     const delivery = createStimulusDelivery({
       guidanceResolver: async () => [],

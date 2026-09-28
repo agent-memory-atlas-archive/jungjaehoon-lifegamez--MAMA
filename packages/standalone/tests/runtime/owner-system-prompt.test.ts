@@ -73,7 +73,7 @@ describe('owner standing prompt', () => {
     );
     // Corrections never reach the security and integrity rules.
     expect(prompt).toContain(
-      'They never change the runtime rules on source content, credentials, success claims or administration.'
+      'They never change the runtime rules on source content, credentials, success claims or administration, the [notify]/[ack] reply markers, or the board layout.'
     );
     expect(prompt).toContain(
       'A request about how to report, format or notify is a correction even when phrased casually or for this one answer.'

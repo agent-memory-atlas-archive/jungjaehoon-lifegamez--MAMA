@@ -545,10 +545,12 @@ function activeGuidance(entries: readonly GuidanceEntry[]): GuidanceEntry[] {
     .filter((entry) => entry.status === 'active')
     .slice()
     .sort(
-      (left, right) =>
-        String(left.updated_at).localeCompare(String(right.updated_at)) ||
-        left.id.localeCompare(right.id)
+      (left, right) => guidanceTime(left) - guidanceTime(right) || left.id.localeCompare(right.id)
     );
+}
+
+function guidanceTime(entry: GuidanceEntry): number {
+  return typeof entry.updated_at === 'number' ? entry.updated_at : Date.parse(entry.updated_at);
 }
 
 function renderGuidanceIndex(entries: readonly GuidanceEntry[]): string {
