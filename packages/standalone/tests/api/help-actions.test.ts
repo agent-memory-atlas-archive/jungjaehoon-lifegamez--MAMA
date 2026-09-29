@@ -74,7 +74,7 @@ describe('action catalog line', () => {
 
   it('names the arguments a top-level oneOf requires, and fixed values', () => {
     expect(actionSignature(contracts[1]!.inputSchema)).toBe(
-      '{observationRef?, observationRefs?, mode?: "stored"; one of: observationRef | observationRefs}'
+      '{observationRef?, observationRefs?: ≤500 items, mode?: "stored"; one of: observationRef | observationRefs}'
     );
     expect(
       run({ actions: ['source_read'] })
@@ -86,6 +86,20 @@ describe('action catalog line', () => {
       '- mode: "stored"',
       '- one of: observationRef | observationRefs',
     ]);
+  });
+
+  it('shows the bound of a number or a list, which a caller cannot guess from the name', () => {
+    expect(
+      actionSignature({
+        type: 'object',
+        properties: {
+          limit: { type: 'integer', minimum: 1, maximum: 50 },
+          caption: { type: 'string', maxLength: 1024 },
+          ids: { type: 'array', minItems: 1, maxItems: 4 },
+          asOf: { type: 'integer', minimum: 0 },
+        },
+      })
+    ).toBe('{limit?: ≤50, caption?: ≤1024 chars, ids?: ≤4 items, asOf?}');
   });
 
   it('caps the sentence, never the argument list', () => {
