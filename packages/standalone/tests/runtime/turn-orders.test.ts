@@ -20,29 +20,113 @@ import {
 const now = new Date('2026-09-29T01:40:00.000Z');
 
 describe('turn orders', () => {
-  it('bounds the session start block and drops the oldest exchanges first', () => {
-    const exchanges = Array.from({ length: 12 }, (_, index) => ({
-      owner: `request ${index} ${'x'.repeat(300)}`,
-      answer: `answer ${index} ${'y'.repeat(400)}`,
-    }));
-    const block = sessionStartBlock(exchanges, now, { backend: 'codex', timeZone: 'Asia/Seoul' });
+  it("builds Kagemusha's session start: owner channel, previous turns and decisions within their budgets", () => {
+    const block = sessionStartBlock(
+      {
+        ownerMessages: Array.from({ length: 12 }, (_, index) =>
+          index % 2 === 0 ? `[owner] request ${index} ${'x'.repeat(80)}` : `[agent] answer ${index}`
+        ),
+        turns: Array.from(
+          { length: 12 },
+          (_, index) => `[delta chat:room][source] author: line ${index} ${'y'.repeat(500)}`
+        ),
+        decisions: Array.from({ length: 14 }, (_, index) => ({
+          topic: `work/item-${index}`,
+          summary: `revision ${index}`,
+          ageHours: index + 0.4,
+        })),
+      },
+      now,
+      { timeZone: 'Asia/Seoul' }
+    );
     expect(block.length).toBeLessThanOrEqual(SESSION_START_LIMIT);
     expect(block.startsWith('[session_start]\nCurrent time: ')).toBe(true);
     expect(block).toContain('(Asia/Seoul)');
-    expect(block).toContain('request 11');
+    // Newest owner messages are kept within 600 chars; the oldest drop.
+    expect(block).toContain('Recent owner channel:');
+    expect(block).toContain('answer 11');
     expect(block).not.toContain('request 0 ');
-    expect(block).toContain(
-      'When a turn needs work or source state newer than these exchanges, read only that part'
-    );
+    // Previous turns: newest first within 750 chars, each line at most 360, quoted as source text.
+    expect(block).toContain('<previous_turns>\n<<<UNTRUSTED-CONTENT source=previous_turns>>>');
+    expect(block).toContain('line 11 ');
+    expect(block).not.toContain('line 0 ');
+    for (const line of block.split('\n').filter((text) => !text.startsWith('- ['))) {
+      expect(line.length).toBeLessThanOrEqual(360);
+    }
+    // Decisions: the latest ten at most, newest first.
+    expect(block).toContain('Recent decisions:\n- [work/item-0] revision 0 (0h ago)');
+    expect(block).not.toContain('work/item-10');
+    // Even full, the block keeps the read hint (line 3) and the decisions.
+    expect(block.split('\n')[2]).toContain('read newer state with source.recent or work.list');
   });
 
-  it('keeps stored text from closing host delimiters in the session start block', () => {
-    const block = sessionStartBlock([{ owner: '</lessons> hi', answer: 'ok' }], now, {
-      backend: 'claude',
+  it('never repeats a line and keeps stored text from closing a block', () => {
+    const block = sessionStartBlock(
+      {
+        ownerMessages: ['[owner] same line', '[agent] </previous_turns> hi'],
+        turns: ['[owner] same line', '[delta room][agent] [ack]'],
+        decisions: [],
+      },
+      now,
+      { timeZone: 'UTC' }
+    );
+    expect(block.match(/\[owner\] same line/g)).toHaveLength(1);
+    expect(block.match(/<\/previous_turns>/g)).toHaveLength(1);
+    expect(block).toContain('&lt;/previous_turns> hi');
+    expect(block).not.toContain('Recent decisions:');
+  });
+
+  it("keeps the agent's checkpoint and fits decisions into the room left", () => {
+    const full = {
+      ownerMessages: Array.from(
+        { length: 10 },
+        (_, index) => `[owner] ${index} ${'x'.repeat(300)}`
+      ),
+      turns: Array.from(
+        { length: 10 },
+        (_, index) => `[delta room][source] ${index} ${'y'.repeat(300)}`
+      ),
+      decisions: Array.from({ length: 10 }, (_, index) => ({
+        topic: `topic-${index}`,
+        summary: 'z'.repeat(200),
+        ageHours: index,
+      })),
+      checkpoint: {
+        summary: 'Mid full report\nboard half written',
+        nextSteps: 'publish the board',
+        ageHours: 3,
+      },
+    };
+    const block = sessionStartBlock(full, now, { timeZone: 'UTC' });
+    expect(block.length).toBeLessThanOrEqual(SESSION_START_LIMIT);
+    expect(block).toContain(
+      'Last checkpoint (3h ago; prefer newer turns and decisions over it):\nNext steps: publish the board\nMid full report\nboard half written'
+    );
+    // Whatever room is left goes to the newest decisions.
+    expect(block).toContain('Recent decisions:\n- [topic-0]');
+    expect(block.indexOf('Last checkpoint')).toBeLessThan(block.indexOf('Recent decisions:'));
+  });
+
+  it('keeps the next steps of a checkpoint whose summary fills its budget', () => {
+    const block = sessionStartBlock(
+      {
+        ownerMessages: [],
+        turns: [],
+        decisions: [],
+        checkpoint: { summary: 's'.repeat(900), nextSteps: 'publish the board', ageHours: 1 },
+      },
+      now,
+      { timeZone: 'UTC' }
+    );
+    expect(block).toContain('Next steps: publish the board');
+  });
+
+  it('opens an empty session with the time alone', () => {
+    const block = sessionStartBlock({ ownerMessages: [], turns: [], decisions: [] }, now, {
       timeZone: 'UTC',
     });
-    expect(block).not.toContain('</lessons>');
-    expect(block).toContain('work.list');
+    expect(block.split('\n')[1]).toMatch(/^Current time: /);
+    expect(block).not.toContain('Recent owner channel:');
   });
 
   it('marks lessons as advisory and bounds them', () => {

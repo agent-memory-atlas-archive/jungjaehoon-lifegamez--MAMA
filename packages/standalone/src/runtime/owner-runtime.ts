@@ -33,7 +33,7 @@ import type { TimeZoneSetting } from './timezone.js';
 import { ownerSystemPrompt } from './owner-system-prompt.js';
 import { storedSourceFamilies } from '../connectors/framework/stored-index-read.js';
 import { createOwnerPolicyProvider, type OwnerPolicyProvider } from './owner-policy.js';
-import { readRecentOwnerExchanges } from './recent-owner-exchanges.js';
+import { readSessionStartInput } from './session-start-context.js';
 import { createRecordOrders, type RecordOrderEvent } from './record-orders.js';
 import { initTokenEstimator } from '@jungjaehoon/mama-core/runtime/token-estimator';
 import {
@@ -354,12 +354,39 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
         : { onUncertain: options.onStimulusUncertain }),
       ...(options.onStimulusDead === undefined ? {} : { onDead: options.onStimulusDead }),
       ...(options.onStimulusSkipped === undefined ? {} : { onSkipped: options.onStimulusSkipped }),
-      recentOwnerExchanges: (row) =>
-        readRecentOwnerExchanges(
-          intakeRuntime.mailbox!,
-          options.recentDeliveredOwnerMessages?.() ?? [],
-          row
-        ),
+      sessionStart: (row) =>
+        readSessionStartInput({
+          adapter: database.adapter,
+          mailbox: intakeRuntime.mailbox!,
+          deliveredRefs: options.recentDeliveredOwnerMessages?.() ?? [],
+          current: row,
+          records: () =>
+            readMemoryRecordsInScopes(database.adapter, [...access.scopes], { status: 'active' }),
+          checkpoint: async () => {
+            const listed = await surface.hostToolCall(
+              'memory.checkpoint.list',
+              { limit: 1 },
+              `session-start:${randomUUID()}`
+            );
+            if (listed.status !== 'completed')
+              throw new Error(
+                `memory.checkpoint.list ${listed.status}: ${listed.error.code} ${listed.error.message}`
+              );
+            const [latest] = (
+              listed.data as {
+                checkpoints: Array<{ summary?: string; next_steps?: string; timestamp?: number }>;
+              }
+            ).checkpoints;
+            return latest?.summary && typeof latest.timestamp === 'number'
+              ? {
+                  summary: latest.summary,
+                  nextSteps: latest.next_steps ?? '',
+                  createdAt: latest.timestamp,
+                }
+              : null;
+          },
+          now: Date.now(),
+        }),
       // Kagemusha's lesson recall: the corrections memory.search ranks highest for the turn's text,
       // active ones only, read in full.
       lessons:

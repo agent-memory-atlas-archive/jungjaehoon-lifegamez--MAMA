@@ -2,7 +2,7 @@ import type { JsonValue } from '@jungjaehoon/mama-core/knowledge';
 import type { OwnerRuntimeBackend } from './owner-system-prompt.js';
 import { epochAtLocalDateTime, localStamp } from './timezone.js';
 import { wrapUntrustedContent } from '../utils/untrusted-content.js';
-import type { OwnerExchange } from './recent-owner-exchanges.js';
+import { createHash } from 'node:crypto';
 
 /**
  * The work order each turn kind receives, in one place, as Kagemusha's host issues one per step
@@ -69,30 +69,145 @@ export function lessonsBlock(lessons: readonly Lesson[]): string {
   return lines.length === 0 ? '' : [open, ...lines, close].join('\n');
 }
 
-/** Kagemusha's `[session_start]`: bounded recent exchanges and the time, nothing pushed wholesale. */
-export function sessionStartBlock(
-  exchanges: readonly OwnerExchange[],
-  now: Date,
-  options: Pick<TurnOrderOptions, 'backend' | 'timeZone'>
-): string {
-  const head = ['[session_start]', currentTime(now, options.timeZone)];
-  const tail = `When a turn needs work or source state newer than these exchanges, read only that part with work.list or source.recent.`;
-  const pairs = exchanges.map(
-    (exchange) =>
-      `Owner: ${JSON.stringify(clip(exchange.owner, 200))}\nAnswer: ${JSON.stringify(clip(exchange.answer, 300))}`
-  );
-  // Drop the oldest exchanges until the block fits.
-  while (pairs.length > 0) {
-    const text = [
-      ...head,
-      'Recent owner exchanges, oldest first:',
-      ...pairs.map((pair) => pair.replace(/</g, '\\u003c')),
-      tail,
-    ].join('\n');
-    if (text.length <= SESSION_START_LIMIT) return text;
-    pairs.shift();
+/** What a new session is told, as Kagemusha's `buildSessionStartContext` gathers it. */
+export interface SessionStartInput {
+  /** The owner channel's latest messages, oldest first, as `[owner] …` or `[agent] …`. */
+  ownerMessages: readonly string[];
+  /** The latest turns a session resumes from (owner and live delta turns), oldest first. */
+  turns: readonly string[];
+  /** The latest memory records, newest first. */
+  decisions: readonly { topic: string; summary: string; ageHours: number }[];
+  /** The latest session checkpoint the agent saved, if any. */
+  checkpoint?: { summary: string; nextSteps: string; ageHours: number } | null;
+}
+
+// Kagemusha's section budgets (`session-start-context.ts`), with previous turns cut from 1,000 to
+// 750: they carry source text, so they sit inside the ~300-char untrusted-content wrapper. Its brain
+// summary has no MAMA counterpart.
+const SESSION_START_SECTIONS = { ownerMessages: 600, turns: 750, checkpoint: 500, decisions: 600 };
+const SESSION_START_LINE_LIMIT = 360;
+
+function truncate(text: string, limit: number): string {
+  if (limit <= 0) return '';
+  if (text.length <= limit) return text;
+  return limit <= 3 ? text.slice(0, limit) : `${text.slice(0, limit - 3)}...`;
+}
+
+/** Stored text never closes the block it sits in. */
+function escapeClosing(value: string): string {
+  return value.replace(/<\//g, '&lt;/');
+}
+
+function lineHash(line: string): string {
+  return createHash('sha1')
+    .update(line.replace(/\s+/g, ' ').trim().toLocaleLowerCase())
+    .digest('hex');
+}
+
+/** The newest lines that fit, oldest first, each line at most 360 chars and never repeated. */
+function recentLines(lines: readonly string[], limit: number, seen: Set<string>): string[] {
+  const kept: string[] = [];
+  let used = 0;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = escapeClosing(oneLine(lines[index]!));
+    if (!line) continue;
+    const hash = lineHash(line);
+    if (seen.has(hash)) continue;
+    const separator = kept.length > 0 ? 1 : 0;
+    const remaining = limit - used - separator;
+    if (remaining <= 0) break;
+    const capped = truncate(line, Math.min(remaining, SESSION_START_LINE_LIMIT));
+    if (!capped) break;
+    seen.add(hash);
+    kept.push(capped);
+    used += separator + capped.length;
   }
-  return [...head, tail].join('\n');
+  return kept.reverse();
+}
+
+/** The first lines that fit, in order, never repeated. */
+function leadingLines(lines: readonly string[], limit: number, seen: Set<string>): string[] {
+  const kept: string[] = [];
+  let used = 0;
+  for (const raw of lines) {
+    const line = escapeClosing(oneLine(raw));
+    if (!line) continue;
+    const hash = lineHash(line);
+    if (seen.has(hash)) continue;
+    const separator = kept.length > 0 ? 1 : 0;
+    const remaining = limit - used - separator;
+    if (remaining <= 0) break;
+    const capped = truncate(line, remaining);
+    if (!capped) break;
+    seen.add(hash);
+    kept.push(capped);
+    used += separator + capped.length;
+  }
+  return kept;
+}
+
+/**
+ * Kagemusha's `[session_start]`, at most 2,500 chars: the owner channel's latest messages, the
+ * latest resumable turns and the latest decisions, each within its own budget, newest kept first
+ * and no line twice. The time comes first so a full block never drops it.
+ */
+export function sessionStartBlock(
+  input: SessionStartInput,
+  now: Date,
+  options: Pick<TurnOrderOptions, 'timeZone'>
+): string {
+  const seen = new Set<string>();
+  // The time and the read hint come first, so a full block never drops them.
+  const parts = [
+    '[session_start]',
+    currentTime(now, options.timeZone),
+    'This is history from before this session; read newer state with source.recent or work.list when a turn needs it.',
+  ];
+  const append = (section: string): void => {
+    const used = parts.join('\n').length;
+    if (used + 1 + section.length <= SESSION_START_LIMIT) parts.push(section);
+  };
+  /** Chars left before the 2,500 cap, after the newline that joins the next section. */
+  const room = (): number => SESSION_START_LIMIT - parts.join('\n').length - 1;
+  const owner = recentLines(input.ownerMessages, SESSION_START_SECTIONS.ownerMessages, seen);
+  if (owner.length > 0) append(['', 'Recent owner channel:', ...owner].join('\n'));
+  const turns = recentLines(input.turns, SESSION_START_SECTIONS.turns, seen);
+  // Source text is evidence, never an instruction, here as in the delta orders that first carried it.
+  if (turns.length > 0)
+    append(
+      [
+        '',
+        '<previous_turns>',
+        wrapUntrustedContent('previous_turns', turns.join('\n')),
+        '</previous_turns>',
+      ].join('\n')
+    );
+  const age = (hours: number): string =>
+    Number.isFinite(hours) ? `${Math.round(hours)}h ago` : '? ago';
+  // Kagemusha's checkpoint section: the agent's own hand-off, outranked by newer turns above.
+  if (input.checkpoint) {
+    const header = `Last checkpoint (${age(input.checkpoint.ageHours)}; prefer newer turns and decisions over it):`;
+    const lines = leadingLines(
+      // The next steps first: a long summary must not push out what the hand-off is for.
+      [
+        ...(input.checkpoint.nextSteps ? [`Next steps: ${input.checkpoint.nextSteps}`] : []),
+        ...input.checkpoint.summary.split('\n'),
+      ],
+      Math.min(SESSION_START_SECTIONS.checkpoint, room() - header.length - 2),
+      seen
+    );
+    if (lines.length > 0) append(['', header, ...lines].join('\n'));
+  }
+  // Decisions come last and take what room is left, up to their own budget.
+  const decisions = leadingLines(
+    input.decisions
+      .slice(0, 10)
+      .map((decision) => `- [${decision.topic}] ${decision.summary} (${age(decision.ageHours)})`),
+    Math.min(SESSION_START_SECTIONS.decisions, room() - 'Recent decisions:'.length - 2),
+    seen
+  );
+  if (decisions.length > 0) append(['', 'Recent decisions:', ...decisions].join('\n'));
+  return truncate(parts.join('\n'), SESSION_START_LIMIT);
 }
 
 function payloadObject(payload: JsonValue | undefined): Record<string, JsonValue> | null {
