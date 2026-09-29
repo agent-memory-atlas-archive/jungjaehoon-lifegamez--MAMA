@@ -333,6 +333,11 @@ export interface RecordOrderLine {
 export interface RecordOrderPayload {
   order: 'record';
   deltaStimulusId: string;
+  /**
+   * The connector the channel belongs to, so the order can name the channel's source.recent key.
+   * Record orders written before 2026-09-29 have none; they are still read and rendered.
+   */
+  source?: string;
   channel: string;
   observationRefs: string[];
   /** The delta's last lines, as Kagemusha's record turn carries them (five, 300 chars each). */
@@ -349,9 +354,12 @@ export function recordOrderPayload(
   const observationRefs = [
     ...new Set(lines.map((line) => line.observationRef).filter(Boolean)),
   ].sort();
+  const refs = payloadObject(delta.payload)?.refs;
+  const first = Array.isArray(refs) ? payloadObject(refs[0]) : null;
   return {
     order: 'record',
     deltaStimulusId: delta.stimulusId,
+    source: textField(first?.connector),
     channel: delta.channelKey,
     observationRefs,
     lines: lines.slice(-5).map((line) => ({
@@ -373,6 +381,7 @@ export function parseRecordOrder(payload: JsonValue | undefined): RecordOrderPay
     !value ||
     value.order !== 'record' ||
     typeof value.deltaStimulusId !== 'string' ||
+    (value.source !== undefined && typeof value.source !== 'string') ||
     typeof value.channel !== 'string' ||
     !Array.isArray(value.observationRefs) ||
     !value.observationRefs.every((ref) => typeof ref === 'string') ||
@@ -385,12 +394,22 @@ export function parseRecordOrder(payload: JsonValue | undefined): RecordOrderPay
   return value as unknown as RecordOrderPayload;
 }
 
-/** Kagemusha's `[delta_taskboard_reconcile]`: fixed steps, one durable outcome, reply [ack]. */
+/**
+ * Kagemusha's `[delta_taskboard_reconcile]` in its order: the channel's latest context
+ * (channel_history), the current work state (task_list), then the update or the no-update reason.
+ * On 2026-09-29 a text-search step in place of the first two left a short reply, a check result in
+ * another room, unattached.
+ */
 export function deltaRecordOrder(
   record: RecordOrderPayload,
   now: Date,
   options: TurnOrderOptions & { wikiEnabled: boolean }
 ): string {
+  // Record orders written before 2026-09-29 carry no source, and a retry copies its order, so the
+  // channel is found by name in the list instead of by key; the step stays the same.
+  const context = record.source
+    ? `source.recent({channels: ["${record.source}:${record.channel}"], perChannel: 20})`
+    : `source.recent (find the channel "${record.channel}" in its list, then read its lines with channels and perChannel: 20)`;
   const lines = record.lines.map((line) => {
     const known = Number.isFinite(Date.parse(line.sourceAt));
     return `[${known ? localStamp(line.sourceAt, options.timeZone) : '-'}] ${line.author}: ${line.text}`;
@@ -400,8 +419,8 @@ export function deltaRecordOrder(
     currentTime(now, options.timeZone),
     ...(lines.length === 0 ? [] : [wrapUntrustedContent('source_delta', lines.join('\n'))]),
     'Record what this delta changed:',
-    `1. Use its lines above; read originals with source.read and observationRefs from the list below only for what the lines do not show.`,
-    `2. Find the work they belong to with work.list (view=items with text) before creating anything.`,
+    `1. Check this channel's latest context with ${context}; read an original with source.read only when a line needs its full text.`,
+    `2. Read the current work state with work.list (view=items for the open work; detail for the items this conversation is about) before creating anything; help({topic: 'record'}) has the recording rules.`,
     `3. For each moved item, work.revise (or work.create for newly entrusted work) with derived_from links to the observations below and eventDatetime set to the source event time; update only the board sections that change with report.publish, reading its contract with help first in a session${
       options.wikiEnabled
         ? `; add the dated line to the case's topic page with manage.wiki.update`
@@ -467,14 +486,14 @@ export function scheduledReportOrder(
       '[scheduled_full_report]',
       currentTime(now, options.timeZone),
       `Changes since: ${since}`,
-      'Write the full report by the full-report procedure.',
+      "Write the full report by its procedure, help({topic: 'full-report'}).",
       `Messenger: ${options.messenger}`,
     ].join('\n');
   }
   return [
     '[scheduled_task_reminder]',
     currentTime(now, options.timeZone),
-    `1. Read open work with work.list view=pipeline, keeping only the fields you need in the script.`,
+    `1. Find the open work that needs the owner now (work.list items with due overdue or today, and items waiting on an owner decision), keeping only the fields you need in the script.`,
     `2. Pick the top five to eight by priority and deadline, including every item waiting on an owner decision; check schedule.upcoming if this session has not read it today.`,
     `3. Update only the action_required board section with report.publish.`,
     '4. Reply with a three-to-six-line reminder of those items, most urgent first, under a title that names them. If nothing needs the owner now, reply [ack] only.',

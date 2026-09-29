@@ -6,6 +6,47 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- The owner agent works one step at a time instead of starting every turn with everything. A turn
+  starts with an index: each action's name and purpose (4,092 characters, was 6,477 with every
+  argument) and a standing prompt of 5,080 characters (was 8,611). The procedures for the full
+  report, recording, corrections, sources, files and the wiki are `help({topic})` texts the agent
+  reads when a turn needs one, and an action's arguments come from `help({actions: [name]})` before
+  its first call. On 2026-09-29 a full report started at 25.7k tokens of context and grew to 112k in
+  one turn; the next turn started at 119k and hit the CLI's context compaction.
+- The full report is what changed since the previous report on top of the work ledger. The procedure
+  no longer prescribes reading 24 hours of sources, the whole open pipeline and 14 days of calendar;
+  the agent finds what it needs and opens originals only for a change the ledger does not explain.
+  On 2026-09-29 two full reports took 218 and 301 seconds (the second timed out), re-reading sources
+  with 13 source searches.
+- A record turn follows Kagemusha's order: it checks the channel's latest context
+  (`source.recent` for that channel), then reads the current work state (`work.list`), then records
+  or states why nothing changed. It had been told to use only the delta's lines and find work by
+  text search, and on 2026-09-29 it left an owner's short check result in another room ("해결됐군요"
+  after a tk5 check request) unattached.
+- `source.recent` lists the channels that changed (key, count, latest line) and returns lines only
+  for the channels the agent asks for. One call had returned 33,077 characters.
+- `work.list` detail gives the current record, its 20 newest evidence refs and its 5 newest
+  revisions with their totals; `history_offset` pages older revisions. One detail read of a
+  52-revision item had returned 50,746 characters. The viewer's task page still shows every revision.
+- `work.list` finds open items by deadline (`due`: overdue, today, upcoming, unscheduled) and work
+  that has not moved (`changedBefore`).
+- Working through many items, the agent settles and records one item before the next, so a long turn
+  keeps what it finished. A 298-second cleanup turn had recorded nothing when it timed out.
+
+### Added
+
+- `mama init` asks whether to use Jev. Choosing it stores the key in `~/.mama/jev-key` (0600) and
+  sets `jev.enabled: true`; MAMA works the same without it. New installs start with a 900-second
+  turn limit, Kagemusha's, instead of 300.
+
+- `judge`: when the owner sets `jev.enabled`, the agent can ask Jev typed questions (noul, choice,
+  score) inside its script to narrow many candidates, such as a name spelled several ways or whether
+  a message settles a work item, and return only the ones that matter. It is used in pairs: code
+  narrows the candidates, then one call judges one item with its own few messages. A state over
+  6,000 characters is refused, because unrelated content lowers Jev's accuracy; on 2026-09-29 the
+  agent put the whole open ledger in each of 24 calls. Off by default; owner text in a `judge` call
+  goes to the Jev service.
+
 - A new owner session starts the way Kagemusha's does, within 2,500 characters: the time, the owner
   channel's last ten messages, the last ten turns it would resume from (your messages and live
   source changes with the replies) and the ten latest saved records. Before, it saw five owner

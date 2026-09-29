@@ -132,7 +132,7 @@ describe('report source reads', () => {
     });
   });
 
-  it('groups recent evidence, obeys channel grants, and exposes failed poll visibility', async () => {
+  it('lists the changed channels first, obeys channel grants, and exposes failed poll visibility', async () => {
     const { dispatch, access } = setup();
     const result = await dispatch(
       { action: 'source.recent', input: { since: now - 60_000 } },
@@ -146,17 +146,69 @@ describe('report source reads', () => {
             source: 'chat',
             channel: 'Room A',
             count: 1,
-            lines: [{ author: 'Writer', text: 'First update', observationRef: 'obs-one' }],
+            latest: {
+              author: 'Writer',
+              text: 'First update',
+              time: expect.stringContaining('(America/Los_Angeles)'),
+            },
           },
         ],
         failedConnectors: [{ connector: 'chat', channels: ['Room A'], error: 'poll failed' }],
       },
     });
+    const listed = (result as { data: { channels: Array<Record<string, unknown>> } }).data
+      .channels[0]!;
+    expect(listed).not.toHaveProperty('lines');
     expect(JSON.stringify(result)).not.toContain('Hidden update');
-    expect(result).toMatchObject({
+
+    const lines = await dispatch(
+      { action: 'source.recent', input: { since: now - 60_000, channels: [listed.key] } },
+      { access }
+    );
+    expect(lines).toMatchObject({
       status: 'completed',
-      data: { channels: [{ lines: [{ time: expect.stringContaining('(America/Los_Angeles)') }] }] },
+      data: {
+        channels: [
+          {
+            key: listed.key,
+            lines: [
+              {
+                author: 'Writer',
+                text: 'First update',
+                observationRef: 'obs-one',
+                time: expect.stringContaining('(America/Los_Angeles)'),
+              },
+            ],
+          },
+        ],
+      },
     });
+    expect(
+      await dispatch(
+        { action: 'source.recent', input: { since: now - 60_000, channels: ['chat:nowhere'] } },
+        { access }
+      )
+    ).toMatchObject({
+      status: 'failed',
+      error: { code: 'invalid_input', message: expect.stringContaining('chat:nowhere') },
+    });
+  });
+
+  it('reads a named channel whatever the cap on the channel list', async () => {
+    const { dispatch, access } = setup();
+    const owner = { ...access, principalId: 'owner', channels: undefined };
+    const listed = (await dispatch(
+      { action: 'source.recent', input: { since: now - 60_000 } },
+      { access: owner }
+    )) as { data: { channels: Array<{ key: string }> } };
+    expect(listed.data.channels.length).toBeGreaterThan(1);
+    const key = listed.data.channels[0]!.key;
+    expect(
+      await dispatch(
+        { action: 'source.recent', input: { since: now - 60_000, cap: 1, channels: [key] } },
+        { access: owner }
+      )
+    ).toMatchObject({ status: 'completed', data: { channels: [{ key }] } });
   });
 
   it('fails loudly as invalid input when recent channels exceed the stated cap', async () => {

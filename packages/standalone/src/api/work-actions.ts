@@ -51,7 +51,14 @@ interface WorkListFilter {
   readonly asOf?: number;
   /** Items written at or after this epoch-ms instant: what an orchestrated turn changed. */
   readonly changedSince?: number;
+  /** Items last written before this epoch-ms instant: work that has not moved since. */
+  readonly changedBefore?: number;
+  /** Open items by their deadline against the owner's today; closed items never match. */
+  readonly due?: WorkListDue;
 }
+
+const WORK_LIST_DUE = ['overdue', 'today', 'upcoming', 'unscheduled'] as const;
+type WorkListDue = (typeof WORK_LIST_DUE)[number];
 
 interface WorkListCursor {
   readonly v: 1;
@@ -200,6 +207,19 @@ function workListAsOf(value: unknown): number | undefined {
   return value as number;
 }
 
+/**
+ * A changed-since/before bound as epoch ms or a timezone-qualified ISO time, as source.recent
+ * takes: on 2026-09-29 the agent passed "2026-09-29T00:00:00+09:00" and the call failed.
+ */
+function workListTime(value: unknown, field: string): number {
+  if (typeof value === 'string' && /(?:Z|[+-]\d{2}:\d{2})$/.test(value)) {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  if (Number.isSafeInteger(value) && (value as number) >= 0) return value as number;
+  throw new Error(`work.list ${field} must be epoch milliseconds or an ISO time with its offset`);
+}
+
 function workListFilter(input: Record<string, unknown>): WorkListFilter {
   const status = workListStatuses(input.status);
   return {
@@ -208,8 +228,21 @@ function workListFilter(input: Record<string, unknown>): WorkListFilter {
     ...(input.project === undefined ? {} : { project: workListString(input.project, 'project') }),
     ...(input.text === undefined ? {} : { text: workListString(input.text, 'text') }),
     ...(input.asOf === undefined ? {} : { asOf: workListAsOf(input.asOf) }),
-    ...(input.changedSince === undefined ? {} : { changedSince: workListAsOf(input.changedSince) }),
+    ...(input.changedSince === undefined
+      ? {}
+      : { changedSince: workListTime(input.changedSince, 'changedSince') }),
+    ...(input.changedBefore === undefined
+      ? {}
+      : { changedBefore: workListTime(input.changedBefore, 'changedBefore') }),
+    ...(input.due === undefined ? {} : { due: workListDueFilter(input.due) }),
   };
+}
+
+function workListDueFilter(value: unknown): WorkListDue {
+  if (typeof value !== 'string' || !(WORK_LIST_DUE as readonly string[]).includes(value)) {
+    throw new Error(`work.list due must be one of ${WORK_LIST_DUE.join('|')}`);
+  }
+  return value as WorkListDue;
 }
 
 function workListValueObject(value: unknown): Record<string, unknown> {
@@ -381,13 +414,34 @@ function workListCompact(
   return compact;
 }
 
-function workListMatches(item: CommitmentView, filter: WorkListFilter): boolean {
+function workListMatches(
+  item: CommitmentView,
+  filter: WorkListFilter,
+  now: number,
+  timeZone: string
+): boolean {
   const values = workListValueObject(item.values);
   if (filter.status !== undefined && !filter.status.includes(workListStatus(item))) return false;
   if (filter.stage !== undefined && workListText(values.stage) !== filter.stage) return false;
   if (filter.project !== undefined && workListText(values.project) !== filter.project) return false;
   if (filter.changedSince !== undefined && item.updatedAt < filter.changedSince) return false;
+  if (filter.changedBefore !== undefined && item.updatedAt >= filter.changedBefore) return false;
+  if (filter.due !== undefined && workListDueGroup(item, now, timeZone) !== filter.due)
+    return false;
   return true;
+}
+
+function workListDueGroup(item: CommitmentView, now: number, timeZone: string): WorkListDue | null {
+  const state = workListDueState(item, now, timeZone);
+  if (state === 'closed') return null;
+  if (state === 'unscheduled') return 'unscheduled';
+  if (state === 'date_due') return 'today';
+  if (state === 'exact_upcoming') {
+    const values = workListValueObject(item.values);
+    const exact = workListEventTime(values.dueAt ?? values.due_at)!;
+    return localDateKey(exact, timeZone) === localDateKey(now, timeZone) ? 'today' : 'upcoming';
+  }
+  return state.endsWith('overdue') ? 'overdue' : 'upcoming';
 }
 
 interface WorkListRankedItem {
@@ -406,9 +460,11 @@ interface WorkListRankedItem {
  */
 function workListRankedItems(
   items: readonly CommitmentView[],
-  filter: WorkListFilter
+  filter: WorkListFilter,
+  now: number,
+  timeZone: string
 ): readonly WorkListRankedItem[] {
-  const filtered = items.filter((item) => workListMatches(item, filter));
+  const filtered = items.filter((item) => workListMatches(item, filter, now, timeZone));
   if (filter.text === undefined) return filtered.map((item) => ({ item }));
   const query = filter.text;
   return filtered
@@ -417,16 +473,23 @@ function workListRankedItems(
     .sort((left, right) => right.score - left.score || right.item.updatedAt - left.item.updatedAt);
 }
 
-function workListFingerprint(filter: WorkListFilter): string {
+/**
+ * The query a cursor belongs to. A due filter depends on the owner's today, so its day is part of
+ * the query: a page read after midnight restarts instead of skipping items that changed group.
+ */
+function workListFingerprint(filter: WorkListFilter, dueDay: string | null): string {
   return createHash('sha256')
     .update(
       JSON.stringify([
+        dueDay,
         filter.status === undefined ? null : [...filter.status].sort(),
         filter.stage ?? null,
         filter.project ?? null,
         filter.text ?? null,
         filter.asOf ?? null,
         filter.changedSince ?? null,
+        filter.changedBefore ?? null,
+        filter.due ?? null,
       ])
     )
     .digest('base64url')
@@ -497,7 +560,11 @@ function workListCursorQuery(value: unknown): WorkListFilter | undefined {
     : undefined;
 }
 
-function decodeWorkListCursor(value: unknown, filter: WorkListFilter): WorkListCursor {
+function decodeWorkListCursor(
+  value: unknown,
+  filter: WorkListFilter,
+  dueDay: string | null
+): WorkListCursor {
   if (value === '') {
     throw new Error('work.list cursor is empty; omit cursor to start from the first page');
   }
@@ -523,7 +590,7 @@ function decodeWorkListCursor(value: unknown, filter: WorkListFilter): WorkListC
   ) {
     throw new Error('work.list cursor is malformed; restart the items read from the first page');
   }
-  if (candidate.filter !== workListFingerprint(filter)) {
+  if (candidate.filter !== workListFingerprint(filter, dueDay)) {
     throw new Error(
       'work.list cursor belongs to a different query; restart the items read from the first page'
     );
@@ -565,22 +632,37 @@ function workListDetailIds(value: unknown): Array<string | number> {
   return ids;
 }
 
+/**
+ * Detail answers one level at a time: the newest revisions and evidence, with their totals and the
+ * offset of the next page. On 2026-09-29 one detail read of a 52-revision item returned 50,746
+ * characters, every revision's values included.
+ */
+const WORK_LIST_DETAIL_HISTORY_PAGE = 5;
+const WORK_LIST_DETAIL_BASIS_RECENT = 20;
+
 function workListDetailRecord(
   item: CommitmentView,
   textOffset: number,
   textLimit: number,
+  historyOffset: number,
   now: number,
   timeZone: string
 ): Record<string, unknown> {
   if (item.history === undefined)
     throw new Error('work.list detail did not return revision history');
   const values = workListValueObject(item.values);
-  const detailedValues = { ...values } as Record<string, unknown>;
-  for (const field of ['title', 'description', 'latestEvent']) {
-    const value = values[field];
-    if (typeof value === 'string')
-      detailedValues[field] = workListTextWindow(value, textOffset, textLimit);
-  }
+  // The text fields are given once, as windows, above the other values.
+  const otherValues = Object.fromEntries(
+    Object.entries(values).filter(
+      ([field]) => !['title', 'description', 'latestEvent'].includes(field)
+    )
+  );
+  const newestFirst = [...item.history].reverse();
+  const historyPage = newestFirst.slice(
+    historyOffset,
+    historyOffset + WORK_LIST_DETAIL_HISTORY_PAGE
+  );
+  const historyNext = historyOffset + historyPage.length;
   const compact = workListCompact(item, now, undefined, timeZone);
   return {
     ...compact,
@@ -596,9 +678,12 @@ function workListDetailRecord(
       typeof values.latestEvent === 'string'
         ? workListTextWindow(values.latestEvent, textOffset, textLimit)
         : null,
-    values: detailedValues,
-    basis: item.basis,
-    history: item.history,
+    values: otherValues,
+    basis: item.basis.slice(-WORK_LIST_DETAIL_BASIS_RECENT),
+    basisTotal: item.basis.length,
+    history: historyPage,
+    historyTotal: newestFirst.length,
+    historyNextOffset: historyNext < newestFirst.length ? historyNext : null,
     latestJudgmentRef: item.latestJudgmentRef,
   };
 }
@@ -613,6 +698,7 @@ function workListDetail(input: Record<string, unknown>, ctx: WorkListViewContext
     1,
     WORK_LIST_MAX_TEXT_LIMIT
   );
+  const historyOffset = workListNonNegativeInteger(input.history_offset, 'history_offset', 0);
   const asOf = workListAsOf(input.asOf);
   const now = ctx.now?.() ?? Date.now();
   const tasks: Array<Record<string, unknown>> = [];
@@ -629,7 +715,7 @@ function workListDetail(input: Record<string, unknown>, ctx: WorkListViewContext
       missingIds.push(id);
       continue;
     }
-    tasks.push(workListDetailRecord(item, textOffset, textLimit, now, ctx.timeZone));
+    tasks.push(workListDetailRecord(item, textOffset, textLimit, historyOffset, now, ctx.timeZone));
   }
   return {
     success: true,
@@ -776,7 +862,7 @@ export async function runWorkListView(
     };
   }
   if (view === 'overview') {
-    const rankedItems = workListRankedItems(snapshot.items, filter);
+    const rankedItems = workListRankedItems(snapshot.items, filter, now, ctx.timeZone);
     return workListOverview(snapshot, rankedItems, now, ctx.timeZone);
   }
 
@@ -787,13 +873,15 @@ export async function runWorkListView(
     1,
     WORK_LIST_MAX_LIMIT
   );
-  const decoded = input.cursor === undefined ? null : decodeWorkListCursor(input.cursor, filter);
+  const dueDay = filter.due === undefined ? null : localDateKey(now, ctx.timeZone);
+  const decoded =
+    input.cursor === undefined ? null : decodeWorkListCursor(input.cursor, filter, dueDay);
   if (decoded !== null && decoded.readVersion !== snapshot.readVersion) {
     throw new Error(
       'work.list board changed since this cursor was issued; restart the items read from the first page'
     );
   }
-  const rankedItems = workListRankedItems(snapshot.items, filter);
+  const rankedItems = workListRankedItems(snapshot.items, filter, now, ctx.timeZone);
   const offset = decoded?.offset ?? 0;
   const page = rankedItems.slice(offset, offset + limit);
   const nextOffset = offset + page.length < rankedItems.length ? offset + page.length : null;
@@ -808,7 +896,7 @@ export async function runWorkListView(
         ? null
         : encodeWorkListCursor({
             v: 1,
-            filter: workListFingerprint(filter),
+            filter: workListFingerprint(filter, dueDay),
             query: filter,
             readVersion: snapshot.readVersion,
             offset: nextOffset,
@@ -827,7 +915,7 @@ export function workListActionRegistrations(ports: WorkListPorts): ActionRegistr
       contract: {
         name: 'work.list',
         summary:
-          'Read owner work progressively: overview counts, a compact open-work pipeline grouped by stage. Each pipeline row is an array using the top-level fields order (commitmentId, title, status, assignee, deadline, latest_change in epoch seconds, latest_event). Pipeline returns the whole open ledger and ignores limit; bounded items pages are capped at 50. Use detail for evidence and revision history.',
+          'Find owner work by what the turn needs: items filtered by status, stage, project, due, changedSince or changedBefore and ranked by text, in pages of 25 (50 max); overview counts; detail for up to 4 ids with the current record, its 20 newest evidence refs and its 5 newest revisions (history_offset pages older ones). pipeline returns every open item grouped by stage (rows in the order of its fields: commitmentId, title, status, assignee, deadline, latest_change in epoch seconds, latest_event) and ignores limit: read it inside a script that builds the board, not into your context.',
         inputSchema: {
           type: 'object',
           additionalProperties: false,
@@ -862,19 +950,41 @@ export function workListActionRegistrations(ports: WorkListPorts): ActionRegistr
             text: { type: 'string' },
             asOf: { type: 'integer', minimum: 0 },
             changedSince: {
-              type: 'integer',
-              minimum: 0,
+              oneOf: [
+                { type: 'integer', minimum: 0 },
+                { type: 'string', minLength: 1 },
+              ],
               description:
-                'Only items written at or after this epoch-ms time, e.g. the start of your turn.',
+                'Only items written at or after this time (epoch ms or ISO with offset), e.g. the start of your turn.',
+            },
+            changedBefore: {
+              oneOf: [
+                { type: 'integer', minimum: 0 },
+                { type: 'string', minLength: 1 },
+              ],
+              description:
+                'Only items last written before this time (epoch ms or ISO with offset): work that has not moved.',
+            },
+            due: {
+              type: 'string',
+              enum: WORK_LIST_DUE,
+              description:
+                "Open items whose deadline is past, is the owner's today, is later, or is unset.",
             },
             text_offset: { type: 'integer', minimum: 0 },
             text_limit: { type: 'integer', minimum: 1, maximum: WORK_LIST_MAX_TEXT_LIMIT },
+            history_offset: {
+              type: 'integer',
+              minimum: 0,
+              description:
+                'Detail: skip this many of the newest revisions; each page has 5, historyNextOffset gives the next.',
+            },
             history: { type: 'string', enum: ['current', 'all'] },
           },
         },
         examples: [
           { title: 'Work overview', input: { view: 'overview' } },
-          { title: 'Open work pipeline', input: { view: 'pipeline' } },
+          { title: 'Overdue open work', input: { view: 'items', due: 'overdue' } },
           { title: 'First work page', input: { view: 'items', limit: WORK_LIST_DEFAULT_LIMIT } },
           { title: 'Work detail', input: { view: 'detail', ids: ['commitment-reference'] } },
         ],

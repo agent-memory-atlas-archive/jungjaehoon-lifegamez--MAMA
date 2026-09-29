@@ -2,7 +2,9 @@ import { readFileSync } from 'node:fs';
 
 export interface JevQuestion {
   readonly type: string;
-  readonly instructions: string;
+  readonly instructions: unknown;
+  /** noul true/false meanings, choice options {key: meaning}, or score levels in order. */
+  readonly criteria?: unknown;
 }
 
 export type JevQuestions = Readonly<Record<string, JevQuestion>>;
@@ -12,6 +14,8 @@ export interface JevBatchRequest {
   readonly state: unknown;
   readonly questions: JevQuestions;
   readonly observationRefs: readonly string[];
+  /** Cancels the request with the turn that made it. */
+  readonly signal?: AbortSignal;
 }
 
 export interface JevClientOptions {
@@ -111,6 +115,7 @@ export function createJevClient(options: JevClientOptions): JevClient {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(body),
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
       });
       const text = await response.text();
       if (response.ok) {

@@ -100,7 +100,7 @@ function withHistory(item: CommitmentView): CommitmentView {
   const values = item.values as Record<string, unknown>;
   return {
     ...item,
-    history: [revision(item.commitmentId, 1, values)],
+    history: item.history ?? [revision(item.commitmentId, 1, values)],
   };
 }
 
@@ -199,6 +199,74 @@ describe('progressive work.list views', () => {
     ).toEqual(['commitment-2', 'commitment-3']);
   });
 
+  it("finds open items by deadline against the owner's today, and work that has not moved", async () => {
+    // now is 2023-11-14 22:15 UTC; a closed item never matches a due filter.
+    const dated = (index: number, deadline: string | null, status = 'pending', updatedAt = 100) =>
+      view(index, {
+        updatedAt,
+        values: { title: `item-${index}`, status, ...(deadline === null ? {} : { deadline }) },
+      });
+    const reader = makeReader([
+      dated(1, '2023-11-13'),
+      dated(2, '2023-11-14'),
+      dated(3, '2023-11-20', 'pending', 300),
+      dated(4, null, 'pending', 300),
+      dated(5, '2023-11-10', 'done'),
+    ]);
+    const ids = async (input: Record<string, unknown>) =>
+      (
+        (await runWorkListView({ view: 'items', ...input }, context(reader.readWork)))
+          .tasks as Array<{
+          commitmentId: string;
+        }>
+      ).map((task) => task.commitmentId);
+    expect(await ids({ due: 'overdue' })).toEqual(['commitment-1']);
+    expect(await ids({ due: 'today' })).toEqual(['commitment-2']);
+    expect(await ids({ due: 'upcoming' })).toEqual(['commitment-3']);
+    expect(await ids({ due: 'unscheduled' })).toEqual(['commitment-4']);
+    expect(await ids({ changedSince: '1970-01-01T00:00:00.250Z' })).toEqual([
+      'commitment-3',
+      'commitment-4',
+    ]);
+    await expect(
+      runWorkListView({ view: 'items', changedSince: 'today' }, context(reader.readWork))
+    ).rejects.toThrow('work.list changedSince must be epoch milliseconds or an ISO time');
+    expect(await ids({ changedBefore: 200 })).toEqual([
+      'commitment-1',
+      'commitment-2',
+      'commitment-5',
+    ]);
+    await expect(
+      runWorkListView({ view: 'items', due: 'late' }, context(reader.readWork))
+    ).rejects.toThrow('work.list due must be one of overdue|today|upcoming|unscheduled');
+  });
+
+  it('counts an exact deadline later today as today, and restarts a due page after midnight', async () => {
+    // now is 2023-11-14 22:15 UTC.
+    const exact = (index: number, dueAt: string) =>
+      view(index, { values: { title: `item-${index}`, status: 'pending', dueAt } });
+    const items = [
+      exact(1, '2023-11-14T23:00:00Z'),
+      exact(2, '2023-11-15T01:00:00Z'),
+      ...Array.from({ length: 3 }, (_, index) => exact(index + 3, '2023-11-14T23:30:00Z')),
+    ];
+    const reader = makeReader(items);
+    const today = await runWorkListView(
+      { view: 'items', due: 'today', limit: 2 },
+      context(reader.readWork)
+    );
+    expect(today.total).toBe(4);
+    const tomorrow = {
+      knowledge: { readWork: reader.readWork },
+      access,
+      now: () => Date.parse('2023-11-15T00:10:00Z'),
+      timeZone: 'UTC',
+    };
+    await expect(
+      runWorkListView({ view: 'items', due: 'today', cursor: today.nextCursor }, tomorrow)
+    ).rejects.toThrow('work.list cursor belongs to a different query');
+  });
+
   it('continues a filtered items read from the cursor alone and refuses a different filter', async () => {
     const reader = makeReader(Array.from({ length: 80 }, (_, index) => view(index + 1)));
     const first = await runWorkListView(
@@ -274,17 +342,51 @@ describe('progressive work.list views', () => {
     expect(first.missingIds).toEqual([]);
     expect(task).toHaveProperty('basis');
     expect(task).toHaveProperty('history');
-    expect(task.values.description).toMatchObject({ total: 2_301, nextOffset: 1_000 });
+    expect(task.description).toMatchObject({ total: 2_301, nextOffset: 1_000 });
+    // The text fields are given once, as windows, not again inside values.
+    expect(task.values).not.toHaveProperty('description');
 
     const second = await runWorkListView(
       { view: 'detail', ids: ['commitment-1'], text_offset: 1_000, text_limit: 2_000 },
       context(reader.readWork)
     );
-    expect(second.tasks[0]!.values.description).toMatchObject({
+    expect(second.tasks[0]!.description).toMatchObject({
       value: longText.slice(1_000),
       complete: true,
       nextOffset: null,
     });
+  });
+
+  it('gives the newest five revisions and twenty evidence refs, paging older revisions', async () => {
+    const history = Array.from({ length: 12 }, (_, index) =>
+      revision('commitment-1', index + 1, { latestEvent: `event ${index + 1}` })
+    );
+    const basis = Array.from({ length: 30 }, (_, index) => ({
+      kind: 'observation' as const,
+      id: `obs-${index + 1}`,
+    }));
+    const reader = makeReader([view(1, { revision: 12, history, basis })]);
+    const page = async (offset?: number) =>
+      (
+        await runWorkListView(
+          {
+            view: 'detail',
+            ids: ['commitment-1'],
+            ...(offset === undefined ? {} : { history_offset: offset }),
+          },
+          context(reader.readWork)
+        )
+      ).tasks[0]!;
+    const first = await page();
+    expect(first.history.map((entry: { revision: number }) => entry.revision)).toEqual([
+      12, 11, 10, 9, 8,
+    ]);
+    expect(first).toMatchObject({ historyTotal: 12, historyNextOffset: 5, basisTotal: 30 });
+    expect(first.basis).toHaveLength(20);
+    expect(first.basis.at(-1)).toMatchObject({ id: 'obs-30' });
+    const last = await page(10);
+    expect(last.history.map((entry: { revision: number }) => entry.revision)).toEqual([2, 1]);
+    expect(last.historyNextOffset).toBeNull();
   });
 
   it('registers work.list as the product progressive contract', () => {
@@ -315,7 +417,7 @@ describe('progressive work.list views', () => {
         },
       ]),
     });
-    expect(registration.contract.summary).toContain('bounded');
+    expect(registration.contract.summary).toContain('Find owner work by what the turn needs');
   });
 
   it('dispatches the current commitment reader under the caller access', async () => {

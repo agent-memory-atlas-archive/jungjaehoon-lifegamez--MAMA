@@ -222,7 +222,12 @@ describe('turn orders', () => {
       channelKey: 'room',
       payload: {
         refs: [
-          { observationRef: 'obs-2', contentPreview: 'b', sourceAt: now.toISOString() },
+          {
+            connector: 'chat',
+            observationRef: 'obs-2',
+            contentPreview: 'b',
+            sourceAt: now.toISOString(),
+          },
           { observationRef: 'obs-1', contentPreview: 'a', sourceAt: now.toISOString() },
           { observationRef: 'obs-1', contentPreview: 'a', sourceAt: now.toISOString() },
         ],
@@ -232,6 +237,7 @@ describe('turn orders', () => {
     expect(first).toMatchObject({
       order: 'record',
       deltaStimulusId: 'source_delta:abc',
+      source: 'chat',
       channel: 'room',
       observationRefs: ['obs-1', 'obs-2'],
       attempt: 1,
@@ -242,6 +248,13 @@ describe('turn orders', () => {
     expect(recordOrderId('source_delta:abc', 2)).toBe('record:source_delta:abc:2');
     expect(parseRecordOrder(first as never)).toEqual(first);
     expect(() => parseRecordOrder({ order: 'record' })).toThrow(/deltaStimulusId/);
+    // Boot recovery reads a record order written before it carried its source.
+    const { source: _source, ...legacy } = first;
+    expect(parseRecordOrder(legacy as never)).toEqual(legacy);
+    // A retry copies its order, so a legacy order is still rendered: the channel found by name.
+    expect(
+      deltaRecordOrder(legacy, now, { backend: 'codex', timeZone: 'UTC', wikiEnabled: false })
+    ).toContain('source.recent (find the channel "room" in its list');
   });
 
   it("gives the record order Kagemusha's five steps and the batch's observations", () => {
@@ -249,6 +262,7 @@ describe('turn orders', () => {
       {
         order: 'record',
         deltaStimulusId: 'source_delta:abc',
+        source: 'chat',
         channel: 'room',
         observationRefs: ['obs-1', 'obs-2'],
         lines: [{ sourceAt: now.toISOString(), author: 'sender', text: 'files sent' }],
@@ -267,12 +281,20 @@ describe('turn orders', () => {
       'observations: obs-1, obs-2',
       '[09-29 01:40] sender: files sent',
       'reading its contract with help first in a session',
+      // Kagemusha's order: the channel's latest context, then the current work state (2026-09-29).
+      '1. Check this channel\'s latest context with source.recent({channels: ["chat:room"], perChannel: 20})',
+      '2. Read the current work state with work.list',
     ])
       expect(order).toContain(part);
+    expect(order).not.toContain('only for what the lines do not show');
     const noWiki = deltaRecordOrder(
       parseRecordOrder(
         recordOrderPayload(
-          { stimulusId: 's', channelKey: 'c', payload: { refs: [{ observationRef: 'o' }] } },
+          {
+            stimulusId: 's',
+            channelKey: 'c',
+            payload: { refs: [{ connector: 'chat', observationRef: 'o' }] },
+          },
           1
         ) as never
       ),
@@ -295,7 +317,7 @@ describe('turn orders', () => {
     });
     expect(full).toContain('[scheduled_full_report]');
     expect(full).toContain('Changes since: 24 hours ago');
-    expect(full).toContain('full-report procedure');
+    expect(full).toContain("help({topic: 'full-report'})");
     const since = scheduledReportOrder(
       { report: 'full', hourKey: '2026-09-29:13', previousFullReportAt: '2026-09-29:08' },
       now,
