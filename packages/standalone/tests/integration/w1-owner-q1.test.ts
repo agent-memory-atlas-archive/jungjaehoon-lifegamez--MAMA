@@ -83,7 +83,7 @@ describe('W1 owner question integration', () => {
       }),
       { encoding: 'utf8' }
     );
-    const now = Date.parse('2026-09-25T00:00:00.000Z');
+    const now = Date.now();
     const item: NormalizedItem = {
       source: 'slack',
       sourceId: 'source-1',
@@ -127,34 +127,29 @@ describe('W1 owner question integration', () => {
           turnId: `fixture-turn-${request.nativeInputId}`,
         });
         const text = content[0]?.type === 'text' ? (content[0].text ?? '') : '';
-        if (text.includes('kind: source_delta')) {
+        if (text.includes('[delta_record]')) {
           const surface = owner!.surface;
           const session = {
             modelRunId: modelRun.model_run_id,
             gatewayCallId: 'fixture-source-delta',
           };
-          // The delta payload arrives quoted as untrusted content: its JSON is the first line
-          // after the payload label that opens an object.
-          const lines = text.split('\n');
-          const labelIndex = lines.findIndex((line) => line.startsWith('payload: '));
-          if (labelIndex < 0) throw new Error('fixture source delta omitted its payload');
-          const payloadJson = lines.slice(labelIndex + 1).find((line) => line.startsWith('{'));
-          if (!payloadJson) throw new Error('fixture source delta payload carried no JSON');
-          const payload = JSON.parse(payloadJson) as {
-            refs?: Array<{ connector?: unknown; observationRef?: unknown }>;
-          };
-          if (!Array.isArray(payload.refs)) throw new Error('fixture source delta omitted refs');
-          const readInputs = payload.refs.map((ref) => {
-            if (typeof ref.connector !== 'string' || typeof ref.observationRef !== 'string') {
-              throw new Error('fixture source delta omitted a readable observation handle');
-            }
-            return { source: ref.connector, observationRef: ref.observationRef };
-          });
+          // The record order lists the batch's observations; source.read takes them without a source.
+          const listed = text.split('\n').find((line) => line.startsWith('observations: '));
+          if (!listed) throw new Error('fixture record order omitted its observations');
+          const readInputs = listed
+            .slice('observations: '.length)
+            .split(', ')
+            .map((observationRef) => ({ observationRefs: [observationRef], observationRef }));
           sourceObservationRefs = readInputs.map((input) => input.observationRef);
           for (const [index, input] of readInputs.entries()) {
-            const read = await surface.hostToolCall('source.read', input, `tool-read-${index}`, {
-              session: { ...session, gatewayCallId: `fixture-read-${index}` },
-            });
+            const read = await surface.hostToolCall(
+              'source.read',
+              { observationRefs: input.observationRefs },
+              `tool-read-${index}`,
+              {
+                session: { ...session, gatewayCallId: `fixture-read-${index}` },
+              }
+            );
             if (read.status !== 'completed') throw new Error('fixture source.read failed');
             actionNames.push('source.read');
           }
@@ -276,6 +271,8 @@ describe('W1 owner question integration', () => {
     });
 
     await vi.waitFor(() => expect(responses).toHaveLength(1));
+    // The record order may run after the owner's answer: owner messages go first.
+    await vi.waitFor(() => expect(actionNames).toContain('work.create'));
     expect(actionNames).toContain('work.list');
     expect(actionNames.filter((name) => name === 'source.read')).toHaveLength(2);
     expect(actionNames).toContain('work.create');
@@ -298,21 +295,26 @@ describe('W1 owner question integration', () => {
     ).toBe(true);
 
     const database = owner!.database.adapter;
-    // The source delta and the owner question; the delta turn updates the board itself.
+    // The source delta, the record order it left and the owner question.
     expect(
       database
         .prepare('SELECT kind, COUNT(*) AS count FROM mailbox_inputs GROUP BY kind ORDER BY kind')
         .all()
     ).toEqual([
       { kind: 'owner_message', count: 1 },
+      { kind: 'scheduled', count: 1 },
       { kind: 'source_delta', count: 1 },
     ]);
     expect(database.prepare('SELECT COUNT(*) AS count FROM model_runs').get()).toEqual({
-      count: 2,
+      count: 3,
     });
-    expect(database.prepare('SELECT COUNT(*) AS count FROM tool_traces').get()).toEqual({
-      count: 4,
-    });
+    // Two reads and the write in the record order, the ledger read in the answer; lesson recall
+    // searches are host operations.
+    expect(
+      database
+        .prepare("SELECT COUNT(*) AS count FROM tool_traces WHERE tool_name != 'memory.search'")
+        .get()
+    ).toEqual({ count: 4 });
     expect(database.prepare('SELECT COUNT(*) AS count FROM commitments').get()).toEqual({
       count: 1,
     });

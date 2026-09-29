@@ -23,8 +23,8 @@ acceptance evidence, not an extra host approval gate or a prescribed owner-agent
 The product requirements cover understanding source material, keeping related work together,
 answering from saved records, reporting changes, and applying corrections. The shared engine has
 separate requirements. Internal
-references belong in records and traces; owner-facing answers use readable sentences without
-internal identifiers. Traceable reads and correct explanation together support the answer.
+references belong in records and traces; owner-facing answers are readable text without
+internal identifiers, in the style the owner policy sets. Traceable reads and correct explanation together support the answer.
 
 ## Record the evidence you observed
 

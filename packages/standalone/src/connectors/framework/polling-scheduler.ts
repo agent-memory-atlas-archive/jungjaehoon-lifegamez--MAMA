@@ -87,6 +87,9 @@ export function canonicalChannelKey(
   return matched[0];
 }
 
+/** Message text a live delta carries per item; the notify order shows up to 500 characters. */
+const DELTA_TEXT_LIMIT = 1_000;
+
 function boundedPreview(items: readonly NormalizedItem[]): string[] {
   const lines: string[] = [];
   for (const item of items) {
@@ -107,14 +110,22 @@ function sourceObservationRef(
   if (typeof item.observedAt !== 'number' || !Number.isFinite(item.observedAt)) {
     throw new Error('A committed source item must have a finite observation time');
   }
+  const channelName =
+    typeof item.metadata?.channelName === 'string' ? item.metadata.channelName : undefined;
   return {
     connector,
     observationRef,
     sourceId: item.sourceId,
     sourceEntityId: item.sourceEntityId ?? item.sourceId,
+    channel: item.channel,
     sourceAt: item.timestamp.toISOString(),
     observedAt: new Date(item.observedAt).toISOString(),
     contentHash: item.contentHash ?? null,
+    // The notify order carries each message inline, as Kagemusha's delta turn does; source.read
+    // stays the full original.
+    author: item.author,
+    ...(channelName === undefined ? {} : { channelName }),
+    contentPreview: item.content.slice(0, DELTA_TEXT_LIMIT),
     ...(item.metadata === undefined ? {} : { metadata: item.metadata }),
   };
 }

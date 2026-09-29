@@ -6,13 +6,8 @@ import type { JsonValue } from '@jungjaehoon/mama-core/knowledge';
 import type { NativeTurnResult } from '@jungjaehoon/mama-core/runtime/native-turn';
 import type { W1ReportsConfig } from './config.js';
 import type { StimulusIntake } from './stimulus-delivery.js';
-import { scheduledReport } from './report-prompts.js';
-import { epochAtLocalDateTime } from './timezone.js';
+import { REPORT_CHANNEL, scheduledReport } from './turn-orders.js';
 import type { TimeZoneSetting } from './timezone.js';
-import {
-  ACKNOWLEDGED_DELTA_CAP,
-  type AcknowledgedSourceDeltaBatch,
-} from './acknowledged-source-deltas.js';
 
 interface ReportScheduleState {
   lastFullKey: string | null;
@@ -26,7 +21,6 @@ export interface ReportSchedulerOptions {
   intake: Pick<StimulusIntake, 'acceptScheduled'>;
   /** Includes queued/retrying inputs across restarts, excludes uncertain failed turns. */
   hasPendingReport: () => boolean;
-  readAcknowledgedDeltas: (sinceAt: number, throughAt: number) => AcknowledgedSourceDeltaBatch;
   sendToOwner: (text: string, idempotencyKey: string) => Promise<void>;
   onError: (error: unknown) => void;
 }
@@ -78,36 +72,14 @@ export function createReportScheduler(options: ReportSchedulerOptions) {
           state.lastFullKey === hourKey
     )
       return;
-    const latestReportKey = [state.lastFullKey, state.lastReminderKey]
-      .filter((key): key is string => key !== null)
-      .sort()
-      .at(-1);
-    const previousReportAt = latestReportKey
-      ? epochAtLocalDateTime(
-          `${latestReportKey.slice(0, 10)}T${latestReportKey.slice(11)}:00:00`,
-          options.timeZone.get()
-        )
-      : now.getTime() - 24 * 60 * 60 * 1000;
-    const acknowledgedDeltas = full
-      ? null
-      : options.readAcknowledgedDeltas(previousReportAt, now.getTime());
     const payload: Record<string, JsonValue> = {
       report: full ? 'full' : 'reminder',
       hourKey,
       ...(full ? { previousFullReportAt: state.lastFullKey } : {}),
     };
-    if (acknowledgedDeltas !== null) {
-      payload.acknowledgedDeltas = {
-        total: acknowledgedDeltas.total,
-        cap: ACKNOWLEDGED_DELTA_CAP,
-        items: acknowledgedDeltas.items,
-      };
-    }
-    // A failed accepted turn is uncertain in the mailbox. R5 explicitly asks for
-    // a new model attempt on the next tick; reusing its id would deduplicate it.
     options.intake.acceptScheduled({
       id: `report:${hourKey}:${randomUUID()}`,
-      channelKey: 'schedule',
+      channelKey: REPORT_CHANNEL,
       occurredAt: now.getTime(),
       payload,
     });
@@ -137,7 +109,13 @@ export function createReportScheduler(options: ReportSchedulerOptions) {
       const { report, hourKey } = scheduledReport(row.payload);
       const text = result.response.trim();
       if (!text) throw new Error('Scheduled report returned empty output');
-      await options.sendToOwner(text, `report:${hourKey}:${report}`);
+      // A reminder with nothing that needs the owner ends with [ack] and is not sent; the last
+      // marker decides, as for delta replies.
+      const lastMarker = text.slice(
+        Math.max(text.lastIndexOf('[notify]'), text.lastIndexOf('[ack]'))
+      );
+      if (!(report === 'reminder' && lastMarker.startsWith('[ack]')))
+        await options.sendToOwner(text, `report:${hourKey}:${report}`);
       const next = { ...state, [report === 'full' ? 'lastFullKey' : 'lastReminderKey']: hourKey };
       mkdirSync(dirname(options.statePath), { recursive: true });
       const temporary = `${options.statePath}.tmp`;

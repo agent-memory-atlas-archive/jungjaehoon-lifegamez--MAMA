@@ -34,26 +34,21 @@ keeps the record. `memory.read:provenance` reads the record's source links.
 
 ## When corrections reach the agent
 
-MAMA's built-in instructions for source changes and answers, together with the
-messenger's formatting rules, are held by the agent for every kind of turn. Each
-report brings its own steps: the full report and the hourly reminder say what to
-read, publish and write. When you ask for a full report in chat in words you have
-told MAMA to use, you get the same report as the scheduled one. The first time you
-ask in new words, MAMA saves them and writes the report in that reply.
+Rules that always apply to how MAMA works for you, such as the language, the
+style of reports and notices, and what a report contains, belong in your owner
+policy file. The agent reads that file with its instructions in every session.
 
-Every active correction is shown to the agent in full (its summary, the situation
-where it applies, and its steps) on the first turn of a new owner session, along
-with the recent owner exchanges carried into that session. Later turns receive a
-correction again, in full, whenever it is added or revised, and a note when it is
-retired. Corrections take precedence over the built-in instructions wherever they
-fit, whichever kind of turn they came from; when two conflict, the later one
-wins. Corrections never change the rules on untrusted source content,
-credentials, success claims, or administration, and they do not change the reply
-markers or the board layout.
+Other corrections are lessons for particular situations. When a message from you
+or a change in a connected source arrives, the agent is shown the few lessons that
+match it best, marked as lessons rather than facts. It is not shown the same lesson
+again in that session on the same day.
 
-The agent decides whether a correction applies. A correction is not evidence of
-current work state: the agent still reads the work record and preserved originals
-when needed.
+When you ask for the full report, in any words, the agent recognises the request
+and follows the same procedure as the scheduled report.
+
+Corrections never change the rules on untrusted source content, credentials,
+success claims, or administration. A correction is not evidence of current work
+state: the agent still reads the work record and preserved originals when needed.
 
 ## Check the next related situation
 

@@ -48,7 +48,6 @@ import { resolvePackageVersion } from '../../package-version.js';
 import { readViewerMemoryStats } from '../../api/viewer-data.js';
 import type { OwnerFileDeliveryResult } from '../../api/file-delivery.js';
 import { createReportScheduler, type ReportScheduler } from '../../runtime/report-scheduler.js';
-import { readAcknowledgedSourceDeltas } from '../../runtime/acknowledged-source-deltas.js';
 import { createTimeZoneSetting } from '../../runtime/timezone.js';
 
 const OWNER_PRINCIPAL_ID = 'owner';
@@ -481,6 +480,22 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
               await reportScheduler.onResult(row, result);
             },
           }),
+      onStimulusDead: (row, reason) =>
+        logger.error(
+          `stimulus parked dead kind=${row.kind ?? 'unknown'} mailbox_id=${row.id} reason=${stimulusFailureReason(reason)}`
+        ),
+      onLessonSearchFailed: (reason) => logger.error(`lesson recall failed reason=${reason}`),
+      onStimulusSkipped: (row, reason) =>
+        logger.info(
+          `stimulus skipped kind=${row.kind ?? 'unknown'} mailbox_id=${row.id} reason=${reason}`
+        ),
+      onRecordOrderEvent: (event) => {
+        const line = `record order ${event.type} delta=${event.deltaStimulusId} attempt=${event.attempt}${
+          'reason' in event ? ` reason=${stimulusFailureReason(event.reason)}` : ''
+        }`;
+        if (event.type === 'lost') logger.error(line);
+        else logger.info(line);
+      },
       onStimulusDelivered: (row, modelRunId) => stimulusDelivered(logger, row, modelRunId),
       onStimulusFailed: (row, reason, modelRunId) =>
         stimulusFailed(logger, row.kind ?? 'unknown', row.stimulusId, reason, modelRunId),
@@ -689,12 +704,10 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
           Boolean(
             owner!.database.adapter
               .prepare(
-                `SELECT 1 FROM mailbox_inputs m LEFT JOIN native_input_deliveries n ON n.input_id = m.id WHERE m.principal_id = ? AND m.kind = 'scheduled' AND m.status IN ('pending', 'claimed') AND (n.state IS NULL OR n.state != 'uncertain') LIMIT 1`
+                `SELECT 1 FROM mailbox_inputs m LEFT JOIN native_input_deliveries n ON n.input_id = m.id WHERE m.principal_id = ? AND m.kind = 'scheduled' AND m.channel_key = 'schedule' AND m.status IN ('pending', 'claimed') AND (n.state IS NULL OR n.state != 'uncertain') LIMIT 1`
               )
               .get(OWNER_PRINCIPAL_ID)
           ),
-        readAcknowledgedDeltas: (sinceAt, throughAt) =>
-          readAcknowledgedSourceDeltas(owner!.database.adapter, sinceAt, throughAt),
         sendToOwner: (text, key) => gateways.get(reportRoute)!.sendToOwner(text, key),
         onError: (error) =>
           logger.error(`report scheduler failed reason=${stimulusFailureReason(error)}`),

@@ -1,10 +1,5 @@
 import { createHash } from 'node:crypto';
-import type {
-  ActionContext,
-  ActionRegistration,
-  ActionSchemaObject,
-  DatabaseAdapter,
-} from '@jungjaehoon/mama-core';
+import type { ActionContext, ActionRegistration, ActionSchemaObject } from '@jungjaehoon/mama-core';
 import type { TimeZoneSetting } from '../runtime/timezone.js';
 import { epochAtLocalDateTime, localDateKey } from '../runtime/timezone.js';
 import { recordLinkSchema, scopeRefSchema } from '@jungjaehoon/mama-core/api/catalog';
@@ -270,15 +265,6 @@ function workListLexicalScore(
   return Math.min(1, overlap * 0.8 + exactSubstringBonus);
 }
 
-/**
- * The title-only form of the same lexical rank used by work.list text search. A delta whose text
- * has no searchable tokens (only attachments or symbols) overlaps no title.
- */
-export function workListTitleTextScore(query: string, title: string): number {
-  if (workListTokens(query).length === 0) return 0;
-  return workListLexicalScore(query, { title, description: '' });
-}
-
 function workListStatus(item: CommitmentView): PublicWorkStatus {
   if (item.withdrawn) return 'cancelled';
   const value = workListValueObject(item.values).status;
@@ -490,66 +476,6 @@ function workListReadSnapshot(ctx: WorkListViewContext, filter: WorkListFilter):
     throw new Error('work.list observed time must be a non-negative epoch-millisecond integer');
   }
   return { items: Object.freeze(items), readVersion: workListReadVersion(items), observedAt };
-}
-
-export interface OpenWorkCandidate {
-  commitmentId: string;
-  title: string;
-  stage: string;
-  assignee: string;
-  /** `connector:channel` of each observation the item's revisions derive from. */
-  evidenceChannels: string[];
-  updatedAt: number;
-}
-
-export function readOpenWorkCandidates(
-  ctx: WorkListViewContext & { adapter: Pick<DatabaseAdapter, 'prepare'> }
-): OpenWorkCandidate[] {
-  const snapshot = workListReadSnapshot(ctx, {});
-  const openItems = snapshot.items.filter(
-    (item) => !['done', 'cancelled'].includes(workListStatus(item))
-  );
-  const basisIds = [...new Set(openItems.flatMap((item) => item.basis.map((ref) => ref.id)))];
-  const channelRows = ctx.adapter
-    .prepare(
-      `SELECT edge.subject_id AS judgment_id, observation.source, observation.channel
-             FROM twin_edges edge
-             JOIN observation_versions observation ON observation.observation_id = edge.object_id
-            WHERE edge.subject_kind = 'memory'
-              AND edge.edge_type = 'derived_from'
-              AND edge.object_kind = 'observation'
-              AND edge.subject_id IN (SELECT value FROM json_each(?))`
-    )
-    .all(JSON.stringify(basisIds)) as Array<{
-    judgment_id: string;
-    source: string;
-    channel: string | null;
-  }>;
-  const evidenceByJudgment = new Map<string, Set<string>>();
-  for (const row of channelRows) {
-    const channels = evidenceByJudgment.get(row.judgment_id) ?? new Set<string>();
-    // Qualified by connector: the same channel id on two connectors is two channels.
-    if (row.channel) channels.add(`${row.source}:${row.channel}`);
-    evidenceByJudgment.set(row.judgment_id, channels);
-  }
-  return openItems.flatMap((item) => {
-    const values = workListValueObject(item.values);
-    const title = workListText(values.title);
-    if (!title) return [];
-    return [
-      {
-        commitmentId: item.commitmentId,
-        title,
-        stage: workListText(values.stage) ?? 'Unstaged',
-        assignee:
-          workListText(values.assignee ?? values.assigneeText ?? values.assignee_text) ?? '',
-        evidenceChannels: [
-          ...new Set(item.basis.flatMap((ref) => [...(evidenceByJudgment.get(ref.id) ?? [])])),
-        ],
-        updatedAt: typeof item.updatedAt === 'number' ? item.updatedAt : Date.parse(item.updatedAt),
-      },
-    ];
-  });
 }
 
 function encodeWorkListCursor(cursor: WorkListCursor): string {

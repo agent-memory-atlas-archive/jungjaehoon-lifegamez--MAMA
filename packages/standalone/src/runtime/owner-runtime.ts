@@ -13,12 +13,12 @@ import {
   type MemoryRecord,
   type MemoryScopeRef,
 } from '@jungjaehoon/mama-core';
+import { randomUUID } from 'node:crypto';
 import { join, isAbsolute } from 'node:path';
 import type { ServerResponse } from 'node:http';
 import type { NativeSessionHandle } from '@jungjaehoon/mama-core/runtime/runtime';
 import type { NativeModelRunPort } from '@jungjaehoon/mama-core/runtime/native-turn';
 import { createStoredSourceReader } from '../api/stored-source-reader.js';
-import { readOpenWorkCandidates, runWorkListView } from '../api/work-actions.js';
 import type { AttachmentActionPorts } from '../api/attachment-actions.js';
 import { createPersistentReportStore } from '../api/report-persistence.js';
 import { ObsidianWriter } from '../wiki/obsidian-writer.js';
@@ -34,16 +34,15 @@ import { ownerSystemPrompt } from './owner-system-prompt.js';
 import { storedSourceFamilies } from '../connectors/framework/stored-index-read.js';
 import { createOwnerPolicyProvider, type OwnerPolicyProvider } from './owner-policy.js';
 import { readRecentOwnerExchanges } from './recent-owner-exchanges.js';
-import { createReportPhraseSetting } from './report-phrases.js';
-import { buildOwnerFullReportPrompt } from './report-prompts.js';
+import { createRecordOrders, type RecordOrderEvent } from './record-orders.js';
 import { initTokenEstimator } from '@jungjaehoon/mama-core/runtime/token-estimator';
 import {
   createStimulusDelivery,
   createStimulusIntake,
   type ReplayClockDelivery,
-  type GuidanceEntry,
   type StimulusDeliveryOptions,
   type StimulusIntake,
+  type TurnLesson,
 } from './stimulus-delivery.js';
 
 export interface OwnerRuntimeOptions {
@@ -84,10 +83,18 @@ export interface OwnerRuntimeOptions {
   recentDeliveredOwnerMessages?: () => readonly string[];
   onSourceResult?: StimulusDeliveryOptions['onSourceResult'];
   onScheduledResult?: StimulusDeliveryOptions['onScheduledResult'];
-  onNativeEventResult?: StimulusDeliveryOptions['onNativeEventResult'];
   onStimulusDelivered?: StimulusDeliveryOptions['onDelivered'];
   onStimulusFailed?: StimulusDeliveryOptions['onFailed'];
   onStimulusUncertain?: StimulusDeliveryOptions['onUncertain'];
+  onStimulusDead?: StimulusDeliveryOptions['onDead'];
+  /** Record-order outcomes (recorded, retry, lost); the daemon logs them. */
+  onRecordOrderEvent?: (event: RecordOrderEvent) => void;
+  /** Lesson recall for a turn; defaults to memory.search over the owner's guidance. */
+  lessons?: StimulusDeliveryOptions['lessons'];
+  /** A lesson search that did not complete; the turn goes on with what the others found. */
+  onLessonSearchFailed?: (reason: string) => void;
+  /** A live delta acked without a turn (only history lines). */
+  onStimulusSkipped?: StimulusDeliveryOptions['onSkipped'];
   /** Keep accepted inputs queued while product delivery ports are starting. */
   deliveryReady?: () => boolean;
   maxTurns: number;
@@ -154,15 +161,53 @@ function runtimeModelRun(
   };
 }
 
-function isOwnerGuidanceRecord(
-  record: MemoryRecord
-): record is MemoryRecord & { kind: GuidanceEntry['kind'] } {
-  return (
-    record.kind === 'lesson' ||
-    record.kind === 'preference' ||
-    record.kind === 'constraint' ||
-    record.kind === 'workflow'
+const GUIDANCE_KINDS = ['lesson', 'preference', 'constraint', 'workflow'] as const;
+
+function searchHits(data: unknown): Array<{ id: string; score: number }> {
+  const results = (data as { results?: unknown } | null)?.results;
+  if (!Array.isArray(results)) return [];
+  return results.flatMap((row) =>
+    row && typeof row === 'object' && typeof (row as { id?: unknown }).id === 'string'
+      ? [
+          {
+            id: (row as { id: string }).id,
+            score: Number((row as { retrieval_score?: unknown }).retrieval_score) || 0,
+          },
+        ]
+      : []
   );
+}
+
+function isOwnerGuidanceRecord(record: MemoryRecord): boolean {
+  return (GUIDANCE_KINDS as readonly string[]).includes(record.kind);
+}
+
+/** Active guidance among the search hits, in the search's own order. */
+export function guidanceInSearchOrder(
+  hitIds: readonly string[],
+  records: readonly MemoryRecord[],
+  limit: number
+): TurnLesson[] {
+  const active = new Map(
+    records
+      .filter((record) => isOwnerGuidanceRecord(record) && record.status === 'active')
+      .map((record) => [record.id, record])
+  );
+  return hitIds
+    .flatMap((id) => {
+      const record = active.get(id);
+      return record
+        ? [
+            {
+              id: record.id,
+              topic: record.topic,
+              summary: record.summary,
+              ...(record.applies_when ? { appliesWhen: record.applies_when } : {}),
+            },
+          ]
+        : [];
+    })
+    .slice(0, limit);
 }
 
 /** Assemble the one owner database, catalog, native session and mailbox runtime. */
@@ -224,9 +269,6 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
           };
         })()
       : {};
-    const reportPhrases = createReportPhraseSetting(
-      join(options.runtimeRoot, 'full-report-phrases.json')
-    );
     const surface = createActionSurface({
       adapter: database.adapter,
       knowledge,
@@ -240,16 +282,6 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       isOwnerMessageTurn: (sourceMessageRef) =>
         ownerMailbox?.readInput(sourceMessageRef, options.ownerPrincipalId)?.kind ===
         'owner_message',
-      reportPhrases: {
-        setting: reportPhrases,
-        fullReportTurn: (sourceMessageRef) =>
-          buildOwnerFullReportPrompt(new Date(), {
-            backend: options.backend,
-            wikiEnabled: options.wiki?.enabled ?? false,
-            messenger: sourceMessageRef.split(':', 1)[0]!,
-            timeZone: options.timeZone.get(),
-          }),
-      },
       reportStore,
       reportSseClients,
       wikiPorts,
@@ -294,9 +326,16 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
         replaySourceEndMs: () => delivery?.getReplaySourceEndMs(),
       });
     }
+    const processStartedAt = Date.now();
+    const recordOrders = createRecordOrders({
+      adapter: database.adapter,
+      accept: (stimulus) =>
+        intakeRuntime.accept({ ...stimulus, principalId: options.ownerPrincipalId }),
+      processStartedAt,
+      ...(options.onRecordOrderEvent === undefined ? {} : { onEvent: options.onRecordOrderEvent }),
+    });
     delivery = createStimulusDelivery({
       backend: options.backend,
-      reportPhrases,
       timeZone: options.timeZone,
       wikiEnabled: options.wiki?.enabled ?? false,
       formattingRoutes: options.formattingRoutes ?? {
@@ -313,39 +352,50 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       ...(options.onStimulusUncertain === undefined
         ? {}
         : { onUncertain: options.onStimulusUncertain }),
+      ...(options.onStimulusDead === undefined ? {} : { onDead: options.onStimulusDead }),
+      ...(options.onStimulusSkipped === undefined ? {} : { onSkipped: options.onStimulusSkipped }),
       recentOwnerExchanges: (row) =>
         readRecentOwnerExchanges(
           intakeRuntime.mailbox!,
           options.recentDeliveredOwnerMessages?.() ?? [],
           row
         ),
-      guidanceResolver: async () =>
-        (
-          await readMemoryRecordsInScopes(database.adapter, [...access.scopes], {
-            kind: ['lesson', 'preference', 'constraint', 'workflow'],
-          })
-        ).filter(isOwnerGuidanceRecord),
-      openWorkPipeline: async () =>
-        runWorkListView(
-          { view: 'pipeline' },
-          { knowledge, access, timeZone: options.timeZone.get() }
-        ),
-      openWorkCandidates: async () =>
-        readOpenWorkCandidates({
-          knowledge,
-          adapter: database.adapter,
-          access,
-          timeZone: options.timeZone.get(),
+      // Kagemusha's lesson recall: the corrections memory.search ranks highest for the turn's text,
+      // active ones only, read in full.
+      lessons:
+        options.lessons ??
+        (async (text): Promise<TurnLesson[]> => {
+          // One ranking: retrieval_score is rank within one search, so separate searches per kind
+          // would put each kind's first hit on every turn. Guidance is a few dozen records among
+          // hundreds of work records, so the search reads deep and keeps guidance in its order.
+          const search = await surface.hostToolCall(
+            'memory.search',
+            { query: text.slice(0, 2_000), limit: 40 },
+            `turn-lessons:${randomUUID()}`
+          );
+          if (search.status !== 'completed') {
+            options.onLessonSearchFailed?.(`memory.search ${search.status}`);
+            return [];
+          }
+          const hits = searchHits(search.data);
+          if (hits.length === 0) return [];
+          const active = await readMemoryRecordsInScopes(database.adapter, [...access.scopes], {
+            kind: [...GUIDANCE_KINDS],
+            status: 'active',
+          });
+          // Ten in search order: the session filter drops lessons already shown and keeps three.
+          return guidanceInSearchOrder(
+            hits.map((hit) => hit.id),
+            active,
+            10
+          );
         }),
-      boardSnapshot: async () => reportStore.getAll(),
+      recordOrders,
       ...(options.onOwnerResult === undefined ? {} : { onOwnerResult: options.onOwnerResult }),
       ...(options.onSourceResult === undefined ? {} : { onSourceResult: options.onSourceResult }),
       ...(options.onScheduledResult === undefined
         ? {}
         : { onScheduledResult: options.onScheduledResult }),
-      ...(options.onNativeEventResult === undefined
-        ? {}
-        : { onNativeEventResult: options.onNativeEventResult }),
       ...(options.onStimulusDelivered === undefined
         ? {}
         : { onDelivered: options.onStimulusDelivered }),
@@ -391,6 +441,7 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       reclaimStaleSocket: true,
     });
     ownerMailbox = intakeRuntime.mailbox;
+    recordOrders.recover();
     const intake = createStimulusIntake(intakeRuntime, options.ownerPrincipalId);
     let stopped = false;
     return {
@@ -406,6 +457,7 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       stop: async () => {
         if (stopped) return;
         stopped = true;
+        recordOrders.stop();
         await intakeRuntime.stop();
         rawStore?.close();
         await database.close();
