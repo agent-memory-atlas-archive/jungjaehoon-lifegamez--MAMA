@@ -1391,6 +1391,18 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Evidence: on 2026-09-29, 100 deltas; record turns appended 66 dated lines, 51 to one 51 KB page (two titles, dated sections out of order), repeating the ledger revision written in the same turn. Since 09-27 the wiki took 188 writes and was read 4 times to answer the owner. The ledger's 115 items carried 10 different project spellings, so grouping by code would have split one project; the agent does the grouping. Ledger revisions carry event times back to 09-01 (1–36 a day), so past days can be rebuilt.
 - Still fails: not yet run live. The first daily page is tonight's; the 28 earlier ones are to be rebuilt in the new format, and the 13 project pages still hold dated logs until they are reorganised.
 
+### Live: daily pages rebuilt, project pages reorganised (2026-09-29, main after #349)
+
+- Result: every existing daily page for 09-01..09-28 (27) was rewritten in the new format by queued daily orders, and the owner's chat request ("페이지별로 새규칙으로 위키 정리하자") reorganised all 13 project pages into overview / decisions and specifications / terms / how the work goes, with no dated lines left.
+- Evidence: 27 daily turns acked, 0 failed, 38 s average (129 s max), 4.5k tokens average; each page 13–25 body lines in the three sections. For days before 09-26 the owner section says the conversation is past the seven-day retention and lists only the decisions the ledger holds. The reorganisation turn took 538 s and 63.7k tokens; the largest page went from 593 to 292 lines, 20 of them body text (the rest `source_ids`).
+- Still fails: rebuilt pages mix in later outcomes (hindsight) for some days. The owner's message waited behind up to eight already-claimed orders, because the owner priority applies only when a row is claimed (owner: not a real problem). The agent passed `id` to `memory.read:record`, which takes `memory_id`, five times in one turn.
+
+### Plan and INTENT realigned (2026-09-29)
+
+- Result: INTENT v8 moves the wiki from "the record of each case" to lasting knowledge plus a daily page. It adds two principles: the agent pulls each next step and the host never pre-loads a turn; the September import only seeds records that live flow and corrections complete. plan.md adds W27–W30 and an ordered next list with C3 first.
+- Evidence: the owner decisions of this session (progressive agent, Kagemusha record retries, knowledge wiki and daily pages, no re-import of September). Owner checks C1–C6 are all still open; W23 measured 99 of 100 record orders on the first attempt and `[notify]` at 28%.
+- Merged 2026-09-30 after the owner's review, with that day's decisions: links the agent judged, each with its reason, are the ground for reaching the record of what happened and search is the way in; records and links are appended and never edited, and the host writes no link the agent did not state; learning is judged over time by corrections, the agent's own included. The 09-29 wording "so related data is found fast" was the framing the owner corrected that day.
+
 ### The agent links records with a reason; the host writes no edge (2026-09-30)
 
 - Result: `work.link` and `work.list` view `links` in MAMA OS; `save` `links`/`replaces`, `link` and `get_decision` in the MCP; one core `appendLink` under both, appending an edge with its reason and no revision, and correcting a wrong link by a newer `contradicts` edge. The host revision chain, the evolution rules and the similarity view are gone; an amendment keeps the values it replaced. Plan: `docs/rebuild/memory-edges.md` v6.

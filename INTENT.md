@@ -1,6 +1,6 @@
 # What MAMA is for
 
-Version 7 · 2026-09-25 (replaces v6 of 2026-09-08)
+Version 8 · 2026-09-30 (replaces v7 of 2026-09-25)
 
 MAMA is a persistent agent that keeps watching and remembering the owner's work. Nobody has to
 explain things from the beginning again: it knows the current situation, reports it, and does the
@@ -13,8 +13,10 @@ It starts from what Kagemusha already does and adds two things.
 - **What Kagemusha does:** watches changes in connected conversations and work tools and
   recognises the work in them. It creates and updates tasks, refreshes the board and the scheduled
   reports, and forwards feedback and files.
-- **Addition 1 — a wiki and memory that carry over:** how the work unfolded, and the owner's
-  corrections, survive new sessions, restarts and model changes.
+- **Addition 1 — a wiki and memory that carry over:** the wiki lets a person see how the work
+  went; memory keeps the records and the owner's corrections, connected by links the agent judged,
+  so the agent can reach the record of what happened. Both survive new sessions, restarts and
+  model changes.
 - **Addition 2 — task history (the differentiator):** for every task it keeps how it progressed,
   what changed, what the feedback was, and who did what. It can also find **similar past cases**
   and reuse how their feedback went and how they ended.
@@ -54,19 +56,35 @@ member permissions and non-owner input wait until the checks below pass on real 
 - Roles are context for the work, not a judgment of people. Record the evidence cross-checked in
   conversation. If it is not confirmed, mark it unconfirmed. An assignee field in a tool such as
   Trello is one piece of evidence, not the answer.
-- The board is the agent's live view of the work, written after reading the tasks and the
-  conversations, so it shows the same state as the tasks. The wiki is the human-readable record of
-  each case.
-  Memory holds corrections and lessons.
-- Tasks, their history and the wiki must all be semantically searchable. That is how similar cases
-  are found.
+- The tasks and the board are the agent's tools for organising the present. The tasks hold each
+  piece of work and its revisions; the board is the live view, written after reading the tasks and
+  the conversations, so it shows the same state as the tasks.
+- The wiki is for people: it lets a person see and understand the history. It is gathered and
+  rewritten from many messages, never a dated copy of events. A daily page sums up each day (what
+  mattered, what the owner decided, what was missed and learned), and a project page keeps the
+  knowledge that stays true (terms, decisions and specifications, how a client works).
+- Memory connects the records (work and its revisions, source messages, people, lessons and
+  corrections) with links the agent states after judging the relation, each with its reason. A
+  judged link is the ground for reaching the record of what happened: from a piece of work to the
+  linked work's revisions and their source messages. Search is the way in; a similar text is no
+  ground that two records are the same case. Similar past cases are found by searching for the
+  kind of problem and following the links, which is faster than checking the originals again.
+- Records and links are never edited. A change, or a link found wrong, is answered by a newer
+  record or link with its reason, so the history shows what changed and why. The host writes no
+  link the agent did not state.
+- Jev, when the owner turns it on, is a classifier the agent uses to narrow candidates before it
+  judges and links. Everything works without it.
 
 ## Data and the present moment
 
 - Keep every original and every change from the connected sources. Record collection coverage,
   gaps and failures as separate things.
 - Do not read everything every time. Go from an overview down through search to the originals, as
-  far as needed.
+  far as needed. The agent pulls each next step itself; the host offers indexes and bounded reads
+  and never pushes whole ledgers or procedures into a turn.
+- An import of past data (the September replay) seeds the records; live changes and owner
+  corrections complete and correct them. Judge accuracy on the running flow over time, not on the
+  seed alone.
 - Keep occurrence time, observation time and period of validity apart. Old material is not a
   current fact. A collection gap is not "no change" and not "done".
 
@@ -87,6 +105,10 @@ member permissions and non-owner input wait until the checks below pass on real 
   up contradicting sentences.
 - Learning is done when the next related situation turns out differently, not when something is
   saved.
+- No judgment is right every time. When the evidence shows that an earlier record or link of its
+  own was wrong, the agent appends the correction with its reason, and later judgments follow it.
+- Judge learning over time: whether corrections, the owner's and the agent's own, keep making the
+  next related situation better, not whether one run was right.
 
 ## What the agent decides and what the host provides
 
