@@ -23,7 +23,7 @@ import type { SearchQualityOptions } from '../knowledge/search-quality.js';
 import type { SemanticEdgeItem } from '../db-manager.js';
 import type { DecisionRecord } from '../db-manager.js';
 import type { DatabaseInstance } from '../db-manager.js';
-import { vectorSearch, fts5Search } from '../knowledge/search.js';
+import { vectorSearch, fts5Search, RECALL_EXCLUDED_STATUSES } from '../knowledge/search.js';
 import type { DecisionInput } from '../db-manager.js';
 import { generateEmbedding } from '../embedding/embedder.js';
 import { appendJudgment, judgmentRecordId, ingestSource } from '../knowledge/index.js';
@@ -926,7 +926,8 @@ export async function retireMemoryRecord(
     reason: string;
   },
   access: JudgmentAccess,
-  commandId: string
+  commandId: string,
+  session?: ActionSessionFacts
 ): Promise<{
   success: true;
   id: string;
@@ -952,12 +953,31 @@ export async function retireMemoryRecord(
     access.scopes.some((scope) => scope.kind === recordScope.kind && scope.id === recordScope.id)
   );
   const summary = `Status '${input.status}' applied to ${id}: ${reason}`;
+  // Who retired it, stated by the host as for a save, so a retirement can be traced to its turn.
+  const provenance = normalizeMemoryWriteProvenance({
+    actor: session?.actor ?? 'main_agent',
+    agent_id: access.agentId,
+    model_run_id: session?.modelRunId,
+    envelope_hash: session?.envelopeHash,
+    tool_name: session?.toolName,
+    gateway_call_id: session?.gatewayCallId,
+    context_packet_id: session?.contextPacketId,
+    source_turn_id: session?.sourceTurnId,
+    source_message_ref: session?.sourceMessageRef,
+    source_refs: session?.sourceRefs ? [...session.sourceRefs] : undefined,
+  });
   const receipt = await appendJudgment(
     {
       commandId,
       topic: `judgment/${id}`,
       summary,
       recordKind: 'judgment',
+      sourceRefs: provenance.source_refs,
+      provenance: provenance.provenance as Record<string, JsonValue>,
+      agentId: provenance.agent_id,
+      modelRunId: provenance.model_run_id,
+      envelopeHash: provenance.envelope_hash,
+      gatewayCallId: provenance.gateway_call_id,
       payload: { amended: id, status: input.status, reason },
       scopes: admittedScopes,
       links: [{ relation: 'amends', target: { kind: 'memory', id } }],
@@ -979,12 +999,18 @@ export async function buildProfile(
   return classifyProfileEntries(records);
 }
 
-const EXCLUDED_STATUSES: Set<string> = new Set([
-  'superseded',
-  'quarantined',
-  'contradicted',
-  'stale',
-]);
+const EXCLUDED_STATUSES: Set<string> = new Set(RECALL_EXCLUDED_STATUSES);
+
+/** The ids among these that only amend another record (a retirement or an outcome change). */
+function amendmentIds(adapter: DatabaseInstance, ids: readonly string[]): Set<string> {
+  const rows = adapter
+    .prepare(
+      `SELECT id FROM decisions WHERE id IN (${ids.map(() => '?').join(',')})
+         AND json_extract(payload_json, '$.amended') IS NOT NULL`
+    )
+    .all(...ids) as Array<{ id: string }>;
+  return new Set(rows.map((row) => row.id));
+}
 
 export async function recallMemory(
   adapter: DatabaseInstance,
@@ -1191,7 +1217,13 @@ export async function recallMemory(
         .map((t) => stemToken(t))
         .filter((t) => !FTS5_NOISE_WORDS.has(t));
       const ftsQuery = ftsTokens.length > 0 ? ftsTokens.join(' OR ') : query;
-      const ftsResults = await fts5Search(searchAdapter, ftsQuery, lexicalLimit, options.kind);
+      const ftsResults = await fts5Search(
+        searchAdapter,
+        ftsQuery,
+        lexicalLimit,
+        options.kind,
+        options.includeHistory ? undefined : { statuses: [...EXCLUDED_STATUSES], amendments: true }
+      );
       if (ftsResults.length > 0) {
         const adapter = searchAdapter;
         const fallbackSource: SaveMemoryInput['source'] = {
@@ -1285,6 +1317,14 @@ export async function recallMemory(
 
       if (options.kind !== undefined) {
         lexicalRecords = lexicalRecords.filter((r) => matchesKind(r.kind));
+      }
+
+      if (!options.includeHistory && lexicalRecords.length > 0) {
+        const amendments = amendmentIds(
+          adapter,
+          lexicalRecords.map((r) => r.id)
+        );
+        lexicalRecords = lexicalRecords.filter((r) => !amendments.has(r.id));
       }
 
       lexicalCandidates = buildLexicalCandidates(lexicalRecords, query);
@@ -1481,6 +1521,20 @@ export async function recallMemory(
   fusedHits = fusedHits.filter(
     (hit) => hit.source_type !== 'decision' || acceptedPrimaryIds.has(hit.source_id)
   );
+  // A retirement or an outcome change audits another record; it is not a belief. Default recall
+  // leaves it out and history shows it. Only the host writers put `amended` in a payload.
+  if (!options.includeHistory && matched.length > 0) {
+    const amendments = amendmentIds(
+      adapter,
+      matched.map((record) => record.id)
+    );
+    if (amendments.size > 0) {
+      matched = matched.filter((record) => !amendments.has(record.id));
+      fusedHits = fusedHits.filter(
+        (hit) => hit.source_type !== 'decision' || !amendments.has(hit.source_id)
+      );
+    }
+  }
   // Honor options.limit on the final memories (matched is RRF-rank-sorted, canonical
   // dual-write appends last). Without this cap the full fusion set (hundreds of records)
   // flowed into bundle.memories AND the per-record enrichment SQL loops below.
@@ -1495,20 +1549,34 @@ export async function recallMemory(
     );
   }
 
-  // Enrich active records with summaries from their superseded predecessors.
-  // When ingestConversation extracts multiple facts under the same topic, only
-  // the last survives as "active" — the earlier ones become superseded and are
-  // excluded from search.  This recovers their key information so it is not lost.
+  // Superseded records are excluded from search, so an active record carries what it replaced:
+  // the reader sees the correction and what it corrected. A predecessor is shown only inside the
+  // reader's scopes, and marked as replaced.
   if (matched.length > 0) {
     const stmtChain = adapter.prepare(
       `SELECT id, summary, decision FROM decisions WHERE superseded_by = ?`
     );
+    const readerScopes =
+      options.scopes && options.scopes.length > 0
+        ? new Set(options.scopes.map((scope) => `${scope.kind}:${scope.id}`))
+        : null;
     for (const record of matched) {
-      const predecessors = stmtChain.all(record.id) as Array<{
+      let predecessors = stmtChain.all(record.id) as Array<{
         id: string;
         summary?: string;
         decision?: string;
       }>;
+      if (readerScopes && predecessors.length > 0) {
+        const scopeMap = batchLoadScopes(
+          adapter,
+          predecessors.map((predecessor) => predecessor.id)
+        );
+        predecessors = predecessors.filter((predecessor) =>
+          (scopeMap.get(predecessor.id) ?? []).some((scope) =>
+            readerScopes.has(`${scope.kind}:${scope.id}`)
+          )
+        );
+      }
       if (predecessors.length > 0) {
         const extra = predecessors
           .map((p) => String(p.summary ?? p.decision ?? ''))
@@ -1516,8 +1584,8 @@ export async function recallMemory(
           .join(' | ');
         if (extra) {
           record.details = record.details
-            ? `${record.details}\n[Prior context] ${extra}`
-            : `[Prior context] ${extra}`;
+            ? `${record.details}\n[Replaced by this record] ${extra}`
+            : `[Replaced by this record] ${extra}`;
         }
       }
     }
@@ -1551,6 +1619,14 @@ export async function recallMemory(
         const status = row?.status || '';
         return matchesKind(row?.kind) && (!status || !EXCLUDED_STATUSES.has(status));
       });
+      // A link an agent stated can point at a retirement or an outcome change; it stays out too.
+      if (expandedOnly.length > 0) {
+        const amendments = amendmentIds(
+          adapter,
+          expandedOnly.map((e) => e.id)
+        );
+        expandedOnly = expandedOnly.filter((e) => !amendments.has(e.id));
+      }
     } else if (options.kind !== undefined) {
       expandedOnly = expandedOnly.filter((e) => {
         const row = adapter.prepare(`SELECT kind FROM decisions WHERE id = ?`).get(e.id) as
