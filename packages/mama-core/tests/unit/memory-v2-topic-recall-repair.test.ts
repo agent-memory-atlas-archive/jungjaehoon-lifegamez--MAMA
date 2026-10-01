@@ -35,6 +35,10 @@ vi.mock('../../src/db-manager.js', async (importOriginal) => {
             if (sql.includes('WHERE topic IN') || sql.includes('d.topic IN')) {
               return currencyRows;
             }
+            // None of these rows amends another record.
+            if (sql.includes("'$.amended'")) {
+              return [];
+            }
             if (sql.includes('FROM decisions')) {
               return decisionRows;
             }
@@ -49,7 +53,8 @@ vi.mock('../../src/db-manager.js', async (importOriginal) => {
   };
 });
 
-vi.mock('../../src/knowledge/search.js', () => ({
+vi.mock('../../src/knowledge/search.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/knowledge/search.js')>()),
   vectorSearch: vectorSearchMock,
   fts5Search: vi.fn(async () => []),
 }));

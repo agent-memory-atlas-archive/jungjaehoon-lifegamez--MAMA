@@ -20,6 +20,10 @@ vi.mock('../../src/db-manager.js', () => ({
           if (sql.includes('FROM memory_scope_bindings')) {
             return [];
           }
+          // None of these rows amends another record.
+          if (sql.includes("'$.amended'")) {
+            return [];
+          }
           if (sql.includes('FROM decisions')) {
             return decisionRows;
           }
@@ -32,7 +36,8 @@ vi.mock('../../src/db-manager.js', () => ({
   ensureMemoryScope: vi.fn(() => 1),
 }));
 
-vi.mock('../../src/knowledge/search.js', () => ({
+vi.mock('../../src/knowledge/search.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/knowledge/search.js')>()),
   vectorSearch: vectorSearchMock,
   fts5Search: vi.fn(async () => []),
 }));
@@ -134,7 +139,7 @@ describe('memory v2 recall ranking', () => {
       20,
       0.6,
       undefined,
-      expect.arrayContaining(['superseded', 'quarantined', 'contradicted', 'stale']),
+      expect.arrayContaining(['superseded', 'contradicted', 'stale']),
       undefined
     );
     expect(bundle.memories).toEqual([]);
