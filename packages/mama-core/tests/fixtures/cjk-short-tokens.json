@@ -1,0 +1,14 @@
+{
+  "_note": "Synthetic Korean text for the CJK lexical tests (the pre-commit guard keeps Korean out of .ts files). It exercises a two-syllable word, a digit with a counter and an acronym, and holds no owner data.",
+  "roundQuery": "주간 보고서 정리 고객 문의(QA) 4회 완료",
+  "roundQueryTokens": ["주간", "보고서", "정리", "고객", "문의", "qa", "4회", "완료"],
+  "roundRecords": {
+    "four": "주간 보고서 정리: 고객 문의(QA) 4회 뒤 완료.",
+    "one": "주간 보고서 정리: 고객 문의(QA) 1회 뒤 완료.",
+    "two": "주간 보고서 정리: 고객 문의(QA) 2회 뒤 완료."
+  },
+  "singleCharacterQuery": "여러 번 a 5",
+  "singleCharacterTokens": ["여러"],
+  "longKoreanQuery": "회의 일정 변경 요청이 계속 들어온 프로젝트 사례",
+  "particleText": "고객 QA가 두 번 왔다."
+}

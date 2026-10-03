@@ -424,23 +424,72 @@ function stemToken(token: string): string {
   return token;
 }
 
+const CJK_TEXT = /[\p{Script=Hangul}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u;
+
+/**
+ * Two characters carry a whole word in Korean, Japanese and Chinese, a count of rounds (a digit and
+ * a Korean counter) and an acronym such as "FB"; two Latin letters are mostly English function
+ * words. Dropping every short token lost the one word that told four feedback rounds from one
+ * (owner ledger, 2026-10-03).
+ */
+function isMeaningfulShortToken(raw: string): boolean {
+  return (
+    characterCount(raw) === 2 &&
+    // Letters and digits only: a token such as "#x" would reach FTS5 MATCH unquoted.
+    /^[\p{L}\p{N}]+$/u.test(raw) &&
+    (CJK_TEXT.test(raw) || (/\p{N}/u.test(raw) && /\p{L}/u.test(raw)) || /^[A-Z]{2}$/.test(raw))
+  );
+}
+
+function characterCount(text: string): number {
+  return Array.from(text).length;
+}
+
 export function getLexicalQueryTokens(query: string): string[] {
   return query
-    .toLowerCase()
     .split(/[\s,.!?;:()[\]{}"']+/)
-    .filter((token) => token.length > 2 && !LEXICAL_STOPWORDS.has(token));
+    .filter((raw) => characterCount(raw) > 2 || isMeaningfulShortToken(raw))
+    .map((raw) => raw.toLowerCase())
+    .filter((token) => !LEXICAL_STOPWORDS.has(token));
+}
+
+const SHORT_LATIN_TOKEN = /^[a-z0-9]{1,2}$/;
+
+/**
+ * A short Latin token (an acronym or a version such as "v2") matches only where no Latin letter
+ * or digit touches it: as a substring "ai" is inside "email", while a Korean particle may follow an
+ * acronym directly. Other tokens keep substring matching, which is what lets a Korean word match
+ * the same word with a particle attached.
+ */
+function textHasToken(text: string, token: string): boolean {
+  if (!SHORT_LATIN_TOKEN.test(token)) {
+    return text.includes(token);
+  }
+  for (let at = text.indexOf(token); at !== -1; at = text.indexOf(token, at + 1)) {
+    if (!isAsciiAlnum(text[at - 1]) && !isAsciiAlnum(text[at + token.length])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isAsciiAlnum(char: string | undefined): boolean {
+  return char !== undefined && /[a-z0-9]/.test(char);
+}
+
+/** FTS5 bm25 is more negative for a better match; this maps the best row of a result set to 1. */
+function bm25Relevance(rank: number, maxAbsRank: number): number {
+  return maxAbsRank > 0 ? Math.abs(rank) / maxAbsRank : 0.5;
 }
 
 function queryTokenCount(query: string): number {
-  const lexicalTokens = getLexicalQueryTokens(query);
+  // The cutoff that forces lexical confirmation was set before short tokens were kept, so it counts
+  // the tokens it counted then; otherwise an acronym or a version in a query would skip lexical search.
+  const lexicalTokens = getLexicalQueryTokens(query).filter((token) => characterCount(token) > 2);
   if (lexicalTokens.length > 0) {
     return lexicalTokens.length;
   }
   return query.trim().split(/\s+/).filter(Boolean).length;
-}
-
-function looksMixedKoreanEnglish(query: string): boolean {
-  return /[\uac00-\ud7a3]/.test(query) && /[a-z]/i.test(query);
 }
 
 function looksEntityLike(query: string): boolean {
@@ -470,7 +519,11 @@ export function topicAffinityBoost(
   let topicMatches = 0;
   for (const token of tokens) {
     const stem = stemToken(token);
-    if (topicWords.some((word) => word === token || word.startsWith(stem))) {
+    if (
+      topicWords.some(
+        (word) => word === token || (!SHORT_LATIN_TOKEN.test(token) && word.startsWith(stem))
+      )
+    ) {
       topicMatches += 1;
     }
   }
@@ -491,7 +544,7 @@ function buildLexicalCandidates(
       const haystack = [record.topic, record.summary, record.details].join(' ').toLowerCase();
       const tokenMatches = tokens.reduce((count, token) => {
         const stem = stemToken(token);
-        if (!haystack.includes(token) && !haystack.includes(stem)) {
+        if (!textHasToken(haystack, token) && !textHasToken(haystack, stem)) {
           return count;
         }
         if (token.length >= 8) {
@@ -1171,7 +1224,11 @@ export async function recallMemory(
     searchOptions.strictness !== 'recall' ||
     searchOptions.minLexicalSupport ||
     queryTokenCount(query) <= 3 ||
-    looksMixedKoreanEnglish(query) ||
+    // The vector channel separates Korean and Japanese text poorly (on a copy of the owner ledger,
+    // paraphrases of one question left the record they described far outside its top 20), so
+    // lexical search runs for any query with CJK text. Before short CJK words were kept, such a
+    // query fell under the three-token cutoff by accident.
+    CJK_TEXT.test(query) ||
     looksEntityLike(query);
   const needsLexical =
     isAggregation ||
@@ -1236,7 +1293,6 @@ export async function recallMemory(
           source_type: 'fts5',
         };
 
-        // Normalize BM25 ranks (negative values, closer to 0 = better match)
         const maxRank = Math.max(...ftsResults.map((r) => Math.abs(r.rank)));
 
         for (const ftsRow of ftsResults) {
@@ -1276,7 +1332,7 @@ export async function recallMemory(
             if (!scopes.some((s) => requestedScopes.has(`${s.kind}:${s.id}`))) continue;
           }
 
-          const bm25Score = maxRank > 0 ? 1 - Math.abs(ftsRow.rank) / maxRank : 0.5;
+          const bm25Score = bm25Relevance(ftsRow.rank, maxRank);
           lexicalCandidates.push({ memory: record, score: bm25Score });
         }
       }
@@ -2957,11 +3013,8 @@ export async function suggestInAdapter(
         try {
           const ftsResults = await fts5Search(adapter, userQuestion, rerankPoolLimit * 2, kind);
           if (ftsResults.length > 0) {
-            // Normalize FTS5 ranks (BM25 returns negative values, closer to 0 = better)
             const maxRank = Math.max(...ftsResults.map((r) => Math.abs(r.rank)));
-            const ftsMap = new Map(
-              ftsResults.map((r) => [r.id, maxRank > 0 ? 1 - Math.abs(r.rank) / maxRank : 0.5])
-            );
+            const ftsMap = new Map(ftsResults.map((r) => [r.id, bm25Relevance(r.rank, maxRank)]));
 
             // Tunable hybrid weights (env: MAMA_VECTOR_WEIGHT, MAMA_FTS5_WEIGHT)
             const vectorWeight = parseFloat(process.env.MAMA_VECTOR_WEIGHT || '0.6');
