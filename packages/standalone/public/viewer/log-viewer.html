@@ -211,10 +211,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   <div id="auditTimeline" style="font-size:11px;font-family:'SF Mono','Cascadia Code',Consolas,monospace;line-height:1.8"></div>
 </div>
 <section class="security-events" aria-labelledby="securityTitle">
-  <h2 id="securityTitle">Recent viewer security events</h2>
+  <h2 id="securityTitle">Recent security events</h2>
   <p id="securityStatus" role="status">Loading security events...</p>
   <table id="securityTable" hidden>
-    <thead><tr><th>Time (KST)</th><th>Class</th><th>Method / path</th><th>Status</th><th>Country</th></tr></thead>
+    <thead><tr><th>Time (KST)</th><th>Class</th><th>Request / command</th><th>Status</th><th>Origin</th></tr></thead>
     <tbody id="securityRows"></tbody>
   </table>
 </section>
@@ -591,7 +591,11 @@ async function fetchSecurityEvents() {
       const row = document.createElement('tr');
       if (event.class !== 'owner_access') row.className = 'security-warning';
       const time = new Date(event.time).toLocaleString('sv-SE', { timeZone: 'Asia/Seoul' });
-      for (const value of [time, event.class, event.method + ' ' + event.path, event.status, event.country || 'unknown']) {
+      // Agent outbound attempts (W35) carry the traced command instead of an HTTP request.
+      const values = event.tool
+        ? [time, event.class, event.tool + ' ' + (event.summary || ''), event.sendsData ? 'sends data' : 'attempt', 'agent']
+        : [time, event.class, event.method + ' ' + event.path, event.status, event.country || 'unknown'];
+      for (const value of values) {
         const cell = document.createElement('td');
         cell.textContent = String(value);
         row.appendChild(cell);
