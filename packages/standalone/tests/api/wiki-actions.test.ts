@@ -19,7 +19,7 @@ const OWNER_DATE = '2026-09-06';
 const ownerAccess: ActionContext['access'] = {
   // Dispatch compares the call against this grant; these are the actions
   // this file calls.
-  actions: ['manage.wiki.publish', 'manage.wiki.read', 'manage.wiki.update'],
+  actions: ['manage.wiki.move', 'manage.wiki.publish', 'manage.wiki.read', 'manage.wiki.update'],
   principalId: 'principal_owner_1',
   agentId: 'agent',
   scopes: [],
@@ -67,11 +67,16 @@ describe('manage.wiki.* action registrations', () => {
     expect(publisher).not.toHaveBeenCalled();
   });
 
-  it('lists the read, publish and update actions', () => {
+  it('lists the move, read, publish and update actions', () => {
     const names = createCatalog(wikiActionRegistrations({}))
       .list()
       .map((contract) => contract.name);
-    expect(names.sort()).toEqual(['manage.wiki.publish', 'manage.wiki.read', 'manage.wiki.update']);
+    expect(names.sort()).toEqual([
+      'manage.wiki.move',
+      'manage.wiki.publish',
+      'manage.wiki.read',
+      'manage.wiki.update',
+    ]);
   });
 
   it('unbound wiki resources fail explicitly', async () => {
@@ -419,6 +424,129 @@ describe('manage.wiki.* action registrations', () => {
         status: 'completed',
         data: { contentVersion: expect.any(String) },
       });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('manage.wiki.move', () => {
+  const pages = (root: string, ...paths: string[]): void => {
+    for (const path of paths) {
+      const file = join(root, ...path.split('/'));
+      mkdirSync(join(file, '..'), { recursive: true });
+      writeFileSync(file, `# ${path}`);
+    }
+  };
+  const move = (root: string, moves: Array<{ from: string; to: string }>) =>
+    dispatch({ vault: { path: root, name: null } })(
+      { action: 'manage.wiki.move', input: { moves } },
+      { access: ownerAccess }
+    );
+
+  it('moves pages into folders it creates and names what moved', async () => {
+    const root = vault();
+    try {
+      pages(root, 'daily/2026-09-01.md', 'daily/2026-10-01.md');
+      const result = await move(root, [
+        { from: 'daily/2026-09-01.md', to: 'daily/2026-09/2026-09-01.md' },
+        { from: 'daily/2026-10-01.md', to: 'daily/2026-10/2026-10-01.md' },
+      ]);
+      expect(result).toMatchObject({
+        status: 'completed',
+        data: {
+          success: true,
+          moved: [
+            { from: 'daily/2026-09-01.md', to: 'daily/2026-09/2026-09-01.md' },
+            { from: 'daily/2026-10-01.md', to: 'daily/2026-10/2026-10-01.md' },
+          ],
+        },
+      });
+      expect(readWikiPageContent(root, 'daily/2026-09/2026-09-01.md')?.content).toBe(
+        '# daily/2026-09-01.md'
+      );
+      expect(readWikiPageContent(root, 'daily/2026-09-01.md')).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['a page already at the target', [{ from: 'daily/a.md', to: 'Home.md' }], 'already exists'],
+    ['a missing page', [{ from: 'daily/none.md', to: 'x/none.md' }], 'does not exist'],
+    ['the generated index', [{ from: 'daily/a.md', to: 'index.md' }], 'reserved'],
+    ['a parent traversal', [{ from: 'daily/a.md', to: '../a.md' }], 'traversal'],
+    ['a non-page target', [{ from: 'daily/a.md', to: 'daily/a.txt' }], '.md'],
+    ['a page moved onto itself', [{ from: 'daily/a.md', to: 'daily/a.md' }], 'same path'],
+    [
+      'two moves to one target',
+      [
+        { from: 'daily/a.md', to: 'x/a.md' },
+        { from: 'daily/b.md', to: 'x/a.md' },
+      ],
+      'twice',
+    ],
+    [
+      'two targets that differ only in case',
+      [
+        { from: 'daily/a.md', to: 'x/A.md' },
+        { from: 'daily/b.md', to: 'x/a.md' },
+      ],
+      'twice',
+    ],
+    [
+      'a hidden folder the wiki does not list',
+      [{ from: 'daily/a.md', to: '.obsidian/a.md' }],
+      'hidden',
+    ],
+    [
+      'a target that another move empties',
+      [
+        { from: 'daily/a.md', to: 'x/a.md' },
+        { from: 'daily/b.md', to: 'daily/a.md' },
+      ],
+      "another move's from",
+    ],
+  ])('refuses the whole batch for %s', async (_name, moves, message) => {
+    const root = vault();
+    try {
+      pages(root, 'daily/a.md', 'daily/b.md');
+      const result = await move(root, moves);
+      expect(result).toMatchObject({ status: 'failed' });
+      expect(JSON.stringify(result)).toContain(message);
+      expect(readWikiPageContent(root, 'daily/a.md')?.content).toBe('# daily/a.md');
+      expect(readWikiPageContent(root, 'daily/b.md')?.content).toBe('# daily/b.md');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a symlinked page', async () => {
+    const root = vault();
+    try {
+      pages(root, 'daily/a.md');
+      symlinkSync(join(root, 'daily', 'a.md'), join(root, 'daily', 'link.md'));
+      const result = await move(root, [{ from: 'daily/link.md', to: 'x/link.md' }]);
+      expect(JSON.stringify(result)).toContain('symlink');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('puts earlier moves back when a later move fails', async () => {
+    const root = vault();
+    try {
+      pages(root, 'daily/a.md', 'daily/b.md');
+      // The first move makes moved/q.md a page, so the second cannot make it a folder.
+      const result = await move(root, [
+        { from: 'daily/a.md', to: 'moved/q.md' },
+        { from: 'daily/b.md', to: 'moved/q.md/b.md' },
+      ]);
+      expect(result).toMatchObject({ status: 'failed' });
+      expect(JSON.stringify(result)).toContain('moving daily/b.md to moved/q.md/b.md failed');
+      expect(readWikiPageContent(root, 'daily/a.md')?.content).toBe('# daily/a.md');
+      expect(readWikiPageContent(root, 'moved/q.md')).toBeNull();
+      expect(readWikiPageContent(root, 'daily/b.md')?.content).toBe('# daily/b.md');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

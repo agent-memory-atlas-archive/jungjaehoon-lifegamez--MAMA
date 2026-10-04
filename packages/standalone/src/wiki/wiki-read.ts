@@ -1,7 +1,7 @@
 /** Bounded reads and content versions for the configured wiki root. */
 import { createHash } from 'crypto';
 import { existsSync, lstatSync, opendirSync, readFileSync, realpathSync } from 'fs';
-import { dirname, join, resolve, sep } from 'path';
+import { dirname, join, posix, resolve, sep } from 'path';
 
 import { normalizeWikiReadPath } from './path-safety.js';
 
@@ -77,6 +77,27 @@ export function listWikiPages(input: {
   }
 
   const root = realpathSync(resolve(input.root));
+  const paths = collectWikiMarkdownPaths(root);
+  const readVersion = createHash('sha256').update(JSON.stringify(paths)).digest('hex');
+  if (input.version && input.version !== readVersion) {
+    throw new Error('manage.wiki.read list changed; restart from the first page');
+  }
+  const start = cursor === null ? 0 : paths.indexOf(cursor) + 1;
+  if (cursor !== null && start === 0) {
+    throw new Error('manage.wiki.read list_cursor is not in the current list');
+  }
+  const page = paths.slice(start, start + (limit as number));
+  return {
+    paths: page,
+    returned: page.length,
+    total: paths.length,
+    nextCursor: start + page.length < paths.length ? page[page.length - 1] : null,
+    readVersion,
+  };
+}
+
+/** Markdown files under the real root (or one folder of it), sorted; dot entries and symlinks are not followed. */
+function collectWikiMarkdownPaths(root: string, folder: string = ''): string[] {
   const paths: string[] = [];
   let inspected = 0;
   const visit = (absolute: string, relative: string, depth: number): void => {
@@ -101,27 +122,27 @@ export function listWikiPages(input: {
       directory.closeSync();
     }
   };
-  visit(root, '', 0);
-  paths.sort();
-  const readVersion = createHash('sha256').update(JSON.stringify(paths)).digest('hex');
-  if (input.version && input.version !== readVersion) {
-    throw new Error('manage.wiki.read list changed; restart from the first page');
-  }
-  const start = cursor === null ? 0 : paths.indexOf(cursor) + 1;
-  if (cursor !== null && start === 0) {
-    throw new Error('manage.wiki.read list_cursor is not in the current list');
-  }
-  const page = paths.slice(start, start + (limit as number));
-  return {
-    paths: page,
-    returned: page.length,
-    total: paths.length,
-    nextCursor: start + page.length < paths.length ? page[page.length - 1] : null,
-    readVersion,
-  };
+  if (folder === '') visit(root, '', 0);
+  else visit(join(root, folder), `${folder}/`, 1);
+  return paths.sort();
 }
 
-function resolveInsideRoot(root: string, normalizedPath: string): string | null {
+/**
+ * The day's daily pages: files named <day>.md under daily/, in a month folder or flat. Only
+ * daily/ is read, so nothing elsewhere in the wiki can fail the scheduler's check.
+ */
+export function findDailyPages(root: string, day: string): string[] {
+  const rootReal = realpathSync(resolve(root));
+  if (lstatSync(join(rootReal, 'daily'), { throwIfNoEntry: false })?.isDirectory() !== true) {
+    return [];
+  }
+  return collectWikiMarkdownPaths(rootReal, 'daily').filter(
+    (path) => posix.basename(path) === `${day}.md`
+  );
+}
+
+/** The real path of a page inside the root, or null when absent; throws on symlinks and escapes. */
+export function resolveInsideRoot(root: string, normalizedPath: string): string | null {
   const rootReal = realpathSync(resolve(root));
   const absolute = join(rootReal, ...normalizedPath.split('/'));
   let ancestor = dirname(absolute);
