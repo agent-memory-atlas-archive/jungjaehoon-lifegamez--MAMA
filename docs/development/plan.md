@@ -67,9 +67,12 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
    checked in code, [check](checks.md#team-plan-review-codex-and-opus-2026-10-07)). The product
    wires every principal path to the owner; in core, work and graph reads ignore read grants, a
    revision rebinds its item to the writer's scopes, and nothing exports or erases a member's
-   records. Next: core steps A1–A3 depend on no open decision and can start; B1 (export and erase)
-   waits for the erasure exception; the product steps wait for eight decisions (enrollment,
-   partition and default, member role, isolation, consent, erasure, member alerts, member computer).
+   records. A1–A3 are done and live on 2026-10-07 (mama-core 7.1.0, mama-os 0.68.0–0.68.1,
+   [check](checks.md#team-slice-a1a3-live-2026-10-07)): the owner is a registered principal that
+   can grant, read grants reach work and graph reads, and a revision keeps its item's scopes. Next:
+   B1 (export and erase) waits for the erasure exception; the product steps wait for eight decisions
+   (enrollment, partition and default, member role, isolation, consent, erasure, member alerts,
+   member computer).
 6. Paraphrase search: closed on 2026-10-07 without a host change
    ([check](checks.md#fusion-variants-with-both-embeddings-2026-10-07)). Three paraphrases sit
    outside the vector candidates; four fusions on e5 and on EmbeddingGemma 2 either move nothing
@@ -125,6 +128,11 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
   `scripts/`, though `tests/replay/september-verification.test.ts` runs a root script, and no MCP
   server tests for a plugin-only change, though `tests/unit/server-env.test.js` imports the
   plugin's `scripts/db-path.js` (found in the #442 review). The pre-commit hook covers the first.
+
+- Shutdown closes the database while a connector poll is in flight: `recordConnectorPollOutcome`
+  throws `Database not connected` (in 8 of the 202 boot segments in `daemon.log`, last on
+  2026-10-07 22:14). The cursor advances only after a successful handoff, so the poll repeats after
+  the restart; the scheduler should stop and settle before the database closes.
 
 ## Owner decisions still open
 
