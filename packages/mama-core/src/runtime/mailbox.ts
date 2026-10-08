@@ -248,7 +248,8 @@ export class Mailbox {
       );
       CREATE TABLE IF NOT EXISTS mailbox_seen (
         ref_id TEXT PRIMARY KEY,
-        seen_at INTEGER NOT NULL DEFAULT 0
+        seen_at INTEGER NOT NULL DEFAULT 0,
+        principal_id TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_mailbox_seen_at ON mailbox_seen(seen_at);
       CREATE TABLE IF NOT EXISTS mailbox_schedules (
@@ -262,11 +263,18 @@ export class Mailbox {
         ON mailbox_schedules(fired_at, due_at);
     `);
 
+    // Consumers create these stores without running the core migration chain.
+    const seenColumns = this.db.prepare('PRAGMA table_info(mailbox_seen)').all() as Array<{
+      name: string;
+    }>;
+    if (!seenColumns.some((column) => column.name === 'principal_id')) {
+      this.db.exec('ALTER TABLE mailbox_seen ADD COLUMN principal_id TEXT');
+    }
     this.nativeInputs = new NativeInputJournal(db, clock);
     // Prepared once: enqueue runs per producer tick and re-preparing per call
     // was measurable on backfill drains.
     this.stmtInsertSeen = this.db.prepare(
-      `INSERT OR IGNORE INTO mailbox_seen (ref_id, seen_at) VALUES (?, ?)`
+      `INSERT OR IGNORE INTO mailbox_seen (ref_id, seen_at, principal_id) VALUES (?, ?, ?)`
     );
     this.stmtInsert = this.db.prepare(
       `INSERT INTO mailbox_inputs
@@ -428,7 +436,7 @@ export class Mailbox {
     return this.db.transaction(() => {
       const now = this.now();
       for (const ref of fresh) {
-        this.stmtInsertSeen.run(ref.refId, now);
+        this.stmtInsertSeen.run(ref.refId, now, stimulus.principalId);
       }
       // Mechanical merge: an existing pending row with the same producer key
       // and principal takes these refs instead of opening a second row. Both

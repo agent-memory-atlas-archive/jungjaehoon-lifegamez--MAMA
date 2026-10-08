@@ -1,3 +1,4 @@
+import { isErasedRecord } from '../identity/erased-record.js';
 /**
  * Action catalog — one contract bound to its implementation.
  *
@@ -1213,12 +1214,13 @@ export function coreActionRegistrations(
         }
         if (typeof query.query !== 'string' || query.query.trim().length === 0) {
           const rows = await listDecisionsInAdapter(adapter, {
+            excludeErased: true,
             limit: query.limit,
             kind: query.kind,
             topicPrefix: query.topicPrefix,
             scopes,
           });
-          const items = Array.isArray(rows) ? rows : [];
+          const items = Array.isArray(rows) ? rows.filter((record) => !isErasedRecord(record)) : [];
           return { success: true, results: items, count: items.length };
         }
         const result = (await suggestInAdapter(adapter, query.query, {
@@ -1332,7 +1334,9 @@ export function coreActionRegistrations(
           ...(Number.isFinite(Number(query.limit)) ? { limit: Number(query.limit) } : {}),
         });
         if (query.detail === 'full') return { decisions, count: decisions.length };
-        const compact = decisions.map(({ reasoning, ...row }) => {
+        const compact = decisions.map((record) => {
+          if (isErasedRecord(record)) return record;
+          const { reasoning, ...row } = record;
           const points = Array.from(reasoning ?? '');
           return {
             ...row,
@@ -1673,22 +1677,26 @@ export function coreActionRegistrations(
         const record = await readMemoryRecordById(adapter, memoryId, scopes);
         return {
           record: record
-            ? {
-                id: record.id,
-                kind: record.kind,
-                topic: record.topic,
-                summary: record.summary,
-                details: record.details,
-                ...(record.applies_when === undefined ? {} : { appliesWhen: record.applies_when }),
-                ...(record.steps === undefined ? {} : { steps: record.steps }),
-                ...(record.evidence_checks === undefined
-                  ? {}
-                  : { evidenceChecks: record.evidence_checks }),
-                confidence: record.confidence,
-                status: record.status,
-                createdAt: record.created_at,
-                updatedAt: record.updated_at,
-              }
+            ? isErasedRecord(record)
+              ? record
+              : {
+                  id: record.id,
+                  kind: record.kind,
+                  topic: record.topic,
+                  summary: record.summary,
+                  details: record.details,
+                  ...(record.applies_when === undefined
+                    ? {}
+                    : { appliesWhen: record.applies_when }),
+                  ...(record.steps === undefined ? {} : { steps: record.steps }),
+                  ...(record.evidence_checks === undefined
+                    ? {}
+                    : { evidenceChecks: record.evidence_checks }),
+                  confidence: record.confidence,
+                  status: record.status,
+                  createdAt: record.created_at,
+                  updatedAt: record.updated_at,
+                }
             : null,
         };
       },

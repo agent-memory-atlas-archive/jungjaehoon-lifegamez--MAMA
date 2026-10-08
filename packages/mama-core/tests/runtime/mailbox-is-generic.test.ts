@@ -71,6 +71,28 @@ const stimulus = (over: Partial<Stimulus> = {}): Stimulus => ({
 });
 
 describe('the mailbox carries no consumer vocabulary', () => {
+  it('upgrades a consumer-created pre-103 seen table without core migrations', () => {
+    const path = join(os.tmpdir(), `mailbox-consumer-${randomUUID()}.db`);
+    tempPaths.add(path);
+    const db = new NodeSQLiteAdapter({ dbPath: path });
+    db.connect();
+    openAdapters.add(db);
+    db.exec(
+      "CREATE TABLE mailbox_seen (ref_id TEXT PRIMARY KEY, seen_at INTEGER NOT NULL DEFAULT 0); INSERT INTO mailbox_seen VALUES ('legacy-ref', 1)"
+    );
+    const mailbox = new Mailbox(db);
+    mailbox.enqueue(stimulus({ refs: [{ refId: 'new-ref', observationRef: null }] }));
+    expect(
+      db.prepare('SELECT principal_id FROM mailbox_seen WHERE ref_id=?').get('new-ref')
+    ).toEqual({ principal_id: 'principal-owner' });
+    expect(db.prepare('SELECT * FROM mailbox_seen WHERE ref_id=?').get('legacy-ref')).toEqual({
+      ref_id: 'legacy-ref',
+      seen_at: 1,
+      principal_id: null,
+    });
+    expect(() => new Mailbox(db)).not.toThrow();
+  });
+
   it('its source names no OwnerEvent or procedure word', () => {
     const source = fs.readFileSync(MAILBOX_SOURCE, 'utf8');
     // The prose may say where the product's own inbox went; code may not.
@@ -174,8 +196,8 @@ describe('migration 086 carries the dedupe horizon and nothing else', () => {
         .prepare(`INSERT OR IGNORE INTO owner_event_inbox_events (event_id, seen_at) VALUES (?, ?)`)
         .run(id, 5_000);
     }
-    adapter.exec(`DELETE FROM schema_version WHERE source = 'core' AND version >= 86`);
-    adapter.runMigrations(MIGRATIONS_DIR);
+    // Replay the carry SQL itself: resetting later version stamps does not restore their schemas.
+    adapter.exec(fs.readFileSync(join(MIGRATIONS_DIR, '086-the-mailbox-is-generic.sql'), 'utf8'));
 
     const carried = (
       adapter.prepare(`SELECT ref_id FROM mailbox_seen ORDER BY ref_id`).all() as Array<{
