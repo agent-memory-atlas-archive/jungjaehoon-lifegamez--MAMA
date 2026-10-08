@@ -70,8 +70,10 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
    records. A1–A3 are done and live on 2026-10-07 (mama-core 7.1.0, mama-os 0.68.0–0.68.1,
    [check](checks.md#team-slice-a1a3-live-2026-10-07)): the owner is a registered principal that
    can grant, read grants reach work and graph reads, and a revision keeps its item's scopes. The
-   owner took all eight recommendations on 2026-10-08 (team-flow.md, "Decided"). Next: B1 (core
-   export and erase) and P1 (access resolver and member role), then P2 onward in order.
+   owner took all eight recommendations on 2026-10-08 (team-flow.md, "Decided"). P1 (access
+   resolver and member role) merged on 2026-10-08 (#448,
+   [check](checks.md#p1-member-access-and-role-448-2026-10-08)); it ships with the next core
+   release. Next: B1 (core export and erase, [work list](work/member-erasure.md)), then P2.
 6. Paraphrase search: closed on 2026-10-07 without a host change
    ([check](checks.md#fusion-variants-with-both-embeddings-2026-10-07)). Three paraphrases sit
    outside the vector candidates; four fusions on e5 and on EmbeddingGemma 2 either move nothing
