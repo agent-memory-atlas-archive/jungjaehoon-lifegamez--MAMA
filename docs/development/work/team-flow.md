@@ -83,38 +83,30 @@ so no member input arrives before the boundaries exist.
 Order: A1–A3 (done 2026-10-07 in mama-core 7.1.0 and mama-os 0.68.0–0.68.1) → B1 (a second core release, after decision 6)
 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10.
 
-## Decisions needed before the slice, in blocking order
+## Decided on 2026-10-08
 
-1. Enrollment (P7). Recommended: a `request_users` button in the owner's DM; the host reads the
-   chosen id and needs no token store. Alternative: the member sends `/start` and the owner
-   approves the host-observed sender. The owner forward chosen on 2026-08-15 fails when the member
-   hides forwarded messages: the forward then carries only a name, so this reopens it. No reply
-   to unenrolled senders: it would open sending to chats outside the allowlist. Overturned if the
-   member cannot be reached from the owner's Telegram.
-2. Partition and default (A3's value, P1–P2). Recommended: one scope per project with ids of its
-   own, not connector names; a member's unscoped write defaults to `user:<member>`; the owner's
-   default is unchanged. Overturned if live items often lack a project or member work crosses
-   projects; then one shared scope per member.
-3. Member role (P1). Recommended: one fixed role, as in P1. Overturned if a member must update
-   common work in the slice.
-4. Native isolation (P4). Recommended: one OS user, the member workspace outside the owner's
-   home, the home denied. Overturned if the smoke test shows a member's sandboxed read of the DB
-   succeeding or file tools failing under the deny; then a separate OS user.
-5. Consent (P2). Recommended: per-item share in the member's own turn. A shared item shows its
-   whole revision history; recommended to accept that, stated in the share action's description,
-   rather than add revision filtering.
-6. Erasure (B1, P9). INTENT.md says records and links are never edited; deleting a member's
-   records needs an exception. Recommended: only for records bound to the member's own scope,
-   with tombstones where shared work cites them.
-7. Member alerts (P6). A member session's fetched hosts, refused proxy connections and sending
-   commands alert the owner today. Recommended: no web tools for members in the slice; refused
-   connections still alert the owner with the principal, host and time only, since the machine
-   and its credentials are the owner's.
-8. Member computer: where processing runs (the MAMA Mac in a scratch area deleted after the turn,
-   or the member's computer through a command tool limited to the chosen folders), the network
-   path (a private network, or the existing tunnel with Access), and what a write may do in the
-   member's folders (blocks the file work after the slice). Whatever the agent reads still enters
-   the member's session on the MAMA Mac.
+The owner took every recommendation.
+
+1. Enrollment (P7): a `request_users` button in the owner's DM; the host reads the chosen id, no
+   token store. The owner forward chosen on 2026-08-15 is dropped (a hidden forward carries no
+   id). Unenrolled senders get no reply.
+2. Partition and default (P1–P2): one scope per project with ids of its own, not connector names;
+   a member's unscoped write binds `user:<member>`; the owner's default is unchanged.
+3. Member role (P1): one fixed role: read granted work, personal memory, share, file delivery to
+   the own DM; no common-work writes, owner policy, Drive or reports.
+4. Native isolation (P4): one OS user; the member workspace outside the owner's home, the home
+   denied. A failed smoke test (a member's sandboxed DB read succeeding, or file tools failing
+   under the deny) moves it to a separate OS user.
+5. Consent (P2): per-item share in the member's own turn. A shared item shows its whole revision
+   history, stated in the share action's description; the graph then admits that history for the
+   reader (the #445 links-view finding).
+6. Erasure (B1, P9): an exception to INTENT.md's "records and links are never edited" for records
+   bound only to the member's own scope: delete what nothing shared cites, tombstone what it cites.
+7. Member alerts (P6): no web tools for members in the slice; a refused connection from a member
+   session alerts the owner with the principal, host and time only.
+8. Member computer (after the slice): processing on the MAMA Mac; a private network (Tailscale,
+   one-time key); an SFTP-only account limited to the chosen folders; no delete; an unreachable
+   computer fails loud.
 
 Can wait until the step that needs them: the serial chain or lanes (P3); owner policy text in a
 member session (P3); revoke semantics and workspace files (P8); DM updates to common work,

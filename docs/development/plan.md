@@ -69,10 +69,9 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
    revision rebinds its item to the writer's scopes, and nothing exports or erases a member's
    records. A1–A3 are done and live on 2026-10-07 (mama-core 7.1.0, mama-os 0.68.0–0.68.1,
    [check](checks.md#team-slice-a1a3-live-2026-10-07)): the owner is a registered principal that
-   can grant, read grants reach work and graph reads, and a revision keeps its item's scopes. Next:
-   B1 (export and erase) waits for the erasure exception; the product steps wait for eight decisions
-   (enrollment, partition and default, member role, isolation, consent, erasure, member alerts,
-   member computer).
+   can grant, read grants reach work and graph reads, and a revision keeps its item's scopes. The
+   owner took all eight recommendations on 2026-10-08 (team-flow.md, "Decided"). Next: B1 (core
+   export and erase) and P1 (access resolver and member role), then P2 onward in order.
 6. Paraphrase search: closed on 2026-10-07 without a host change
    ([check](checks.md#fusion-variants-with-both-embeddings-2026-10-07)). Three paraphrases sit
    outside the vector candidates; four fusions on e5 and on EmbeddingGemma 2 either move nothing
@@ -136,8 +135,9 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
 
 ## Owner decisions still open
 
-1. Two project names and an asset name stayed in the check log's history from 2026-09-30 to
-   2026-10-06 (removed from the current file). Whether to rewrite the git history.
+1. Decided 2026-10-08: rewrite the git history to remove two project names and an asset name that
+   stayed in the check log's history from 2026-09-30 to 2026-10-06. Prepared on a mirror first;
+   the force push follows the owner's look at the counts.
 
 ## History
 
