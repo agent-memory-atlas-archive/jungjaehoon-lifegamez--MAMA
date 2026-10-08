@@ -75,8 +75,11 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
    [check](checks.md#p1-member-access-and-role-448-2026-10-08)); it ships with the next core
    release. B1 (member export and erasure, [work list](work/member-erasure.md)) merged (#449) and
    both ship in mama-core 8.0.0 and mama-os 0.69.0, live from 2026-10-08 15:28 KST
-   ([check](checks.md#b1-member-export-and-erasure-449-and-release-800--0690-2026-10-08)). Next:
-   P2a, the owner binds common work to a partition ([work list](work/member-share.md)).
+   ([check](checks.md#b1-member-export-and-erasure-449-and-release-800--0690-2026-10-08)). P2a,
+   the owner binds common work to a partition, merged (#451,
+   [check](checks.md#p2a-the-owner-binds-common-work-to-a-partition-451-2026-10-08)); it ships
+   with the next release. Next: P2b, a member shares a personal record
+   ([work list](work/member-share.md)).
 6. Paraphrase search: closed on 2026-10-07 without a host change
    ([check](checks.md#fusion-variants-with-both-embeddings-2026-10-07)). Three paraphrases sit
    outside the vector candidates; four fusions on e5 and on EmbeddingGemma 2 either move nothing
