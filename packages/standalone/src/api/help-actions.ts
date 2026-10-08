@@ -1,5 +1,5 @@
 import { invalidInput } from '../utils/invalid-input.js';
-import type { ActionContract, ActionRegistration } from '@jungjaehoon/mama-core';
+import type { ActionContext, ActionContract, ActionRegistration } from '@jungjaehoon/mama-core';
 
 type Schema = Record<string, unknown>;
 
@@ -157,7 +157,7 @@ export interface HelpActionPorts {
   /** The granted contracts, read when `help` runs so it sees the finished catalog. */
   contracts(): readonly ActionContract[];
   /** The procedures a turn reads when it needs one, by topic name. */
-  topics?(): Readonly<Record<string, string>>;
+  topics?(access: ActionContext['access']): Readonly<Record<string, string>>;
 }
 
 export function helpActionRegistrations(ports: HelpActionPorts): ActionRegistration[] {
@@ -180,10 +180,13 @@ export function helpActionRegistrations(ports: HelpActionPorts): ActionRegistrat
           { title: 'Read a procedure', input: { topic: 'full-report' } },
         ],
       },
-      exec: async (input) => {
+      exec: async (input, context) => {
         const { actions: requested, topic } = input as { actions?: unknown; topic?: unknown };
-        const contracts = ports.contracts();
-        const topics = ports.topics?.() ?? {};
+        // Only what the caller may call: an action outside its grant is not listed or explained.
+        const contracts = ports
+          .contracts()
+          .filter((contract) => context.access.actions.includes(contract.name));
+        const topics = ports.topics?.(context.access) ?? {};
         const parts: string[] = [];
         if (topic !== undefined) {
           const text =
