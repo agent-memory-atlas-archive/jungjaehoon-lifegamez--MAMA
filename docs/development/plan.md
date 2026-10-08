@@ -83,7 +83,9 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
    ([check](checks.md#p2b-member-share-452-and-release-810--0700-2026-10-08)). P3a, owner rules
    recognised by principal, merged (#454,
    [check](checks.md#p3a-owner-rules-by-principal-454-2026-10-08)); it ships with the next
-   release. Next: P3b, a session per principal.
+   release. P3b, a session per principal, merged (#455,
+   [check](checks.md#p3b-a-session-per-principal-455-2026-10-08)); both ship with the next
+   release. Next: P4, the member native boundary.
 6. Paraphrase search: closed on 2026-10-07 without a host change
    ([check](checks.md#fusion-variants-with-both-embeddings-2026-10-07)). Three paraphrases sit
    outside the vector candidates; four fusions on e5 and on EmbeddingGemma 2 either move nothing
