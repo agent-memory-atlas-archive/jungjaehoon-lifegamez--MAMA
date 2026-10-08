@@ -1,3 +1,5 @@
+import type { JudgmentAccess } from '@jungjaehoon/mama-core';
+import { memberSystemLayers } from './member-system-prompt.js';
 import { backendEnvironment, credentialReadPaths } from './backend-security.js';
 import { untrustedToolData } from '../utils/untrusted-content.js';
 import { mkdirSync } from 'node:fs';
@@ -69,6 +71,8 @@ export interface NativeDriverOptions {
   requestMaxMs?: number;
   effort: RuntimeEffort;
   codexHome?: string;
+  isolatedHome?: string;
+  registryRoot?: string;
   pluginDir?: string;
   mcpConfigPath?: string;
   createSubagentBridge: (info: SubagentBridgeRequest) => Promise<SubagentBridge | null>;
@@ -91,6 +95,18 @@ export interface NativeSessionOptions {
   workspaceDir: string;
   runtimeRoot: string;
   actionSurface: ActionSurface;
+  principal?: {
+    principalId: string;
+    agentId: string;
+    sessionKey: string;
+    systemPrompt: string;
+    prepareAccess: () => JudgmentAccess;
+  };
+  claudeConfigDir?: string;
+  socketPath?: string;
+  credentialPath?: string;
+  journalPath?: string;
+  deniedReadPaths?: readonly string[];
   ownerSystemPrompt?: string;
   ownerPolicyProvider?: OwnerPolicyProvider;
   effort?: RuntimeEffort;
@@ -101,6 +117,8 @@ export interface NativeSessionOptions {
   maxTurns: number;
   runTokenBudget?: number;
   codexHome?: string;
+  isolatedHome?: string;
+  registryRoot?: string;
   replayKeyFile?: string;
   /** The host's logging proxy for the Claude shell sandbox's network (W35.4). */
   sandboxNetworkProxy?: SandboxNetworkProxy;
@@ -131,8 +149,11 @@ export interface NativeSession {
   stop(): Promise<void>;
 }
 
-function actionToolDefinitions(surface: ActionSurface): HostToolDefinition[] {
-  return surface.hostToolDefinitions().map((tool) => ({
+function actionToolDefinitions(
+  surface: ActionSurface,
+  access?: JudgmentAccess
+): HostToolDefinition[] {
+  return surface.hostToolDefinitions(access).map((tool) => ({
     type: 'function',
     name: tool.name,
     description: tool.description,
@@ -188,12 +209,17 @@ function driverOptions(
   }
   return {
     backend: options.backend,
-    processEnv: backendEnvironment(),
+    processEnv: {
+      ...backendEnvironment(),
+      ...(options.claudeConfigDir === undefined
+        ? {}
+        : { CLAUDE_CONFIG_DIR: options.claudeConfigDir }),
+    },
     deniedReadPaths: credentialReadPaths(
       options.runtimeRoot,
       options.codexHome,
       options.replayKeyFile
-    ),
+    ).concat(options.deniedReadPaths ?? []),
     model: options.model,
     workspaceDir: options.workspaceDir,
     cwd: options.workspaceDir,
@@ -204,7 +230,7 @@ function driverOptions(
     ...(options.backend === 'codex'
       ? {
           shellTool: true,
-          webSearch: true,
+          webSearch: options.principal === undefined,
           // macOS login shells run path_helper and put the system Python before Homebrew.
           // Keep the daemon's toolchain PATH and the driver's isolated HOME; no user profiles.
           shellEnvironment: { PATH: path! },
@@ -215,6 +241,8 @@ function driverOptions(
     ...(options.maxTurnMs === undefined ? {} : { requestMaxMs: options.maxTurnMs }),
     effort: options.effort ?? 'medium',
     ...(options.codexHome === undefined ? {} : { codexHome: options.codexHome }),
+    ...(options.isolatedHome === undefined ? {} : { isolatedHome: options.isolatedHome }),
+    ...(options.registryRoot === undefined ? {} : { registryRoot: options.registryRoot }),
     ...(options.pluginDir === undefined ? {} : { pluginDir: options.pluginDir }),
     ...(options.mcpConfigPath === undefined ? {} : { mcpConfigPath: options.mcpConfigPath }),
     createSubagentBridge: bridge,
@@ -243,6 +271,8 @@ function createDriver(
         ? {}
         : { requestMaxMs: nativeOptions.requestMaxMs }),
       codexHome: options.codexHome,
+      isolatedHome: options.isolatedHome,
+      registryRoot: options.registryRoot,
       effort: nativeOptions.effort,
       createSubagentBridge: bridge,
     });
@@ -253,13 +283,19 @@ function createDriver(
     mcpConfigPath,
     ...(options.mcpServerPath === undefined ? {} : { serverPath: options.mcpServerPath }),
     mamaHome: options.runtimeRoot,
+    socketPath: options.socketPath,
+    credentialPath: options.credentialPath,
+    journalPath: options.journalPath,
+    allowedActions: options.principal?.prepareAccess().actions,
   });
   return new PersistentCLIAdapter({
     workspaceDir: options.workspaceDir,
     model: options.model,
     mcpConfigPath,
     permissionMode: nativeOptions.permissionMode,
-    allowedTools: claudeOwnerAllowedTools(options.workspaceDir),
+    allowedTools: claudeOwnerAllowedTools(options.workspaceDir).filter(
+      (tool) => options.principal === undefined || !['WebFetch', 'WebSearch'].includes(tool)
+    ),
     disallowedTools: claudeOwnerDisallowedTools(
       nativeOptions.deniedReadPaths,
       options.workspaceDir
@@ -302,10 +338,21 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
   if (options.backend === 'claude')
     ensureClaudeCallerHook(
       options.workspaceDir,
-      credentialReadPaths(options.runtimeRoot, options.codexHome, options.replayKeyFile),
+      credentialReadPaths(options.runtimeRoot, options.codexHome, options.replayKeyFile).concat(
+        options.deniedReadPaths ?? []
+      ),
       options.sandboxNetworkProxy
     );
-  const tools = actionToolDefinitions(options.actionSurface);
+  const sessionKey = options.principal?.sessionKey ?? OWNER_RUNTIME_SESSION_KEY;
+  const prepareAccess =
+    options.principal?.prepareAccess ?? (() => options.actionSurface.ownerAccess);
+  const tools = actionToolDefinitions(options.actionSurface, options.principal?.prepareAccess());
+  // Core prepares a member's access before it builds the tool list or runs a tool; without it a
+  // member call must fail rather than reach the surface's owner default.
+  const memberAccess = (access: unknown): JudgmentAccess => {
+    if (!access) throw new Error(`No prepared access for ${options.principal!.principalId}`);
+    return access as JudgmentAccess;
+  };
   const runnerRef: { current?: NativeSessionRunner<HostExecutionContext> } = {};
   const bridge: NativeDriverOptions['createSubagentBridge'] = (info) =>
     runnerRef.current?.createSubagentBridge(info) ?? Promise.resolve(null);
@@ -327,6 +374,10 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
         ? {}
         : { serverPath: configuredMcpOptions.mcpServerPath }),
       mamaHome: configuredMcpOptions.runtimeRoot,
+      socketPath: configuredMcpOptions.socketPath,
+      credentialPath: configuredMcpOptions.credentialPath,
+      journalPath: configuredMcpOptions.journalPath,
+      allowedActions: configuredMcpOptions.principal?.prepareAccess().actions,
     });
   }
   const nativeOptions = driverOptions(configuredMcpOptions, bridge);
@@ -335,8 +386,9 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
     configuredMcpOptions.createAgent?.(nativeOptions) ??
     createDriver(configuredMcpOptions, nativeOptions, bridge);
   const sessionPool = options.sessionPool ?? getSessionPool();
-  const standingPrompt = options.ownerSystemPrompt ?? '';
-  const ownerPolicyProvider = options.ownerPolicyProvider;
+  const standingPrompt = options.principal?.systemPrompt ?? options.ownerSystemPrompt ?? '';
+  const ownerPolicyProvider =
+    options.principal === undefined ? options.ownerPolicyProvider : undefined;
   const emptyOwnerPolicy: OwnerPolicySnapshot = {
     content: null,
     fingerprint: '',
@@ -357,13 +409,24 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
       const current = request as NativeSessionRequest | undefined;
       const systemPrompt = current?.systemPrompt ?? standingPrompt;
       const ownerPolicy = ownerPolicyProvider?.() ?? emptyOwnerPolicy;
-      const role = current?.nativeRole ?? defaultRole;
+      const requestedRole = current?.nativeRole ?? defaultRole;
+      const role =
+        options.principal === undefined
+          ? requestedRole
+          : {
+              ...requestedRole,
+              blockedTools: [...(requestedRole.blockedTools ?? []), 'WebFetch', 'WebSearch'],
+            };
       const nativeTools = options.backend === 'claude' ? projectClaudeNativeTools(role) : undefined;
-      const systemLayers = ownerSystemLayers(systemPrompt, ownerPolicy.content);
+      const layers = (policy: string | null) =>
+        options.principal === undefined
+          ? ownerSystemLayers(systemPrompt, policy)
+          : memberSystemLayers(systemPrompt);
+      const systemLayers = layers(ownerPolicy.content);
       const buildSystemLayers = async () =>
-        ownerSystemLayers(systemPrompt, (ownerPolicyProvider?.() ?? emptyOwnerPolicy).content);
+        layers((ownerPolicyProvider?.() ?? emptyOwnerPolicy).content);
       return {
-        channelKey: current?.sessionKey ?? OWNER_RUNTIME_SESSION_KEY,
+        channelKey: current?.sessionKey ?? sessionKey,
         systemLayers,
         reanchorLayers: buildSystemLayers,
         resumeLayers: buildSystemLayers,
@@ -389,8 +452,8 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
           ? { sourceMessageRef: current.sourceMessageRef }
           : {}),
         ...(current?.sourceRefs === undefined ? {} : { sourceRefs: current.sourceRefs }),
-        channelId: current?.channelId ?? current?.sessionKey ?? OWNER_RUNTIME_SESSION_KEY,
-        agentId: options.actionSurface.ownerAccess.agentId,
+        channelId: current?.channelId ?? current?.sessionKey ?? sessionKey,
+        agentId: options.principal?.agentId ?? options.actionSurface.ownerAccess.agentId,
         ...(replaySourceEndMs === undefined ? {} : { replaySourceEndMs }),
       };
     },
@@ -398,7 +461,13 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
       const { modelRunId } = toolContext(context);
       return modelRunId ? options.actionSurface.createNativeEffectObserver(modelRunId) : undefined;
     },
-    hostToolDefinitions: () => tools,
+    hostToolDefinitions: (request) =>
+      options.principal === undefined
+        ? tools
+        : actionToolDefinitions(
+            options.actionSurface,
+            memberAccess((request as NativeSessionRequest | undefined)?.access)
+          ),
     ...(options.modelRun === undefined ? {} : { modelRun: options.modelRun }),
     callTool: async (name, input, context) => {
       const facts = toolContext(context);
@@ -408,6 +477,7 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
       return modelToolResult(
         name,
         await options.actionSurface.hostToolCall(name, input, facts.gatewayCallId, {
+          ...(options.principal === undefined ? {} : { access: memberAccess(context?.access) }),
           session: {
             ...(facts.modelRunId === undefined ? {} : { modelRunId: facts.modelRunId }),
             gatewayCallId: facts.gatewayCallId,
@@ -428,14 +498,17 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
   runnerRef.current = createNativeSessionRunner(host);
   return {
     backend: options.backend,
-    sessionKey: OWNER_RUNTIME_SESSION_KEY,
+    sessionKey,
     supportsNativeSubagents: agent.supportsNativeSubagents === true,
-    hostToolDefinitions: () => [...tools],
+    hostToolDefinitions: () =>
+      options.principal === undefined
+        ? [...tools]
+        : actionToolDefinitions(options.actionSurface, options.principal.prepareAccess()),
     callAction: (call, caller) =>
       runnerRef.current!.withToolCaller(caller, async (context) => {
         const facts = toolContext(context);
         return options.actionSurface.dispatch(call, {
-          access: context.access as ActionContext['access'],
+          access: options.principal?.prepareAccess() ?? (context.access as ActionContext['access']),
           session: facts,
         });
       }),
@@ -443,9 +516,9 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
     runTurn: (content, request) => {
       const nativeRequest = {
         ...(request ?? {}),
-        sessionKey: request?.sessionKey ?? OWNER_RUNTIME_SESSION_KEY,
-        access: options.actionSurface.ownerAccess,
-        prepareAccess: request?.prepareAccess ?? (async () => options.actionSurface.ownerAccess),
+        sessionKey: request?.sessionKey ?? sessionKey,
+        access: options.principal === undefined ? options.actionSurface.ownerAccess : undefined,
+        prepareAccess: request?.prepareAccess ?? prepareAccess,
       } as NativeTurnRequest;
       return runnerRef.current!.runTurn(content, nativeRequest);
     },
