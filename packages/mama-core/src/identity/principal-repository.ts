@@ -75,6 +75,11 @@ export interface PrincipalRepository {
   grantScope(input: PrincipalScopeGrantMutationInput): 'created' | 'exists';
   revokeScope(input: PrincipalScopeGrantMutationInput): 'revoked' | 'absent';
   listActiveGrants(principalId: string): PrincipalScopeGrantRecord[];
+  /**
+   * Every project partition a member memory grant has ever named, revoked or not. The owner keeps
+   * write authority over work it bound to a partition after the last grant on it ends.
+   */
+  listGrantedPartitions(): Array<{ kind: 'project'; id: string }>;
 }
 
 export type PrincipalRegistrationErrorCode = 'identity_bound_to_owner' | 'member_not_active';
@@ -333,6 +338,12 @@ export function createPrincipalRepository(
      ORDER BY grants.created_at ASC, grants.grant_kind ASC,
        grants.scope_kind ASC, grants.scope_id ASC`
   );
+  const listGrantedPartitionsStatement = adapter.prepare(
+    `SELECT DISTINCT scope_id AS id
+     FROM principal_scope_grants
+     WHERE grant_kind = 'memory' AND scope_kind = 'project'
+     ORDER BY scope_id ASC`
+  );
 
   function assertGrantMutationPrincipals(
     targetPrincipalId: string,
@@ -576,5 +587,10 @@ export function createPrincipalRepository(
     grantScope,
     revokeScope,
     listActiveGrants,
+    listGrantedPartitions: () =>
+      (listGrantedPartitionsStatement.all() as Array<{ id: string }>).map(({ id }) => ({
+        kind: 'project',
+        id,
+      })),
   };
 }
