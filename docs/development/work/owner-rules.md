@@ -8,7 +8,7 @@ Owner decision, 2026-10-06:
   it. Situational rules stay in memory and reach turns as lessons, as now.
 - The owner rules saved so far are merged once. After that, the rule index of #414 (record orders)
   and #421 (the full-report procedure) is removed.
-- This closes open owner decision 1 in [kagemusha-operator.md](https://github.com/jungjaehoon-lifegamez/MAMA/blob/81695ecbc/docs/rebuild/kagemusha-operator.md#owner-decisions-still-open).
+- This closes open owner decision 1 in [kagemusha-operator.md](https://github.com/jungjaehoon-lifegamez/MAMA/blob/e3e17f85b/docs/rebuild/kagemusha-operator.md#owner-decisions-still-open).
 
 Program evidence (code and the 2026-10-05 21:30 to 10-06 15:34 data, UTC+9; [checks](../checks.md)):
 

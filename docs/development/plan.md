@@ -135,11 +135,10 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
 
 ## Owner decisions still open
 
-1. Decided 2026-10-08: rewrite the git history to remove two project names and an asset name that
-   stayed in the check log's history from 2026-09-30 to 2026-10-06. Prepared on a mirror first;
-   the force push follows the owner's look at the counts.
+None. The history rewrite the owner decided on 2026-10-08 is done
+([check](checks.md#history-rewrite-two-project-names-and-an-asset-name-2026-10-08)).
 
 ## History
 
 The rebuild started from `4066dfb37` (archived branch: tag `archive/unified-core-2026-09-25`) and finished on 2026-10-06.
-Its carry/keep/drop table and W0–W36 rows are in the [plan at 81695ecbc](https://github.com/jungjaehoon-lifegamez/MAMA/blob/81695ecbc/docs/rebuild/plan.md); their evidence is in [checks.md](checks.md).
+Its carry/keep/drop table and W0–W36 rows are in the [plan at e3e17f85b](https://github.com/jungjaehoon-lifegamez/MAMA/blob/e3e17f85b/docs/rebuild/plan.md); their evidence is in [checks.md](checks.md).
