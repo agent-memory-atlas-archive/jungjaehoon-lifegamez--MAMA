@@ -2027,3 +2027,15 @@ The implementation writes raw/index data during import only. Replay is the owner
   - As for the owner, a direct socket the OS sandbox refuses and Codex's OS-level network deny never reach a proxy.
   - A member's error strings in `daemon.log` stay open until one carrying member content is reproduced.
   - Not deployed: P3a, P3b, P4, #457, P5 and P6 ship with the next release, core first.
+
+### Release mama-core 8.2.0 / mama-os 0.71.0 (2026-10-09)
+
+- Result: P3a, P3b, P4, #457, P5 and P6a–c are live from 22:15 KST: the live checkout was fast-forwarded to 29076130e (#462), built and restarted. Every boot stage passed with no errors. The live config passes the new boot checks: default workspace, no overlap with downloads or connectors, `member_root` unset, so no member session starts.
+- Evidence:
+  - The owner's generated Claude settings deny the DB and its `-wal`, the connectors directory and the member temp root, and still allow the workspace and downloads.
+  - One owner turn on Telegram (22:41, "summarise what I said on Telegram today") answered with the owner's five messages of the day in 33.5 s. It made 9 MAMA calls and refused nothing; three `source.recent` calls were rejected for the model's own invalid input.
+  - The model never read the `chat` source itself. On a copy of the live DB and chat raw store, run with the deployed build and no model, the owner's access holds its 3 chat channels and no connector-wide chat. `source.search` on chat returned hits, `source.read` of the owner's own chat succeeded 3/3, and the Slack wide read still works. The copy was deleted afterwards.
+- Publication: release run 37935323493 tagged v0.71.0 and deployed the docs site. Publishing mama-core failed with npm `E404` on PUT, the response an invalid or expired `NPM_TOKEN` gives, so mama-os was skipped. The token needs renewing by the owner; then rerun the failed jobs (`gh run rerun 37935323493 --failed`).
+- Still open:
+  - npm publication.
+  - The core `principal-records` keyword-fallback test fails locally wherever the embedding model is installed, because search takes the vector path; CI passes it.

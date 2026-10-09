@@ -97,7 +97,9 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
    [check](checks.md#p6b-the-owners-native-reads-stop-at-the-db-raw-stores-and-member-directories-460-2026-10-09)).
    P6c, a member's refused connection alerts the owner with principal, host and time, merged
    (#461, [check](checks.md#p6c-a-members-refused-connection-alerts-the-owner-with-principal-host-and-time-461-2026-10-09)).
-   P6 is done. Next: P7, enrollment.
+   P6 is done. P3a–P6c ship in mama-core 8.2.0 and mama-os 0.71.0, live from 2026-10-09 22:15 KST
+   ([check](checks.md#release-mama-core-820--mama-os-0710-2026-10-09)); npm publication waits for a
+   renewed `NPM_TOKEN`. Next: P7, enrollment.
 6. Paraphrase search: closed on 2026-10-07 without a host change
    ([check](checks.md#fusion-variants-with-both-embeddings-2026-10-07)). Three paraphrases sit
    outside the vector candidates; four fusions on e5 and on EmbeddingGemma 2 either move nothing
