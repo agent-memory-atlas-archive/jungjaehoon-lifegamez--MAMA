@@ -1992,3 +1992,14 @@ The implementation writes raw/index data during import only. Replay is the owner
   - The Codex bot found that a hard link in the member's files could alias an owner file, which the daemon would upload with its own authority. A member's file is refused unless its descriptor has one link.
   - CodeRabbit found that between the realpath check and the open, a member could swap a parent directory for a symlink to an owner directory; `O_NOFOLLOW` covers only the last component. Reproduced on macOS. A member's file now opens with `O_NOFOLLOW_ANY` on macOS (it cannot be combined with `O_NOFOLLOW`: EINVAL), with a check of the opened descriptor's `/proc` path on Linux, and is refused on other platforms.
 - Still open: the real member's live check comes with P10, with gateway admission and member text replies. Not deployed: P3a, P3b, P4, #457 and P5 ship with the next release.
+
+### P6a: the owner's action reads stop at member records (#459, 2026-10-09)
+
+- Result: under the owner decision of 2026-10-09 (team-flow decision 10), the owner reads records through MAMA actions under its access, and those reads stop at a member's personal records. `chat` left the owner's connector-wide reads: the owner's chat channels are the stored channels with rows bound to the owner, read at each access, so a member's DM is `stored_source_out_of_scope` in `source.read`, `source.search`, `source.recent`, `graph.query` and provenance, erased observations included. The stored-source reader and `source.recent`/`schedule.upcoming` use one access rule instead of "is the owner" exceptions. A core read option lists unbound checkpoints plus the caller's scopes, so member checkpoints leave the owner's session start and the viewer. The session-start inventory and viewer memory stats count under access.
+- Evidence:
+  - New tests through the real dispatcher, with an owner DM, an owner group and a member DM saved by the real chat intake. The worker reports 15 new and 2 tightened tests failing before the change. The session-per-principal test no longer strips the member checkpoint sentinel.
+  - The full standalone suite passed (1655). Core: 1110 passed and 1 failed (`principal-records` keyword fallback); that test fails the same way locally on main's core source, and CI passed.
+  - Owner turns were byte-identical to main on both backends on a live copy. All 374 chat rows there are bound to the owner, in 3 channels, so the owner loses no chat it reads today.
+  - Source +118 / −90.
+- Reviews: CodeRabbit and the Codex bot (code and security) found nothing.
+- Still open: P6b (native denies and the AGENTS.md sentence) and P6c (member alerts). The product calls the new core option, so mama-core is published first and the product's core range raised with it. Not deployed: ships with the next release.
