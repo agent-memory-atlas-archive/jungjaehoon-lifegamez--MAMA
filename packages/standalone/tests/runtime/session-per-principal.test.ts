@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, realpathSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir, userInfo } from 'node:os';
 import { createRequire } from 'node:module';
 import { createPrincipalRepository } from '@jungjaehoon/mama-core';
 import type { JudgmentAccess } from '@jungjaehoon/mama-core';
 import type { ActionIpcServerOptions } from '@jungjaehoon/mama-core/client/ipc';
 import type { IModelRunner } from '@jungjaehoon/mama-core/runtime/drivers/types';
 import { SessionPool } from '@jungjaehoon/mama-core/runtime/session-pool';
+import { CodexRuntimeProcess } from '@jungjaehoon/mama-core/runtime/runtime-process';
 import { createOwnerRuntime, type OwnerRuntimeOptions } from '../../src/runtime/owner-runtime.js';
 import {
   createNativeSession,
@@ -16,7 +17,8 @@ import {
 } from '../../src/runtime/native-session.js';
 import { openCoreDatabase } from '../../src/runtime/core-db.js';
 import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
-import { memberPaths } from '../../src/runtime/member-paths.js';
+import { memberClaudeTmpDir, memberPaths } from '../../src/runtime/member-paths.js';
+import { credentialReadPaths, physicalReadPath } from '../../src/runtime/backend-security.js';
 
 // Only the unavailable socket transport is replaced. Core intake, credentials, mailbox,
 // native runner, records, model_runs and traces stay real.
@@ -208,6 +210,255 @@ async function fixture(backend: 'codex' | 'claude' = 'codex', withRoot = true) {
 }
 
 it.each(['codex', 'claude'] as const)(
+  'denies external owner data and all siblings, refreshes a later enrollment before the next turn (%s)',
+  async (backend) => {
+    const f = await fixture(backend);
+    const external = realpathSync(mkdtempSync(join(tmpdir(), 'fixture-external-')));
+    roots.push(external);
+    const orphan = join(f.root, 'fixture-orphan');
+    mkdirSync(orphan);
+    Object.assign(f.options, {
+      rawPath: join(external, 'raw'),
+      databasePath: f.options.databasePath,
+      workspaceDir: join(external, 'workspace'),
+      reportPath: join(external, 'reports', 'slots.json'),
+      codexHome: join(external, 'codex'),
+      replayKeyFile: join(external, 'replay-key'),
+      jev: undefined,
+      wiki: { enabled: false, vaultPath: join(external, 'vault'), wikiDir: 'wiki' },
+      attachmentPorts: { downloadsDir: join(external, 'downloads') },
+      driveDelivery: undefined,
+      ownerDeniedReadPaths: [join(external, 'logs'), join(external, 'vocab')],
+    });
+    // The owner's Claude credential store, kept outside HOME.
+    vi.stubEnv('CLAUDE_SECURESTORAGE_CONFIG_DIR', join(external, 'claude-store'));
+    // Move the fixture DB outside HOME, preserving the registered identities.
+    const { renameSync } = await import('node:fs');
+    renameSync(f.options.databasePath, join(external, 'owner.db'));
+    f.options.databasePath = join(external, 'owner.db');
+    const runtime = await createOwnerRuntime(f.options);
+    try {
+      const owner = f.drivers.get('owner')!;
+      expect(owner.deniedReadPaths).toEqual(
+        credentialReadPaths(f.options.runtimeRoot, f.options.codexHome, f.options.replayKeyFile)
+      );
+      expect(owner.processEnv.TMPDIR).toBe(process.env.TMPDIR);
+      if (backend === 'codex') expect(owner.shellEnvironment).toEqual({ PATH: process.env.PATH });
+      const paths = memberPaths(f.root, f.member);
+      const expected = [
+        f.home,
+        f.options.databasePath,
+        `${f.options.databasePath}-wal`,
+        `${f.options.databasePath}-shm`,
+        f.options.rawPath,
+        f.options.workspaceDir,
+        join(external, 'reports'),
+        join(external, 'vault'),
+        join(external, 'vault', 'wiki'),
+        join(external, 'downloads'),
+        join(external, 'codex'),
+        join(external, 'replay-key'),
+        join(external, 'logs'),
+        join(external, 'vocab'),
+        join(external, 'claude-store'),
+        memberPaths(f.root, f.inactive).runtimeRoot,
+        orphan,
+        // The Claude sandbox temp dir every session of this OS user falls back to.
+        physicalReadPath(join('/tmp', `claude-${userInfo().uid}`)),
+        physicalReadPath(memberClaudeTmpDir(f.inactive)),
+      ];
+      const check = () => {
+        const driver = f.drivers.get(f.member)!;
+        for (const path of expected) expect(driver.deniedReadPaths, path).toContain(path);
+        expect(driver.deniedReadPaths).not.toContain(paths.runtimeRoot);
+        expect(driver.processEnv.TMPDIR).toBe(join(paths.workspaceDir, '.tmp'));
+        if (backend === 'codex')
+          expect(driver.shellEnvironment?.TMPDIR).toBe(join(paths.workspaceDir, '.tmp'));
+        else {
+          const settings = JSON.parse(
+            readFileSync(join(paths.workspaceDir, '.claude', 'settings.json'), 'utf8')
+          );
+          expect(settings.sandbox.filesystem.denyRead).toEqual(driver.deniedReadPaths);
+          // Short enough that the sandbox shell gets it rather than the shared fallback.
+          const tmp = memberClaudeTmpDir(f.member);
+          expect(settings.env.CLAUDE_CODE_TMPDIR).toBe(tmp);
+          expect(Buffer.byteLength(join(tmp, `claude-${userInfo().uid}`))).toBeLessThanOrEqual(44);
+          expect(driver.deniedReadPaths).not.toContain(physicalReadPath(tmp));
+        }
+      };
+      check();
+      const intake = runtime.serveMember(f.member);
+      intake.acceptOwnerMessage({
+        id: 'fixture:first',
+        channelKey: 'fixture',
+        occurredAt: 1,
+        text: 'first',
+      });
+      await vi.waitFor(
+        () => expect(f.turns.filter((turn) => turn.principal === f.member)).toHaveLength(1),
+        { timeout: 5_000 }
+      );
+      await vi.waitFor(() => expect(intake.isPending!('fixture:first')).toBe(false));
+      const previous = f.natives.get(f.member);
+      const later = createPrincipalRepository(runtime.database.adapter).registerMember({
+        connector: 'telegram',
+        namespace: 'private',
+        externalId: 'fixture-later',
+        now: 4,
+      });
+      runtime.serveMember(later);
+      const debris = join(f.root, 'fixture-after-start');
+      mkdirSync(debris);
+      expected.push(memberPaths(f.root, later).runtimeRoot, debris);
+      intake.acceptOwnerMessage({
+        id: 'fixture:next',
+        channelKey: 'fixture',
+        occurredAt: 2,
+        text: 'next',
+      });
+      await vi.waitFor(
+        () => expect(f.turns.filter((turn) => turn.principal === f.member)).toHaveLength(2),
+        { timeout: 5_000 }
+      );
+      await vi.waitFor(() => expect(intake.isPending!('fixture:next')).toBe(false));
+      check();
+      expect(f.natives.get(f.member)).not.toBe(previous);
+      expect(f.stopped).toContain(f.member);
+      expect(f.drivers.get('owner')).toBe(owner);
+    } finally {
+      await runtime.stop();
+      f.pool.dispose();
+    }
+  }
+);
+
+it('writes member denies and workspace TMPDIR into the existing Codex named profile before CLI launch', async () => {
+  const f = await fixture('codex');
+  // The owner signed in to its managed Codex home; a usual Codex home on the machine is not it.
+  f.options.codexHome = join(f.home, 'managed-codex');
+  mkdirSync(f.options.codexHome, { recursive: true });
+  writeFileSync(join(f.options.codexHome, 'auth.json'), '{"fixture":"owner-managed"}');
+  mkdirSync(join(f.home, '.codex'), { recursive: true });
+  writeFileSync(join(f.home, '.codex', 'auth.json'), '{"fixture":"usual-codex-home"}');
+  const create = f.options.createSession!;
+  f.options.createSession = (options) =>
+    options.principal === undefined
+      ? create(options)
+      : createNativeSession({
+          ...options,
+          sessionPool: f.pool,
+          createAgent: (driver) =>
+            new CodexRuntimeProcess({
+              ...driver,
+              hostRootDir: driver.runtimeRoot,
+              mcpConfigPath: undefined,
+              command: join(f.root, 'missing-codex'),
+            }),
+        });
+  const failures: string[] = [];
+  const runtime = await createOwnerRuntime({
+    ...f.options,
+    onStimulusFailed: (_row, reason) => {
+      failures.push(reason);
+    },
+  });
+  try {
+    runtime.serveMember(f.member).acceptOwnerMessage({
+      id: 'fixture:profile',
+      channelKey: 'fixture',
+      occurredAt: 1,
+      text: 'prepare config',
+    });
+    await vi.waitFor(() => expect(failures.join()).toContain('ENOENT'));
+    const paths = memberPaths(f.root, f.member);
+    const config = readFileSync(join(paths.codexHome, 'config.toml'), 'utf8');
+    expect(config).toContain('default_permissions = "host-workspace"');
+    expect(config).toContain('[permissions.host-workspace.filesystem]');
+    for (const path of [f.home, memberPaths(f.root, f.inactive).runtimeRoot, paths.claudeConfigDir])
+      expect(config).toContain(`${JSON.stringify(path)} = "deny"`);
+    expect(config).toContain(`"TMPDIR" = ${JSON.stringify(join(paths.workspaceDir, '.tmp'))}`);
+    expect(config).toContain('web_search = false');
+    expect(readFileSync(join(paths.codexHome, 'auth.json'), 'utf8')).toBe(
+      '{"fixture":"owner-managed"}'
+    );
+    // The owner's own managed home is never overwritten from elsewhere.
+    expect(f.drivers.get('owner')?.authSourcePath).toBeUndefined();
+  } finally {
+    await runtime.stop();
+    f.pool.dispose();
+  }
+});
+
+it.each(['codex', 'claude'] as const)(
+  'restarts an existing member with a later served path after the owner enrollment turn releases the chain (%s)',
+  async (backend) => {
+    const f = await fixture(backend);
+    f.options.lessons = async () => [];
+    const runtime = await createOwnerRuntime(f.options);
+    let release!: () => void;
+    try {
+      const intake = runtime.serveMember(f.member);
+      intake.acceptOwnerMessage({
+        id: 'fixture:before-enroll',
+        channelKey: 'fixture',
+        occurredAt: 1,
+        text: 'before',
+      });
+      await vi.waitFor(
+        () => expect(f.turns.filter((turn) => turn.principal === f.member)).toHaveLength(1),
+        { timeout: 5_000 }
+      );
+      await vi.waitFor(() => expect(intake.isPending!('fixture:before-enroll')).toBe(false));
+      const previous = f.natives.get(f.member);
+      f.blockOwner(
+        new Promise<void>((resolve) => {
+          release = resolve;
+        })
+      );
+      runtime.intake.acceptOwnerMessage({
+        id: 'fixture:enroll',
+        channelKey: 'fixture',
+        occurredAt: 2,
+        text: 'enroll',
+      });
+      await vi.waitFor(() =>
+        expect(f.turns.filter((turn) => turn.principal === 'owner')).toHaveLength(1)
+      );
+      // Enrollment host work while the owner's model turn holds the shared chain.
+      const later = createPrincipalRepository(runtime.database.adapter).registerMember({
+        connector: 'telegram',
+        namespace: 'private',
+        externalId: 'fixture-later-on-chain',
+        now: 3,
+      });
+      runtime.serveMember(later);
+      intake.acceptOwnerMessage({
+        id: 'fixture:after-enroll',
+        channelKey: 'fixture',
+        occurredAt: 3,
+        text: 'after',
+      });
+      expect(f.turns.filter((turn) => turn.principal === f.member)).toHaveLength(1);
+      expect(f.natives.get(f.member)).toBe(previous);
+      release();
+      await vi.waitFor(
+        () => expect(f.turns.filter((turn) => turn.principal === f.member)).toHaveLength(2),
+        { timeout: 5_000 }
+      );
+      expect(f.natives.get(f.member)).not.toBe(previous);
+      expect(f.drivers.get(f.member)?.deniedReadPaths).toContain(
+        memberPaths(f.root, later).runtimeRoot
+      );
+      expect(f.stopped).toContain(f.member);
+    } finally {
+      release?.();
+      await runtime.stop();
+      f.pool.dispose();
+    }
+  }
+);
+
+it.each(['codex', 'claude'] as const)(
   'serves active members with separate turns, personal starts and run/trace attribution (%s)',
   async (backend) => {
     const f = await fixture(backend);
@@ -347,6 +598,12 @@ it.each(['codex', 'claude'] as const)(
         memberPaths(f.root, f.member).claudeConfigDir
       );
       expect(f.drivers.get('owner')?.processEnv.CLAUDE_CONFIG_DIR).toBeUndefined();
+      // Own config dir, the owner's credential store: the CLI keys the store by the explicit
+      // store dir, else the config dir, else '' (the default login).
+      const ownerEnv = f.drivers.get('owner')!.processEnv;
+      expect(f.drivers.get(f.member)?.processEnv.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(
+        ownerEnv.CLAUDE_SECURESTORAGE_CONFIG_DIR ?? ownerEnv.CLAUDE_CONFIG_DIR ?? ''
+      );
       expect(f.drivers.get(f.member)?.cwd).not.toBe(f.drivers.get('owner')?.cwd);
       const memberDenied = f.drivers.get(f.member)?.deniedReadPaths ?? [];
       const own = memberPaths(f.root, f.member);
@@ -402,6 +659,14 @@ it('fails an unauthenticated member turn loudly without constructing an owner-pa
     await runtime.stop();
     f.pool.dispose();
   }
+});
+
+it('refuses to boot when a denied owner path contains member_root', async () => {
+  const f = await fixture();
+  // The report slot directory is denied to members; here it would cover their own workspaces.
+  f.options.reportPath = join(f.root, 'report-slots.json');
+  await expect(createOwnerRuntime(f.options)).rejects.toThrow(/owner data paths/);
+  f.pool.dispose();
 });
 
 it('requires no root with no active members and serves a newly enrolled member only on serveMember', async () => {

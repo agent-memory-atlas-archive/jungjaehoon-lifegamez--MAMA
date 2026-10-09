@@ -1,6 +1,7 @@
 import type { JudgmentAccess } from '@jungjaehoon/mama-core';
 import { memberSystemLayers } from './member-system-prompt.js';
-import { backendEnvironment, credentialReadPaths } from './backend-security.js';
+import { backendEnvironment, credentialReadPaths, normalizeReadPaths } from './backend-security.js';
+import { memberClaudeTmpDir } from './member-paths.js';
 import { untrustedToolData } from '../utils/untrusted-content.js';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -38,6 +39,7 @@ import type {
 import {
   claudeOwnerAllowedTools,
   claudeOwnerDisallowedTools,
+  claudeMemberDisallowedTools,
   projectClaudeNativeTools,
   type ClaudeToolRole,
 } from '../agent/claude-native-tool-policy.js';
@@ -73,6 +75,7 @@ export interface NativeDriverOptions {
   codexHome?: string;
   isolatedHome?: string;
   registryRoot?: string;
+  authSourcePath?: string;
   pluginDir?: string;
   mcpConfigPath?: string;
   createSubagentBridge: (info: SubagentBridgeRequest) => Promise<SubagentBridge | null>;
@@ -117,6 +120,8 @@ export interface NativeSessionOptions {
   maxTurns: number;
   runTokenBudget?: number;
   codexHome?: string;
+  /** A member's Codex home copies the owner's managed credential; the owner signs in to its own. */
+  codexAuthSourcePath?: string;
   isolatedHome?: string;
   registryRoot?: string;
   replayKeyFile?: string;
@@ -201,6 +206,7 @@ function modelToolResult(
 
 function driverOptions(
   options: NativeSessionOptions,
+  deniedReadPaths: string[],
   bridge: NativeDriverOptions['createSubagentBridge']
 ): NativeDriverOptions {
   const path = process.env.PATH;
@@ -211,15 +217,19 @@ function driverOptions(
     backend: options.backend,
     processEnv: {
       ...backendEnvironment(),
+      ...(options.principal === undefined ? {} : { TMPDIR: join(options.workspaceDir, '.tmp') }),
+      // A member's own config dir keeps its sessions and CLI state out of the owner's. The
+      // credential store follows the CLI's own key rule: an explicit store dir, else the config
+      // dir, else '' for the default; so the member signs in with the owner's login.
       ...(options.claudeConfigDir === undefined
         ? {}
-        : { CLAUDE_CONFIG_DIR: options.claudeConfigDir }),
+        : {
+            CLAUDE_CONFIG_DIR: options.claudeConfigDir,
+            CLAUDE_SECURESTORAGE_CONFIG_DIR:
+              process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR ?? '',
+          }),
     },
-    deniedReadPaths: credentialReadPaths(
-      options.runtimeRoot,
-      options.codexHome,
-      options.replayKeyFile
-    ).concat(options.deniedReadPaths ?? []),
+    deniedReadPaths,
     model: options.model,
     workspaceDir: options.workspaceDir,
     cwd: options.workspaceDir,
@@ -233,8 +243,16 @@ function driverOptions(
           webSearch: options.principal === undefined,
           // macOS login shells run path_helper and put the system Python before Homebrew.
           // Keep the daemon's toolchain PATH and the driver's isolated HOME; no user profiles.
-          shellEnvironment: { PATH: path! },
+          shellEnvironment: {
+            PATH: path!,
+            ...(options.principal === undefined
+              ? {}
+              : { TMPDIR: join(options.workspaceDir, '.tmp') }),
+          },
           allowLoginShell: false,
+          ...(options.codexAuthSourcePath === undefined
+            ? {}
+            : { authSourcePath: options.codexAuthSourcePath }),
         }
       : { permissionMode: 'dontAsk' as const }),
     requestTimeout: options.timeout,
@@ -247,6 +265,13 @@ function driverOptions(
     ...(options.mcpConfigPath === undefined ? {} : { mcpConfigPath: options.mcpConfigPath }),
     createSubagentBridge: bridge,
   };
+}
+
+/** The Claude CLI's temp root: the workspace's for the owner, a short private one for a member. */
+function claudeTmpDir(options: NativeSessionOptions): string {
+  return options.principal === undefined
+    ? join(options.workspaceDir, '.tmp')
+    : memberClaudeTmpDir(options.principal.principalId);
 }
 
 function createDriver(
@@ -273,6 +298,7 @@ function createDriver(
       codexHome: options.codexHome,
       isolatedHome: options.isolatedHome,
       registryRoot: options.registryRoot,
+      authSourcePath: nativeOptions.authSourcePath,
       effort: nativeOptions.effort,
       createSubagentBridge: bridge,
     });
@@ -296,12 +322,11 @@ function createDriver(
     allowedTools: claudeOwnerAllowedTools(options.workspaceDir).filter(
       (tool) => options.principal === undefined || !['WebFetch', 'WebSearch'].includes(tool)
     ),
-    disallowedTools: claudeOwnerDisallowedTools(
-      nativeOptions.deniedReadPaths,
-      options.workspaceDir
-    ),
+    disallowedTools: (options.principal === undefined
+      ? claudeOwnerDisallowedTools
+      : claudeMemberDisallowedTools)(nativeOptions.deniedReadPaths, options.workspaceDir),
     processEnv: nativeOptions.processEnv,
-    env: { CLAUDE_CODE_TMPDIR: join(options.workspaceDir, '.tmp') },
+    env: { CLAUDE_CODE_TMPDIR: claudeTmpDir(options) },
     pluginDir: nativeOptions.pluginDir,
     requestTimeout: nativeOptions.requestTimeout,
     ...(nativeOptions.requestMaxMs === undefined
@@ -335,13 +360,21 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
     throw new Error('The owner Codex session requires the workspace-write sandbox');
   }
   mkdirSync(options.workspaceDir, { recursive: true });
+  if (options.principal !== undefined)
+    mkdirSync(join(options.workspaceDir, '.tmp'), { recursive: true, mode: 0o700 });
+  const readPaths = credentialReadPaths(
+    options.runtimeRoot,
+    options.codexHome,
+    options.replayKeyFile
+  ).concat(options.deniedReadPaths ?? []);
+  const deniedReadPaths =
+    options.principal === undefined ? readPaths : normalizeReadPaths(readPaths);
   if (options.backend === 'claude')
     ensureClaudeCallerHook(
       options.workspaceDir,
-      credentialReadPaths(options.runtimeRoot, options.codexHome, options.replayKeyFile).concat(
-        options.deniedReadPaths ?? []
-      ),
-      options.sandboxNetworkProxy
+      deniedReadPaths,
+      options.sandboxNetworkProxy,
+      claudeTmpDir(options)
     );
   const sessionKey = options.principal?.sessionKey ?? OWNER_RUNTIME_SESSION_KEY;
   const prepareAccess =
@@ -380,7 +413,7 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
       allowedActions: configuredMcpOptions.principal?.prepareAccess().actions,
     });
   }
-  const nativeOptions = driverOptions(configuredMcpOptions, bridge);
+  const nativeOptions = driverOptions(configuredMcpOptions, deniedReadPaths, bridge);
   const agent =
     configuredMcpOptions.agent ??
     configuredMcpOptions.createAgent?.(nativeOptions) ??

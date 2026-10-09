@@ -142,8 +142,13 @@ Owner decision 2026-10-08 (4): member agents run in their own workspace under th
 member root outside the owner's home, with the same isolation settings as the owner: git boundary,
 empty plugins, project/local settings, persistent sessions, first-turn system prompt, required
 sandbox and deny-all proxy, workspace-only writes, credential denies, environment scrubbing and
-background tasks off. Members have no web tools (owner decision 7). Member backend credentials and
-runtime state stay under that member root.
+background tasks off. Members have no web tools (owner decision 7). Member runtime state, including
+each member's own Claude config directory and Codex home, stays under that member root; members never
+use the owner's `~/.claude`. Owner decision 2026-10-09: members sign in with the owner's logins, not
+their own. The member's Claude CLI reads the owner's credential store
+(`CLAUDE_SECURESTORAGE_CONFIG_DIR`), and the member's Codex home receives a copy of the credential in
+the owner's managed Codex home, copied again after each refresh. The owner still signs in to its
+managed Codex home directly; nothing is copied into it.
 
 ## Owner credential boundary — 2026-09-27
 
