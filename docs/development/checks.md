@@ -1980,3 +1980,15 @@ The implementation writes raw/index data during import only. Replay is the owner
   - There are 0 unbound records out of 5106 on the live copy.
   - The Codex bot raised a share-in-flight race. It is not reachable: record ids come from operation ids the common client issues per call, so a member turn cannot name a share's record before the share returns.
 - Still open: group-room edits by members, of owner policy and shared records, come with P10, recorded by member principal. The owner-rule guard and AGENTS.md's owner-chat authority must then admit them.
+
+### P5: a member's files go to the member's own DM (#458, 2026-10-09)
+
+- Result: a member's `deliver.telegram.file` sends only from the member's own `workspace/files` and only to the one Telegram DM the registry resolves for that member, so a member's xlsx or image reaches that member (Attach). Input cannot name a chat; `allowed_chats`, inbound admission and text sends are unchanged, and so is the owner's file delivery. Attachment reads and downloads already carried the caller's access and paths.
+- Evidence:
+  - Live, with the owner's approval: a test member registered on the owner's own DM, run through the real dispatcher and TelegramGateway (no polling, temp DB), delivered an xlsx as a document (message 4614) and a png as a photo (4615). The owner confirmed both arrived. The gateway's owner chat in that run was a fixture id, so only the member branch could send.
+  - 29 dispatcher and real-gateway fixture cases: the member's xlsx and png reach only its DM; owner, other-member, symlink, hard-link, outside-files, downloads, directory and oversized paths are refused with no API call; a repeated operation sends once; the trace names the member.
+  - The full standalone suite passed (1640). Owner turns were byte-identical to main on both backends on a live copy, rerun at the head.
+- Reviews:
+  - The Codex bot found that a hard link in the member's files could alias an owner file, which the daemon would upload with its own authority. A member's file is refused unless its descriptor has one link.
+  - CodeRabbit found that between the realpath check and the open, a member could swap a parent directory for a symlink to an owner directory; `O_NOFOLLOW` covers only the last component. Reproduced on macOS. A member's file now opens with `O_NOFOLLOW_ANY` on macOS (it cannot be combined with `O_NOFOLLOW`: EINVAL), with a check of the opened descriptor's `/proc` path on Linux, and is refused on other platforms.
+- Still open: the real member's live check comes with P10, with gateway admission and member text replies. Not deployed: P3a, P3b, P4, #457 and P5 ship with the next release.
