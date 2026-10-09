@@ -95,7 +95,9 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
    the product needs its new core option, so core is published first. P6b, the owner's native
    reads stop at the DB, raw stores and member directories, merged (#460,
    [check](checks.md#p6b-the-owners-native-reads-stop-at-the-db-raw-stores-and-member-directories-460-2026-10-09)).
-   Next: P6c, member alerts (#461).
+   P6c, a member's refused connection alerts the owner with principal, host and time, merged
+   (#461, [check](checks.md#p6c-a-members-refused-connection-alerts-the-owner-with-principal-host-and-time-461-2026-10-09)).
+   P6 is done. Next: P7, enrollment.
 6. Paraphrase search: closed on 2026-10-07 without a host change
    ([check](checks.md#fusion-variants-with-both-embeddings-2026-10-07)). Three paraphrases sit
    outside the vector candidates; four fusions on e5 and on EmbeddingGemma 2 either move nothing

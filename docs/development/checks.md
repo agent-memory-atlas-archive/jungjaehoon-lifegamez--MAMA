@@ -2014,3 +2014,16 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Reviews: the Codex bot found that a workspace configured under the connectors root would become unreadable, so boot now refuses that overlap. It also found that a Codex transcript showing a successful denied read could be ignored by the harness; that guard is restored. Its docs finding is answered by this entry.
 - Found along the way: the harness first hid the macOS login keychain behind a fake HOME ("Not logged in", no model ran), then used a non-default credential path that kept the MCP server from starting. Both are fixed; two model turns in all.
 - Still open: P6c, member alerts (#461). Not deployed: ships with the next release.
+
+### P6c: a member's refused connection alerts the owner with principal, host and time (#461, 2026-10-09)
+
+- Result: under owner decision 7, a refused connection from a member session alerts the owner with the principal, host and time only. Each Claude member session binds its own deny-all proxy when it first runs, so every refusal names its member and nothing infers the principal from timing. The refusal is stored and delivered as exactly `{principalId, host, time}`, picked before it reaches the shared security log. The alert reads "Member connection refused by the sandbox proxy" with the member, host and time, grouped per member and host like the owner's proxy alerts, and the security viewer shows it as `member_connect`. A member's shell starts stay in `tool_traces` only. The owner's proxy, alerts and stored events are unchanged. Members still have no web tools.
+- Evidence:
+  - Two members' HTTP and SOCKS refusals through their own proxies are attributed to the right principal and stored and alerted with exactly those three fields; a sentinel in the path, query, body and command appears nowhere in the alert, the log or `/api/security/events`.
+  - A repeat to the same host is stored but grouped. Each Claude member session gets its own proxy ports, distinct from the owner's.
+  - The full standalone suite passed (1670). Owner turns on a live copy were byte-identical to main on both backends.
+- Reviews: the Codex bot found that the viewer rendered a member refusal row as `undefined`; it now has its own row. CodeRabbit found nothing. I replaced the worker's raw JSON alert with readable text and added grouping, so one member cannot flood the owner.
+- Still open:
+  - As for the owner, a direct socket the OS sandbox refuses and Codex's OS-level network deny never reach a proxy.
+  - A member's error strings in `daemon.log` stay open until one carrying member content is reproduced.
+  - Not deployed: P3a, P3b, P4, #457, P5 and P6 ship with the next release, core first.
