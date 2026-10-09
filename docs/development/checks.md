@@ -1969,3 +1969,14 @@ The implementation writes raw/index data during import only. Replay is the owner
   - `CLAUDE_SECURESTORAGE_CONFIG_DIR` is undocumented: if the CLI changes it, a member turn fails with "Not logged in".
   - The first member's directory holds smoke state (config-dir transcripts, Codex threads, the temp root), which P7 clears at enrollment.
   - Not deployed: P3a, P3b and P4 ship with the next release.
+
+### Shared records change in a group room (#457, 2026-10-09)
+
+- Result: following owner decision 2026-10-09, a member's own chat changes only that member's own records, while the owner's chat is unchanged. In a member turn, `memory.save` (`replaces`) and `memory.retire` refuse any target not bound to the member's personal scope alone; sharing a personal record stays allowed. Owner policy, owner rules, owner-bound common work and other members' copies were already out of reach. Two paths were open: retiring or replacing the member's own shared copy, which every partition reader then saw as superseded or stale without the reason, and replacing a record with no scope binding.
+- Evidence:
+  - Two new tests fail before the wiring: the shared copy (retire and replace, with the member's own record and the owner still allowed) and an unbound replace.
+  - The full standalone suite passed (1608).
+  - Owner turns were byte-identical to main on both backends on a live copy.
+  - There are 0 unbound records out of 5106 on the live copy.
+  - The Codex bot raised a share-in-flight race. It is not reachable: record ids come from operation ids the common client issues per call, so a member turn cannot name a share's record before the share returns.
+- Still open: group-room edits by members, of owner policy and shared records, come with P10, recorded by member principal. The owner-rule guard and AGENTS.md's owner-chat authority must then admit them.
