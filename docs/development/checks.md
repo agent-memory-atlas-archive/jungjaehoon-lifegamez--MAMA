@@ -2003,3 +2003,14 @@ The implementation writes raw/index data during import only. Replay is the owner
   - Source +118 / −90.
 - Reviews: CodeRabbit and the Codex bot (code and security) found nothing.
 - Still open: P6b (native denies and the AGENTS.md sentence) and P6c (member alerts). The product calls the new core option, so mama-core is published first and the product's core range raised with it. Not deployed: ships with the next release.
+
+### P6b: the owner's native reads stop at the DB, raw stores and member directories (#460, 2026-10-09)
+
+- Result: under team-flow decision 10, now in AGENTS.md, the owner agent's native tools no longer read the product DB (with `-wal`/`-shm`), the raw stores, `member_root` or the member temp root, on either backend. Logical and physical paths are both denied, through Claude's Read rules and Bash sandbox and the owner's Codex `host-workspace` profile. The owner's workspace, downloads, wiki, policy and web tools are unchanged; the daemon and the MAMA MCP server keep their own DB access. Boot refuses a workspace inside the raw stores.
+- Evidence:
+  - Native proof on a temp fixture (`scripts/p6b-owner-native-smoke.mjs`), never the live config. Claude, one owner turn on the owner's own login store: Read, Bash, Grep and Glob of the DB, a raw DB and a member file were refused by the CLI and the sandbox, not declined by the model; the workspace control file was read; MAMA `help` completed. Codex: the owner turn wrote the profile and stopped at 401 because the fixture home has no login, so no model ran; under that profile the same reads were refused and the control read.
+  - Live copy, 2026-09-25 to 10-08: the owner agent made 107 native Bash and 6 Read calls, none on the DB or raw stores, so the deny removes nothing it used.
+  - The full standalone suite passed (1662). Owner turns on a live copy were identical to main apart from the deny lists.
+- Reviews: the Codex bot found that a workspace configured under the connectors root would become unreadable, so boot now refuses that overlap. It also found that a Codex transcript showing a successful denied read could be ignored by the harness; that guard is restored. Its docs finding is answered by this entry.
+- Found along the way: the harness first hid the macOS login keychain behind a fake HOME ("Not logged in", no model ran), then used a non-default credential path that kept the MCP server from starting. Both are fixed; two model turns in all.
+- Still open: P6c, member alerts (#461). Not deployed: ships with the next release.

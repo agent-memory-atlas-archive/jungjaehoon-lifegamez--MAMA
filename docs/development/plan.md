@@ -92,8 +92,10 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
    [check](checks.md#p5-a-members-files-go-to-the-members-own-dm-458-2026-10-09)); #457 and P5
    ship with the next release too. P6a, the owner's action reads stop at member records, merged
    (#459, [check](checks.md#p6a-the-owners-action-reads-stop-at-member-records-459-2026-10-09));
-   the product needs its new core option, so core is published first. Next: P6b, the owner's
-   native reads (decision 10 in team-flow.md), then P6c, member alerts.
+   the product needs its new core option, so core is published first. P6b, the owner's native
+   reads stop at the DB, raw stores and member directories, merged (#460,
+   [check](checks.md#p6b-the-owners-native-reads-stop-at-the-db-raw-stores-and-member-directories-460-2026-10-09)).
+   Next: P6c, member alerts (#461).
 6. Paraphrase search: closed on 2026-10-07 without a host change
    ([check](checks.md#fusion-variants-with-both-embeddings-2026-10-07)). Three paraphrases sit
    outside the vector candidates; four fusions on e5 and on EmbeddingGemma 2 either move nothing
