@@ -99,7 +99,10 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
    (#461, [check](checks.md#p6c-a-members-refused-connection-alerts-the-owner-with-principal-host-and-time-461-2026-10-09)).
    P6 is done. P3a–P6c ship in mama-core 8.2.0 and mama-os 0.71.0, live from 2026-10-09 22:15 KST
    ([check](checks.md#release-mama-core-820--mama-os-0710-2026-10-09)); both are on npm (the
-   renewed `NPM_TOKEN` expires around 2027-01-07). Next: P7, enrollment.
+   renewed `NPM_TOKEN` expires around 2027-01-07). P7, enrollment, merged (#463,
+   [check](checks.md#p7-the-owner-enrolls-a-member-by-picking-them-in-the-owners-dm-463-2026-10-10));
+   the first member stays the owner until P10 (team-flow decision 11). Next: release and the live
+   button check, then P8.
 6. Paraphrase search: closed on 2026-10-07 without a host change
    ([check](checks.md#fusion-variants-with-both-embeddings-2026-10-07)). Three paraphrases sit
    outside the vector candidates; four fusions on e5 and on EmbeddingGemma 2 either move nothing

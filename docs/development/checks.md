@@ -2039,3 +2039,18 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Still open:
   - The token expires around 2027-01-07. npm trusted publishing (OIDC from `release.yml`) would remove the renewal; it needs the owner's setting on npmjs.com for each package.
   - The core `principal-records` keyword-fallback test fails locally wherever the embedding model is installed, because search takes the vector path; CI passes it.
+
+### P7: the owner enrolls a member by picking them in the owner's DM (#463, 2026-10-10)
+
+- Result: `manage.member.enroll` runs only in the owner's own message turn; delta, scheduled, report, replay, member and subagent turns are `denied`. It takes no person, chat, request id or grants, refuses when `member_root` is unset, and sends the owner's DM a one-time `request_users` keyboard. The gateway matches the `users_shared` reply to the pending request in memory and consumes it once; non-owners are dropped before it, without a reply.
+- The host completes on the serial turn chain through the dispatcher:
+  - It refuses the owner's own id, an id still in `owner_user_ids` (team-flow decision 11) and an inactive member; an active member is `exists`.
+  - It registers an unknown id, or moves an owner-bound id that is no longer listed (core `moveIdentityToMember`).
+  - For a new member it clears the P4 smoke state, validates access and paths before commit, and serves the member.
+  - The owner gets a receipt without the Telegram id; the model never sees it.
+- Evidence:
+  - 25 gateway and dispatcher tests (a fixture Telegram gateway and the real dispatcher) and 3 core tests; the worker reports them failing before the change.
+  - The full standalone suite passed (1694). Core: 1113 passed and 1 failed, the known local-only keyword-fallback test.
+  - Owner turns on a live copy were identical to the deployed P6b state on both backends.
+- Reviews: CodeRabbit found that a rejected host completion left the owner at "selection received" with no outcome; it now arrives as a refused receipt with its reason. The Codex bot found nothing.
+- Still open: not released or deployed. The live check needs `member_root` in the owner's config, then the owner asks for enrollment and picks the first member. That must be refused, because the id is still in `owner_user_ids`, and the refusal proves the button and `users_shared` on real Telegram without enrolling anyone. Members are still not admitted (P10).
