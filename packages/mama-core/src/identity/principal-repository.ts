@@ -63,6 +63,8 @@ export interface PrincipalRepository {
     now: number
   ): void;
   suspend(principalId: string, now: number): void;
+  resume(principalId: string, now: number): void;
+  /** Terminal transition; every retained grant is revoked in the same transaction. */
   offboard(principalId: string, now: number): void;
   /**
    * Without principalId, retain identity-based minting. A named id must be nonblank.
@@ -83,6 +85,8 @@ export interface PrincipalRepository {
   grantScope(input: PrincipalScopeGrantMutationInput): 'created' | 'exists';
   revokeScope(input: PrincipalScopeGrantMutationInput): 'revoked' | 'absent';
   listActiveGrants(principalId: string): PrincipalScopeGrantRecord[];
+  /** Unrevoked grants, including those retained while the member is suspended. */
+  listRetainedGrants(principalId: string): PrincipalScopeGrantRecord[];
   /**
    * Every project partition a member memory grant has ever named, revoked or not. The owner keeps
    * write authority over work it bound to a partition after the last grant on it ends.
@@ -290,11 +294,6 @@ export function createPrincipalRepository(
      WHERE kind = 'member'
      ORDER BY created_at ASC, principal_id ASC`
   );
-  const selectActiveMemberStatement = adapter.prepare(
-    `SELECT 1
-     FROM principals
-     WHERE principal_id = ? AND kind = 'member' AND status = 'active'`
-  );
   const selectActiveGrantorStatement = adapter.prepare(
     `SELECT 1
      FROM principals
@@ -318,6 +317,7 @@ export function createPrincipalRepository(
        WHERE revoked_at IS NULL
      DO NOTHING`
   );
+  // A suspended member keeps its grants, so the owner may still revoke one.
   const revokeGrantStatement = adapter.prepare(
     `UPDATE principal_scope_grants
      SET revoked_at = ?
@@ -325,7 +325,7 @@ export function createPrincipalRepository(
        AND revoked_at IS NULL
        AND EXISTS (
          SELECT 1 FROM principals
-         WHERE principal_id = ? AND kind = 'member' AND status = 'active'
+         WHERE principal_id = ? AND kind = 'member' AND status IN ('active', 'suspended')
        )
        AND EXISTS (
          SELECT 1 FROM principals
@@ -355,12 +355,24 @@ export function createPrincipalRepository(
      WHERE grant_kind = 'memory' AND scope_kind = 'project'
      ORDER BY scope_id ASC`
   );
+  const listRetainedGrantsStatement = adapter.prepare(
+    `SELECT principal_id, grant_kind, scope_kind, scope_id, granted_by_principal_id, created_at
+     FROM principal_scope_grants WHERE principal_id = ? AND revoked_at IS NULL
+     ORDER BY created_at ASC, grant_kind ASC, scope_kind ASC, scope_id ASC`
+  );
 
   function assertGrantMutationPrincipals(
     targetPrincipalId: string,
-    ownerPrincipalId: string
+    ownerPrincipalId: string,
+    revoke = false
   ): void {
-    if (!selectActiveMemberStatement.get(targetPrincipalId)) {
+    const target = selectPrincipalStatement.get(targetPrincipalId) as
+      | PrincipalDatabaseRow
+      | undefined;
+    const allowed =
+      target?.kind === 'member' &&
+      (target.status === 'active' || (revoke && target.status === 'suspended'));
+    if (!allowed) {
       throw new PrincipalScopeGrantError(
         'target_not_active_member',
         'Grant target must be an active member principal'
@@ -476,19 +488,30 @@ export function createPrincipalRepository(
     });
   }
 
-  function transitionMember(
-    principalId: string,
-    status: Extract<PrincipalStatus, 'suspended' | 'offboarded'>,
-    now: number
-  ): void {
-    const principal = selectPrincipalStatement.get(principalId) as PrincipalDatabaseRow | undefined;
-    if (!principal) {
-      throw new Error(`Principal not found: ${principalId}`);
-    }
-    if (principal.kind === 'owner') {
-      throw new Error(`Owner principals cannot be ${status}`);
-    }
-    updatePrincipalStatusStatement.run(status, now, principalId);
+  function transitionMember(principalId: string, status: PrincipalStatus, now: number): void {
+    adapter.transaction(() => {
+      const principal = selectPrincipalStatement.get(principalId) as
+        | PrincipalDatabaseRow
+        | undefined;
+      if (!principal) throw new Error(`Principal not found: ${principalId}`);
+      if (principal.kind !== 'member')
+        throw new Error(`Owner principals cannot transition to ${status}`);
+      const legal =
+        status === 'active'
+          ? principal.status === 'suspended'
+          : status === 'suspended'
+            ? principal.status === 'active'
+            : principal.status === 'active' || principal.status === 'suspended';
+      if (!legal) throw new Error(`Illegal member transition: ${principal.status} -> ${status}`);
+      if (status === 'offboarded') {
+        adapter
+          .prepare(
+            'UPDATE principal_scope_grants SET revoked_at = ? WHERE principal_id = ? AND revoked_at IS NULL'
+          )
+          .run(now, principalId);
+      }
+      updatePrincipalStatusStatement.run(status, now, principalId);
+    });
   }
 
   function ensureOwner(input: {
@@ -606,7 +629,7 @@ export function createPrincipalRepository(
       if (result.changes === 1) {
         return 'revoked';
       }
-      assertGrantMutationPrincipals(input.targetPrincipalId, input.ownerPrincipalId);
+      assertGrantMutationPrincipals(input.targetPrincipalId, input.ownerPrincipalId, true);
       return 'absent';
     });
   }
@@ -625,6 +648,9 @@ export function createPrincipalRepository(
     suspend(principalId, now) {
       transitionMember(principalId, 'suspended', now);
     },
+    resume(principalId, now) {
+      transitionMember(principalId, 'active', now);
+    },
     offboard(principalId, now) {
       transitionMember(principalId, 'offboarded', now);
     },
@@ -637,6 +663,10 @@ export function createPrincipalRepository(
     grantScope,
     revokeScope,
     listActiveGrants,
+    listRetainedGrants: (id) =>
+      (listRetainedGrantsStatement.all(id) as PrincipalScopeGrantDatabaseRow[]).map(
+        mapPrincipalScopeGrant
+      ),
     listGrantedPartitions: () =>
       (listGrantedPartitionsStatement.all() as Array<{ id: string }>).map(({ id }) => ({
         kind: 'project',
