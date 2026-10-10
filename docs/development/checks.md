@@ -2062,3 +2062,29 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Still open:
   - Fixed in #465, not yet deployed (it ships with the next release; live still shows the old text): the refusal told the owner to remove the id from `owner_user_ids`, which contradicts team-flow decision 11 (co-owner), and the keyboard message did not say where the button is.
   - No member is enrolled yet, so the real member checks of P8–P10 need another person or a test account. Members are still not admitted (P10).
+
+### P8: the owner grants, revokes, suspends, resumes and offboards a member (#466, 2026-10-10)
+
+- Result: six owner-only `manage.member.*` actions in the owner's own message turn (team-flow decision 12): grant and revoke a project-partition read, suspend, resume, offboard, list. They run on the shared serial chain, so a change applies after a running member turn and a receipt means it is in force.
+  - Grant and revoke reset the member's session and keep its files and personal records.
+  - Suspend and offboard reset and stop the session, and set the runtime directory aside under `member_root` and the temp directory under the member temp root.
+  - Resume serves a fresh environment with the grants that remain. Offboard revokes every grant and keeps the identity binding, so enrollment keeps refusing that id.
+  - Queued inputs that have not reached the native transport are cancelled with a host reason.
+  - The owner principal and its co-owner identities are refused as targets, and without `member_root` no change is committed.
+- Evidence:
+  - 25 lifecycle tests through the real dispatcher on Claude and Codex, plus core transition, grant and mailbox tests, each failing before its change.
+  - Full suites passed: standalone 1716/1716; core apart from the known local-only keyword-fallback test. CI was green on every push.
+  - Owner turns on a copied live DB were identical to P7 on both backends.
+- Reviews: four rounds; CodeRabbit raised 1 finding and the Codex bot 9.
+  - Nine were fixed, each with a test:
+    - resume cancels queued inputs before serving;
+    - the temp archive stays beside its source;
+    - the runtime rechecks the claimed row by its id;
+    - a failed suspend cleanup can be retried;
+    - a grant can be revoked while the member is suspended;
+    - a grant that later overlaps an owner default can be revoked;
+    - nothing is committed without `member_root`;
+    - the summary names both archive locations;
+    - retiring a member resets its pooled session (P1). Stopping had kept the pool entry, so a resume would have reopened the archived context; the fixture's own fresh flag had hidden that.
+  - One was declined: member administration is limited by principal, not by chat.
+- Still open: not released or deployed. The live check needs a member other than the co-owner (another person or a test account). Member messages arrive only from P10, and restart recovery for member messages moved there.
