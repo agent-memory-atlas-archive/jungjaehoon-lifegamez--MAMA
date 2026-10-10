@@ -108,7 +108,10 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
    P8, the owner grants, revokes, suspends, resumes and offboards a member (team-flow decision
    12), merged (#466,
    [check](checks.md#p8-the-owner-grants-revokes-suspends-resumes-and-offboards-a-member-466-2026-10-10));
-   restart recovery for member messages moved to P10. Next: release, then P9.
+   restart recovery for member messages moved to P10. Released as mama-core 8.4.0 and mama-os
+   0.73.0, live from 2026-10-10 14:35 KST; the owner's member list answered live
+   ([check](checks.md#release-mama-core-840--mama-os-0730-and-the-live-member-list-2026-10-10)).
+   Next: enrollment receipts reach the owner's conversation record, then P9.
 6. Paraphrase search: closed on 2026-10-07 without a host change
    ([check](checks.md#fusion-variants-with-both-embeddings-2026-10-07)). Three paraphrases sit
    outside the vector candidates; four fusions on e5 and on EmbeddingGemma 2 either move nothing

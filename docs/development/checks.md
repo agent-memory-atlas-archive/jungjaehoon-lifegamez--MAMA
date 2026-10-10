@@ -2088,3 +2088,11 @@ The implementation writes raw/index data during import only. Replay is the owner
     - retiring a member resets its pooled session (P1). Stopping had kept the pool entry, so a resume would have reopened the archived context; the fixture's own fresh flag had hidden that.
   - One was declined: member administration is limited by principal, not by chat.
 - Still open: not released or deployed. The live check needs a member other than the co-owner (another person or a test account). Member messages arrive only from P10, and restart recovery for member messages moved there.
+
+### Release mama-core 8.4.0 / mama-os 0.73.0 and the live member list (2026-10-10)
+
+- Result: P8 and #465 shipped. Release PR #467 and run 38027879169 published core 8.4.0 and mama-os 0.73.0 and created release v0.73.0. The live daemon has run f835b1845 since 14:35 KST, deployed after an idle check (no running model runs and no pending or claimed inputs); the boot was clean through `report_scheduler`.
+- Live check: at 15:23 the owner asked for the member list in the DM. The agent read the help, called `manage.member.list` and got `members: []`, and it answered that no member is registered. `daemon.log` is clean.
+- Still open:
+  - The same answer said the morning's enrollment was still waiting for a pick, though the owner picked the co-owner at 11:56 and was refused. The enrollment receipts (selection received, refused, created) go to Telegram straight from the gateway and are stored in no record the owner agent reads, so even a perfect model could not know the outcome. The receipt has to reach the owner's conversation record.
+  - Real member checks wait for P10 (owner, 2026-10-10).
