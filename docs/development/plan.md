@@ -113,7 +113,8 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
    ([check](checks.md#release-mama-core-840--mama-os-0730-and-the-live-member-list-2026-10-10)).
    Enrollment receipts reach the owner's record and the member list (#468, #469, live from main;
    [check](checks.md#enrollment-receipts-reach-the-owners-record-and-the-member-list-468-469-2026-10-10)).
-   Next: the owner's live check of the list receipts, then P9.
+   The owner's live check stored and listed the receipt, but the agent misread its UTC time; the
+   list moves to owner-local time. Next: that fix, the owner's re-test, then P9.
 6. Paraphrase search: closed on 2026-10-07 without a host change
    ([check](checks.md#fusion-variants-with-both-embeddings-2026-10-07)). Three paraphrases sit
    outside the vector candidates; four fusions on e5 and on EmbeddingGemma 2 either move nothing
