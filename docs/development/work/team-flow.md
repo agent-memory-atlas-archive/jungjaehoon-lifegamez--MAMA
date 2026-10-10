@@ -139,6 +139,13 @@ The owner took every recommendation.
     moves to P10, where member messages first arrive. Added the same day: the same actions grant a member a project
     partition read and list members (principal, status, grants; never a Telegram id); source-channel
     grants are not offered.
+13. Export and erase (2026-10-11, P9): a member erases its personal records only from its own
+    message turns, and only after confirming in a later member message than the one that asked;
+    the host checks the turn, not the model. Erasure always exports first: after the confirming turn
+    settles, the host sends the whole export to the member's DM and erases only once Telegram
+    confirms delivery; a failed or oversized delivery erases nothing. The member stays enrolled
+    with its grants and starts again in a fresh environment; erasure is not offboard. Work list:
+    [member-erasure.md](member-erasure.md#product-p9-owner-decision-13-2026-10-11).
 
 Settled at P3 by the design: one shared serial chain, and no owner policy text in a member session
 (the role holds no owner policy). Can wait until the step that needs them: workspace files beyond

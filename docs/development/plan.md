@@ -115,7 +115,9 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
    [check](checks.md#enrollment-receipts-reach-the-owners-record-and-the-member-list-468-469-2026-10-10)).
    The owner's live check stored and listed the receipt, but the agent misread its UTC time; the
    list gives owner-local time (#470, live from main), and the owner's 23:59 list answer was right.
-   Next: P9.
+   P9 (member export and erase) designed with the owner's decision 13
+   ([work list](work/member-erasure.md#product-p9-owner-decision-13-2026-10-11)). Next: P9's
+   implementation, then the release with #468–#470.
 6. Paraphrase search: closed on 2026-10-07 without a host change
    ([check](checks.md#fusion-variants-with-both-embeddings-2026-10-07)). Three paraphrases sit
    outside the vector candidates; four fusions on e5 and on EmbeddingGemma 2 either move nothing
