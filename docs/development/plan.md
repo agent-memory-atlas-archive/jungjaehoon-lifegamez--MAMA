@@ -101,8 +101,11 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
    ([check](checks.md#release-mama-core-820--mama-os-0710-2026-10-09)); both are on npm (the
    renewed `NPM_TOKEN` expires around 2027-01-07). P7, enrollment, merged (#463,
    [check](checks.md#p7-the-owner-enrolls-a-member-by-picking-them-in-the-owners-dm-463-2026-10-10));
-   the first member stays a co-owner (team-flow decision 11, revised 2026-10-10). Next: release
-   and the live button check, then P8.
+   the first member stays a co-owner (team-flow decision 11, revised 2026-10-10). Released as
+   mama-core 8.3.0 and mama-os 0.72.0, live from 2026-10-10 11:51 KST; the owner's enrollment of
+   the co-owner was refused on real Telegram
+   ([check](checks.md#release-mama-core-830--mama-os-0720-and-the-live-enrollment-check-2026-10-10)).
+   Next: P8.
 6. Paraphrase search: closed on 2026-10-07 without a host change
    ([check](checks.md#fusion-variants-with-both-embeddings-2026-10-07)). Three paraphrases sit
    outside the vector candidates; four fusions on e5 and on EmbeddingGemma 2 either move nothing

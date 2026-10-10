@@ -2054,3 +2054,12 @@ The implementation writes raw/index data during import only. Replay is the owner
   - Owner turns on a live copy were identical to the deployed P6b state on both backends.
 - Reviews: CodeRabbit found that a rejected host completion left the owner at "selection received" with no outcome; it now arrives as a refused receipt with its reason. The Codex bot found nothing.
 - Still open: not released or deployed. The live check needs `member_root` in the owner's config, then the owner asks for enrollment and picks the first member. That must be refused, because the id is still in `owner_user_ids`, and the refusal proves the button and `users_shared` on real Telegram without enrolling anyone. Members are still not admitted (P10).
+
+### Release mama-core 8.3.0 / mama-os 0.72.0 and the live enrollment check (2026-10-10)
+
+- Result: P7 shipped. Release PR #464 and run 38018338952 published core 8.3.0 and mama-os 0.72.0 (depending on core ^8.3.0) and created release v0.72.0. The live daemon has run ad716e29c since 11:51 KST, deployed after an idle check. At the owner's request `member_root` went into the live config; both builds loaded that config first. The boot was clean through `report_scheduler`, and the owner's sandbox `denyRead` now includes the member root, so P6b is in force.
+- Live check: at 11:53 the owner asked for enrollment in the DM. The agent read the action's help and called `manage.member.enroll`, which returned `pending` with no id in model-visible data, and the keyboard message arrived. On Telegram for macOS the reply keyboard stayed folded behind the keyboard icon in the input box, and the owner found the button there. At 11:56 the owner picked the co-owner. The host completion is traced with the owner as actor under a `member-enrollment:` operation, was refused with principal `owner`, and the receipt reached the DM. Read-back: one principal (the owner) and two Telegram private identities bound to it, as before. `daemon.log` is clean.
+- Still open:
+  - The refusal text tells the owner to remove the id from `owner_user_ids`, which contradicts team-flow decision 11 (co-owner).
+  - The keyboard message does not say where the button is.
+  - No member is enrolled yet, so the real member checks of P8–P10 need another person or a test account. Members are still not admitted (P10).
