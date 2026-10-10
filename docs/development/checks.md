@@ -2096,3 +2096,10 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Still open:
   - The same answer said the morning's enrollment was still waiting for a pick, though the owner picked the co-owner at 11:56 and was refused. The enrollment receipts (selection received, refused, created) go to Telegram straight from the gateway and are stored in no record the owner agent reads, so even a perfect model could not know the outcome. The receipt has to reach the owner's conversation record.
   - Real member checks wait for P10 (owner, 2026-10-10).
+
+### Enrollment receipts reach the owner's record and the member list (#468, #469, 2026-10-10)
+
+- Result: every `users_shared` pick from the owner's DM now ends in one exchange in the owner's conversation record (#468). The exchange is a selection item with a host marker and the host receipt, exactly as delivered; it holds no user id and starts no turn. `manage.member.list` returns the last five receipts as `recentEnrollments` (#469). Both are live from main without an npm release (#468 since 16:27 KST, #469 since 16:44); boots were clean.
+- Live evidence after #468: at 16:29 the owner asked for enrollment and picked the co-owner, and the selection and its refusal receipt were stored. The agent still said twice that the pick was pending: it pulled only the member list, and the running session never sees records written outside its turns. The owner chose to put the answer in the list (#469) over a pointer in the descriptions or a next-turn notice.
+- Reviews: CodeRabbit found that a record throw in `finally` replaced the send error; it is now logged loudly. Two Codex points were declined with reasons: persisting before sending, and putting docs in the PR.
+- Still open: the live check after #469 (request, pick, then ask how it went) has not run yet. The 16:29 pick has no marker and will not appear in the list. #468 and #469 ship to npm with P9.
