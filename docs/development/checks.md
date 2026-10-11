@@ -2126,4 +2126,5 @@ The implementation writes raw/index data during import only. Replay is the owner
 
 - Result: #468–#471 released together (#472; core first). Both versions are `latest` on npm; mama-os appeared a minute after the workflow, which reported npm still processing it.
 - Live: the main checkout runs a2e491baa from 13:49 KST after an idle check, `pnpm install` (new `fflate`), build and restart; every boot stage passed with no new error.
-- Still open: an owner turn on the new core loop (claim `ready` check, `onSettled`) to confirm the owner flow; P9 itself waits for P10 to be checked live.
+- Owner turn on the new build (17:19 KST): "멤버 목록 보여줘" was claimed, answered and acked; the reply was delivered (`deliveryVerified = 1`) and said that no member is enrolled and that the latest attempt, last night at 23:17, was refused as an owner. The scheduled record orders and the 17:00 report also settled. `daemon.log` since the restart has no error apart from the known Chatwork/Slack timeouts. The agent guessed two action names (`manage.members.list`, `member.list`) before `help` led it to `manage.member.list`; a model miss it corrected itself, not a host gap.
+- Still open: P9 waits for P10 to be checked live.
