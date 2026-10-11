@@ -118,7 +118,9 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
    P9 (member export and erase) designed with the owner's decision 13
    ([work list](work/member-erasure.md#product-p9-owner-decision-13-2026-10-11)), merged (#471,
    [check](checks.md#p9-a-member-exports-and-erases-its-personal-records-471-2026-10-11)).
-   Next: the release with #468–#471, then P10.
+   Released as mama-core 8.5.0 and mama-os 0.74.0, live from 2026-10-11 13:49 KST
+   ([check](checks.md#release-mama-core-850--mama-os-0740-2026-10-11)). Next: an owner turn on the
+   new build, then P10.
 6. Paraphrase search: closed on 2026-10-07 without a host change
    ([check](checks.md#fusion-variants-with-both-embeddings-2026-10-07)). Three paraphrases sit
    outside the vector candidates; four fusions on e5 and on EmbeddingGemma 2 either move nothing

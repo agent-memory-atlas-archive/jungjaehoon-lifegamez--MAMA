@@ -2121,3 +2121,9 @@ The implementation writes raw/index data during import only. Replay is the owner
 - Evidence: fixture tests only, because member messages are not admitted before P10 (decision 13): denied from owner, delta, scheduled, replay and subagent turns; exports equal core plus product rows with no credential or account file; owner rows, ledger entries, files and a shared revision unchanged after erasure; failed, oversized, uncertain and partial runs; cancelled queues; a fresh session afterwards. The standalone suite passes (1791 tests); core passes except the known local keyword-fallback test.
 - Reviews: an independent Opus review (no P0/P1) and eight bot rounds. Fixed: a sparse file could block the event loop, credential temp files and the owner's account file could enter the zip, hard links blocked erasure for good, queued messages were lost on a failed delivery, files or messages could change between the export and the deletion, the receipt misstated pre-deletion failures, and a member's exports could pause the owner. Declined with reasons: a steering-path cancellation check, and checks in the PR.
 - Still open: P10 owns receipt recovery after a restart, a confirmed erasure surviving a restart, and pausing only the erasing member's claims. Core follow-up: B1's snapshot reads whole tables for the preview and the export. #468–#471 ship to npm together.
+
+### Release mama-core 8.5.0 / mama-os 0.74.0 (2026-10-11)
+
+- Result: #468–#471 released together (#472; core first). Both versions are `latest` on npm; mama-os appeared a minute after the workflow, which reported npm still processing it.
+- Live: the main checkout runs a2e491baa from 13:49 KST after an idle check, `pnpm install` (new `fflate`), build and restart; every boot stage passed with no new error.
+- Still open: an owner turn on the new core loop (claim `ready` check, `onSettled`) to confirm the owner flow; P9 itself waits for P10 to be checked live.
