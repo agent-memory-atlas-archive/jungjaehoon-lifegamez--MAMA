@@ -158,8 +158,11 @@ The owner took every recommendation.
     belongs. A person, owners included, works on personal records in its own DM and on common
     records in the common channel (the group room); the common channel reads nobody's personal
     records, because the whole room reads the answer. Delta processing and other unattended work
-    run in the common session. Each member gets the reports it asks for in its own channel. Each
-    owner can suspend and resume another owner; at least one active owner remains. Work list:
+    run in the common session. Each member gets the reports it asks for in its own channel. An
+    owner can suspend and resume another owner; no owner suspends itself or is offboarded. An
+    owner's DM session is a member's session (member prompt, native boundary and tools, no web
+    tools). The owner's DM chat from before P10 moves to the owner's personal records, an exception
+    to "records are never edited" like decision 6. Work list:
     [owners-are-members.md](owners-are-members.md).
 
 Settled at P3 by the design: one shared serial chain, and no owner policy text in a member session

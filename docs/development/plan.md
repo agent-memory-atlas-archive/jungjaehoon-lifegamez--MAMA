@@ -124,7 +124,8 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
    each with its own chat and personal records, and owner authority is a role; decision 14 adds the
    room rule, the common session, reports per member and owner suspend/resume. P10 designed as six
    slices ([work list](work/owners-are-members.md),
-   [check](checks.md#p10-plan-pass-2026-10-12)). Next: the owner's three questions, then P10.1.
+   [check](checks.md#p10-plan-pass-2026-10-12)); reviewed by Opus, and the owner answered its three
+   questions. Next: P10.1.
 6. Paraphrase search: closed on 2026-10-07 without a host change
    ([check](checks.md#fusion-variants-with-both-embeddings-2026-10-07)). Three paraphrases sit
    outside the vector candidates; four fusions on e5 and on EmbeddingGemma 2 either move nothing
