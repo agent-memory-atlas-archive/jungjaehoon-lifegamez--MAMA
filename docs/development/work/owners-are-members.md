@@ -11,7 +11,7 @@ Owner decisions, 2026-10-12 ([team-flow](team-flow.md) decisions 11 and 14):
 - An owner can suspend and resume another owner; no owner suspends itself, and no owner is
   offboarded.
 - An owner's DM session is a member's session: the member prompt, native boundary and tools, no
-  web tools.
+  web tools. It reads the owner rules read-only (added after its first live answer broke a rule).
 - The owner's DM chat from before P10 moves to the owner's personal records.
 
 Evidence: [checks](../checks.md#p10-plan-pass-2026-10-12) (plan pass and the Opus review).

@@ -161,7 +161,8 @@ The owner took every recommendation.
     run in the common session. Each member gets the reports it asks for in its own channel. An
     owner can suspend and resume another owner; no owner suspends itself or is offboarded. An
     owner's DM session is a member's session (member prompt, native boundary and tools, no web
-    tools). The owner's DM chat from before P10 moves to the owner's personal records, an exception
+    tools); it reads the owner rules read-only (owner, 2026-10-12, after its first live answer broke
+    owner-policy rule 13). The owner's DM chat from before P10 moves to the owner's personal records, an exception
     to "records are never edited" like decision 6. Work list:
     [owners-are-members.md](owners-are-members.md).
 
