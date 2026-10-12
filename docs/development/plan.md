@@ -126,8 +126,10 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
    slices ([work list](work/owners-are-members.md),
    [check](checks.md#p10-plan-pass-2026-10-12)); reviewed by Opus, and the owner answered its three
    questions. P10.1 merged (#473, [check](checks.md#p101-owners-are-members-each-person-answers-in-its-own-dm-473-2026-10-12));
-   a dry run on a copy of the live data moved the first owner's 233 DM chat items. Next: release
-   and the live cutover, with the owner's approval.
+   a dry run on a copy of the live data moved the first owner's 233 DM chat items. Released as
+   mama-core 8.6.0 and mama-os 0.75.0; the live cutover ran at 20:49 KST
+   ([check](checks.md#release-mama-core-860--mama-os-0750-and-the-live-cutover-2026-10-12)). Next: the
+   owner's live turns (each owner's DM, the group, a DM image, a rule change asked in a DM).
 6. Paraphrase search: closed on 2026-10-07 without a host change
    ([check](checks.md#fusion-variants-with-both-embeddings-2026-10-07)). Three paraphrases sit
    outside the vector candidates; four fusions on e5 and on EmbeddingGemma 2 either move nothing
