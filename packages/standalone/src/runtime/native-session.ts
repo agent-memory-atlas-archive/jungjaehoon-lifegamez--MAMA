@@ -3,7 +3,8 @@ import { memberSystemLayers } from './member-system-prompt.js';
 import { backendEnvironment, credentialReadPaths, normalizeReadPaths } from './backend-security.js';
 import { memberClaudeTmpDir } from './member-paths.js';
 import { untrustedToolData } from '../utils/untrusted-content.js';
-import { mkdirSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type {
   ActionCall,
@@ -67,6 +68,7 @@ export interface NativeDriverOptions {
   permissionMode?: 'dontAsk';
   shellEnvironment?: Record<string, string>;
   processEnv: NodeJS.ProcessEnv;
+  beforeSpawn?: () => void;
   deniedReadPaths: string[];
   allowLoginShell?: boolean;
   requestTimeout: number;
@@ -212,11 +214,15 @@ function driverOptions(
   webTools: boolean
 ): NativeDriverOptions {
   const path = process.env.PATH;
+  const configDir = options.claudeConfigDir;
   if (options.backend === 'codex' && !path?.trim()) {
     throw new Error('Owner Codex shell requires the host PATH');
   }
   return {
     backend: options.backend,
+    ...(options.principal !== undefined && options.backend === 'claude' && configDir !== undefined
+      ? { beforeSpawn: () => removePersonalClaudeEmail(configDir) }
+      : {}),
     processEnv: {
       ...backendEnvironment(),
       ...(options.principal === undefined ? {} : { TMPDIR: join(options.workspaceDir, '.tmp') }),
@@ -276,6 +282,39 @@ function claudeTmpDir(options: NativeSessionOptions): string {
     : memberClaudeTmpDir(options.principal.principalId);
 }
 
+/** The shared login is not the person in this session; the CLI reads this profile at startup. */
+function removePersonalClaudeEmail(configDir: string): void {
+  const configPath = join(configDir, '.claude.json');
+  let text: string;
+  try {
+    text = readFileSync(configPath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  let config: { oauthAccount?: Record<string, unknown> };
+  try {
+    config = JSON.parse(text) as { oauthAccount?: Record<string, unknown> };
+  } catch (error) {
+    throw new Error(`Cannot remove the account email: ${configPath} is not valid JSON`, {
+      cause: error,
+    });
+  }
+  if (!config.oauthAccount || !Object.hasOwn(config.oauthAccount, 'emailAddress')) return;
+  delete config.oauthAccount.emailAddress;
+  const temporary = join(configDir, `.claude-${randomUUID()}.tmp`);
+  try {
+    writeFileSync(temporary, JSON.stringify(config, null, 2), {
+      encoding: 'utf8',
+      flag: 'wx',
+      mode: 0o600,
+    });
+    renameSync(temporary, configPath);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+}
+
 function createDriver(
   options: NativeSessionOptions,
   nativeOptions: NativeDriverOptions,
@@ -330,6 +369,7 @@ function createDriver(
       : claudeMemberDisallowedTools)(nativeOptions.deniedReadPaths, options.workspaceDir),
     processEnv: nativeOptions.processEnv,
     env: { CLAUDE_CODE_TMPDIR: claudeTmpDir(options) },
+    beforeSpawn: nativeOptions.beforeSpawn,
     pluginDir: nativeOptions.pluginDir,
     requestTimeout: nativeOptions.requestTimeout,
     ...(nativeOptions.requestMaxMs === undefined
