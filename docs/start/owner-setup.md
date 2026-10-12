@@ -36,14 +36,15 @@ path. See [Backends](../guides/backends.md).
 
 ## Run onboarding in your terminal
 
-Create a Telegram bot through BotFather, start a private conversation with it, and
-have your owner chat and user IDs ready. Then run:
+Create a Telegram bot through BotFather and a group with the bot for common changes,
+even if you are the only owner. Have the group's negative chat ID ready; a supergroup
+also works. Start a private conversation with the bot for your personal session. Then run:
 
 ```bash
 mama init
 ```
 
-Enter the backend, model, Telegram bot token, owner chat and user IDs, and any
+Enter the backend, model, Telegram bot token, negative common group chat ID, and any
 source connectors you want to enable. Tokens are entered with terminal echo off;
 do not send them to the agent. `mama init` requires a terminal and refuses to
 overwrite an existing `config.yaml`, `connectors.json`, `start.sh`, or a selected
@@ -63,7 +64,7 @@ Setup writes these files under `~/.mama/`:
 
 | File              | Purpose                                                        |
 | ----------------- | -------------------------------------------------------------- |
-| `config.yaml`     | Backend, database, Telegram owner identity and wiki settings   |
+| `config.yaml`     | Backend, database, common Telegram channel and wiki settings   |
 | `connectors.json` | Source channels, roles and credential variable names           |
 | `auth.env`        | Tokens, mode 0600; includes a generated viewer bearer token    |
 | `start.sh`        | Loads credentials, sets the executable PATH, starts the daemon |
@@ -73,6 +74,12 @@ Setup writes these files under `~/.mama/`:
 
 The OS database defaults to `~/.mama/memory.db`. Development memory uses
 `~/.claude/mama-memory.db`; keep the two data homes separate.
+
+Before starting the daemon, set `member_root` to an absolute directory outside HOME in
+`config.yaml`, and run `mama register-owner <telegram id>` for each owner, using that person's
+positive Telegram user ID. Each owner gets a personal member session; the common group keeps
+the common session. Private chats cannot serve as the common channel: they always enter that
+person's intake.
 
 ## Start one daemon
 

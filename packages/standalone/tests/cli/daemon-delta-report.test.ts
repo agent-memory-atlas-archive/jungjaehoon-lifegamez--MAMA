@@ -110,9 +110,8 @@ async function boot(
           : undefined,
       telegram: {
         enabled: messenger === 'telegram',
-        allowed_chats: ['8', '7'],
-        owner_chat_id: '7',
-        owner_user_ids: ['9'],
+        allowed_chats: ['8', '-7'],
+        owner_chat_id: '-7',
         polling: false,
       },
       discord:
@@ -224,6 +223,15 @@ describe('live delta reports', () => {
   });
   it('delivers the interrupted notice when an accepted owner turn fails without restarting', async () => {
     const { daemon } = await boot('[ack]', 'live', false, true);
+    const { createPrincipalRepository } = await import('@jungjaehoon/mama-core');
+    const repository = createPrincipalRepository(daemon.owner.database.adapter);
+    const person = repository.registerMember({
+      connector: 'telegram',
+      namespace: 'private',
+      externalId: '9',
+      now: 1,
+    });
+    repository.grantRole({ principalId: person, role: 'owner', now: 1 });
     telegram.editMessageText.mockResolvedValue(true);
     const { Bot } = await import('grammy');
     const bot = vi.mocked(Bot).mock.results.at(-1)!.value;
@@ -232,19 +240,19 @@ describe('live delta reports', () => {
       message: {
         message_id: 99,
         date: 1,
-        chat: { id: 7, type: 'private' },
+        chat: { id: -7, type: 'group' },
         from: { id: 9, is_bot: false, first_name: 'Fixture' },
         text: 'Owner request',
       },
     });
     await vi.waitFor(() =>
       expect(telegram.editMessageText).toHaveBeenCalledWith(
-        7,
+        -7,
         101,
         expect.stringContaining('was interrupted')
       )
     );
-    expect(daemon.owner.intake.isPending!('telegram:7:99')).toBe(false);
+    expect(daemon.owner.intake.isPending!('telegram:-7:99')).toBe(false);
   });
 
   it('logs the run id even when the native turn throws before producing a result', async () => {
@@ -275,7 +283,7 @@ describe('live delta reports', () => {
       expect(daemon.owner.runtime.mailbox?.readInput(id, 'owner')?.status).toBe('acked')
     );
     expect(telegram.sendMessage).toHaveBeenCalledOnce();
-    expect(telegram.sendMessage).toHaveBeenCalledWith(7, 'startup update');
+    expect(telegram.sendMessage).toHaveBeenCalledWith(-7, 'startup update');
   });
 
   it('finishes an in-flight delta send before closing Telegram on shutdown', async () => {
@@ -322,7 +330,7 @@ describe('live delta reports', () => {
     if (sent === null) expect(telegram.sendMessage).not.toHaveBeenCalled();
     else {
       expect(telegram.sendMessage).toHaveBeenCalledOnce();
-      expect(telegram.sendMessage).toHaveBeenCalledWith(7, sent);
+      expect(telegram.sendMessage).toHaveBeenCalledWith(-7, sent);
       expect(
         JSON.parse(readFileSync(join(root, 'runtime', 'owner-message-ledger.json'), 'utf8')).entries
       ).toEqual([
