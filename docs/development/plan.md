@@ -129,7 +129,12 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
    a dry run on a copy of the live data moved the first owner's 233 DM chat items. Released as
    mama-core 8.6.0 and mama-os 0.75.0; the live cutover ran at 20:49 KST
    ([check](checks.md#release-mama-core-860--mama-os-0750-and-the-live-cutover-2026-10-12)). Next: the
-   owner's live turns (each owner's DM, the group, a DM image, a rule change asked in a DM).
+   owner's live turns: both DMs, the group and a DM image ran in the right sessions
+   ([check](checks.md#p101-live-the-first-owners-dm-turns-2026-10-12)); their gaps (owner rules,
+   who is who, web in an owner's DM) were fixed in #475, live from 23:14 KST
+   ([check](checks.md#p101-follow-ups-owner-rules-who-is-who-and-web-in-an-owners-dm-475-2026-10-12)).
+   The owner added personal schedules and notices (P10.4) and skills (P10.5). Next: the owner's turns
+   on #475, then P10.2.
 6. Paraphrase search: closed on 2026-10-07 without a host change
    ([check](checks.md#fusion-variants-with-both-embeddings-2026-10-07)). Three paraphrases sit
    outside the vector candidates; four fusions on e5 and on EmbeddingGemma 2 either move nothing
