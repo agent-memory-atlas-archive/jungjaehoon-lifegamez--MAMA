@@ -1,3 +1,10 @@
+import {
+  personalJobPayload,
+  personalJobSessionKey,
+  PersonalJobFinalFailure,
+  type PersonalJobStore,
+} from './personal-jobs.js';
+import { latestCronOccurrence } from './personal-job-cron.js';
 import { createSerialTurnChain } from './principal-sessions.js';
 import { wrapUntrustedContent } from '../utils/untrusted-content.js';
 import { createHash } from 'node:crypto';
@@ -26,6 +33,7 @@ import {
   ownerMessageOrder,
   parseRecordOrder,
   scheduledReportOrder,
+  personalJobOrder,
   sessionStartBlock,
   type Lesson,
   type SessionStartInput,
@@ -93,6 +101,7 @@ export interface RecordOrderPort {
 export interface StimulusDeliveryOptions {
   backend: OwnerRuntimeBackend;
   turnChain?: ReturnType<typeof createSerialTurnChain>;
+  personalJobs?: PersonalJobStore;
   member?: { principalId: string; sessionKey: string; voice: TurnVoice };
   wikiEnabled?: boolean;
   formattingRoutes?: { reports: string; notifications: string };
@@ -549,6 +558,31 @@ function planTurn(row: MailboxRow, options: StimulusDeliveryOptions): TurnPlan {
         ),
     };
   }
+  const jobPayload = personalJobPayload(row);
+  if (options.member && jobPayload) {
+    const job = options.personalJobs?.find(row.principalId, jobPayload.jobId);
+    if (!job || !job.enabled || job.version !== jobPayload.version)
+      return { kind: 'skip', reason: 'personal job changed or deleted' };
+    if (!options.personalJobs!.isActive(row.principalId))
+      return { kind: 'skip', reason: 'personal job person is no longer active' };
+    const latest = latestCronOccurrence(job.cron, job.timeZone, Date.now(), job.scheduleFrom);
+    if (
+      options.personalJobs!.isClosed(row) ||
+      options.personalJobs!.isSuperseded(row) ||
+      row.occurredAt <= job.scheduleFrom ||
+      (latest !== null && row.occurredAt < latest)
+    )
+      return {
+        kind: 'skip',
+        reason: 'personal job occurrence is no longer the latest due occurrence',
+      };
+    return {
+      kind: 'turn',
+      lessonQuery: jobPayload.instruction,
+      render: (lessons) =>
+        personalJobOrder(jobPayload, row.occurredAt, job.lastCompletedAt ?? job.createdAt, lessons),
+    };
+  }
   if (options.member) throw new Error(`Member turn does not support stimulus kind ${row.kind}`);
   if (row.kind === 'source_delta') {
     if (replaySourceCeiling(row) !== undefined)
@@ -608,7 +642,16 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
   let shownLessons = new Set<string>();
   let shownDay = '';
 
-  const pickLessons = async (query: string | null, newSession: boolean): Promise<Lesson[]> => {
+  const pickLessons = async (
+    query: string | null,
+    newSession: boolean,
+    stateless: boolean
+  ): Promise<Lesson[]> => {
+    // A job's fresh context must not consume guidance for the person's continuing DM context.
+    if (stateless)
+      return query?.trim() && options.lessons
+        ? [...(await options.lessons(query))].slice(0, 3)
+        : [];
     const day = localDateKey(Date.now(), options.timeZone.get());
     if (newSession || day !== shownDay) {
       shownLessons = new Set();
@@ -635,7 +678,17 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
     }
     if (row.kind === 'scheduled') {
       if (isRecordOrderRow(row)) await options.recordOrders?.onResult(row, modelRunId ?? null);
-      else await options.onScheduledResult?.(row, result);
+      else {
+        if (personalJobPayload(row) && options.personalJobs?.isClosed(row)) return;
+        try {
+          await options.onScheduledResult?.(row, result);
+        } catch (error) {
+          if (!(error instanceof PersonalJobFinalFailure)) throw error;
+          await options.personalJobs!.close(row);
+          await options.onFailed?.(row, stimulusFailureReason(error), modelRunId ?? null);
+          return;
+        }
+      }
     }
     await options.onDelivered?.(row, modelRunId ?? null);
   };
@@ -648,6 +701,7 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
         activeReplaySourceEndMs = replaySourceEndMs;
         const plan = planTurn(row, options);
         if (plan.kind === 'skip') {
+          if (personalJobPayload(row)) await options.personalJobs?.close(row);
           // Kagemusha's backfill guard: only history lines, so no live turn and no record order.
           await options.onSkipped?.(row, plan.reason);
           await options.onDelivered?.(row, null);
@@ -661,7 +715,11 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
             modelRunId = id;
           },
           prepareSessionContent: async ({ isNewSession }) => {
-            const lessons = await pickLessons(plan.lessonQuery, isNewSession);
+            const lessons = await pickLessons(
+              plan.lessonQuery,
+              isNewSession,
+              options.member !== undefined && personalJobPayload(row) !== null
+            );
             const start = isNewSession
               ? sessionStartBlock(
                   (await options.sessionStart?.(row)) ?? { exchanges: [], decisions: [] },
@@ -678,6 +736,9 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
             return text([start, plan.render(lessons, new Date())]);
           },
           sessionKey:
+            (personalJobPayload(row) && options.member
+              ? personalJobSessionKey(row.principalId, personalJobPayload(row)!.jobId)
+              : undefined) ??
             options.member?.sessionKey ??
             (replaySourceEndMs === undefined
               ? OWNER_RUNTIME_SESSION_KEY
@@ -721,6 +782,7 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
       await options.recordOrders.onLost(row, 'record order parked uncertain');
       return 'record check';
     }
+    if (personalJobPayload(row)) return 'the next personal job occurrence';
     if (row.kind === 'scheduled') return 'the next report tick';
     // Other kinds (native_event) have no producer left and owe nothing further.
     return 'nothing further';
@@ -734,6 +796,7 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
       await options.onUncertain?.(row, reason);
     },
     onDead: async (row, reason) => {
+      if (personalJobPayload(row)) await options.personalJobs?.close(row);
       await lost(row, reason);
       await options.onDead?.(row, reason);
     },
@@ -741,6 +804,19 @@ export function createStimulusDelivery(options: StimulusDeliveryOptions): Replay
       const result = options.readResult?.(row);
       if (result) {
         await deliverResult(row, { ...result, history: [] });
+        return 'settled';
+      }
+      if (personalJobPayload(row) && options.personalJobs) {
+        if (!options.personalJobs.isClosed(row)) {
+          await options.personalJobs.close(row);
+          await options.onFailed?.(
+            row,
+            options.personalJobs.isSuperseded(row)
+              ? 'Personal job occurrence superseded by a later occurrence'
+              : 'Personal job interrupted before completion; retry on the next occurrence',
+            null
+          );
+        }
         return 'settled';
       }
       // Core invokes reconciliation only when no delivery in this process owns
