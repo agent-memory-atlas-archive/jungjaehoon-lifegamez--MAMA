@@ -140,7 +140,9 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
    P10.2, restart recovery per person, merged (#477) and live from 2026-10-13 11:18 KST
    ([check](checks.md#p102-restart-recovery-per-person-477-2026-10-13)). P10.3, owners manage from their
    DMs and suspend each other, merged (#478) and live from 13:08 KST
-   ([check](checks.md#p103-owners-manage-from-their-dms-and-suspend-each-other-478-2026-10-13)). Next:
+   ([check](checks.md#p103-owners-manage-from-their-dms-and-suspend-each-other-478-2026-10-13)).
+   Sessions no longer wait for each other: one turn chain per principal (#480), live from 19:01 KST
+   ([check](checks.md#one-turn-chain-per-principal-480-2026-10-13)). Next:
    P10.4, designed as personal jobs (P10.4a: cron and heartbeat) and event notices (P10.4b)
    ([check](checks.md#p104-plan-pass-2026-10-13)); still to check live: an enrollment from an owner's
    DM, the co-owner's DM, a rule change asked in a DM.
