@@ -159,7 +159,12 @@ The owner took every recommendation.
     records in the common channel (the group room); the common channel reads nobody's personal
     records, because the whole room reads the answer. Delta processing and other unattended work
     run in the common session. Each member gets the reports it asks for in its own channel. An
-    owner can suspend and resume another owner; no owner suspends itself or is offboarded. An
+    owner can suspend and resume another owner; no owner suspends itself or is offboarded.
+    P10.4 (owner, 2026-10-13): today's full reports and reminders stay in the common channel;
+    personal jobs (cron and heartbeat) run at least an hour apart, at most ten per person, and
+    after downtime only the latest missed occurrence runs; for event notices the common session
+    names candidates from common facts and each candidate's own turn decides, so personal
+    interests stay personal. An
     owner's DM session is a member's session (member prompt, native boundary and tools, no web
     tools); it reads the owner rules read-only (owner, 2026-10-12, after its first live answer broke
     owner-policy rule 13). The owner's DM chat from before P10 moves to the owner's personal records, an exception

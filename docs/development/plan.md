@@ -141,8 +141,9 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
    ([check](checks.md#p102-restart-recovery-per-person-477-2026-10-13)). P10.3, owners manage from their
    DMs and suspend each other, merged (#478) and live from 13:08 KST
    ([check](checks.md#p103-owners-manage-from-their-dms-and-suspend-each-other-478-2026-10-13)). Next:
-   P10.4 (personal schedules and notices); still to check live: an enrollment from an owner's DM,
-   the co-owner's DM, a rule change asked in a DM.
+   P10.4, designed as personal jobs (P10.4a: cron and heartbeat) and event notices (P10.4b)
+   ([check](checks.md#p104-plan-pass-2026-10-13)); still to check live: an enrollment from an owner's
+   DM, the co-owner's DM, a rule change asked in a DM.
 6. Paraphrase search: closed on 2026-10-07 without a host change
    ([check](checks.md#fusion-variants-with-both-embeddings-2026-10-07)). Three paraphrases sit
    outside the vector candidates; four fusions on e5 and on EmbeddingGemma 2 either move nothing
