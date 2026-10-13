@@ -1,3 +1,5 @@
+import type { MailboxRow } from '@jungjaehoon/mama-core/runtime/mailbox';
+import { StimulusQuarantine } from '@jungjaehoon/mama-core/runtime/runtime';
 import {
   createMemberEnrollment,
   type MemberEnrollmentPorts,
@@ -7,6 +9,7 @@ import {
   memberLifecycleRegistrations,
   MEMBER_MANAGEMENT_ACTIONS,
   type MemberLifecyclePorts,
+  type MemberManagementContext,
 } from '../api/member-lifecycle.js';
 import { createMemberRecords, type MemberRecordsPorts } from '../api/member-records.js';
 import { traceSummary } from '@jungjaehoon/mama-core/runtime/trace-summary';
@@ -23,6 +26,7 @@ import {
   type ActionContext,
   type ActionContract,
   type ActionDispatcher,
+  type DispatcherOptions,
 } from '@jungjaehoon/mama-core';
 import type { ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
@@ -183,8 +187,9 @@ export interface ActionSurfaceOptions {
   memberRecords?: MemberRecordsPorts;
   memberEnrollment?: MemberEnrollmentPorts;
   memberLifecycle?: MemberLifecyclePorts;
+  memberDirectoryChange?: <T>(work: () => Promise<T>) => Promise<T>;
   recordManagementReceipt?(receipt: {
-    callerPrincipalId: string;
+    callerPrincipalId?: string;
     operationId: string;
     action: string;
     input: unknown;
@@ -194,6 +199,9 @@ export interface ActionSurfaceOptions {
 
 export interface ActionSurface {
   memberRecords: ReturnType<typeof createMemberRecords>;
+  releasePrincipal(principalId: string): void;
+  deliverManagement(row: MailboxRow): Promise<'handled' | 'deferred' | 'unhandled'>;
+  onManagementDead(row: MailboxRow, reason: string): void;
   completeMemberEnrollment(selection: MemberSelection): ReturnType<ActionDispatcher>;
   createNativeEffectObserver(
     modelRunId: string,
@@ -228,6 +236,7 @@ export function ownerMemoryScopes(
 
 export function createActionSurface(options: ActionSurfaceOptions): ActionSurface {
   let principals: ReturnType<typeof createPrincipalRepository> | undefined;
+  const memberDirectoryChange = options.memberDirectoryChange;
   const memberRecords = createMemberRecords({
     adapter: options.adapter,
     isMessageTurn: options.isOwnerMessageTurn,
@@ -239,6 +248,7 @@ export function createActionSurface(options: ActionSurfaceOptions): ActionSurfac
     isOwnerMessageTurn: options.isOwnerMessageTurn,
     ownerAccess: () => ownerAccess,
     ports: options.memberEnrollment,
+    directoryChange: memberDirectoryChange,
   });
   const defaultScopes = ownerMemoryScopes(
     options.ownerPrincipalId,
@@ -329,16 +339,95 @@ export function createActionSurface(options: ActionSurfaceOptions): ActionSurfac
           },
         }),
   };
+  const lifecycle = memberLifecycleRegistrations({
+    adapter: options.adapter,
+    ownerPrincipalId: options.ownerPrincipalId,
+    ownerAccess: () => ownerAccess,
+    isOwnerMessageTurn: options.isOwnerMessageTurn,
+    timeZone: options.timeZone,
+    ports: options.memberLifecycle,
+    scheduleChange: async (name, input, context) => {
+      const ports = options.memberLifecycle!;
+      const { principalId } = input as { principalId: string };
+      const earlier = context.operationId
+        ? ports.mailbox().readInput(`member-management:${context.operationId}`, principalId)
+        : null;
+      if (earlier)
+        return {
+          principalId,
+          change: name.slice('manage.member.'.length),
+          status: 'scheduled',
+          commandId: earlier.stimulusId,
+        };
+      // ACKed rows age out before their accepted identities. Do not turn their replay into
+      // an immediate change, or reject a resume whose activation already succeeded.
+      if (
+        context.operationId &&
+        options.adapter
+          .prepare('SELECT 1 FROM mailbox_seen WHERE ref_id=?')
+          .get(`member-management:${context.operationId}`)
+      )
+        return {
+          principalId,
+          change: name.slice('manage.member.'.length),
+          status: 'duplicate',
+          commandId: `member-management:${context.operationId}`,
+        };
+      const chain = ports.turnChain(principalId);
+      const pendingHost =
+        options.adapter
+          .prepare(
+            "SELECT 1 FROM mailbox_inputs WHERE principal_id=? AND kind='host_job' AND status IN ('pending','claimed') LIMIT 1"
+          )
+          .get(principalId) !== undefined;
+      // A new resume needs a suspended target, unless an earlier queued change still owns it.
+      // Executing the retained command later may instead find the target already activated.
+      if (name === 'manage.member.resume' && !pendingHost) {
+        const principal = createPrincipalRepository(options.adapter).findById(principalId);
+        if (principal?.status !== 'suspended')
+          throw new Error(`Cannot resume a ${principal?.status} member`);
+      }
+      const changesDirectory = [
+        'manage.member.suspend',
+        'manage.member.resume',
+        'manage.member.offboard',
+      ].includes(name);
+      if (!changesDirectory && !chain.isBusy() && !pendingHost)
+        return chain.afterCurrent(async () =>
+          lifecycle
+            .find((registration) => registration.contract.name === name)!
+            .exec(input, { ...context, memberManagementQueued: true } as MemberManagementContext)
+        );
+
+      if (!context.operationId) throw new Error('Member management requires an operation id');
+      const commandId = `member-management:${context.operationId}`;
+      const rowId = ports.mailbox().enqueue({
+        id: commandId,
+        kind: 'host_job',
+        principalId,
+        channelKey: 'member-management',
+        occurredAt: Date.now(),
+        payload: JSON.parse(
+          JSON.stringify({
+            action: name,
+            input,
+            callerPrincipalId: activeOwnerMessageCaller(context, options),
+          })
+        ),
+      });
+      if (rowId !== null) ports.resumeQueued();
+      return {
+        principalId,
+        change: name.slice('manage.member.'.length),
+        status: rowId === null ? 'duplicate' : 'scheduled',
+        commandId,
+      };
+    },
+  });
+  const codeAct = codeActRegistration(() => dispatch);
   const registrations = [
     ...core,
-    ...memberLifecycleRegistrations({
-      adapter: options.adapter,
-      ownerPrincipalId: options.ownerPrincipalId,
-      ownerAccess: () => ownerAccess,
-      isOwnerMessageTurn: options.isOwnerMessageTurn,
-      timeZone: options.timeZone,
-      ports: options.memberLifecycle,
-    }),
+    ...lifecycle,
     ...memberRecords.registrations,
     ...memberShareActionRegistrations({
       adapter: options.adapter,
@@ -425,52 +514,65 @@ export function createActionSurface(options: ActionSurfaceOptions): ActionSurfac
     }),
     // Claude calls every action from inside code_act, as Kagemusha's code_act; the inner calls go
     // through the dispatcher below, so each is granted and traced as the caller's.
-    codeActRegistration(() => dispatch),
+    codeAct,
   ];
   const catalog = createCatalog(registrations);
-  const dispatch = createDispatcher(catalog, {
-    observeCall: async ({ action, operationId, input, result, durationMs, context }) => {
-      const session = context.session;
-      const caller = action.startsWith('manage.member.')
-        ? messageTurnCaller(context, options)
-        : undefined;
-      if (
-        action !== 'manage.member.list' &&
-        caller &&
-        activeOwnerMessageCaller(context, options) === caller
-      ) {
-        options.recordManagementReceipt?.({
-          callerPrincipalId: caller,
-          operationId: operationId ?? randomUUID(),
-          action,
-          input,
-          result,
-        });
-      }
-      const common = {
-        tool_name: action,
-        gateway_call_id: session?.gatewayCallId ?? null,
-        input_summary: traceSummary(caller ? { callerPrincipalId: caller, input } : input),
-        output_summary: traceSummary(result),
-        execution_status: result.status,
-        duration_ms: durationMs,
-        ...(result.status === 'failed' ? { failure_code: result.error.code } : {}),
-      };
-      if (session?.modelRunId) {
-        const trace = await appendToolTrace(options.adapter, {
-          ...common,
-          model_run_id: session.modelRunId,
-        });
-        return trace.trace_id;
-      }
-      if (!operationId) return undefined;
-      const trace = appendOperationToolTrace(options.adapter, {
+  const observeCall: NonNullable<DispatcherOptions['observeCall']> = async ({
+    action,
+    operationId,
+    input,
+    result,
+    durationMs,
+    context,
+  }) => {
+    const session = context.session;
+    const caller = action.startsWith('manage.member.')
+      ? messageTurnCaller(context, options)
+      : undefined;
+    if (
+      action !== 'manage.member.list' &&
+      caller &&
+      ((context as MemberManagementContext).memberManagementQueued ||
+        activeOwnerMessageCaller(context, options) === caller) &&
+      !(
+        result.status === 'completed' &&
+        ['scheduled', 'duplicate'].includes((result.data as { status?: string })?.status ?? '')
+      )
+    ) {
+      options.recordManagementReceipt?.({
+        callerPrincipalId: caller,
+        operationId: operationId ?? randomUUID(),
+        action,
+        input,
+        result,
+      });
+    }
+    const common = {
+      tool_name: action,
+      gateway_call_id: session?.gatewayCallId ?? null,
+      input_summary: traceSummary(caller ? { callerPrincipalId: caller, input } : input),
+      output_summary: traceSummary(result),
+      execution_status: result.status,
+      duration_ms: durationMs,
+      ...(result.status === 'failed' ? { failure_code: result.error.code } : {}),
+    };
+    if (session?.modelRunId) {
+      const trace = await appendToolTrace(options.adapter, {
         ...common,
-        operation_id: operationId,
-        actor_principal_id: caller ?? context.access.principalId,
+        model_run_id: session.modelRunId,
       });
       return trace.trace_id;
-    },
+    }
+    if (!operationId) return undefined;
+    const trace = appendOperationToolTrace(options.adapter, {
+      ...common,
+      operation_id: operationId,
+      actor_principal_id: caller ?? context.access.principalId,
+    });
+    return trace.trace_id;
+  };
+  const dispatch = createDispatcher(catalog, {
+    observeCall,
   });
   // Built on the first scopes read, so constructing a surface touches no table.
   const ownerAccess: JudgmentAccess = {
@@ -521,6 +623,106 @@ export function createActionSurface(options: ActionSurfaceOptions): ActionSurfac
 
   return {
     memberRecords,
+    releasePrincipal: codeAct.releasePrincipal,
+    onManagementDead: (row, reason) => {
+      if (row.kind !== 'host_job' || row.channelKey !== 'member-management') return;
+      if (
+        options.adapter
+          .prepare('SELECT 1 FROM connector_event_index WHERE source_entity_id=?')
+          .get(`host:management:${row.stimulusId}:reply`)
+      )
+        return;
+      const payload = row.payload as {
+        callerPrincipalId?: unknown;
+        action?: unknown;
+        input?: unknown;
+      } | null;
+      options.recordManagementReceipt?.({
+        ...(typeof payload?.callerPrincipalId === 'string'
+          ? { callerPrincipalId: payload.callerPrincipalId }
+          : {}),
+        operationId: row.stimulusId,
+        action: typeof payload?.action === 'string' ? payload.action : 'member-management',
+        input: payload?.input ?? null,
+        result: {
+          status: 'failed',
+          error: { kind: 'internal', code: 'member_management_failed', message: reason },
+        },
+      });
+    },
+    deliverManagement: async (row) => {
+      if (row.kind !== 'host_job' || row.channelKey !== 'member-management') return 'unhandled';
+      const ports = options.memberLifecycle;
+      if (!ports) throw new StimulusQuarantine('Member management job requires lifecycle ports');
+      const job = row.payload as unknown as {
+        action: string;
+        input: unknown;
+        callerPrincipalId: string;
+      };
+      if (
+        !job ||
+        !lifecycle.some((r) => r.contract.name === job.action) ||
+        typeof job.callerPrincipalId !== 'string' ||
+        !job.callerPrincipalId.trim()
+      )
+        throw new StimulusQuarantine('Invalid member management job');
+      const execute = async (): Promise<'handled' | 'deferred'> => {
+        if (ports.isStopping()) return 'deferred';
+        // The common receipt is also the command's durable completion marker. A replay after
+        // receipt storage but before mailbox ACK must not reset or move the session again.
+        const receipt = options.adapter
+          .prepare('SELECT 1 FROM connector_event_index WHERE source_entity_id=?')
+          .get(`host:management:${row.stimulusId}:reply`);
+        if (!receipt) {
+          const result = await dispatch(
+            { action: job.action, input: job.input, operationId: row.stimulusId },
+            {
+              access: {
+                principalId: job.callerPrincipalId,
+                agentId: 'member-management-host',
+                scopes: [],
+                actions: [job.action],
+              },
+              operationId: row.stimulusId,
+              memberManagementQueued: true,
+              memberManagementCaller: job.callerPrincipalId,
+            } as MemberManagementContext
+          );
+          // The authenticated caller id survives even if that caller erased the requesting
+          // message while the target was busy; a denied change still owes its common receipt.
+          if (
+            !options.adapter
+              .prepare('SELECT 1 FROM connector_event_index WHERE source_entity_id=?')
+              .get(`host:management:${row.stimulusId}:reply`)
+          )
+            options.recordManagementReceipt?.({
+              callerPrincipalId: job.callerPrincipalId,
+              operationId: row.stimulusId,
+              action: job.action,
+              input: job.input,
+              result,
+            });
+        }
+        return 'handled';
+      };
+      let completion: Promise<'handled' | 'deferred'> = Promise.resolve('deferred');
+      await ports.turnChain(row.principalId).afterCurrent(async () => {
+        if (ports.isStopping()) return;
+        if (
+          ['manage.member.suspend', 'manage.member.resume', 'manage.member.offboard'].includes(
+            job.action
+          )
+        ) {
+          // Release this reservation before the directory lane drains all current member work.
+          // Awaiting that lane here would make it wait for its own target reservation.
+          completion = memberDirectoryChange!(execute);
+        } else {
+          completion = execute();
+          await completion;
+        }
+      });
+      return completion;
+    },
     createNativeEffectObserver: (modelRunId, access = ownerAccess) => {
       const traces = createNativeToolTraceObserver(options.adapter, modelRunId);
       return options.outboundAttempts === undefined

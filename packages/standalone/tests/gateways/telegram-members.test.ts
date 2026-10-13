@@ -7,6 +7,7 @@ import { Mailbox } from '@jungjaehoon/mama-core/runtime/mailbox';
 import { TelegramGateway } from '../../src/gateways/telegram.js';
 import { TelegramMessageLedger } from '../../src/gateways/telegram-message-ledger.js';
 import { openCoreDatabase } from '../../src/runtime/core-db.js';
+import { createPrincipalSessions } from '../../src/runtime/principal-sessions.js';
 import { memberPaths } from '../../src/runtime/member-paths.js';
 import { createStimulusIntake } from '../../src/runtime/stimulus-delivery.js';
 import { RawStore } from '../../src/storage/source-archive.js';
@@ -78,13 +79,19 @@ async function send(overrides: Record<string, unknown> = {}) {
   });
 }
 
-function createGateway() {
+function createGateway(
+  memberIntake: (
+    id: string
+  ) =>
+    | ReturnType<typeof createStimulusIntake>
+    | Promise<ReturnType<typeof createStimulusIntake>> = (id) => intakes.get(id)!
+) {
   return new TelegramGateway({
     token: 'fixture-token',
     messageLedger: ledger,
     intake: intakes.get(common)!,
     registry: repository,
-    memberIntake: (id) => intakes.get(id)!,
+    memberIntake,
     principalPaths: (id) => memberPaths(join(root, 'members'), id),
     downloadsDir: join(root, 'common-downloads'),
     config: { allowedChats, ownerChatId: '-100', polling: false },
@@ -153,6 +160,135 @@ afterEach(async () => {
 });
 
 describe('P10.1 Telegram person routing', () => {
+  it('recovers every DM acknowledged while its personal intake was still opening', async () => {
+    await gateway.stop();
+    gateway = createGateway(() => new Promise(() => {}));
+    await gateway.start();
+    await send({ message_id: 21, text: 'first waiting message' });
+    await send({ message_id: 22, text: 'second waiting message' });
+    expect(mailbox.readInput('telegram:20001:21', member)).toBeNull();
+    expect(mailbox.readInput('telegram:20001:22', member)).toBeNull();
+    expect(ledger.get('telegram:20001:21')?.state).toBe('processing');
+    expect(ledger.get('telegram:20001:22')?.state).toBe('processing');
+    await restartGateway();
+    expect(ledger.get('telegram:20001:21')?.state).toBe('delivered');
+    expect(ledger.get('telegram:20001:22')?.state).toBe('delivered');
+    expect(transport.sent.filter((m) => m.text.includes('interrupted'))).toHaveLength(2);
+  });
+
+  it('makes a reply from a finished intake task wait for the current chat queue holder', async () => {
+    await gateway.stop();
+    let open!: (intake: ReturnType<typeof createStimulusIntake>) => void;
+    const opening = new Promise<ReturnType<typeof createStimulusIntake>>((r) => (open = r));
+    let reply!: () => void;
+    const ready = new Promise<void>((r) => (reply = r));
+    let answering: Promise<void> | undefined;
+    const intake = intakes.get(member)!;
+    let served = false;
+    const responding = {
+      ...intake,
+      acceptOwnerMessage: (input: Parameters<typeof intake.acceptOwnerMessage>[0]) => {
+        answering = ready.then(() => gateway.deliverResponse(input.id, 'queued final reply'));
+        return intake.acceptOwnerMessage(input);
+      },
+    };
+    gateway = createGateway(() => (served ? responding : opening));
+    await gateway.start();
+    await send();
+    served = true;
+    open(responding);
+    await vi.waitFor(() => expect(mailbox.readInput('telegram:20001:11', member)).not.toBeNull());
+    // Finish the task that scheduled the reply, then occupy the same chat with another send.
+    await new Promise<void>((r) => setImmediate(r));
+    let release!: () => void;
+    const hold = new Promise<void>((r) => (release = r));
+    transport.api.sendMessage.mockImplementationOnce(async (chatId, text) => {
+      await hold;
+      transport.sent.push({ chatId, text });
+      return { message_id: 999 };
+    });
+    const sending = gateway.sendMessage('20001', 'queue holder');
+    try {
+      await new Promise<void>((r) => setImmediate(r));
+      reply();
+      await new Promise<void>((r) => setImmediate(r));
+      expect(transport.edits.some((m) => m.text === 'queued final reply')).toBe(false);
+      expect(ledger.get('telegram:20001:11')?.state).toBe('ready');
+    } finally {
+      release();
+      await sending;
+      await answering;
+    }
+    expect(ledger.get('telegram:20001:11')?.state).toBe('delivered');
+  });
+
+  it('logs a status recheck drop without exposing the transport identity', async () => {
+    await gateway.stop();
+    let open!: (intake: ReturnType<typeof createStimulusIntake>) => void;
+    gateway = createGateway(() => new Promise((r) => (open = r)));
+    await gateway.start();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await send();
+    repository.suspend(member, 4);
+    open(intakes.get(member)!);
+    await vi.waitFor(() => expect(warn).toHaveBeenCalled());
+    expect(warn.mock.calls[0][0]).toMatch(/reason=principal_inactive.*chat_hash=.*sender_hash=/);
+    expect(warn.mock.calls[0][0]).not.toContain('20001');
+    expect(mailbox.readInput('telegram:20001:11', member)).toBeNull();
+    warn.mockRestore();
+  });
+
+  it('returns during serve-on-demand and accepts other chats while preserving the waiting DM order', async () => {
+    await gateway.stop();
+    let served!: () => void;
+    const serving = new Promise<void>((resolve) => (served = resolve));
+    const sessions = createPrincipalSessions(common);
+    const longTurn = sessions.turnChain(second)(() => serving);
+    let isServed = false;
+    gateway = createGateway((id) =>
+      id === member && !isServed
+        ? sessions.exclusive(async () => {
+            isServed = true;
+            return intakes.get(id)!;
+          })
+        : intakes.get(id)!
+    );
+    await gateway.start();
+    let returned = false;
+    const first = send({ message_id: 21, text: 'first waiting message' }).then(() => {
+      returned = true;
+    });
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(returned).toBe(true);
+      await send({ message_id: 21, text: 'first waiting message' });
+      await send({ message_id: 22, text: 'second waiting message' });
+      await send({
+        message_id: 23,
+        chat: { id: 20002, type: 'private' },
+        from: { id: 20002 },
+        text: 'other chat',
+      });
+      expect(mailbox.readInput('telegram:20002:23', second)).not.toBeNull();
+      expect(mailbox.readInput('telegram:20001:21', member)).toBeNull();
+      served();
+      await vi.waitFor(() => expect(mailbox.readInput('telegram:20001:22', member)).not.toBeNull());
+      const inputs = database.adapter
+        .prepare('SELECT stimulus_id FROM mailbox_inputs WHERE principal_id=? ORDER BY id')
+        .all(member);
+      expect(inputs).toEqual([
+        { stimulus_id: 'telegram:20001:21' },
+        { stimulus_id: 'telegram:20001:22' },
+      ]);
+      expect(ledger.get('telegram:20001:21')?.state).toBe('processing');
+    } finally {
+      served();
+      await first;
+      await longTurn;
+      await sessions.idle();
+    }
+  });
+
   it('admits an active owner role in the allowed group and records the sender on common chat', async () => {
     repository.grantRole({ principalId: member, role: 'owner', now: 3 });
     await send({ chat: { id: -100, type: 'supergroup' }, text: 'Common correction' });

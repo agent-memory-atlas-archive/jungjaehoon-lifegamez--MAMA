@@ -154,7 +154,8 @@ export interface OwnerRuntime {
   readonly wikiRoot: string | null;
   readonly intake: StimulusIntake;
   readonly acceptSourceDelta: StimulusIntake['acceptSourceDelta'];
-  serveMember(principalId: string): StimulusIntake;
+  serveMember(principalId: string): Promise<StimulusIntake>;
+  memberIntake(principalId: string): StimulusIntake;
   principalPaths(principalId: string): { workspaceDir: string; downloadsDir: string };
   completeMemberEnrollment(selection: MemberSelection): Promise<ActionResult>;
   recordHostExchange(input: OwnerHostExchangeInput): void;
@@ -354,6 +355,7 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       : {};
     const surface = createActionSurface({
       runtimeRoot: options.runtimeRoot,
+      memberDirectoryChange: sessions.exclusive,
       adapter: database.adapter,
       ...(options.outboundAttempts === undefined
         ? {}
@@ -374,7 +376,7 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
         chat.saveOwnerMessage({
           id: ref,
           channelKey: 'management',
-          senderPrincipalId: callerPrincipalId,
+          ...(callerPrincipalId === undefined ? {} : { senderPrincipalId: callerPrincipalId }),
           occurredAt: at,
           text: action,
           payload: { managementAction: action },
@@ -435,6 +437,15 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
               },
             },
             memberLifecycle: {
+              mailbox: () => ownerMailbox!,
+              isStopping: () => stopping,
+              isServed: (id) => members.has(id),
+              resumeQueued: () => {
+                void intakeRuntime
+                  .drainOnce()
+                  .catch((error) => console.error('[Member management] delivery failed', error));
+              },
+              turnChain: sessions.turnChain,
               resetSession: async (id) => {
                 const member = members.get(id);
                 if (!member) throw new Error(`Member session is not served: ${id}`);
@@ -557,7 +568,7 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       ...(options.onRecordOrderEvent === undefined ? {} : { onEvent: options.onRecordOrderEvent }),
     });
     delivery = createStimulusDelivery({
-      turnChain: sessions.turnChain,
+      turnChain: sessions.turnChain(options.ownerPrincipalId),
       backend: options.backend,
       timeZone: options.timeZone,
       principalRoles: (principalId) => principals.listRoles(principalId).map(({ role }) => role),
@@ -684,7 +695,7 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
         database,
         rawStore: sourceStore,
         surface,
-        turnChain: sessions.turnChain,
+        turnChain: sessions.turnChain(principalId),
         readResult: (row) =>
           row.nativeDelivery?.receipt
             ? intakeRuntime.mailbox!.nativeInputs.resultForReceipt(
@@ -749,8 +760,11 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       nativeSession: sessions.native,
       delivery: {
         ...sessions.delivery,
+        deliverHost: surface.deliverManagement,
+        hostReady: () => !stopping && !surface.memberRecords.isBusy(),
         onSettled: surface.memberRecords.onSettled,
         onDead: (row, reason) => {
+          surface.onManagementDead(row, reason);
           surface.memberRecords.onDead(row, reason);
           return sessions.delivery.onDead?.(row, reason);
         },
@@ -765,6 +779,10 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
     });
     ownerMailbox = intakeRuntime.mailbox;
     recordOrders.recover();
+    // Recovered host inputs need no new Telegram update to run.
+    void intakeRuntime
+      .drainOnce()
+      .catch((error) => console.error('[Member management] recovery failed', error));
     const intake = createStimulusIntake(intakeRuntime, options.ownerPrincipalId, chat);
     const createMemberIntake = (id: string, member: ReturnType<typeof createMemberSession>) =>
       createStimulusIntake(intakeRuntime, id, {
@@ -775,10 +793,12 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
           return member.chat.saveOwnerMessage(input);
         },
         saveReply: (input) => member.chat.saveReply(input),
+        hasOwnerMessage: (ref) => member.chat.hasOwnerMessage(ref),
       });
     for (const [id, member] of members) memberIntakes.set(id, createMemberIntake(id, member));
     const retireMember = async (id: string, setAside = true) => {
       if (memberRoot === undefined) throw new Error('Member lifecycle requires member_root');
+      surface.releasePrincipal(id);
       intakeRuntime.unservePrincipal(id);
       const member = members.get(id);
       if (member) {
@@ -835,12 +855,29 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       wikiRoot,
       intake,
       acceptSourceDelta: intake.acceptSourceDelta,
+      // Gateway DMs retry active unserved members through the directory lane. A served
+      // intake needs no directory work; P9 restores its own known paths on the member chain.
       serveMember: (id) => {
+        executionAccess(id);
+        if (stopped) return Promise.reject(new Error('Cannot serve a member after runtime stop'));
+        if (intakeRuntime.servesPrincipal(id)) return Promise.resolve(memberIntakes.get(id)!);
+        return sessions.exclusive(async () => {
+          if (surface.memberRecords.isBlocked(id) && !intakeRuntime.servesPrincipal(id))
+            throw new Error(`Member session is not served: ${id}`);
+          return serveMember(id);
+        });
+      },
+      memberIntake: (id) => {
         // Erasure owns restoration once it unserves the member. Intake callers must not
         // recreate a writer while the host takes and delivers that member's snapshot.
         if (surface.memberRecords.isBlocked(id) && !intakeRuntime.servesPrincipal(id))
           throw new Error(`Member session is not served: ${id}`);
-        return serveMember(id);
+        if (stopped) throw new Error('Cannot obtain member intake after runtime stop');
+        executionAccess(id);
+        const intake = memberIntakes.get(id);
+        if (!intake || !intakeRuntime.servesPrincipal(id))
+          throw new Error(`Member session is not served: ${id}`);
+        return intake;
       },
       principalPaths: (principalId) => {
         if (principalId === options.ownerPrincipalId) {
@@ -855,11 +892,10 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
         sessions.get(principalId);
         return members.get(principalId)!.paths;
       },
-      completeMemberEnrollment: (selection) =>
-        sessions.turnChain(async () => {
-          if (stopped) throw new Error('Cannot enroll a member after runtime stop');
-          return surface.completeMemberEnrollment(selection);
-        }),
+      completeMemberEnrollment: (selection) => {
+        if (stopping) return Promise.reject(new Error('Cannot enroll a member after runtime stop'));
+        return surface.completeMemberEnrollment(selection);
+      },
       recordHostExchange: ({ message, reply }) => {
         const person = message.id.startsWith('telegram:')
           ? principals.resolveByExternal('telegram', 'private', message.channelKey)
@@ -897,6 +933,7 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
           stopped = true;
           recordOrders.stop();
           await intakeRuntime.stop();
+          await sessions.idle();
           rawStore?.close();
           await database.close();
         })();

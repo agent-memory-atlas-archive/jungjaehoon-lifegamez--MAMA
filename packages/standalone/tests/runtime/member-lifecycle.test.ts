@@ -61,7 +61,7 @@ it.each(['codex', 'claude'] as const)(
     f.read(ids);
     const personalMessage = f.message(f.member, 'PERSONAL_CHAT');
     await f.settled(personalMessage, f.member);
-    f.runtime.serveMember(f.member).recordOwnerReply({
+    f.runtime.memberIntake(f.member).recordOwnerReply({
       messageRef: personalMessage,
       text: 'PERSONAL_ANSWER',
       occurredAt: Date.now(),
@@ -99,7 +99,7 @@ it.each(['codex', 'claude'] as const)(
 it('suspends and resumes with preserved grants in fresh directories, then offboards terminally without unbinding identity', async () => {
   const f = await fixture();
   data(await f.manage('grant', partition(f.member)));
-  const intake = f.runtime.serveMember(f.member);
+  const intake = f.runtime.memberIntake(f.member);
   await f.settled(f.message(f.member), f.member);
   const paths = memberPaths(f.root, f.member);
   const temp = memberClaudeTmpDir(f.member);
@@ -190,7 +190,7 @@ it('suspends and resumes with preserved grants in fresh directories, then offboa
   expect(repo.resolveByExternal('telegram', 'private', 'fixture-member')?.principalId).toBe(
     f.member
   );
-  expect(() => f.runtime.serveMember(f.member)).toThrow(/offboarded/);
+  expect(() => f.runtime.memberIntake(f.member)).toThrow(/offboarded/);
   const ref = f.message('owner');
   await f.settled(ref);
   const enrollment = await f.runtime.completeMemberEnrollment({
@@ -717,7 +717,7 @@ it('retries terminal offboard cleanup after runtime move succeeds and temp move 
   expect(repo.resolveByExternal('telegram', 'private', 'fixture-member')?.status).toBe(
     'offboarded'
   );
-  expect(() => f.runtime.serveMember(f.member)).toThrow(/offboarded/);
+  expect(() => f.runtime.memberIntake(f.member)).toThrow(/offboarded/);
   expect((await f.manage('resume')).status).toBe('failed');
 });
 
@@ -799,3 +799,24 @@ it('refuses offboard without member_root before any change', async () => {
     ],
   });
 });
+
+it.each(['suspend', 'offboard'])(
+  'clears carried code_act values when the session is retired by %s',
+  async (change) => {
+    const f = await fixture();
+    const action = f.runtime.surface.catalog.entry('code_act');
+    const context = {
+      access: { ...f.runtime.surface.ownerAccess, principalId: f.member },
+      operationId: 'fixture-carried',
+      session: { modelRunId: 'fixture-carried-run' },
+    };
+    await action.exec({ code: 'globalThis.saved = "personal value";' }, context);
+    expect(await action.exec({ code: 'return saved;' }, context)).toMatchObject({
+      value: 'personal value',
+    });
+    data(await f.manage(change));
+    expect(await action.exec({ code: 'return typeof saved;' }, context)).toMatchObject({
+      value: 'undefined',
+    });
+  }
+);

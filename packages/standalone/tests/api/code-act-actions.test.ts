@@ -18,12 +18,13 @@ const echo = (name: string): ActionRegistration => ({
 });
 
 function surface(actions: string[]) {
+  const codeAct = codeActRegistration(() => dispatch);
   const catalog = createCatalog([
     echo('work.list'),
     echo('schedule.upcoming'),
     echo('memory.read:provenance'),
     echo('admin.only'),
-    codeActRegistration(() => dispatch),
+    codeAct,
   ]);
   const dispatch: ActionDispatcher = createDispatcher(catalog);
   const access: JudgmentAccess = {
@@ -32,11 +33,17 @@ function surface(actions: string[]) {
     scopes: [],
     actions,
   };
-  return (code: string, modelRunId?: string) =>
-    dispatch(
-      { action: 'code_act', input: { code }, operationId: 'op-1' },
-      { access, ...(modelRunId === undefined ? {} : { session: { modelRunId } }) }
-    );
+  return Object.assign(
+    (code: string, modelRunId?: string, principalId = 'owner') =>
+      dispatch(
+        { action: 'code_act', input: { code }, operationId: 'op-1' },
+        {
+          access: { ...access, principalId },
+          ...(modelRunId === undefined ? {} : { session: { modelRunId } }),
+        }
+      ),
+    { releasePrincipal: codeAct.releasePrincipal }
+  );
 }
 
 describe('code_act', () => {
@@ -169,6 +176,34 @@ describe('code_act', () => {
       expect((fresh as { data: { value: unknown } }).data.value).toBe('undefined');
     }
   });
+
+  it('keeps carried values independently across concurrent principals', async () => {
+    const run = surface(['code_act']);
+    for (let n = 0; n < 6; n++) await run(`globalThis.saved = ${n};`, `run-${n}`, `principal-${n}`);
+    for (let n = 0; n < 6; n++) {
+      const result = await run('return saved;', `run-${n}`, `principal-${n}`);
+      expect((result as { data: { value: number } }).data.value).toBe(n);
+    }
+  });
+
+  it('retains carried values beyond 128 principals until a principal retires', async () => {
+    const run = surface(['code_act']);
+    await run('globalThis.saved = "first";', 'first-run', 'first');
+    for (let n = 0; n < 128; n++) {
+      expect(await run('globalThis.saved = "kept";', `run-${n}`, `principal-${n}`)).toMatchObject({
+        status: 'completed',
+      });
+    }
+    expect(
+      ((await run('return saved;', 'first-run', 'first')) as { data: { value: unknown } }).data
+        .value
+    ).toBe('first');
+    run.releasePrincipal('first');
+    expect(
+      ((await run('return typeof saved;', 'first-run', 'first')) as { data: { value: unknown } })
+        .data.value
+    ).toBe('undefined');
+  }, 20_000);
 
   it('keeps what parallel scripts of one run each left', async () => {
     const run = surface(['code_act']);

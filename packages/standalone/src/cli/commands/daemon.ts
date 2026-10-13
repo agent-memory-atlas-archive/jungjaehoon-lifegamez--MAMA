@@ -317,6 +317,7 @@ function loggedOwnerIntake(intake: StimulusIntake, logger: DaemonLogger): TurnIn
     },
     recordOwnerReply: (input) => intake.recordOwnerReply(input),
     ...(intake.isPending === undefined ? {} : { isPending: intake.isPending }),
+    ...(intake.hasOwnerMessage === undefined ? {} : { hasOwnerMessage: intake.hasOwnerMessage }),
   };
 }
 
@@ -744,7 +745,10 @@ export async function bootDaemon(options: DaemonBootOptions = {}): Promise<Daemo
         token,
         intake,
         registry: createPrincipalRepository(owner.database.adapter),
-        memberIntake: (principalId) => loggedOwnerIntake(owner!.serveMember(principalId), logger),
+        memberIntake: (principalId) =>
+          owner!.runtime.servesPrincipal(principalId)
+            ? loggedOwnerIntake(owner!.memberIntake(principalId), logger)
+            : owner!.serveMember(principalId).then((intake) => loggedOwnerIntake(intake, logger)),
         principalPaths: (principalId) => owner!.principalPaths(principalId),
         onMemberSelection: (selection) => owner!.completeMemberEnrollment(selection),
         recordMemberSelection: (exchange) => owner!.recordHostExchange(exchange),
