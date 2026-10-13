@@ -1,3 +1,4 @@
+import { isPersonalTurnTextKey } from '../runtime/personal-turns.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomInt } from 'node:crypto';
 import type { ActionResult, JudgmentAccess, PrincipalRepository } from '@jungjaehoon/mama-core';
@@ -25,6 +26,8 @@ import {
   type OwnerMessageLedger,
   type TelegramMessageLedgerEntry,
   DEFAULT_INTERRUPTED_NOTICE,
+  outboundLedgerKey,
+  retirePersonalTurnReceipt,
 } from './telegram-message-ledger.js';
 import { TelegramResponsePresenter } from './telegram-response-presenter.js';
 import {
@@ -139,10 +142,6 @@ function chatIdFromSourceMessageRef(value: string): string {
     throw new Error('Telegram source message reference is invalid');
   }
   return rest.slice(0, separator);
-}
-
-function outboundLedgerKey(idempotencyKey: string): string {
-  return `outbound:${createHash('sha256').update(`text\0${idempotencyKey}`).digest('hex')}`;
 }
 
 /** Telegram personal/common ingress and its durable response transport. */
@@ -333,9 +332,7 @@ export class TelegramGateway extends BaseGateway {
 
   /** Host-only retirement after the mailbox occurrence closes, including inactive recipients. */
   retireMemberJobText(operationId: string): void {
-    if (!/^job:[^:]+:\d+$/.test(operationId))
-      throw new Error('Only personal job occurrence receipts can be retired');
-    this.messageLedger.retireUndelivered(outboundLedgerKey(operationId));
+    retirePersonalTurnReceipt(this.messageLedger, operationId);
   }
 
   async sendMemberText(
@@ -910,9 +907,9 @@ export class TelegramGateway extends BaseGateway {
           continue;
         }
         if (entry.key.startsWith('outbound:') && entry.state === 'ready') {
-          // Job recovery belongs to mailbox reconciliation, which checks the current person
-          // and job version before sending. Gateway startup cannot establish that authority.
-          if (entry.idempotencyKey?.startsWith('job:')) continue;
+          // Personal turn recovery belongs to mailbox reconciliation, which checks the current person
+          // and input before sending. Gateway startup cannot establish that authority.
+          if (entry.idempotencyKey && isPersonalTurnTextKey(entry.idempotencyKey)) continue;
           const chatId = entry.deliveryTarget?.slice('telegram:'.length);
           if (!entry.deliveryTarget?.startsWith('telegram:') || !chatId) {
             throw new Error('Telegram outbound entry has no valid destination');
@@ -962,7 +959,7 @@ export class TelegramGateway extends BaseGateway {
     const existing = this.messageLedger.claim(key, binding).entry;
     if (existing.state === 'delivered') return;
     // Keep the rejection until the occurrence closes. A restart in between must not send it.
-    if (idempotencyKey.startsWith('job:') && existing.state === 'failed')
+    if (isPersonalTurnTextKey(idempotencyKey) && existing.state === 'failed')
       throw new TelegramJobDeliveryRejected('Personal job DM delivery was already rejected');
     if (existing.state !== 'ready') this.messageLedger.markReady(key, text, 'html-v1');
     await this.deliverOutboundEntry(key, chatId);
@@ -988,8 +985,9 @@ export class TelegramGateway extends BaseGateway {
         this.messageLedger.markDeliveryProgress(key, index + 1, false, sent.message_id);
       } catch (error) {
         if (isDefinitiveTelegramRejection(error)) {
-          // A job refusal is final. Never persist a retryable ready receipt before its failure.
-          if (entry.idempotencyKey?.startsWith('job:')) this.messageLedger.markFailed(key);
+          // A personal turn refusal is final. Never persist a retryable ready receipt before its failure.
+          if (entry.idempotencyKey && isPersonalTurnTextKey(entry.idempotencyKey))
+            this.messageLedger.markFailed(key);
           else this.messageLedger.markDeliveryProgress(key, index, false);
         }
         throw error;

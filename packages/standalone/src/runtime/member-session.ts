@@ -1,4 +1,5 @@
 import { deliverPersonalJobResult, type PersonalJobStore } from './personal-jobs.js';
+import { deliverPersonalNoticeResult, personalNoticePayload } from './personal-notices.js';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { createPrincipalRepository, type JudgmentAccess } from '@jungjaehoon/mama-core';
@@ -19,6 +20,7 @@ import { createStimulusDelivery, type StimulusDeliveryOptions } from './stimulus
 import { holdsOwnerRole, ownerRuleIds, RULE_KINDS } from './owner-authority.js';
 import type { OwnerPolicyProvider } from './owner-policy.js';
 import { startMemberEgressProxy, type EgressProxy } from './egress-proxy.js';
+import { retirePersonalTurnReceipt } from '../gateways/telegram-message-ledger.js';
 
 export function createMemberSession(
   principalId: string,
@@ -162,12 +164,12 @@ export function createMemberSession(
         current = create();
       }
       const key = request?.sessionKey ?? sessionKey;
-      const job = key !== sessionKey;
-      if (job) await current.resetSession(key); // Includes an orphan context left by a process crash.
+      const stateless = key !== sessionKey;
+      if (stateless) await current.resetSession(key); // Includes an orphan context left by a process crash.
       try {
         return await current.runTurn(content, request);
       } finally {
-        if (job) await current.resetSession(key);
+        if (stateless) await current.resetSession(key);
       }
     },
   };
@@ -177,27 +179,37 @@ export function createMemberSession(
     turnChain: ports.turnChain,
     member: { principalId, sessionKey, voice: MEMBER_VOICE },
     personalJobs: ports.personalJobs,
+    personalNotices: surface.personalNotices,
+    readNoticeRef: (ref) => surface.readNoticeRef(ref, access()),
     retirePersonalJobText: (key) => {
-      const telegram = options.memberRecordsTelegram?.();
-      if (!telegram) throw new Error('Personal job Telegram delivery is unavailable');
-      telegram.retireMemberJobText(key);
+      // Receipts live in the shared ledger the gateway writes; it exists without Telegram.
+      const ledger = options.messageLedger?.();
+      if (!ledger) throw new Error('Personal turn receipt ledger is unavailable');
+      retirePersonalTurnReceipt(ledger, key);
     },
-    onScheduledResult: (row, result) =>
-      deliverPersonalJobResult(row, result, {
-        store: ports.personalJobs,
+    onScheduledResult: (row, result) => {
+      const deliveryPorts = {
         access,
         chat,
-        delivered: (key) => {
+        delivered: (key: string) => {
           const telegram = options.memberRecordsTelegram?.();
-          if (!telegram) throw new Error('Personal job Telegram delivery is unavailable');
+          if (!telegram) throw new Error('Personal turn Telegram delivery is unavailable');
           return telegram.memberTextDelivered(initialAccess, key);
         },
-        send: (resolved, text, key) => {
+        send: (resolved: JudgmentAccess, text: string, key: string) => {
           const telegram = options.memberRecordsTelegram?.();
-          if (!telegram) throw new Error('Personal job Telegram delivery is unavailable');
+          if (!telegram) throw new Error('Personal turn Telegram delivery is unavailable');
           return telegram.sendMemberText(resolved, text, key);
         },
-      }),
+      };
+      return personalNoticePayload(row)
+        ? deliverPersonalNoticeResult(row, result, {
+            ...deliveryPorts,
+            store: surface.personalNotices,
+            read: surface.readNoticeRef,
+          })
+        : deliverPersonalJobResult(row, result, { ...deliveryPorts, store: ports.personalJobs });
+    },
     principalRoles: (id) => principals.listRoles(id).map(({ role }) => role),
     principalDisplayName: (id) => principals.findById(id)?.displayName,
     commonPrincipalId: options.ownerPrincipalId,
