@@ -133,8 +133,11 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
    ([check](checks.md#p101-live-the-first-owners-dm-turns-2026-10-12)); their gaps (owner rules,
    who is who, web in an owner's DM) were fixed in #475, live from 23:14 KST
    ([check](checks.md#p101-follow-ups-owner-rules-who-is-who-and-web-in-an-owners-dm-475-2026-10-12)).
-   The owner added personal schedules and notices (P10.4) and skills (P10.5). Next: the owner's turns
-   on #475, then P10.2.
+   The owner added personal schedules and notices (P10.4) and skills (P10.5). On #475 the owner's DM
+   answered in plain sentences and searched the web; it also quoted the owner's account email,
+   which personal sessions no longer see (#476, live from 2026-10-13 10:49 KST,
+   [check](checks.md#a-personal-session-does-not-give-the-model-the-owners-account-email-476-2026-10-13)).
+   Next: the co-owner's DM and a rule change asked in a DM on the new build, then P10.2.
 6. Paraphrase search: closed on 2026-10-07 without a host change
    ([check](checks.md#fusion-variants-with-both-embeddings-2026-10-07)). Three paraphrases sit
    outside the vector candidates; four fusions on e5 and on EmbeddingGemma 2 either move nothing
