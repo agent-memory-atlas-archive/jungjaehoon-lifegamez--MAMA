@@ -1,15 +1,18 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
+  chmodSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { EventEmitter } from 'node:events';
@@ -24,6 +27,20 @@ import { SessionPool } from '@jungjaehoon/mama-core/runtime/session-pool';
 import { createActionSurface } from '../../src/runtime/action-surface.js';
 import { createTimeZoneSetting } from '../../src/runtime/timezone.js';
 import { createNativeSession, type NativeDriverOptions } from '../../src/runtime/native-session.js';
+
+let hostBin: string;
+const originalPath = process.env.PATH;
+beforeAll(() => {
+  hostBin = mkdtempSync(join(tmpdir(), 'native-session-host-bin-'));
+  for (const backend of ['claude', 'codex'])
+    writeFileSync(join(hostBin, backend), '#!/bin/sh\nexit 99\n', { mode: 0o755 });
+  process.env.PATH = `${hostBin}${delimiter}${originalPath ?? ''}`;
+});
+afterAll(() => {
+  if (originalPath === undefined) delete process.env.PATH;
+  else process.env.PATH = originalPath;
+  rmSync(hostBin, { recursive: true, force: true });
+});
 
 function surface() {
   return createActionSurface({
@@ -338,6 +355,233 @@ describe('personal Claude account email', () => {
   });
 });
 
+describe('managed document toolkit session PATH', () => {
+  it('still requires the host PATH for Codex when the toolkit is configured', () => {
+    const root = mkdtempSync(join(tmpdir(), 'toolkit-no-path-'));
+    const hostPath = process.env.PATH;
+    process.env.PATH = '';
+    try {
+      expect(() =>
+        createNativeSession({
+          backend: 'codex',
+          model: 'fixture',
+          workspaceDir: join(root, 'workspace'),
+          runtimeRoot: join(root, 'runtime'),
+          toolsRoot: join(root, 'tools'),
+          actionSurface: surface(),
+          agent: runner('codex'),
+          timeout: 1000,
+          maxTurns: 1,
+        })
+      ).toThrow(/host PATH/);
+    } finally {
+      if (hostPath === undefined) delete process.env.PATH;
+      else process.env.PATH = hostPath;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+  it.each([
+    ['claude', false],
+    ['claude', true],
+    ['codex', false],
+    ['codex', true],
+  ] as const)(
+    'prepends the toolkit for %s, personal=%s without widening read access',
+    async (backend, personal) => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), 'toolkit-session-')));
+      const pool = new SessionPool({ cleanupInterval: 0 });
+      const actionSurface = surface();
+      let driver!: NativeDriverOptions;
+      const toolsRoot = join(root, 'tools');
+      const version = join(toolsRoot, 'v-fixture');
+      mkdirSync(join(version, 'bin'), { recursive: true });
+      for (const name of ['bin/python3', 'pyvenv.cfg', 'fonts.conf', 'soffice'])
+        writeFileSync(join(version, name), 'fixture');
+      writeFileSync(
+        join(version, 'manifest.json'),
+        JSON.stringify({ version: 1, soffice: join(version, 'soffice') })
+      );
+      symlinkSync('v-fixture', join(toolsRoot, 'current'));
+      // A fake backend in toolkit bin must never be the Node spawn executable.
+      writeFileSync(join(version, 'bin', backend), 'fixture');
+      chmodSync(join(version, 'bin', backend), 0o755);
+      const runtimeRoot = join(root, 'runtime-home');
+      try {
+        const session = createNativeSession({
+          backend,
+          model: 'fixture',
+          workspaceDir: join(root, 'workspace'),
+          runtimeRoot,
+          actionSurface,
+          timeout: 1000,
+          maxTurns: 1,
+          toolsRoot,
+          sessionPool: pool,
+          deniedReadPaths: [join(root, 'owner-home'), join(root, 'other-members')],
+          ...(personal
+            ? {
+                principal: {
+                  principalId: 'fixture-person',
+                  agentId: 'fixture-agent',
+                  sessionKey: 'fixture-session',
+                  roles: [],
+                  systemPrompt: '',
+                  prepareAccess: () => actionSurface.ownerAccess,
+                },
+              }
+            : {}),
+          createAgent: (options) => {
+            driver = options;
+            return runner(backend);
+          },
+        });
+        expect(driver.processEnv.PATH?.split(':')[0]).toBe(join(toolsRoot, 'current', 'bin'));
+        expect(driver.command).not.toBe(join(toolsRoot, 'current', 'bin', backend));
+        expect(driver.command?.startsWith(toolsRoot)).not.toBe(true);
+        if (backend === 'codex')
+          expect(driver.shellEnvironment?.PATH?.split(':')[0]).toBe(
+            join(toolsRoot, 'current', 'bin')
+          );
+        expect(driver.deniedReadPaths).toContain(join(root, 'owner-home'));
+        expect(
+          driver.deniedReadPaths.some(
+            (path) => toolsRoot === path || toolsRoot.startsWith(`${path}/`)
+          )
+        ).toBe(false);
+        expect(driver.sandbox).toBe('workspace-write');
+        await session.stop();
+        rmSync(join(version, 'bin', 'python3'));
+        symlinkSync('/fixture/removed-python', join(version, 'bin', 'python3'));
+        const broken = createNativeSession({
+          backend,
+          model: 'fixture',
+          workspaceDir: join(root, 'workspace'),
+          runtimeRoot,
+          actionSurface,
+          timeout: 1000,
+          maxTurns: 1,
+          toolsRoot,
+          sessionPool: pool,
+          createAgent: (options) => {
+            driver = options;
+            return runner(backend);
+          },
+        });
+        expect(driver.processEnv.PATH?.split(delimiter)[0]).toBe(join(toolsRoot, 'current', 'bin'));
+        if (backend === 'codex') expect(driver.shellEnvironment?.PATH).toBe(driver.processEnv.PATH);
+        await broken.stop();
+        chmodSync(root, 0o777);
+        expect(() =>
+          createNativeSession({
+            backend,
+            model: 'fixture',
+            workspaceDir: join(root, 'workspace'),
+            runtimeRoot,
+            actionSurface,
+            timeout: 1000,
+            maxTurns: 1,
+            toolsRoot,
+            createAgent: () => runner(backend),
+          })
+        ).toThrow(/Unsafe tools_root ancestor/);
+        chmodSync(root, 0o700);
+        chmodSync(toolsRoot, 0o777);
+        expect(() =>
+          createNativeSession({
+            backend,
+            model: 'fixture',
+            workspaceDir: join(root, 'workspace'),
+            runtimeRoot,
+            actionSurface,
+            timeout: 1000,
+            maxTurns: 1,
+            toolsRoot,
+            createAgent: () => runner(backend),
+          })
+        ).toThrow(/Unsafe tools_root/);
+        chmodSync(toolsRoot, 0o755);
+        expect(() =>
+          createNativeSession({
+            backend,
+            model: 'fixture',
+            workspaceDir: join(root, 'workspace'),
+            runtimeRoot,
+            actionSurface,
+            timeout: 1000,
+            maxTurns: 1,
+            toolsRoot,
+            sessionPool: pool,
+            deniedReadPaths: [toolsRoot],
+            createAgent: () => runner(backend),
+          })
+        ).toThrow(/tools_root.*read deny/);
+      } finally {
+        pool.dispose();
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.each([
+    ['claude', 'missing-root'],
+    ['claude', 'missing-current'],
+    ['claude', 'dangling-current'],
+    ['claude', 'broken-manifest'],
+    ['codex', 'missing-root'],
+    ['codex', 'missing-current'],
+    ['codex', 'dangling-current'],
+    ['codex', 'broken-manifest'],
+  ] as const)('keeps a stable session PATH for %s with %s', async (backend, state) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'toolkit-pending-')));
+    const toolsRoot = join(root, 'tools');
+    let driver!: NativeDriverOptions;
+    const pool = new SessionPool({ cleanupInterval: 0 });
+    if (state !== 'missing-root') mkdirSync(toolsRoot);
+    if (state === 'dangling-current') symlinkSync('v-missing', join(toolsRoot, 'current'));
+    if (state === 'broken-manifest') {
+      mkdirSync(join(toolsRoot, 'v-broken'));
+      writeFileSync(join(toolsRoot, 'v-broken', 'manifest.json'), '{');
+      symlinkSync('v-broken', join(toolsRoot, 'current'));
+    }
+    try {
+      const session = createNativeSession({
+        backend,
+        model: 'fixture',
+        workspaceDir: join(root, 'workspace'),
+        runtimeRoot: join(root, 'runtime'),
+        toolsRoot,
+        actionSurface: surface(),
+        sessionPool: pool,
+        timeout: 1000,
+        maxTurns: 1,
+        createAgent: (options) => {
+          driver = options;
+          return runner(backend);
+        },
+      });
+      const expected =
+        state === 'missing-root'
+          ? process.env.PATH
+          : `${join(toolsRoot, 'current', 'bin')}${delimiter}${process.env.PATH}`;
+      expect(driver.processEnv.PATH).toBe(expected);
+      expect(driver.command).toBe(join(hostBin, backend));
+      if (backend === 'codex') expect(driver.shellEnvironment?.PATH).toBe(expected);
+      if (state === 'missing-current') {
+        mkdirSync(join(toolsRoot, 'v-installed', 'bin'), { recursive: true });
+        writeFileSync(join(toolsRoot, 'v-installed', 'bin', 'python3'), 'new toolkit');
+        symlinkSync('v-installed', join(toolsRoot, 'current'));
+        expect(
+          readFileSync(join(driver.processEnv.PATH!.split(delimiter)[0]!, 'python3'), 'utf8')
+        ).toBe('new toolkit');
+      }
+      await session.stop();
+    } finally {
+      pool.dispose();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('one owner native session', () => {
   it("writes the host's sandbox proxy ports into the Claude workspace settings", async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'native-proxy-workspace-'));
@@ -386,6 +630,7 @@ describe('one owner native session', () => {
           .sort()
       ).toEqual([
         'deliver.telegram.file',
+        'document.render',
         'drive.download',
         'drive.read',
         'graph.query',

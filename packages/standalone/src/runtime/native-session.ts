@@ -2,9 +2,11 @@ import type { JudgmentAccess } from '@jungjaehoon/mama-core';
 import { memberSystemLayers } from './member-system-prompt.js';
 import { backendEnvironment, credentialReadPaths, normalizeReadPaths } from './backend-security.js';
 import { memberClaudeTmpDir } from './member-paths.js';
+import { assertToolsOwnership, assertToolsReadable } from './tools-paths.js';
+import { findExecutable } from '../cli/launch-files.js';
 import { untrustedToolData } from '../utils/untrusted-content.js';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type {
   ActionCall,
@@ -57,6 +59,7 @@ export const OWNER_RUNTIME_SESSION_KEY = 'owner:runtime';
 
 export interface NativeDriverOptions {
   backend: RuntimeBackend;
+  command?: string;
   model: string;
   workspaceDir: string;
   cwd: string;
@@ -100,6 +103,7 @@ export interface NativeSessionOptions {
   workspaceDir: string;
   runtimeRoot: string;
   actionSurface: ActionSurface;
+  toolsRoot?: string;
   principal?: {
     principalId: string;
     agentId: string;
@@ -213,18 +217,25 @@ function driverOptions(
   bridge: NativeDriverOptions['createSubagentBridge'],
   webTools: boolean
 ): NativeDriverOptions {
-  const path = process.env.PATH;
+  if (options.toolsRoot) assertToolsOwnership(options.toolsRoot);
+  // Pin the stable path once the host owns the root; installation can fill it later.
+  const path =
+    options.toolsRoot && existsSync(options.toolsRoot)
+      ? `${join(options.toolsRoot, 'current', 'bin')}:${process.env.PATH ?? ''}`
+      : process.env.PATH;
   const configDir = options.claudeConfigDir;
-  if (options.backend === 'codex' && !path?.trim()) {
+  if (options.backend === 'codex' && !process.env.PATH?.trim()) {
     throw new Error('Owner Codex shell requires the host PATH');
   }
   return {
     backend: options.backend,
+    command: findExecutable(options.backend),
     ...(options.principal !== undefined && options.backend === 'claude' && configDir !== undefined
       ? { beforeSpawn: () => removePersonalClaudeEmail(configDir) }
       : {}),
     processEnv: {
       ...backendEnvironment(),
+      ...(path === undefined ? {} : { PATH: path }),
       ...(options.principal === undefined ? {} : { TMPDIR: join(options.workspaceDir, '.tmp') }),
       // A member's own config dir keeps its sessions and CLI state out of the owner's. The
       // credential store follows the CLI's own key rule: an explicit store dir, else the config
@@ -321,8 +332,10 @@ function createDriver(
   bridge: NativeDriverOptions['createSubagentBridge'],
   webTools: boolean
 ): IModelRunner {
+  if (!nativeOptions.command) throw new Error(`${options.backend} is missing from the host PATH`);
   if (options.backend === 'codex') {
     return new CodexRuntimeProcess({
+      command: nativeOptions.command,
       hostRootDir: options.runtimeRoot,
       model: options.model,
       cwd: nativeOptions.cwd,
@@ -357,6 +370,7 @@ function createDriver(
     allowedActions: options.principal?.prepareAccess().actions,
   });
   return new PersistentCLIAdapter({
+    command: nativeOptions.command,
     workspaceDir: options.workspaceDir,
     model: options.model,
     mcpConfigPath,
@@ -414,6 +428,7 @@ export function createNativeSession(options: NativeSessionOptions): NativeSessio
     options.principal === undefined
       ? [...new Set([...readPaths.map((path) => resolve(path)), ...normalizeReadPaths(readPaths)])]
       : normalizeReadPaths(readPaths);
+  if (options.toolsRoot) assertToolsReadable(options.toolsRoot, deniedReadPaths);
   if (options.backend === 'claude')
     ensureClaudeCallerHook(
       options.workspaceDir,
