@@ -137,7 +137,9 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
    answered in plain sentences and searched the web; it also quoted the owner's account email,
    which personal sessions no longer see (#476, live from 2026-10-13 10:49 KST,
    [check](checks.md#a-personal-session-does-not-give-the-model-the-owners-account-email-476-2026-10-13)).
-   Next: the co-owner's DM and a rule change asked in a DM on the new build, then P10.2.
+   P10.2, restart recovery per person, merged (#477) and live from 2026-10-13 11:18 KST
+   ([check](checks.md#p102-restart-recovery-per-person-477-2026-10-13)). Next: P10.3; still to check
+   live: the co-owner's DM and a rule change asked in a DM.
 6. Paraphrase search: closed on 2026-10-07 without a host change
    ([check](checks.md#fusion-variants-with-both-embeddings-2026-10-07)). Three paraphrases sit
    outside the vector candidates; four fusions on e5 and on EmbeddingGemma 2 either move nothing
