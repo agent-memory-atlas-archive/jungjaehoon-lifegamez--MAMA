@@ -147,9 +147,12 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
    ([check](checks.md#p104-plan-pass-2026-10-13)); P10.4a merged (#481, #482) and live from
    2026-10-14 01:58 KST ([check](checks.md#p104a-personal-jobs-cron-and-heartbeat-481-482-2026-10-14));
    P10.4b, event notices, merged (#483) and live from 05:22 KST
-   ([check](checks.md#p104b-event-notices-483-2026-10-14)). Next: P10.4c (#484); still to check live: a
-   personal job, a notice to the co-owner, an enrollment from an owner's DM, the co-owner's DM, a rule
-   change asked in a DM.
+   ([check](checks.md#p104b-event-notices-483-2026-10-14)); P10.4c, the document toolkit with a host
+   renderer, merged (#484) and live from 08:10 KST
+   ([check](checks.md#p104c-a-managed-document-toolkit-and-a-host-renderer-484-2026-10-14)). Next: P10.5,
+   then P10.6; still to check live: a personal job, a notice to the co-owner, a PPTX rendered and checked
+   in a DM, an enrollment from an owner's DM, the co-owner's DM, a rule change asked in a DM. Open owner
+   decision: web tools in owner-role notice turns (Codex security advisory on #483).
 6. Paraphrase search: closed on 2026-10-07 without a host change
    ([check](checks.md#fusion-variants-with-both-embeddings-2026-10-07)). Three paraphrases sit
    outside the vector candidates; four fusions on e5 and on EmbeddingGemma 2 either move nothing
