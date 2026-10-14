@@ -162,7 +162,10 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
    check live (the DM now reads Kakao chats, owner-confirmed): a personal job, a notice to the co-owner, a PPTX rendered and
    checked in a DM, an enrollment from an owner's DM, a rule change asked in a DM, and a member without the
    owner role in the group. Open owner decision: web tools in owner-role notice turns (Codex security
-   advisory on #483). Follow-up: the room enrollment floor in core observation visibility.
+   advisory on #483). Owner actions that change common state (management, enrollment, the time zone,
+   common skills) now need the common channel or the person's DM, as owner policy did (#491, live from
+   2026-10-15 00:47 KST, [check](checks.md#owner-actions-change-common-state-only-from-the-common-channel-491-2026-10-15)).
+   The room enrollment floor in core observation visibility waits for a live room turn that needs graph reads.
 6. Paraphrase search: closed on 2026-10-07 without a host change
    ([check](checks.md#fusion-variants-with-both-embeddings-2026-10-07)). Three paraphrases sit
    outside the vector candidates; four fusions on e5 and on EmbeddingGemma 2 either move nothing
