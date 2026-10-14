@@ -149,8 +149,9 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
    P10.4b, event notices, merged (#483) and live from 05:22 KST
    ([check](checks.md#p104b-event-notices-483-2026-10-14)); P10.4c, the document toolkit with a host
    renderer, merged (#484) and live from 08:10 KST
-   ([check](checks.md#p104c-a-managed-document-toolkit-and-a-host-renderer-484-2026-10-14)). Next: P10.5,
-   then P10.6; still to check live: a personal job, a notice to the co-owner, a PPTX rendered and checked
+   ([check](checks.md#p104c-a-managed-document-toolkit-and-a-host-renderer-484-2026-10-14)); P10.5, skills
+   per person, merged (#485) and live from 10:33 KST
+   ([check](checks.md#p105-skills-per-person-485-2026-10-14)). Next: P10.6, then P10.7; still to check live: a personal job, a notice to the co-owner, a PPTX rendered and checked
    in a DM, an enrollment from an owner's DM, the co-owner's DM, a rule change asked in a DM. Open owner
    decision: web tools in owner-role notice turns (Codex security advisory on #483).
 6. Paraphrase search: closed on 2026-10-07 without a host change
