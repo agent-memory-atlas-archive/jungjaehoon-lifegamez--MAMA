@@ -151,9 +151,18 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
    renderer, merged (#484) and live from 08:10 KST
    ([check](checks.md#p104c-a-managed-document-toolkit-and-a-host-renderer-484-2026-10-14)); P10.5, skills
    per person, merged (#485) and live from 10:33 KST
-   ([check](checks.md#p105-skills-per-person-485-2026-10-14)). Next: P10.6, then P10.7; still to check live: a personal job, a notice to the co-owner, a PPTX rendered and checked
-   in a DM, an enrollment from an owner's DM, the co-owner's DM, a rule change asked in a DM. Open owner
-   decision: web tools in owner-role notice turns (Codex security advisory on #483).
+   ([check](checks.md#p105-skills-per-person-485-2026-10-14)). P10.6, durable erasure and a two-step stop,
+   merged (#486) and live from 14:39 KST
+   ([check](checks.md#p106-durable-erasure-per-member-waiting-receipt-recovery-and-a-two-step-stop-486-2026-10-14));
+   P10.7, members in the common channel, merged (#489) and live from 18:48 KST
+   ([check](checks.md#p107-members-in-the-common-channel-489-2026-10-14)). The owner's DM failed a Kakao
+   question because a DM was never told where sources live; fixed in #487 and #488
+   ([check](checks.md#live-a-kakao-question-in-the-owners-dm-and-the-estimate-board-2026-10-14)). P10 is
+   built. Next: release mama-core 8.7.0 and mama-os 0.76.0 with the user guide for people and DMs; still to
+   check live: the Kakao question again, a personal job, a notice to the co-owner, a PPTX rendered and
+   checked in a DM, an enrollment from an owner's DM, a rule change asked in a DM, and a member without the
+   owner role in the group. Open owner decision: web tools in owner-role notice turns (Codex security
+   advisory on #483). Follow-up: the room enrollment floor in core observation visibility.
 6. Paraphrase search: closed on 2026-10-07 without a host change
    ([check](checks.md#fusion-variants-with-both-embeddings-2026-10-07)). Three paraphrases sit
    outside the vector candidates; four fusions on e5 and on EmbeddingGemma 2 either move nothing
