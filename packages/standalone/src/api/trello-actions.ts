@@ -49,9 +49,12 @@ function permittedBoards(
   principals: () => PrincipalRepository
 ): TrelloBoardChannel[] {
   const boards = connector.boards();
+  // A room reads only its granted boards, even for a sender who gained the owner role while the
+  // room turn was queued.
   if (
     access.principalId === ports.ownerPrincipalId ||
-    holdsOwnerRole(principals(), access.principalId)
+    ((access as { roomChannel?: string }).roomChannel === undefined &&
+      holdsOwnerRole(principals(), access.principalId))
   )
     return boards;
   const granted = access.channels?.trello ?? [];

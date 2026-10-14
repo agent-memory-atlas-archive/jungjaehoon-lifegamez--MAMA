@@ -14,7 +14,7 @@ import {
 } from '../gateways/telegram-message-ledger.js';
 import { createMemberSession } from './member-session.js';
 import { ownerDataReadPaths, ownerNativeDataReadPaths } from './backend-security.js';
-import { validateMemberRoot, setAsideMemberPaths } from './member-paths.js';
+import { memberPaths, validateMemberRoot, setAsideMemberPaths } from './member-paths.js';
 import { resolvePrincipalAccess } from './principal-access.js';
 import {
   beginModelRun,
@@ -33,14 +33,16 @@ import {
   type MemoryScopeRef,
 } from '@jungjaehoon/mama-core';
 import { randomUUID } from 'node:crypto';
-import { join, isAbsolute } from 'node:path';
+import { basename, join, isAbsolute } from 'node:path';
+import { copyFileSync, mkdirSync } from 'node:fs';
+import type { OwnerAttachment } from '../gateways/telegram-attachments.js';
+import type { JsonValue } from '@jungjaehoon/mama-core/knowledge';
 import type { ServerResponse } from 'node:http';
 import type { NativeSessionHandle } from '@jungjaehoon/mama-core/runtime/runtime';
 import type { NativeModelRunPort } from '@jungjaehoon/mama-core/runtime/native-turn';
 import { createStoredSourceReader } from '../api/stored-source-reader.js';
 import type { AttachmentActionPorts } from '../api/attachment-actions.js';
 import { credentialReadPaths } from './backend-security.js';
-import { memberPaths, otherMemberReadPaths } from './member-paths.js';
 import { createPersistentReportStore } from '../api/report-persistence.js';
 import { ObsidianWriter } from '../wiki/obsidian-writer.js';
 import { RawStore } from '../storage/source-archive.js';
@@ -64,7 +66,11 @@ import { storedSourceFamilies } from '../connectors/framework/stored-index-read.
 import { createOwnerPolicyProvider, type OwnerPolicyProvider } from './owner-policy.js';
 import { readSessionStartInput } from './session-start-context.js';
 import { ChatSources } from '../storage/chat-sources.js';
-import type { OwnerMessageInput, OwnerHostExchangeInput } from '../gateways/turn-contract.js';
+import type {
+  OwnerMessageInput,
+  OwnerHostExchangeInput,
+  TurnIntake,
+} from '../gateways/turn-contract.js';
 import { createJevClient } from '../replay/jev-client.js';
 import { createRecordOrders, type RecordOrderEvent } from './record-orders.js';
 import { initTokenEstimator } from '@jungjaehoon/mama-core/runtime/token-estimator';
@@ -93,6 +99,8 @@ export interface OwnerRuntimeOptions {
   timeZone: TimeZoneSetting;
   workspaceDir: string;
   ownerPrincipalId: string;
+  commonChannelId?: string;
+  roomChannels?: readonly string[];
   agentId: string;
   scopes: readonly MemoryScopeRef[];
   connectors?: readonly string[];
@@ -169,8 +177,15 @@ export interface OwnerRuntime {
   readonly intake: StimulusIntake;
   readonly acceptSourceDelta: StimulusIntake['acceptSourceDelta'];
   serveMember(principalId: string): Promise<StimulusIntake>;
-  memberIntake(principalId: string): StimulusIntake;
-  principalPaths(principalId: string): { workspaceDir: string; downloadsDir: string };
+  /** `deferIncoming` is set while an erasure has the member retired. */
+  memberIntake(
+    principalId: string,
+    roomChannel?: string
+  ): StimulusIntake & Pick<TurnIntake, 'deferIncoming'>;
+  principalPaths(
+    principalId: string,
+    roomChannel?: string
+  ): { workspaceDir: string; downloadsDir: string };
   completeMemberEnrollment(selection: MemberSelection): Promise<ActionResult>;
   recordHostExchange(input: OwnerHostExchangeInput): void;
   beginStop(): void;
@@ -357,6 +372,15 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       archive.saveOwnerMessage({ ...message, senderPrincipalId: id });
       archive.saveReply({ ...reply, messageRef: message.id, author: 'host' });
     };
+    // A member's chat archive: its personal records for a DM, the common records for a room
+    // (as its room session keeps them).
+    const memberChat = (id: string, room?: string) =>
+      new ChatSources(
+        sourceStore,
+        database.adapter,
+        room === undefined ? id : options.ownerPrincipalId,
+        `member-agent:${id}`
+      );
     const storedSourceReader = createStoredSourceReader({
       adapter: database.adapter,
       rawStore: () => sourceStore,
@@ -392,6 +416,7 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
         })()
       : {};
     const surface = createActionSurface({
+      commonChannelId: options.commonChannelId,
       runtimeRoot: options.runtimeRoot,
       skillPaths: {
         toolsRoot: options.toolsRoot,
@@ -412,17 +437,15 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
         ...(memberRoot === undefined
           ? {}
           : {
-              principalPaths: (id: string) => memberPaths(memberRoot, id),
+              principalPaths: (id: string) => {
+                sessions.get(id);
+                return members.get(id)!.activePaths();
+              },
               // Linked document resources have the same private-data boundary as native tools.
-              principalDeniedReadPaths: (id: string) => [
-                ...ownerDataReadPaths(options),
-                memberPaths(memberRoot, id).claudeConfigDir,
-                ...otherMemberReadPaths(
-                  memberRoot,
-                  id,
-                  principals.listMembers().map((row) => row.principalId)
-                ),
-              ],
+              principalDeniedReadPaths: (id: string) => {
+                sessions.get(id);
+                return members.get(id)!.activeDeniedReadPaths();
+              },
             }),
       },
       memberDirectoryChange: sessions.exclusive,
@@ -591,7 +614,7 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
               downloadsDir: options.attachmentPorts?.downloadsDir ?? '',
             };
           sessions.get(principalId);
-          return members.get(principalId)!.paths;
+          return members.get(principalId)!.activePaths();
         },
       },
       ...(options.driveDelivery === undefined
@@ -677,6 +700,56 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
         return (
           person?.kind === 'member' && person.status === 'active' && holdsOwnerRole(principals, id)
         );
+      },
+      rerouteOwnerMessage: async (row, sender) => {
+        const person = principals.findById(sender);
+        if (
+          person?.kind !== 'member' ||
+          person.status !== 'active' ||
+          !row.stimulusId.startsWith(`telegram:${row.channelKey}:`) ||
+          !options.roomChannels?.includes(row.channelKey)
+        )
+          return false;
+        await serveMemberOnLane(sender);
+        // The room session cannot read the common downloads; its files go to the room's own.
+        const payload = row.payload as {
+          input?: { attachments?: OwnerAttachment[] } & Record<string, unknown>;
+        };
+        let input = payload.input;
+        if (input?.attachments?.length) {
+          const target = join(
+            members.get(sender)!.roomSession(row.channelKey).paths.downloadsDir,
+            'telegram'
+          );
+          mkdirSync(target, { recursive: true });
+          input = {
+            ...input,
+            attachments: input.attachments.map((attachment) => {
+              if (!('path' in attachment)) return attachment;
+              const path = join(target, basename(attachment.path));
+              copyFileSync(attachment.path, path);
+              return { ...attachment, path };
+            }),
+          };
+        }
+        // A deterministic handoff ref survives a crash between this append and the common
+        // acknowledgement. Mailbox ref identities are global; keep the evidence handles.
+        intakeRuntime.accept({
+          id: row.stimulusId,
+          kind: 'owner_message',
+          principalId: sender,
+          channelKey: row.channelKey,
+          occurredAt: row.occurredAt,
+          refs: row.refs.map((ref) => ({ ...ref, refId: `room-handoff:${sender}:${ref.refId}` })),
+          replyTo: row.replyTo,
+          payload: {
+            ...(row.payload as object),
+            ...(input === undefined ? {} : { input }),
+            senderPrincipalId: sender,
+            roomChannel: row.channelKey,
+          } as unknown as JsonValue,
+        });
+        return true;
       },
       wikiEnabled: options.wiki?.enabled ?? false,
       formattingRoutes: options.formattingRoutes ?? {
@@ -810,17 +883,25 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
     };
     for (const member of activeMembers)
       if (!surface.memberRecords.isBlocked(member.principalId)) prepareMember(member.principalId);
-    const executionAccess = (principalId: string) =>
+    const executionAccess = (principalId: string, sessionKey?: string) =>
       principalId === options.ownerPrincipalId
         ? access
         : resolvePrincipalAccess(principalId, {
             adapter: database.adapter,
             ownerAccess: access,
             agentId: `member-agent:${principalId}`,
+            sessionKey,
+            commonChannelId: options.commonChannelId,
           });
     const socketDispatch: ActionDispatcher = Object.assign(
       async (...[call, context]: Parameters<ActionDispatcher>) => {
-        context = { ...context, access: executionAccess(context.access.principalId) };
+        context = {
+          ...context,
+          access: executionAccess(
+            context.access.principalId,
+            members.get(context.access.principalId)?.activeSessionKey()
+          ),
+        };
         const caller = context.session?.nativeCaller;
         if (caller !== undefined) {
           const principalSession = sessions.get(context.access.principalId).native;
@@ -851,6 +932,7 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
         executionAccess(callerAccess.principalId);
         const ceiling = sessions.replaySourceEndMs(callerAccess.principalId);
         return {
+          ...members.get(callerAccess.principalId)?.activeSessionFacts(),
           ...(ceiling === undefined ? {} : { replaySourceEndMs: ceiling }),
           ...(request.session?.nativeCaller === undefined
             ? {}
@@ -869,24 +951,24 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
                 input?: OwnerMessageInput['payload'];
                 senderPrincipalId?: string;
                 deferredMemberMessage?: boolean;
+                roomChannel?: string;
               }
             | undefined;
           if (row.kind === 'owner_message' && payload?.deferredMemberMessage) {
             if (!intakeRuntime.servesPrincipal(row.principalId))
               await serveMemberOnLane(row.principalId);
-            const archive = new ChatSources(
-              sourceStore,
-              database.adapter,
-              row.principalId,
-              `member-agent:${row.principalId}`
-            );
+            // A room message belongs to its room session's common archive, never to the
+            // member's personal records.
+            const room = payload.roomChannel;
+            const archive = memberChat(row.principalId, room);
             const existing = database.adapter
               .prepare(
                 "SELECT current_observation_id, metadata_json FROM connector_event_index WHERE source_connector='chat' AND source_id=? AND memory_scope_id=?"
               )
-              .get(row.stimulusId, row.principalId) as
-              | { current_observation_id: string; metadata_json: string }
-              | undefined;
+              .get(
+                row.stimulusId,
+                room === undefined ? row.principalId : options.ownerPrincipalId
+              ) as { current_observation_id: string; metadata_json: string } | undefined;
             let observation: string;
             let input = payload.input;
             if (existing) {
@@ -966,19 +1048,29 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       .drainOnce()
       .catch((error) => console.error('[Member management] recovery failed', error));
     const intake = createStimulusIntake(intakeRuntime, options.ownerPrincipalId, chat);
-    const createMemberIntake = (id: string, member?: ReturnType<typeof createMemberSession>) => {
-      const archive =
-        member?.chat ?? new ChatSources(sourceStore, database.adapter, id, `member-agent:${id}`);
-      const direct = createStimulusIntake(intakeRuntime, id, {
-        saveOwnerMessage: (input) => {
-          executionAccess(id);
-          if (!intakeRuntime.servesPrincipal(id))
-            throw new Error(`Member session is not served: ${id}`);
-          return archive.saveOwnerMessage(input);
+    const createMemberIntake = (
+      id: string,
+      member?: ReturnType<typeof createMemberSession>,
+      room?: string
+    ) => {
+      const archive = member?.chat ?? memberChat(id, room);
+      // A room intake made while the member was retired stays a room intake after the erasure
+      // ends: its message runs in the room session and is kept in the room's common archive.
+      const direct = createStimulusIntake(
+        intakeRuntime,
+        id,
+        {
+          saveOwnerMessage: (input) => {
+            executionAccess(id);
+            if (!intakeRuntime.servesPrincipal(id))
+              throw new Error(`Member session is not served: ${id}`);
+            return archive.saveOwnerMessage(input);
+          },
+          saveReply: (input) => archive.saveReply(input),
+          hasOwnerMessage: (ref) => archive.hasOwnerMessage(ref),
         },
-        saveReply: (input) => archive.saveReply(input),
-        hasOwnerMessage: (ref) => archive.hasOwnerMessage(ref),
-      });
+        room
+      );
       const deferred = () =>
         surface.memberRecords.isBlocked(id) && !intakeRuntime.servesPrincipal(id);
       return {
@@ -1001,6 +1093,8 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
             payload: {
               text: input.text,
               deferredMemberMessage: true,
+              // A room message waits with its room, so it runs in that room session.
+              ...(room === undefined ? {} : { roomChannel: room }),
               ...(input.payload === undefined ? {} : { input: input.payload }),
               ...(input.senderPrincipalId === undefined
                 ? {}
@@ -1118,19 +1212,33 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
       intake,
       acceptSourceDelta: intake.acceptSourceDelta,
       serveMember: serveMemberOnLane,
-      memberIntake: (id) => {
+      memberIntake: (id, room) => {
         // Erasure owns restoration once it unserves the member. Intake callers must not
         // recreate a writer while the host takes and delivers that member's snapshot.
         if (surface.memberRecords.isBlocked(id) && !intakeRuntime.servesPrincipal(id))
-          return createMemberIntake(id);
+          return createMemberIntake(id, undefined, room);
         if (stopped) throw new Error('Cannot obtain member intake after runtime stop');
         executionAccess(id);
         const intake = memberIntakes.get(id);
         if (!intake || !intakeRuntime.servesPrincipal(id))
           throw new Error(`Member session is not served: ${id}`);
-        return intake;
+        if (room === undefined) return intake;
+        const session = members.get(id)!.roomSession(room);
+        return createStimulusIntake(
+          intakeRuntime,
+          id,
+          {
+            saveOwnerMessage: (input) => {
+              executionAccess(id, session.native.sessionKey);
+              return session.chat.saveOwnerMessage(input);
+            },
+            saveReply: (input) => session.chat.saveReply(input),
+            hasOwnerMessage: (ref) => session.chat.hasOwnerMessage(ref),
+          },
+          room
+        );
       },
-      principalPaths: (principalId) => {
+      principalPaths: (principalId, room) => {
         if (principalId === options.ownerPrincipalId) {
           const downloadsDir = options.attachmentPorts?.downloadsDir;
           if (!downloadsDir?.trim()) throw new Error('Owner downloads directory is required');
@@ -1141,7 +1249,8 @@ export async function createOwnerRuntime(options: OwnerRuntimeOptions): Promise<
         }
         executionAccess(principalId);
         sessions.get(principalId);
-        return members.get(principalId)!.paths;
+        const member = members.get(principalId)!;
+        return room === undefined ? member.paths : member.roomSession(room).paths;
       },
       completeMemberEnrollment: (selection) => {
         if (stopping) return Promise.reject(new Error('Cannot enroll a member after runtime stop'));

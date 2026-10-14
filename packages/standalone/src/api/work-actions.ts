@@ -18,8 +18,15 @@ import {
 
 export interface WorkPorts {
   knowledge: Pick<Knowledge, 'createWork' | 'reviseWork' | 'readWork' | 'appendLink' | 'findLink'>;
-  /** sourceRefs are observationRef handles; core stores them unchecked, so the product checks them. */
-  observationExists: (observationId: string) => boolean;
+  /**
+   * sourceRefs are observationRef handles; core stores them unchecked, so the product checks them,
+   * under the caller's own source reads when those are narrower than the common session's.
+   */
+  observationExists: (observationId: string, context: ActionContext) => boolean;
+  /** The observations at either end of an edge, which a link to that edge also cites. */
+  edgeObservations: (edgeId: string) => string[];
+  /** The scopes the current head of a work item is bound to. */
+  workBindings: (commitmentId: string) => Array<{ kind: string; id: string }>;
 }
 
 export interface WorkListPorts {
@@ -998,6 +1005,10 @@ export async function runWorkListView(
     throw invalidInput('work.list ids are only valid with view=detail or view=links');
   }
   if (view === 'detail') return workListDetail(input, ctx);
+  // The links view reads the graph, whose visibility does not know a room's enrollment floor;
+  // a room (an access with roomChannel, principal-access.ts) has no graph reads.
+  if (view === 'links' && (ctx.access as { roomChannel?: string }).roomChannel !== undefined)
+    throw invalidInput('work.list view=links is not available in a group room session');
   if (view === 'links') return workListLinks(input, ctx);
   const requested = workListFilter(input);
   const filter =
@@ -1412,16 +1423,53 @@ function operationId(context: ActionContext, action: string): string {
   return context.operationId;
 }
 
-function assertSourceRefsExist(body: Record<string, unknown>, ports: WorkPorts): void {
-  if (!Array.isArray(body.sourceRefs)) return;
-  for (const ref of body.sourceRefs) {
-    if (typeof ref === 'string' && !ports.observationExists(ref)) {
-      // Echo only the caller's own input, as the core reference refusal does.
-      throw new JudgmentError(
-        'REFERENCE_NOT_FOUND',
-        `sourceRefs names an unavailable observation: ${ref}`
-      );
+function assertSourceRefsExist(
+  body: Record<string, unknown>,
+  ports: WorkPorts,
+  context: ActionContext
+): void {
+  const event = body.event as { evidenceRefs?: unknown } | undefined;
+  const roles = (body.set as { roles?: unknown } | undefined)?.roles;
+  const evidence: Array<[string, unknown]> = [
+    ['sourceRefs', body.sourceRefs],
+    ['event.evidenceRefs', event?.evidenceRefs],
+    ...(Array.isArray(roles) ? roles : []).map(
+      (role) =>
+        ['set.roles[].evidenceRefs', (role as { evidenceRefs?: unknown } | null)?.evidenceRefs] as [
+          string,
+          unknown,
+        ]
+    ),
+  ];
+  for (const [field, refs] of evidence)
+    for (const ref of Array.isArray(refs) ? refs : []) {
+      if (typeof ref === 'string' && !ports.observationExists(ref, context)) {
+        // Echo only the caller's own input, as the core reference refusal does.
+        throw new JudgmentError(
+          'REFERENCE_NOT_FOUND',
+          `${field} names an unavailable observation: ${ref}`
+        );
+      }
     }
+  // Core checks only that a linked observation exists; the caller must also read it, and both
+  // observation ends of a linked edge.
+  for (const link of Array.isArray(body.links)
+    ? (body.links as Array<{ target?: { kind?: unknown; id?: unknown } }>)
+    : []) {
+    const target = link?.target;
+    if (typeof target?.id !== 'string') continue;
+    const cited =
+      target.kind === 'observation'
+        ? [target.id]
+        : target.kind === 'edge'
+          ? ports.edgeObservations(target.id)
+          : [];
+    for (const ref of cited)
+      if (!ports.observationExists(ref, context))
+        throw new JudgmentError(
+          'REFERENCE_NOT_FOUND',
+          `links names an unavailable observation: ${ref}`
+        );
   }
 }
 
@@ -1505,7 +1553,7 @@ export function minimalWorkActionRegistrations(ports: WorkPorts): ActionRegistra
       exec: (input, context) => {
         const body = withEventEpoch(input as Record<string, unknown>, 'work.create');
         assertReplayEventDatetime(body, context, 'work.create');
-        assertSourceRefsExist(body, ports);
+        assertSourceRefsExist(body, ports, context);
         return ports.knowledge.createWork(
           {
             ...body,
@@ -1539,8 +1587,28 @@ export function minimalWorkActionRegistrations(ports: WorkPorts): ActionRegistra
       exec: (input, context) => {
         const body = withEventEpoch(input as Record<string, unknown>, 'work.revise');
         assertReplayEventDatetime(body, context, 'work.revise');
-        assertSourceRefsExist(body, ports);
+        assertSourceRefsExist(body, ports, context);
         const commitmentId = body.commitmentId as string;
+        // A revision becomes the head every reader sees, so a room revises only bound work whose
+        // every binding is within its grants (an access with roomChannel, principal-access.ts);
+        // an unbound head is readable by everyone.
+        const bindings =
+          (context.access as { roomChannel?: string }).roomChannel === undefined
+            ? undefined
+            : ports.workBindings(commitmentId);
+        if (
+          bindings !== undefined &&
+          (bindings.length === 0 ||
+            !bindings.every((binding) =>
+              context.access.scopes.some(
+                (scope) => scope.kind === binding.kind && scope.id === binding.id
+              )
+            ))
+        )
+          throw new JudgmentError(
+            'SCOPE_DENIED',
+            `${commitmentId} is also bound outside your granted projects; ask an owner to change it`
+          );
         return ports.knowledge.reviseWork(
           {
             ...commandFieldsFrom(body),
@@ -1660,10 +1728,24 @@ export function workLinkRegistration(ports: WorkPorts): ActionRegistration {
         evidenceRefs?: string[];
       };
       for (const ref of body.evidenceRefs ?? []) {
-        if (!ports.observationExists(ref))
+        if (!ports.observationExists(ref, context))
           throw new JudgmentError(
             'REFERENCE_NOT_FOUND',
             `evidenceRefs names an unavailable observation: ${ref}`
+          );
+      }
+      // Core checks only that a target observation exists; the caller must also read it.
+      const targetObservations =
+        body.to.kind === 'observation'
+          ? [body.to.id]
+          : body.to.kind === 'edge'
+            ? ports.edgeObservations(body.to.id)
+            : [];
+      for (const ref of targetObservations) {
+        if (!ports.observationExists(ref, context))
+          throw new JudgmentError(
+            'REFERENCE_NOT_FOUND',
+            `to names an unavailable observation: ${ref}`
           );
       }
       // A retried call finds its link before the heads are read again: the item may have been

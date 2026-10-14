@@ -23,6 +23,8 @@ function database(): DatabaseInstance {
       command_id TEXT PRIMARY KEY, principal_id TEXT, action TEXT, receipt_kind TEXT, receipt_key TEXT
     );
     CREATE TABLE judgment_commands (command_id TEXT PRIMARY KEY, record_id TEXT);
+    CREATE TABLE memory_scopes (id INTEGER PRIMARY KEY, kind TEXT, external_id TEXT);
+    CREATE TABLE memory_scope_bindings (memory_id TEXT, scope_id INTEGER);
   `);
   const insert = db.prepare('INSERT INTO decisions (id, kind, provenance_json) VALUES (?, ?, ?)');
   const rows: Array<[string, string, string | null]> = [
@@ -183,5 +185,14 @@ describe('owner rules keep the owner as their only author (owner, 2026-10-01)', 
     await expect(
       guarded.exec({ memory_id: 'owner-telegram', status: 'stale', reason: 'x' }, replay)
     ).rejects.toMatchObject({ name: 'denied' });
+    // With a common channel configured, an owner turn from another allowed group is refused.
+    const common = guardOwnerRules(retire.registration, db, OWNER, '-100123');
+    await expect(
+      common.exec(
+        { memory_id: 'owner-telegram', status: 'stale', reason: 'x' },
+        turn('telegram:-100999:9003')
+      )
+    ).rejects.toMatchObject({ name: 'denied' });
+    expect(retire.calls).toHaveLength(1);
   });
 });

@@ -189,6 +189,7 @@ export interface ActionSurfaceOptions {
   outboundAttempts?: (event: OutboundAttemptEvent) => void;
   knowledge: Knowledge;
   ownerPrincipalId: string;
+  commonChannelId?: string;
   agentId: string;
   scopes?: readonly MemoryScopeRef[];
   connectors?: readonly string[];
@@ -265,6 +266,19 @@ export function ownerMemoryScopes(
 }
 
 export function createActionSurface(options: ActionSurfaceOptions): ActionSurface {
+  // Whether the caller's own source reads (connectors, channels, enrollment floor) reach an
+  // observation; any refusal, erased or missing included, is not readable.
+  const observationReadable = (id: string, context: ActionContext): boolean => {
+    if (!options.storedSourceReader) return false;
+    try {
+      options.storedSourceReader.readObservation(id, context.access, undefined, {
+        content_limit: 1,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  };
   let principals: ReturnType<typeof createPrincipalRepository> | undefined;
   const memberDirectoryChange = options.memberDirectoryChange;
   const memberRecords = createMemberRecords({
@@ -348,7 +362,13 @@ export function createActionSurface(options: ActionSurfaceOptions): ActionSurfac
     .map((registration) =>
       registration.contract.name === 'memory.save' || registration.contract.name === 'memory.retire'
         ? guardMemberSharedRecords(
-            guardOwnerRules(registration, options.adapter, options.ownerPrincipalId),
+            guardOwnerRules(
+              registration,
+              options.adapter,
+              options.ownerPrincipalId,
+              options.commonChannelId,
+              observationReadable
+            ),
             options.adapter,
             options.ownerPrincipalId
           )
@@ -523,6 +543,7 @@ export function createActionSurface(options: ActionSurfaceOptions): ActionSurfac
       isOwnerMessageTurn: options.isOwnerMessageTurn,
     }),
     ...ownerPolicyActionRegistrations({
+      commonChannelId: options.commonChannelId,
       runtimeRoot: options.runtimeRoot,
       adapter: options.adapter,
       ownerPrincipalId: options.ownerPrincipalId,
@@ -559,10 +580,38 @@ export function createActionSurface(options: ActionSurfaceOptions): ActionSurfac
     ...workListActionRegistrations({ knowledge: options.knowledge, timeZone: options.timeZone }),
     ...minimalWorkActionRegistrations({
       knowledge: options.knowledge,
-      observationExists: (observationId) =>
-        options.adapter
-          .prepare('SELECT 1 FROM observation_versions WHERE observation_id = ? LIMIT 1')
-          .get(observationId) !== undefined,
+      observationExists: (observationId, context) =>
+        context.access.principalId === options.ownerPrincipalId
+          ? options.adapter
+              .prepare('SELECT 1 FROM observation_versions WHERE observation_id = ? LIMIT 1')
+              .get(observationId) !== undefined
+          : observationReadable(observationId, context),
+      workBindings: (commitmentId) =>
+        (
+          options.adapter
+            .prepare(
+              `SELECT s.kind, s.external_id FROM commitments c
+               JOIN memory_scope_bindings b ON b.memory_id = c.head_record_id
+               JOIN memory_scopes s ON s.id = b.scope_id
+               WHERE c.commitment_id = ?`
+            )
+            .all(commitmentId) as Array<{ kind: string; external_id: string }>
+        ).map((row) => ({ kind: row.kind, id: row.external_id })),
+      edgeObservations: (edgeId) => {
+        const edge = options.adapter
+          .prepare(
+            'SELECT subject_kind, subject_id, object_kind, object_id FROM twin_edges WHERE edge_id = ?'
+          )
+          .get(edgeId) as
+          | { subject_kind: string; subject_id: string; object_kind: string; object_id: string }
+          | undefined;
+        return edge === undefined
+          ? []
+          : [
+              ...(edge.subject_kind === 'observation' ? [edge.subject_id] : []),
+              ...(edge.object_kind === 'observation' ? [edge.object_id] : []),
+            ];
+      },
     }),
     ...reportActionRegistrations(reportPorts),
     ...wikiActionRegistrations(options.wikiPorts ?? {}),

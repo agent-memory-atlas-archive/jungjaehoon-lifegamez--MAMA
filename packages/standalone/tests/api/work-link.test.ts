@@ -35,6 +35,8 @@ describe('work.link and work.list view links', () => {
     const registration = minimalWorkActionRegistrations({
       knowledge,
       observationExists: () => false,
+      edgeObservations: () => [],
+      workBindings: () => [],
     }).find((candidate) => candidate.contract.name === 'work.link')!;
     link = async (input, operationId) =>
       registration.exec(input, { access, operationId } as never) as Promise<unknown>;
@@ -197,6 +199,8 @@ describe('work.link and work.list view links', () => {
     const registration = minimalWorkActionRegistrations({
       knowledge,
       observationExists: (id) => id === observation.observationId,
+      edgeObservations: () => [],
+      workBindings: () => [],
     }).find((candidate) => candidate.contract.name === 'work.link')!;
     const exec = async (input: Record<string, unknown>, operationId: string) =>
       registration.exec(input, { access, operationId } as never);
