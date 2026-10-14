@@ -159,7 +159,7 @@ decided to link. The agent reads them through `graph.query`. Jev, when the owner
    question because a DM was never told where sources live; fixed in #487 and #488
    ([check](checks.md#live-a-kakao-question-in-the-owners-dm-and-the-estimate-board-2026-10-14)). P10 is
    built. Next: release mama-core 8.7.0 and mama-os 0.76.0 with the user guide for people and DMs; still to
-   check live: the Kakao question again, a personal job, a notice to the co-owner, a PPTX rendered and
+   check live (the DM now reads Kakao chats, owner-confirmed): a personal job, a notice to the co-owner, a PPTX rendered and
    checked in a DM, an enrollment from an owner's DM, a rule change asked in a DM, and a member without the
    owner role in the group. Open owner decision: web tools in owner-role notice turns (Codex security
    advisory on #483). Follow-up: the room enrollment floor in core observation visibility.
