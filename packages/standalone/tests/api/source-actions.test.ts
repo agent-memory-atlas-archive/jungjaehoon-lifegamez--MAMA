@@ -300,9 +300,12 @@ describe('minimal source actions', () => {
       { action: 'source.search', input: { source: 'other-connector', query: 'term' } },
       { access }
     );
+    // Not worded as a permission problem, and the same for an unknown name as for an ungranted one.
+    const refusal =
+      'other-connector is not one of your readable connectors: connector-test. The start of your session lists each readable source with the chat families stored inside it; name that source.';
     expect(deniedSearch).toMatchObject({
       status: 'failed',
-      error: { code: 'connector_out_of_scope' },
+      error: { code: 'denied', message: refusal },
     });
     {
       const action = 'source.read';
@@ -312,7 +315,7 @@ describe('minimal source actions', () => {
       );
       expect(denied).toMatchObject({
         status: 'failed',
-        error: { code: 'denied' },
+        error: { code: 'denied', message: refusal },
       });
     }
     expect(stored.search).toHaveBeenCalledTimes(2);

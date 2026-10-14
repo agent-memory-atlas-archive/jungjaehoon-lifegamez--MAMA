@@ -76,8 +76,11 @@ function storedReader(ports: SourcePorts): StoredSourceReader {
 
 function assertGrantedSource(source: string, access: ActionContext['access']): void {
   if (access.connectors?.includes(source)) return;
+  // Not worded as a permission problem: the usual cause is a chat platform named directly
+  // although it is stored as a family inside another source. One message for unknown and
+  // ungranted names, so it never tells a member which other connectors exist.
   const error = new Error(
-    `principal ${access.principalId} may not read ${source}; readable connectors: ${(access.connectors ?? []).join(', ') || '(none)'}`
+    `${source} is not one of your readable connectors: ${[...(access.connectors ?? [])].sort().join(', ') || '(none)'}. The start of your session lists each readable source with the chat families stored inside it; name that source.`
   );
   error.name = 'denied';
   throw error;
@@ -180,7 +183,6 @@ export function sourceActionRegistrations(ports: SourcePorts): ActionRegistratio
     {
       contract: {
         name: 'source.search',
-        readsConnector: { fromInput: 'source' },
         summary:
           'Search or page preserved source observations. Search results are bounded navigation hits; read the cited observation explicitly for the original content.',
         inputSchema: sourceSchema,

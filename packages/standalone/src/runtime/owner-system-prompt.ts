@@ -26,7 +26,19 @@ export function ownerAdministrationRule(): string {
   );
 }
 
-function readableSourcesLine(families: readonly StoredSourceFamily[]): string {
+/** A family name comes from stored channel keys a source shapes: one short quoted label. */
+function familyLabel(family: string): string {
+  return JSON.stringify(
+    family
+      .replace(/[\p{Cc}<>]/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 40)
+  );
+}
+
+/** The stored sources a grant reads, with the chat families kept inside each and their counts. */
+export function readableSourcesLine(families: readonly StoredSourceFamily[]): string {
   const sources = new Map<string, StoredSourceFamily[]>();
   for (const row of families) {
     const rows = sources.get(row.source) ?? [];
@@ -36,9 +48,11 @@ function readableSourcesLine(families: readonly StoredSourceFamily[]): string {
   if (sources.size === 0) return '- Readable sources: none stored for this grant.';
   const inventory = [...sources].map(([source, rows]) => {
     const total = rows.reduce((sum, row) => sum + row.count, 0);
-    const named = rows.filter((row) => row.family !== null);
+    const named = rows.filter(
+      (row): row is StoredSourceFamily & { family: string } => row.family !== null
+    );
     if (named.length === 0) return `${source} (${total})`;
-    const counts = named.map((row) => `${row.family} ${row.count}`);
+    const counts = named.map((row) => `${familyLabel(row.family)} ${row.count}`);
     const bare = rows.find((row) => row.family === null);
     if (bare) counts.push(`bare ${bare.count}`);
     return `${source} (${total}; ${counts.join(', ')})`;
