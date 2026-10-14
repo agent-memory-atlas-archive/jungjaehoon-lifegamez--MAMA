@@ -8,7 +8,7 @@ nav_order: 5
 
 For setup and shared Telegram, Discord, and Slack delivery rules, see the [messengers guide](messengers.md).
 
-Telegram admits registered members in their own DMs and owners in the common group. Replies return to the input chat;
+Telegram admits registered members in their own DMs and in allowed groups: owners join the common session, other members get a session of their own for that group. Replies return to the input chat;
 reports, notifications, and security alerts use the routes in `delivery`. Set it up with
 [`mama init`](../start/owner-setup.md), using a bot token entered in your terminal.
 The daemon reads `MAMA_TELEGRAM_TOKEN` from the environment loaded by
@@ -37,10 +37,12 @@ the `owner` role and a separate session, workspace and personal records. The fir
 DM chat and checkpoints move to its personal scope; group chat stays common.
 
 An active member's private DM is admitted through the registry even when absent from
-`allowed_chats`. An allowed group admits only active members with the `owner` role. Unregistered
-and inactive senders get no reply. Owner DMs can read common records through MAMA actions;
-common changes must be requested in the common channel. DM sessions use member tools without
-web access. Enrolling members is not available yet.
+`allowed_chats`. In an allowed group, a member with the `owner` role talks to the common session;
+a member without it gets a session of its own for that group, under its grants. Unregistered and
+inactive senders get no reply. Owner DMs read common records through MAMA actions and can use the
+web; common changes must be requested in the common channel. Owners enroll members from their DMs
+or the common channel. See [People and their DMs](people.md) for enrollment, scheduled jobs,
+notices, skills, documents and record export.
 
 Send a private message to the bot and confirm the reply. `polling: false` stops
 inbound polling but does not prove another process is receiving messages.
