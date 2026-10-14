@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { basename, dirname, join } from 'node:path';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { strFromU8, unzipSync } from 'fflate';
 import { expect, it, vi } from 'vitest';
 import {
@@ -20,6 +20,7 @@ import { resolvePrincipalAccess } from '../../src/runtime/principal-access.js';
 import { OWNER_FILE_MAX_UPLOAD_BYTES, validateWorkspaceFile } from '../../src/api/file-delivery.js';
 import Database from '../../src/storage-sqlite.js';
 import { RawStore } from '../../src/storage/source-archive.js';
+import { outboundLedgerKey } from '../../src/gateways/telegram-message-ledger.js';
 
 interface FixtureData {
   id: string;
@@ -50,6 +51,11 @@ async function setup(toolsRoot?: string) {
         operationId,
         path,
       });
+      f.ledger.claim(`file:${operationId}`, {
+        deliveryTarget: `telegram:${f.memberDm}`,
+        payloadIdentity: createHash('sha256').update(fs.readFileSync(file.path)).digest('hex'),
+      });
+      f.ledger.markDelivered(`file:${operationId}`);
       return { sentAs: 'document' as const, size: file.size, messageId: 'fixture-accepted' };
     }),
     sendMemberText: vi.fn(async (access, text, operationId) => {
@@ -131,6 +137,7 @@ async function setup(toolsRoot?: string) {
         receipts.some((r) => !latestCommand || r.operationId === `${latestCommand}:receipt`)
       ).toBe(true)
     );
+    await f.runtime.surface.memberRecords.idle();
     const { text, operationId } = latestCommand
       ? receipts.find((r) => r.operationId === `${latestCommand}:receipt`)!
       : receipts.at(-1)!;
@@ -209,6 +216,12 @@ async function setup(toolsRoot?: string) {
     );
   return {
     ...f,
+    get runtime() {
+      return f.runtime;
+    },
+    get ledger() {
+      return f.ledger;
+    },
     telegram,
     uploads,
     receipts,
@@ -958,7 +971,11 @@ it.each(['created', 'rewritten', 'omitted_rewritten'] as const)(
         const rawAfter = rawStore.exportScope('chat', 'user', f.member);
         for (const store of ['raw_items', 'pending_core_projections'] as const)
           for (const row of raw[store]) expect(rawAfter[store]).toContainEqual(row);
-        expect(f.ledger.listForTelegramDm(f.memberDm)).toEqual(ledger);
+        expect(
+          f.ledger
+            .listForTelegramDm(f.memberDm)
+            .filter((entry) => entry.key !== `file:${receipt.commandId}:export`)
+        ).toEqual(ledger);
         expect(db.prepare('SELECT * FROM principal_erasure_receipts').all()).toEqual([]);
         expect(f.runtime.runtime.servesPrincipal(f.member)).toBe(true);
         expect([...f.pool.listSessions().values()].some((s) => s.sessionId === session)).toBe(
@@ -991,7 +1008,7 @@ it.each(['created', 'rewritten', 'omitted_rewritten'] as const)(
   }
 );
 
-it('retires before snapshot and export, includes retirement writes, and refuses unserved intake', async () => {
+it('retires before snapshot and export, includes retirement writes, and queues unserved intake', async () => {
   const f = await setup();
   const intake = f.runtime.memberIntake(f.member);
   const native = f.natives.get(f.member)!;
@@ -1013,32 +1030,15 @@ it('retires before snapshot and export, includes retirement writes, and refuses 
     order.push('export');
     expect(order).toEqual(['reset', 'stop', 'export']);
     expect(f.runtime.runtime.servesPrincipal(f.member)).toBe(false);
-    expect(() => f.runtime.memberIntake(f.member)).toThrow('Member session is not served');
-    expect(() =>
-      intake.acceptOwnerMessage({
-        id: refused,
-        channelKey: 'fixture',
-        occurredAt: Date.now(),
-        text: 'fixture refused message',
-      })
-    ).toThrow('Member session is not served');
-    expect(f.runtime.runtime.mailbox!.readInput(refused, f.member)).toBeNull();
-    const db = f.runtime.database.adapter;
-    expect(
-      db.prepare('SELECT * FROM connector_event_index WHERE source_id=?').get(refused)
-    ).toBeUndefined();
-    expect(
-      db.prepare('SELECT * FROM observation_versions WHERE source_id=?').get(refused)
-    ).toBeUndefined();
-    const raw = new Database(join(f.home, 'raw', 'chat', 'raw.db'));
-    try {
-      expect(raw.prepare('SELECT * FROM raw_items WHERE source_id=?').get(refused)).toBeUndefined();
-      expect(
-        raw.prepare('SELECT * FROM pending_core_projections WHERE raw_source_id=?').get(refused)
-      ).toBeUndefined();
-    } finally {
-      raw.close();
-    }
+    expect(f.runtime.memberIntake(f.member)).toBeDefined();
+    const receipt = intake.acceptOwnerMessage({
+      id: refused,
+      channelKey: 'fixture',
+      occurredAt: Date.now(),
+      text: 'fixture queued message',
+    });
+    expect(receipt.state).toBe('accepted');
+    expect(f.runtime.runtime.mailbox!.readInput(refused, f.member)?.status).toBe('pending');
     const sent = await send(...args);
     const zip = unzipSync(f.uploads.at(-1)!.bytes);
     expect(strFromU8(zip[`files/${f.member}/workspace/files/retirement.txt`])).toBe(
@@ -1052,7 +1052,137 @@ it('retires before snapshot and export, includes retirement writes, and refuses 
   expect(order).toEqual(['reset', 'stop', 'export']);
 });
 
-it('retires P9 on its member chain while another DM runs and pauses new claims through re-serve', async () => {
+it('writes a personal receipt from other work after the erasure and keeps later DM ledger entries', async () => {
+  const f = await setup();
+  const send = f.telegram.sendFile.getMockImplementation()!;
+  const laterRef = `telegram:${f.memberDm}:fixture-later-receipt`;
+  f.telegram.sendFile.mockImplementationOnce(async (...args) => {
+    // Other principals keep running during an erasure; these land after the snapshot.
+    f.runtime.recordHostExchange({
+      message: {
+        id: laterRef,
+        channelKey: f.memberDm,
+        senderPrincipalId: f.member,
+        occurredAt: Date.now(),
+        text: 'Fixture management notice',
+      },
+      reply: { text: 'Fixture later receipt', occurredAt: Date.now(), deliveryVerified: true },
+    });
+    f.ledger.claim('outbound:fixture-later', {
+      deliveryTarget: `telegram:${f.memberDm}`,
+      payloadIdentity: 'c'.repeat(64),
+    });
+    f.ledger.markDelivered('outbound:fixture-later');
+    return send(...args);
+  });
+  const preview = await f.preview();
+  const erasure = await f.confirm(preview.confirmationToken);
+  expect((await f.finish()).status).toBe('erased');
+  const left = f.runtime.database.adapter
+    .prepare(
+      "SELECT source_id FROM connector_event_index WHERE source_connector='chat' AND memory_scope_kind='user' AND memory_scope_id=? ORDER BY rowid"
+    )
+    .all(f.member) as Array<{ source_id: string }>;
+  // Only the receipt written for the member during the erasure is left; it was deferred until
+  // the erase ended, and everything the export held is gone.
+  // What is left: the erasure's own receipt and the deferred receipt, nothing exported.
+  expect(left.map((row) => row.source_id).sort()).toEqual(
+    [
+      `host:${erasure.commandId}`,
+      `host:${erasure.commandId}:reply`,
+      laterRef,
+      `${laterRef}:reply`,
+    ].sort()
+  );
+
+  expect(f.ledger.listForTelegramDm(f.memberDm).map((entry) => entry.key)).toContain(
+    'outbound:fixture-later'
+  );
+});
+
+it('leaves a member under erasure unserved when an enrollment selects it during the upload', async () => {
+  const f = await setup();
+  const ref = f.message('owner');
+  await f.settled(ref);
+  const send = f.telegram.sendFile.getMockImplementation()!;
+  let enrollment: unknown;
+  f.telegram.sendFile.mockImplementationOnce(async (...args) => {
+    // The upload releases the directory wait, so this completion runs now; serving the member
+    // here would recreate the paths the delivered export was checked against.
+    enrollment = await f.runtime.completeMemberEnrollment({
+      sourceMessageRef: ref,
+      ownerUserId: 'fixture-manager',
+      userId: f.memberDm,
+    });
+    return send(...args);
+  });
+  const preview = await f.preview();
+  await f.confirm(preview.confirmationToken);
+  expect((await f.finish()).status).toBe('erased');
+  expect(enrollment).toMatchObject({
+    status: 'completed',
+    data: {
+      status: 'exists',
+      principalId: f.member,
+      message: "The member's personal records are being erased; it is served again when that ends",
+    },
+  });
+  expect(f.runtime.runtime.servesPrincipal(f.member)).toBe(true);
+});
+
+it('keeps a personal receipt deferred during the erasure across a restart', async () => {
+  const f = await setup();
+  const send = f.telegram.sendFile.getMockImplementation()!;
+  const laterRef = `telegram:${f.memberDm}:fixture-restart-receipt`;
+  f.telegram.sendFile.mockImplementationOnce(async (...args) => {
+    f.runtime.recordHostExchange({
+      message: {
+        id: laterRef,
+        channelKey: f.memberDm,
+        senderPrincipalId: f.member,
+        occurredAt: Date.now(),
+        text: 'Fixture management notice',
+      },
+      reply: { text: 'Fixture restart receipt', occurredAt: Date.now(), deliveryVerified: true },
+    });
+    return send(...args);
+  });
+  // The receipt fails before its claim, so the erasure waits for a later run with the write
+  // still deferred; the restart drops everything held in memory.
+  f.telegram.sendMemberText.mockRejectedValueOnce(new Error('fixture disconnected before claim'));
+  const preview = await f.preview();
+  await f.confirm(preview.confirmationToken);
+  await f.runtime.surface.memberRecords.idle();
+  expect(f.receipts).toEqual([]);
+  // No run holds the erasure now: this write goes into its durable checkpoint.
+  const idleRef = `telegram:${f.memberDm}:fixture-idle-receipt`;
+  f.runtime.recordHostExchange({
+    message: {
+      id: idleRef,
+      channelKey: f.memberDm,
+      senderPrincipalId: f.member,
+      occurredAt: Date.now(),
+      text: 'Fixture management notice',
+    },
+    reply: { text: 'Fixture idle receipt', occurredAt: Date.now(), deliveryVerified: true },
+  });
+  const personal = () =>
+    (
+      f.runtime.database.adapter
+        .prepare(
+          "SELECT source_id FROM connector_event_index WHERE source_connector='chat' AND memory_scope_kind='user' AND memory_scope_id=?"
+        )
+        .all(f.member) as Array<{ source_id: string }>
+    ).map((row) => row.source_id);
+  expect(personal()).not.toContain(idleRef);
+  await f.restart();
+  expect((await f.finish()).status).toBe('erased');
+  expect(personal()).toEqual(
+    expect.arrayContaining([laterRef, `${laterRef}:reply`, idleRef, `${idleRef}:reply`])
+  );
+});
+
+it('retires P9 on its member chain while another DM keeps claiming through re-serve', async () => {
   const f = await setup();
   const preview = await f.preview();
   let finishTurn!: () => void;
@@ -1095,8 +1225,8 @@ it('retires P9 on its member chain while another DM runs and pauses new claims t
     expect(f.runtime.runtime.servesPrincipal(f.member)).toBe(false);
     const before = f.turns.filter((t) => t.principal === f.managingOwner).length;
     const queued = f.message(f.managingOwner);
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(f.turns.filter((t) => t.principal === f.managingOwner)).toHaveLength(before);
+    await f.settled(queued, f.managingOwner);
+    expect(f.turns.filter((t) => t.principal === f.managingOwner)).toHaveLength(before + 1);
     finishUpload();
     expect((await f.finish()).status).toBe('erased');
     await f.settled(queued, f.managingOwner);
@@ -1278,11 +1408,22 @@ it.each(['resetSession', 'stop'] as const)(
   async (method) => {
     const f = await setup();
     const preview = await f.preview();
-    vi.spyOn(f.natives.get(f.member)!, method).mockRejectedValueOnce(
-      new Error('fixture retirement failed')
-    );
+    // The native method also runs when a read-deny inventory changes. Inject only after
+    // retirement revokes service, so an unrelated policy refresh cannot consume this failure.
+    const unserve = f.runtime.runtime.unservePrincipal.bind(f.runtime.runtime);
+    let injected = false;
+    vi.spyOn(f.runtime.runtime, 'unservePrincipal').mockImplementation((id) => {
+      unserve(id);
+      if (id === f.member && !injected) {
+        injected = true;
+        vi.spyOn(f.natives.get(f.member)!, method).mockRejectedValueOnce(
+          new Error('fixture retirement failed')
+        );
+      }
+    });
     await f.confirm(preview.confirmationToken);
     expect(await f.finish()).toMatchObject({ status: 'failed', failedStep: 'retire' });
+    expect(injected).toBe(true);
     expect(f.runtime.runtime.servesPrincipal(f.member)).toBe(true);
     await f.settled(f.message(f.member), f.member);
     expect(f.ledger.get('member-entry')).not.toBeNull();
@@ -1327,35 +1468,29 @@ it('a new preview replaces the old token even in a valid later message', async (
   ).toMatchObject({ status: 'failed', error: { kind: 'denied' } });
 });
 
-it('records an unaccepted receipt as deliveryVerified=false and keeps enrollment and grants', async () => {
+it('retries an unaccepted erasure receipt and records only a confirmed receipt', async () => {
   const f = await setup();
-  data(
-    await f.manage('grant', {
-      principalId: f.member,
-      scopeKind: 'project',
-      scopeId: 'fixture-partition',
-    })
-  );
-  const grants = createPrincipalRepository(f.runtime.database.adapter).listActiveGrants(f.member);
-  f.telegram.sendMemberText.mockImplementationOnce(async (access, text, operationId) => {
-    f.receipts.push({ principal: access.principalId, text, operationId });
-    return false;
-  });
+  f.telegram.sendMemberText.mockResolvedValueOnce(false);
   const p = await f.preview();
   await f.confirm(p.confirmationToken);
+  await f.runtime.surface.memberRecords.idle();
+  expect(
+    f.runtime.database.adapter
+      .prepare(
+        "SELECT count(*) AS n FROM connector_event_index WHERE memory_scope_id=? AND source_entity_id LIKE 'host:member-erase:%:reply'"
+      )
+      .get(f.member)
+  ).toEqual({ n: 0 });
+  f.runtime.surface.memberRecords.recover();
   await f.finish();
-  await vi.waitFor(() =>
-    expect(
-      f.runtime.database.adapter
-        .prepare(
-          "SELECT count(*) AS n FROM connector_event_index WHERE memory_scope_id=? AND json_extract(metadata_json,'$.deliveryVerified')=0"
-        )
-        .get(f.member)
-    ).toEqual({ n: 1 })
-  );
-  expect(createPrincipalRepository(f.runtime.database.adapter).listActiveGrants(f.member)).toEqual(
-    grants
-  );
+  expect(f.receipts).toHaveLength(1);
+  expect(
+    f.runtime.database.adapter
+      .prepare(
+        "SELECT count(*) AS n FROM connector_event_index WHERE memory_scope_id=? AND json_extract(metadata_json,'$.deliveryVerified')=1"
+      )
+      .get(f.member)
+  ).toEqual({ n: 1 });
   expect(createPrincipalRepository(f.runtime.database.adapter).findById(f.member)?.status).toBe(
     'active'
   );
@@ -1489,13 +1624,16 @@ it('lets owner turns run while an export uploads; only an erasure pauses claims'
   expect(f.runtime.surface.memberRecords.isBusy()).toBe(false);
 });
 
-it('holds erasure on the confirming member chain while existing common work finishes and global new claims stay paused', async () => {
+it('holds only the confirming member pending while other people and common turns run', async () => {
   const f = await setup();
   const p = await f.preview();
   let releaseCommon!: () => void;
   let releaseConfirmation!: () => void;
   f.blockOwner(new Promise<void>((resolve) => (releaseCommon = resolve)));
-  f.holdMemberCompletion(new Promise<void>((resolve) => (releaseConfirmation = resolve)));
+  f.holdPrincipalCompletion(
+    f.member,
+    new Promise<void>((resolve) => (releaseConfirmation = resolve))
+  );
   const common = f.message('owner');
   try {
     await vi.waitFor(() => expect(f.turns.at(-1)?.principal).toBe('owner'));
@@ -1511,15 +1649,12 @@ it('holds erasure on the confirming member chain while existing common work fini
     await f.settled(common);
     const commonQueued = f.message('owner');
     await f.runtime.runtime.drainOnce();
-    for (const [id, ref] of [
-      [f.member, memberQueued],
-      [f.managingOwner, otherQueued],
-      ['owner', commonQueued],
-    ])
-      expect(f.runtime.runtime.mailbox!.readInput(ref, id)?.status).toBe('pending');
+    expect(f.runtime.runtime.mailbox!.readInput(memberQueued, f.member)?.status).toBe('pending');
+    await f.settled(otherQueued, f.managingOwner);
+    await f.settled(commonQueued);
     expect(f.uploads).toEqual([]);
     releaseConfirmation();
-    f.holdMemberCompletion(undefined);
+    f.holdPrincipalCompletion(f.member, undefined);
     await f.finish();
     expect(f.runtime.surface.memberRecords.isBusy()).toBe(false);
     expect(f.runtime.runtime.mailbox!.readInput(memberQueued, f.member)).toBeNull();
@@ -1528,7 +1663,7 @@ it('holds erasure on the confirming member chain while existing common work fini
   } finally {
     releaseCommon();
     releaseConfirmation();
-    f.holdMemberCompletion(undefined);
+    f.holdPrincipalCompletion(f.member, undefined);
   }
 });
 
@@ -1853,23 +1988,31 @@ it.each(['failed', 'success'] as const)(
 it('keeps the step that stopped an erasure when serving the member again also fails', async () => {
   const f = await setup();
   const prepare = f.runtime.database.adapter.prepare.bind(f.runtime.database.adapter);
-  let fail = false;
+  let failures = 0;
   vi.spyOn(f.runtime.database.adapter, 'prepare').mockImplementation((sql) => {
-    if (fail && /SELECT kind, status FROM principals/.test(sql)) {
-      fail = false;
+    if (failures > 0 && /SELECT kind, status FROM principals/.test(sql)) {
+      failures--;
       throw new Error('fixture serve failed');
     }
     return prepare(sql);
   });
   f.telegram.sendFile.mockImplementationOnce(async () => {
-    fail = true;
+    failures = 3;
     throw new Error('fixture rejected');
   });
   const p = await f.preview();
   await f.confirm(p.confirmationToken);
-  await vi.waitFor(() => expect(f.receipts).toHaveLength(1));
+  await f.runtime.surface.memberRecords.idle();
+  // Each recovery tick retries the re-serve; the receipt names the failure once.
+  while (f.receipts.length === 0) {
+    f.runtime.surface.memberRecords.recover();
+    await f.runtime.surface.memberRecords.idle();
+  }
+  expect(failures).toBe(0);
+  expect(f.receipts).toHaveLength(1);
   expect(f.receipts[0].text).toContain('Erasure stopped at export delivery');
   expect(f.receipts[0].text).toContain('Nothing was erased.');
+  expect(f.receipts[0].text.split('serving the member again also failed').length - 1).toBe(1);
   expect(f.receipts[0].text).toContain(
     'serving the member again also failed: fixture serve failed'
   );
@@ -1897,6 +2040,8 @@ it('still records a serve failure receipt in the erasure job', async () => {
   });
   syncBuiltinESMExports();
   await f.confirm(p.confirmationToken);
+  await f.runtime.surface.memberRecords.idle();
+  f.runtime.surface.memberRecords.recover();
   await vi.waitFor(() => expect(f.receipts).toHaveLength(1));
   expect(f.receipts[0].text).toContain('serve');
   expect(f.receipts[0].text).toContain('fixture serve failed');
@@ -1905,6 +2050,68 @@ it('still records a serve failure receipt in the erasure job', async () => {
       .prepare('SELECT content FROM connector_event_index WHERE memory_scope_id=? AND content=?')
       .all(f.member, f.receipts[0].text)
   ).toHaveLength(1);
+});
+
+it('keeps deferred messages pending after a transient re-serve failure until a recovery tick succeeds', async () => {
+  const f = await setup();
+  const preview = await f.preview();
+  let release!: () => void;
+  let started!: () => void;
+  const uploading = new Promise<void>((resolve) => (started = resolve));
+  const wait = new Promise<void>((resolve) => (release = resolve));
+  const send = f.telegram.sendFile.getMockImplementation()!;
+  f.telegram.sendFile.mockImplementationOnce(async (...args) => {
+    started();
+    await wait;
+    return send(...args);
+  });
+  try {
+    const result = await f.confirm(preview.confirmationToken);
+    await uploading;
+    const mailbox = f.runtime.runtime.mailbox!;
+    const queued = f.message(f.member, 'fixture deferred during erasure');
+    const before = f.turns.length;
+    vi.spyOn(f.runtime.runtime, 'servePrincipal').mockImplementationOnce(() => {
+      throw new Error('fixture transient service restoration failed');
+    });
+    release();
+    await f.runtime.surface.memberRecords.idle();
+    const host = mailbox.readInput(result.commandId, f.member)!;
+    expect(f.runtime.runtime.servesPrincipal(f.member)).toBe(false);
+    expect(f.runtime.surface.memberRecords.isBlocked(f.member)).toBe(true);
+    expect(f.runtime.surface.memberRecords.excludePrincipals()).toContain(f.member);
+    expect(host.status).toBe('pending');
+    expect(mailbox.hostJobCheckpoint(host.id)).toMatchObject({ phase: 'receipt' });
+    expect(mailbox.readInput(queued, f.member)).toMatchObject({
+      status: 'pending',
+      payload: { deferredMemberMessage: true },
+    });
+    expect(f.receipts).toEqual([]);
+    const later = f.message(f.member, 'fixture deferred after failed re-serve');
+    await f.runtime.runtime.drainOnce();
+    expect(mailbox.readInput(later, f.member)?.status).toBe('pending');
+    expect(f.turns).toHaveLength(before);
+    f.runtime.surface.memberRecords.recover();
+    await f.runtime.surface.memberRecords.idle();
+    await f.settled(queued, f.member);
+    await f.settled(later, f.member);
+    expect(f.runtime.runtime.servesPrincipal(f.member)).toBe(true);
+    expect(f.runtime.surface.memberRecords.isBlocked(f.member)).toBe(false);
+    expect(f.runtime.surface.memberRecords.excludePrincipals()).not.toContain(f.member);
+    expect(mailbox.inputStatus(host.id)).toBe('acked');
+    expect(mailbox.hostJobCheckpoint(host.id)).toMatchObject({ phase: 'done' });
+    expect(f.uploads).toHaveLength(1);
+    expect(
+      f.runtime.database.adapter.prepare('SELECT command_id FROM principal_erasure_receipts').all()
+    ).toEqual([{ command_id: result.commandId }]);
+    expect(f.turns.slice(before).map((turn) => turn.prompt)).toEqual([
+      expect.stringContaining('fixture deferred during erasure'),
+      expect.stringContaining('fixture deferred after failed re-serve'),
+    ]);
+    await f.settled(f.message(f.member), f.member);
+  } finally {
+    release();
+  }
 });
 
 it('does not re-serve a member from an export upload outside the exclusive lane', async () => {
@@ -1922,42 +2129,85 @@ it('does not re-serve a member from an export upload outside the exclusive lane'
   expect(f.runtime.runtime.servesPrincipal(f.member)).toBe(true);
 });
 
-it('drops a confirmation that settles during stop without starting a job or cancelling messages', async () => {
+it('keeps a completed erasure carrier excluded until boot re-serving succeeds', async () => {
+  const f = await setup();
+  const preview = await f.preview();
+  const result = await f.confirm(preview.confirmationToken);
+  await f.finish();
+  const host = f.runtime.runtime.mailbox!.readInput(result.commandId, f.member)!;
+  f.runtime.database.adapter
+    .prepare("UPDATE mailbox_inputs SET status='pending' WHERE id=?")
+    .run(host.id);
+  f.blockDelivery(true);
+  await f.restart();
+  vi.spyOn(f.runtime.runtime, 'servePrincipal').mockImplementationOnce(() => {
+    throw new Error('fixture completed carrier service restoration failed');
+  });
+  f.blockDelivery(false);
+  f.runtime.surface.memberRecords.recover();
+  await f.runtime.surface.memberRecords.idle();
+  expect(f.runtime.surface.memberRecords.isBlocked(f.member)).toBe(true);
+  expect(f.runtime.surface.memberRecords.excludePrincipals()).toContain(f.member);
+  expect(f.runtime.runtime.mailbox!.inputStatus(host.id)).toBe('pending');
+  const queued = f.message(f.member);
+  f.runtime.surface.memberRecords.recover();
+  await f.runtime.surface.memberRecords.idle();
+  await f.settled(queued, f.member);
+  expect(f.runtime.runtime.servesPrincipal(f.member)).toBe(true);
+  expect(f.runtime.surface.memberRecords.isBlocked(f.member)).toBe(false);
+  expect(f.runtime.runtime.mailbox!.inputStatus(host.id)).toBe('acked');
+  expect(f.receipts).toHaveLength(1);
+  expect(f.uploads).toHaveLength(1);
+});
+
+it('tells the member an export settled during stop did not run instead of dropping it', async () => {
+  const f = await setup();
+  let release!: () => void;
+  f.holdMemberCompletion(
+    new Promise<void>((resolve) => {
+      release = resolve;
+    })
+  );
+  const request = await f.act('records.export', {});
+  f.runtime.beginStop();
+  release();
+  f.holdMemberCompletion(undefined);
+  await f.settled(request.ref, f.member);
+  await f.runtime.surface.memberRecords.idle();
+  expect(f.telegram.sendFile).not.toHaveBeenCalled();
+  expect(f.receipts.at(-1)?.text).toContain('Export did not run because MAMA was restarting');
+});
+
+it('keeps a confirmation that settles during stop and resumes the same job on boot', async () => {
   const f = await setup();
   const p = await f.preview();
   let release!: () => void;
   f.holdMemberCompletion(
-    new Promise<void>((r) => {
-      release = r;
+    new Promise<void>((resolve) => {
+      release = resolve;
     })
   );
   const request = await f.act('records.erase', { confirmationToken: p.confirmationToken });
-  expect(data(request.result).status).toBe('scheduled');
+  const commandId = data(request.result).commandId;
   const queued = f.message(f.member);
-  let finishStop!: () => void;
-  let stopping = false;
-  vi.spyOn(f.runtime.surface.memberRecords, 'idle').mockImplementation(async () => {
-    stopping = true;
-    await new Promise<void>((r) => {
-      finishStop = r;
-    });
-  });
-  const stop = f.runtime.stop();
-  try {
-    await vi.waitFor(() => expect(stopping).toBe(true));
-    release();
-    f.holdMemberCompletion(undefined);
-    await f.settled(request.ref, f.member);
-    expect(f.telegram.sendFile).not.toHaveBeenCalled();
-    expect(f.runtime.runtime.mailbox!.readInput(queued, f.member)?.status).not.toBe('dead');
-    expect(
-      f.runtime.database.adapter.prepare('SELECT * FROM principal_erasure_receipts').all()
-    ).toEqual([]);
-  } finally {
-    release();
-    finishStop?.();
-    await stop;
-  }
+  f.runtime.beginStop();
+  release();
+  f.holdMemberCompletion(undefined);
+  await f.settled(request.ref, f.member);
+  expect(f.telegram.sendFile).not.toHaveBeenCalled();
+  expect(f.runtime.runtime.mailbox!.readInput(queued, f.member)?.status).toBe('pending');
+  expect(f.runtime.runtime.mailbox!.readInput(commandId, f.member)?.status).toBe('pending');
+  await f.restart();
+  const receipt = await f.finish();
+  expect(receipt.commandId).toBe(commandId);
+  expect(f.uploads).toHaveLength(1);
+  expect(
+    f.runtime.database.adapter.prepare('SELECT command_id FROM principal_erasure_receipts').all()
+  ).toEqual([{ command_id: commandId }]);
+  await f.restart();
+  await f.runtime.surface.memberRecords.idle();
+  expect(f.uploads).toHaveLength(1);
+  expect(f.receipts).toHaveLength(1);
 });
 
 it('keeps records and asks the member to check an uncertain upload before asking again', async () => {
@@ -1974,7 +2224,8 @@ it('keeps records and asks the member to check an uncertain upload before asking
   await f.confirm(p.confirmationToken);
   const receipt = await f.finish();
   expect(receipt.status).toBe('failed');
-  expect(receipt.text).toContain('Check whether the file arrived');
+  expect(receipt.text).toContain('No file was resent');
+  expect(receipt.text).toContain('confirm it in a later member message');
   expect(receipt.text).not.toContain('Make a new erasure request');
   expect(fs.existsSync(join(f.paths.workspaceDir, 'files', 'personal.txt'))).toBe(true);
 });
@@ -2033,3 +2284,672 @@ it.each(['export', 'erase'] as const)(
     }
   }
 );
+
+it('cancels a durable erasure after a crash before the confirming turn settles', async () => {
+  const f = await setup();
+  const p = await f.preview();
+  let release!: () => void;
+  f.holdPrincipalCompletion(
+    f.member,
+    new Promise<void>((resolve) => {
+      release = resolve;
+    })
+  );
+  const request = await f.act('records.erase', { confirmationToken: p.confirmationToken });
+  const command = data(request.result).commandId;
+  await f.crashRestart(() => {
+    release();
+    f.holdPrincipalCompletion(f.member, undefined);
+  });
+  await vi.waitFor(() => expect(f.receipts).toHaveLength(1));
+  await f.runtime.surface.memberRecords.idle();
+  expect(f.receipts[0].operationId).toBe(`${command}:receipt`);
+  expect(f.receipts[0].text).toContain('Erasure did not run');
+  // Core alone reconciles the uncertain native input; cancellation keeps its records intact.
+  expect(f.runtime.runtime.mailbox!.readInput(request.ref, f.member)).toMatchObject({
+    status: 'claimed',
+    nativeDelivery: { state: 'uncertain' },
+  });
+  expect(f.uploads).toEqual([]);
+  expect(fs.existsSync(join(f.paths.workspaceDir, 'files', 'personal.txt'))).toBe(true);
+  expect(
+    f.runtime.database.adapter.prepare('SELECT command_id FROM principal_erasure_receipts').all()
+  ).toEqual([]);
+});
+
+it('cancels after a crash between persisting native uncertainty and notifying the erasure job', async () => {
+  const f = await setup();
+  const preview = await f.preview();
+  const snapshot = join(f.home, 'uncertain-confirmation-crash.db');
+  const journal = f.runtime.runtime.mailbox!.nativeInputs;
+  const uncertain = journal.uncertain.bind(journal);
+  vi.spyOn(journal, 'uncertain').mockImplementationOnce((id, reason) => {
+    uncertain(id, reason);
+    f.snapshotCrash(snapshot);
+    f.runtime.beginStop();
+  });
+  f.finishMemberTurn('after_acceptance');
+  const request = await f.confirm(preview.confirmationToken);
+  await vi.waitFor(() => expect(fs.existsSync(snapshot)).toBe(true));
+  await f.crashRestart(() => {}, snapshot);
+  await f.runtime.surface.memberRecords.idle();
+  const mailbox = f.runtime.runtime.mailbox!;
+  const host = mailbox.readInput(request.commandId, f.member)!;
+  expect(mailbox.hostJobCheckpoint(host.id)).toMatchObject({ phase: 'done' });
+  expect(f.receipts[0].text).toContain('Erasure did not run');
+  expect(f.receipts[0].text).toContain('uncertain');
+  expect(f.uploads).toEqual([]);
+  expect(fs.existsSync(join(f.paths.workspaceDir, 'files', 'personal.txt'))).toBe(true);
+  expect(
+    f.runtime.database.adapter.prepare('SELECT * FROM principal_erasure_receipts').all()
+  ).toEqual([]);
+  await f.settled(f.message(f.member), f.member);
+});
+
+it.each([
+  'dead',
+  'prepared',
+  'dispatching',
+  'missing journal',
+  'missing input',
+  'settled but claimed',
+])('cancels a confirmed erasure recovered with %s confirmation', async (outcome) => {
+  const f = await setup();
+  const preview = await f.preview();
+  let release!: () => void;
+  f.holdPrincipalCompletion(f.member, new Promise<void>((resolve) => (release = resolve)));
+  const request = await f.act('records.erase', { confirmationToken: preview.confirmationToken });
+  const command = data(request.result).commandId;
+  const db = f.runtime.database.adapter;
+  const input = f.runtime.runtime.mailbox!.readInput(request.ref, f.member)!;
+  if (outcome === 'missing input')
+    db.prepare('DELETE FROM mailbox_inputs WHERE id=?').run(input.id);
+  else if (outcome === 'missing journal')
+    db.prepare('DELETE FROM native_input_deliveries WHERE input_id=?').run(input.id);
+  else if (outcome === 'dead')
+    db.prepare("UPDATE mailbox_inputs SET status='dead' WHERE id=?").run(input.id);
+  else
+    db.prepare('UPDATE native_input_deliveries SET state=? WHERE input_id=?').run(
+      outcome === 'settled but claimed' ? 'settled' : outcome,
+      input.id
+    );
+  f.blockDelivery(true);
+  await f.crashRestart(() => {
+    release();
+    f.holdPrincipalCompletion(f.member, undefined);
+  });
+  // Boot repairs a settled journal's mailbox acknowledgement. Also exercise a recovery tick
+  // encountering an inconsistent mailbox row after that repair.
+  if (outcome === 'settled but claimed')
+    f.runtime.database.adapter
+      .prepare("UPDATE mailbox_inputs SET status='claimed' WHERE id=?")
+      .run(input.id);
+  f.blockDelivery(false);
+  f.runtime.surface.memberRecords.recover();
+  await f.runtime.surface.memberRecords.idle();
+  expect(f.receipts[0].operationId).toBe(`${command}:receipt`);
+  expect(f.receipts[0].text).toContain('Erasure did not run');
+  expect(f.uploads).toEqual([]);
+  expect(fs.existsSync(join(f.paths.workspaceDir, 'files', 'personal.txt'))).toBe(true);
+  expect(
+    f.runtime.database.adapter.prepare('SELECT * FROM principal_erasure_receipts').all()
+  ).toEqual([]);
+});
+
+it('resumes a confirmed erasure after a crash with a settled and acked confirmation', async () => {
+  const f = await setup();
+  const preview = await f.preview();
+  const snapshot = join(f.home, 'settled-confirmation-crash.db');
+  const journal = f.runtime.runtime.mailbox!.nativeInputs;
+  const settle = journal.settle.bind(journal);
+  vi.spyOn(journal, 'settle').mockImplementationOnce((id, reconciled) => {
+    settle(id, reconciled);
+    f.snapshotCrash(snapshot);
+    f.runtime.beginStop();
+  });
+  const request = await f.confirm(preview.confirmationToken);
+  await f.runtime.surface.memberRecords.idle();
+  await f.crashRestart(() => {}, snapshot);
+  const receipt = await f.finish();
+  expect(receipt.commandId).toBe(request.commandId);
+  expect(receipt.status).toBe('erased');
+  expect(f.uploads).toHaveLength(1);
+});
+
+it.each(['delivered', 'uncertain', 'missing receipt'] as const)(
+  'reconciles a %s export file ledger after a crash before the next job checkpoint',
+  async (outcome) => {
+    const f = await setup();
+    const snapshot = join(f.home, 'export-crash.db');
+    const send = f.telegram.sendFile.getMockImplementation()!;
+    f.telegram.sendFile.mockImplementationOnce(async (...args) => {
+      let result;
+      if (outcome !== 'uncertain') {
+        result = await send(...args);
+        if (outcome === 'missing receipt') f.ledger.eraseTelegramDm(f.memberDm);
+      } else
+        f.ledger.claim(`file:${args[2]}`, {
+          deliveryTarget: `telegram:${f.memberDm}`,
+          payloadIdentity: 'f'.repeat(64),
+        });
+      f.snapshotCrash(snapshot);
+      f.runtime.beginStop();
+      if (outcome === 'uncertain') throw new Error('fixture interrupted upload');
+      return result!;
+    });
+    const p = await f.preview();
+    await f.confirm(p.confirmationToken);
+    await f.runtime.surface.memberRecords.idle();
+    await f.crashRestart(() => {}, snapshot);
+    const result = await f.finish();
+    expect(f.telegram.sendFile).toHaveBeenCalledOnce();
+    if (outcome === 'delivered') {
+      expect(result.status).toBe('erased');
+      expect(f.uploads).toHaveLength(1);
+      expect(
+        f.runtime.database.adapter.prepare('SELECT * FROM principal_erasure_receipts').all()
+      ).toHaveLength(1);
+    } else {
+      expect(result.status).toBe('failed');
+      expect(result.text).toContain('Nothing was erased');
+      expect(result.text).toContain('No file was resent');
+      expect(result.text).toContain('confirm it in a later member message');
+      expect(f.uploads).toHaveLength(outcome === 'missing receipt' ? 1 : 0);
+      expect(fs.existsSync(join(f.paths.workspaceDir, 'files', 'personal.txt'))).toBe(true);
+      expect(
+        f.runtime.database.adapter.prepare('SELECT * FROM principal_erasure_receipts').all()
+      ).toEqual([]);
+    }
+  }
+);
+
+it('recovers a delivered final receipt into the member chat exactly once after a crash', async () => {
+  const f = await setup();
+  const snapshot = join(f.home, 'receipt-crash.db');
+  const send = f.telegram.sendMemberText.getMockImplementation()!;
+  f.telegram.sendMemberText.mockImplementationOnce(async (...args) => {
+    const accepted = await send(...args);
+    f.snapshotCrash(snapshot);
+    f.runtime.beginStop();
+    return accepted;
+  });
+  const p = await f.preview();
+  await f.confirm(p.confirmationToken);
+  await f.finish();
+  const mkdir = fs.mkdirSync;
+  let failedService = false;
+  vi.spyOn(fs, 'mkdirSync').mockImplementation((...args) => {
+    if (!failedService && String(args[0]).startsWith(f.paths.runtimeRoot)) {
+      failedService = true;
+      throw new Error('fixture service restoration after delivered receipt failed');
+    }
+    return mkdir(...args);
+  });
+  syncBuiltinESMExports();
+  await f.crashRestart(() => {}, snapshot);
+  await f.runtime.surface.memberRecords.idle();
+  expect(failedService).toBe(true);
+  expect(f.runtime.surface.memberRecords.isBlocked(f.member)).toBe(true);
+  f.runtime.surface.memberRecords.recover();
+  await f.runtime.surface.memberRecords.idle();
+  const text = f.receipts[0].text;
+  expect(f.telegram.sendMemberText).toHaveBeenCalledOnce();
+  expect(
+    f.runtime.database.adapter
+      .prepare(
+        "SELECT content FROM connector_event_index WHERE memory_scope_id=? AND content=? AND json_extract(metadata_json,'$.deliveryVerified')=1"
+      )
+      .all(f.member, text)
+  ).toHaveLength(1);
+  await f.restart();
+  await f.runtime.surface.memberRecords.idle();
+  expect(f.receipts).toHaveLength(1);
+  expect(
+    f.runtime.database.adapter
+      .prepare('SELECT content FROM connector_event_index WHERE memory_scope_id=? AND content=?')
+      .all(f.member, text)
+  ).toHaveLength(1);
+});
+
+it('retries a receipt that failed before claiming after restart without exporting or erasing again', async () => {
+  const f = await setup();
+  f.telegram.sendMemberText.mockRejectedValueOnce(new Error('fixture disconnected before claim'));
+  const p = await f.preview();
+  await f.confirm(p.confirmationToken);
+  await f.runtime.surface.memberRecords.idle();
+  expect(f.receipts).toEqual([]);
+  await f.restart();
+  await f.finish();
+  expect(f.uploads).toHaveLength(1);
+  expect(f.receipts).toHaveLength(1);
+  expect(
+    f.runtime.database.adapter.prepare('SELECT * FROM principal_erasure_receipts').all()
+  ).toHaveLength(1);
+});
+
+it('runs another DM, a common delta and another host job while every erasing-member row stays unclaimed', async () => {
+  const f = await setup();
+  let release!: () => void;
+  let started!: () => void;
+  const uploading = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const wait = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const send = f.telegram.sendFile.getMockImplementation()!;
+  f.telegram.sendFile.mockImplementationOnce(async (...args) => {
+    started();
+    await wait;
+    return send(...args);
+  });
+  const p = await f.preview();
+  await f.confirm(p.confirmationToken);
+  await uploading;
+  let drain: Promise<unknown> | undefined;
+  try {
+    const pending = f.message(f.member);
+    const other = f.message(f.managingOwner);
+    const mailbox = f.runtime.runtime.mailbox!;
+    for (const id of [f.member, f.managingOwner])
+      mailbox.enqueue({
+        id: `fixture-host:${id}`,
+        kind: 'host_job',
+        principalId: id,
+        channelKey: 'member-management',
+        occurredAt: Date.now(),
+        payload: {
+          action: 'manage.member.grant',
+          input: { principalId: id, scopeKind: 'project', scopeId: 'fixture-scope' },
+          callerPrincipalId: f.managingOwner,
+        },
+      });
+    const principals = createPrincipalRepository(f.runtime.database.adapter);
+    const third = principals.registerMember({
+      connector: 'telegram',
+      namespace: 'private',
+      externalId: 'fixture-resume-during-erasure',
+      now: 3,
+    });
+    principals.suspend(third, 4);
+    mailbox.enqueue({
+      id: 'fixture-resume-during-erasure',
+      kind: 'host_job',
+      principalId: third,
+      channelKey: 'member-management',
+      occurredAt: Date.now(),
+      payload: {
+        action: 'manage.member.resume',
+        input: { principalId: third },
+        callerPrincipalId: f.managingOwner,
+      },
+    });
+    const commonBefore = f.turns.filter((turn) => turn.principal === 'owner').length;
+    const delta = {
+      kind: 'source_delta' as const,
+      collector: 'fixture',
+      channel: 'fixture:replay',
+      refs: [],
+      preview: [],
+      coalesceKey: 'fixture-delta',
+      occurredAt: 10,
+      replay: {
+        runId: 'fixture-run',
+        windowId: 'fixture-window',
+        windowStartMs: 10,
+        windowEndMs: 20,
+      },
+    };
+    const accepted = f.runtime.acceptSourceDelta(delta);
+    drain = f.runtime.runtime.drainOnce();
+    await vi.waitFor(() =>
+      expect(mailbox.readInput('fixture-resume-during-erasure', third)?.status).toBe('acked')
+    );
+    await f.settled(other, f.managingOwner);
+    await vi.waitFor(() => expect(mailbox.inputStatus(Number(accepted.inputId))).toBe('acked'));
+    await vi.waitFor(() =>
+      expect(mailbox.readInput(`fixture-host:${f.managingOwner}`, f.managingOwner)?.status).toBe(
+        'acked'
+      )
+    );
+    for (const ref of [pending, `fixture-host:${f.member}`]) {
+      expect(mailbox.readInput(ref, f.member)?.status).toBe('pending');
+      expect(mailbox.readInput(ref, f.member)?.attempts).toBe(0);
+    }
+    expect(f.turns.filter((turn) => turn.principal === 'owner')).toHaveLength(commonBefore + 1);
+  } finally {
+    release();
+    await drain;
+  }
+  await f.finish();
+});
+
+it('resumes a crash after the core erasure receipt without sending the export or erasing core twice', async () => {
+  const f = await setup();
+  const snapshot = join(f.home, 'core-erasure-crash.db');
+  vi.spyOn(RawStore.prototype, 'eraseScope').mockImplementationOnce(() => {
+    f.snapshotCrash(snapshot);
+    f.runtime.beginStop();
+    throw new Error('fixture crash before raw deletion');
+  });
+  const p = await f.preview();
+  const confirm = await f.confirm(p.confirmationToken);
+  await f.runtime.surface.memberRecords.idle();
+  await f.crashRestart(() => {}, snapshot);
+  const receipt = await f.finish();
+  expect(receipt.status).toBe('erased');
+  expect(receipt.commandId).toBe(confirm.commandId);
+  expect(f.uploads).toHaveLength(1);
+  expect(f.receipts).toHaveLength(1);
+  expect(
+    f.runtime.database.adapter.prepare('SELECT command_id FROM principal_erasure_receipts').all()
+  ).toEqual([{ command_id: confirm.commandId }]);
+  const raw = new RawStore(join(f.home, 'raw'));
+  try {
+    const remaining = raw.exportScope('chat', 'user', f.member);
+    expect(remaining.raw_items).toHaveLength(2); // Only the new host receipt exchange.
+  } finally {
+    raw.close();
+  }
+});
+
+it('still refuses a preview token lost to restart without creating an erasure carrier', async () => {
+  const f = await setup();
+  const preview = await f.preview();
+  await f.restart();
+  expect(
+    (await f.act('records.erase', { confirmationToken: preview.confirmationToken })).result
+  ).toMatchObject({ status: 'failed', error: { kind: 'denied' } });
+  expect(
+    f.runtime.database.adapter
+      .prepare("SELECT * FROM mailbox_inputs WHERE channel_key='member-erasure'")
+      .all()
+  ).toEqual([]);
+  expect(f.uploads).toEqual([]);
+});
+
+it('does not report rolled-back connector deletes when core erasure fails', async () => {
+  const f = await setup();
+  const before = f.runtime.database.adapter
+    .prepare('SELECT source_id FROM connector_event_index WHERE memory_scope_id=?')
+    .all(f.member);
+  const prepare = f.runtime.database.adapter.prepare.bind(f.runtime.database.adapter);
+  let fail = false;
+  vi.spyOn(f.runtime.database.adapter, 'prepare').mockImplementation((sql) => {
+    if (fail && /FROM principal_erasure_receipts WHERE command_id/.test(sql)) {
+      fail = false;
+      throw new Error('fixture core transaction failed');
+    }
+    return prepare(sql);
+  });
+  const send = f.telegram.sendFile.getMockImplementation()!;
+  f.telegram.sendFile.mockImplementationOnce(async (...args) => {
+    const delivered = await send(...args);
+    fail = true;
+    return delivered;
+  });
+  const p = await f.preview();
+  await f.confirm(p.confirmationToken);
+  const receipt = await f.finish();
+  expect(receipt.failedStep).toBe('personal_records');
+  expect(receipt.product.connector_event_index ?? 0).toBe(0);
+  const remaining = f.runtime.database.adapter
+    .prepare('SELECT source_id FROM connector_event_index WHERE memory_scope_id=?')
+    .all(f.member);
+  for (const row of before) expect(remaining).toContainEqual(row);
+});
+
+it('cancels the durable erasure when shutdown interrupts a failed confirming model turn', async () => {
+  const f = await setup();
+  const p = await f.preview();
+  let release!: () => void;
+  f.holdPrincipalCompletion(
+    f.member,
+    new Promise<void>((resolve) => {
+      release = resolve;
+    })
+  );
+  f.finishMemberTurn('after_acceptance');
+  const confirmation = await f.confirm(p.confirmationToken);
+  f.runtime.beginStop();
+  release();
+  f.holdPrincipalCompletion(f.member, undefined);
+  await f.runtime.drain();
+  expect(f.runtime.runtime.mailbox!.readInput(confirmation.commandId, f.member)?.status).toBe(
+    'pending'
+  );
+  expect(f.uploads).toEqual([]);
+  await f.restart();
+  await vi.waitFor(() => expect(f.receipts).toHaveLength(1));
+  await f.runtime.surface.memberRecords.idle();
+  expect(f.receipts[0].operationId).toBe(`${confirmation.commandId}:receipt`);
+  expect(f.receipts[0].text).toContain('Erasure did not run');
+  expect(f.uploads).toEqual([]);
+  expect(fs.existsSync(join(f.paths.workspaceDir, 'files', 'personal.txt'))).toBe(true);
+  expect(
+    f.runtime.database.adapter.prepare('SELECT * FROM principal_erasure_receipts').all()
+  ).toEqual([]);
+});
+
+it('recovers the cancellation receipt when its send failed before claiming', async () => {
+  const f = await setup();
+  const preview = await f.preview();
+  f.telegram.sendMemberText.mockRejectedValueOnce(
+    new Error('fixture cancellation receipt disconnected')
+  );
+  f.finishMemberTurn('after_acceptance');
+  const confirmation = await f.confirm(preview.confirmationToken);
+  await vi.waitFor(() => expect(f.telegram.sendMemberText).toHaveBeenCalledOnce());
+  await f.runtime.surface.memberRecords.idle();
+  await f.restart();
+  await vi.waitFor(() => expect(f.receipts).toHaveLength(1));
+  await f.runtime.surface.memberRecords.idle();
+  expect(f.receipts[0].text).toContain('Erasure did not run');
+  expect(f.uploads).toEqual([]);
+  expect(
+    f.runtime.database.adapter.prepare('SELECT * FROM principal_erasure_receipts').all()
+  ).toEqual([]);
+  expect(fs.existsSync(join(f.paths.workspaceDir, 'files', 'personal.txt'))).toBe(true);
+  expect(
+    f.runtime.database.adapter
+      .prepare('SELECT content FROM connector_event_index WHERE source_entity_id=?')
+      .all(`host:${confirmation.commandId}:reply`)
+  ).toHaveLength(1);
+});
+
+it('holds a new message outside personal projections when resuming an already committed core erasure', async () => {
+  const f = await setup();
+  const snapshot = join(f.home, 'late-message-crash.db');
+  vi.spyOn(RawStore.prototype, 'eraseScope').mockImplementationOnce(() => {
+    f.snapshotCrash(snapshot);
+    f.runtime.beginStop();
+    throw new Error('fixture crash before raw deletion');
+  });
+  const preview = await f.preview();
+  await f.confirm(preview.confirmationToken);
+  await f.runtime.surface.memberRecords.idle();
+  f.blockDelivery(true);
+  await f.crashRestart(() => {}, snapshot);
+  const queued = f.message(f.member, 'fixture message received while resuming erasure');
+  expect(f.runtime.runtime.mailbox!.readInput(queued, f.member)?.status).toBe('pending');
+  expect(
+    f.runtime.database.adapter
+      .prepare('SELECT source_id FROM connector_event_index WHERE source_id=?')
+      .get(queued)
+  ).toBeUndefined();
+  f.blockDelivery(false);
+  f.runtime.surface.memberRecords.recover();
+  await f.finish();
+  await f.settled(queued, f.member);
+  expect(
+    f.runtime.database.adapter.prepare('SELECT command_id FROM principal_erasure_receipts').all()
+  ).toHaveLength(1);
+  expect(
+    f.runtime.database.adapter
+      .prepare('SELECT content FROM connector_event_index WHERE source_id=?')
+      .get(queued)
+  ).toEqual({ content: 'fixture message received while resuming erasure' });
+  expect(f.uploads).toHaveLength(1);
+});
+
+it('resumes a confirmed erasure when stop interrupts retirement after launch', async () => {
+  const f = await setup();
+  const preview = await f.preview();
+  const unserve = f.runtime.runtime.unservePrincipal.bind(f.runtime.runtime);
+  vi.spyOn(f.runtime.runtime, 'unservePrincipal').mockImplementationOnce((id) => {
+    f.runtime.beginStop();
+    unserve(id);
+  });
+  const result = await f.confirm(preview.confirmationToken);
+  await f.runtime.surface.memberRecords.idle();
+  const host = f.runtime.runtime.mailbox!.readInput(result.commandId, f.member)!;
+  expect(f.runtime.runtime.mailbox!.hostJobCheckpoint(host.id)).toMatchObject({
+    phase: 'confirmed',
+  });
+  expect(f.receipts).toEqual([]);
+  await f.restart();
+  expect((await f.finish()).status).toBe('erased');
+  expect(f.uploads).toHaveLength(1);
+});
+
+it('keeps a delivered erasure checkpoint when stop interrupts boot retirement', async () => {
+  const f = await setup();
+  const send = f.telegram.sendFile.getMockImplementation()!;
+  f.telegram.sendFile.mockImplementationOnce(async (...args) => {
+    const result = await send(...args);
+    f.runtime.beginStop();
+    return result;
+  });
+  const preview = await f.preview();
+  const result = await f.confirm(preview.confirmationToken);
+  await f.runtime.surface.memberRecords.idle();
+  f.blockDelivery(true);
+  await f.restart();
+  const host = f.runtime.runtime.mailbox!.readInput(result.commandId, f.member)!;
+  expect(f.runtime.runtime.mailbox!.hostJobCheckpoint(host.id)).toMatchObject({
+    phase: 'delivered',
+  });
+  const unserve = f.runtime.runtime.unservePrincipal.bind(f.runtime.runtime);
+  vi.spyOn(f.runtime.runtime, 'unservePrincipal').mockImplementationOnce((id) => {
+    f.runtime.beginStop();
+    unserve(id);
+  });
+  f.blockDelivery(false);
+  f.runtime.surface.memberRecords.recover();
+  await f.runtime.surface.memberRecords.idle();
+  expect(f.runtime.runtime.mailbox!.hostJobCheckpoint(host.id)).toMatchObject({
+    phase: 'delivered',
+  });
+  expect(f.receipts).toEqual([]);
+  await f.restart();
+  expect((await f.finish()).status).toBe('erased');
+  expect(f.uploads).toHaveLength(1);
+});
+
+it.each(['uncertain ledger', 'crash before claim'] as const)(
+  // An uncertain claimed send is final (recorded unverified); an unclaimed one never reached
+  // Telegram, so the resumed job sends it again.
+  'finishes erasure and unblocks intake after %s',
+  async (outcome) => {
+    const f = await setup();
+    const snapshot = join(f.home, 'unverified-receipt.db');
+    f.telegram.sendMemberText.mockImplementationOnce(async (_access, text, operationId) => {
+      if (outcome === 'uncertain ledger') {
+        const key = outboundLedgerKey(operationId);
+        f.ledger.claim(key, {
+          deliveryTarget: `telegram:${f.memberDm}`,
+          payloadIdentity: 'b'.repeat(64),
+        });
+        f.ledger.markReady(key, text, 'html-v1');
+        f.ledger.markDeliveryProgress(key, 0, true);
+      } else {
+        f.snapshotCrash(snapshot);
+        f.runtime.beginStop();
+      }
+      throw new Error('fixture interrupted receipt');
+    });
+    const preview = await f.preview();
+    const result = await f.confirm(preview.confirmationToken);
+    await f.runtime.surface.memberRecords.idle();
+    if (outcome === 'crash before claim') await f.crashRestart(() => {}, snapshot);
+    for (let i = 0; i < 3; i++) {
+      f.runtime.surface.memberRecords.recover();
+      await f.runtime.surface.memberRecords.idle();
+    }
+    const host = f.runtime.runtime.mailbox!.readInput(result.commandId, f.member)!;
+    expect(host.status).toBe('acked');
+    const resent = outcome === 'crash before claim';
+    expect(f.runtime.runtime.mailbox!.hostJobCheckpoint(host.id)).toMatchObject({
+      phase: 'done',
+      receiptDelivered: resent,
+    });
+    expect(f.telegram.sendMemberText).toHaveBeenCalledTimes(resent ? 2 : 1);
+    expect(f.runtime.surface.memberRecords.excludePrincipals()).not.toContain(f.member);
+    expect(
+      f.runtime.database.adapter
+        .prepare(
+          "SELECT content FROM connector_event_index WHERE source_entity_id=? AND memory_scope_id=? AND json_extract(metadata_json,'$.deliveryVerified')=?"
+        )
+        .all(`host:${result.commandId}:reply`, f.member, resent ? 1 : 0)
+    ).toHaveLength(1);
+    const next = f.message(f.member);
+    await f.settled(next, f.member);
+  }
+);
+
+it('drops the archive inventory and omitted file paths from the completed checkpoint', async () => {
+  const f = await setup();
+  const preview = await f.preview();
+  const result = await f.confirm(preview.confirmationToken);
+  await f.finish();
+  const host = f.runtime.runtime.mailbox!.readInput(result.commandId, f.member)!;
+  const state = f.runtime.runtime.mailbox!.hostJobCheckpoint(host.id)!;
+  expect(state.phase).toBe('done');
+  expect(state).not.toHaveProperty('archive');
+  expect(JSON.stringify(state)).not.toContain('fileSnapshot');
+});
+
+it('does not quarantine a claimed uncertain confirmation on recovery ticks', async () => {
+  const f = await setup();
+  const preview = await f.preview();
+  let release!: () => void;
+  f.holdPrincipalCompletion(
+    f.member,
+    new Promise<void>((resolve) => {
+      release = resolve;
+    })
+  );
+  const request = await f.act('records.erase', { confirmationToken: preview.confirmationToken });
+  f.blockDelivery(true);
+  await f.crashRestart(() => {
+    release();
+    f.holdPrincipalCompletion(f.member, undefined);
+  });
+  const mailbox = f.runtime.runtime.mailbox!;
+  const confirmation = mailbox.readInput(request.ref, f.member)!;
+  expect(confirmation.status).toBe('claimed');
+  const quarantine = vi.spyOn(mailbox, 'quarantine');
+  f.blockDelivery(false);
+  f.runtime.surface.memberRecords.recover();
+  expect(quarantine).not.toHaveBeenCalledWith(confirmation.id, expect.anything());
+  expect(mailbox.inputStatus(confirmation.id)).toBe('claimed');
+  await f.runtime.surface.memberRecords.idle();
+});
+
+it('gives export instructions without an erasure preview for uncertain plain exports', async () => {
+  const f = await setup();
+  f.telegram.sendFile.mockImplementationOnce(async (_path, _caption, operationId) => {
+    f.ledger.claim(`file:${operationId}`, {
+      deliveryTarget: `telegram:${f.memberDm}`,
+      payloadIdentity: 'c'.repeat(64),
+    });
+    f.ledger.markReady(`file:${operationId}`, 'fixture export');
+    f.ledger.markDeliveryProgress(`file:${operationId}`, 0, true);
+    throw new Error('fixture uncertain export');
+  });
+  await runExport(f);
+  const receipt = f.receipts.at(-1)!.text;
+  expect(receipt).toContain('No file was resent');
+  expect(receipt).not.toMatch(/preview|confirm/i);
+  expect(receipt).toContain('export');
+});
