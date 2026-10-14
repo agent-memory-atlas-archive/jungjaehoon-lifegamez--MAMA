@@ -27,6 +27,8 @@ import {
   withToolkitState,
 } from '../../src/tools/toolkit-state.js';
 import { onToolkitSignal } from '../../src/tools/toolkit-process.js';
+import { openCoreDatabase } from '../../src/runtime/core-db.js';
+import { createSkillStore } from '../../src/runtime/skills.js';
 
 let root: string;
 let home: string;
@@ -136,6 +138,42 @@ describe('host document toolkit installer', () => {
       locate: (name) => `/fixture/${name}`,
     });
 
+  it.each(['install-first', 'publish-first'])(
+    'keeps published skills through toolkit installation (%s)',
+    async (order) => {
+      const source = join(home, 'workspace', 'skills', 'fixture-skill');
+      mkdirSync(source, { recursive: true });
+      mkdirSync(tools);
+      writeFileSync(
+        join(source, 'SKILL.md'),
+        '---\nname: fixture-skill\ndescription: Fixture\n---\nFixture steps'
+      );
+      const db = await openCoreDatabase({ path: join(root, 'state.db') });
+      try {
+        const skills = createSkillStore({
+          adapter: db.adapter,
+          commonPrincipalId: 'common',
+          commonScopes: () => [],
+          paths: { toolsRoot: tools, workspace: () => join(home, 'workspace') },
+        });
+        if (order === 'publish-first') {
+          expect(() => skills.publish('fixture-skill')).toThrow(/mama tools install/);
+          expect(existsSync(join(tools, 'skills'))).toBe(false);
+        }
+        await install(fakeHost().run);
+        skills.publish('fixture-skill');
+        // The adoption path must also recognise a skill publication in an older unmarked root.
+        rmSync(join(tools, '.mama-document-toolkit'));
+        await install(fakeHost().run);
+        expect((await skills.read('common', 'file:common:fixture-skill')).text).toContain(
+          'Fixture steps'
+        );
+      } finally {
+        db.close();
+      }
+    }
+  );
+
   it('refuses an unrelated non-empty root before running host commands', async () => {
     mkdirSync(tools);
     writeFileSync(join(tools, 'keep.txt'), 'unrelated data');
@@ -145,6 +183,31 @@ describe('host document toolkit installer', () => {
     expect(readdirSync(tools)).toEqual(['keep.txt']);
     expect(host.calls).toEqual([]);
   });
+
+  it.each(['empty', 'unrelated', 'unmanaged-link', 'wrong-name'])(
+    'refuses an unmarked root with an unmanaged skills directory (%s)',
+    async (layout) => {
+      const skills = join(tools, 'skills');
+      mkdirSync(skills, { recursive: true });
+      if (layout === 'unrelated') writeFileSync(join(skills, 'keep.txt'), 'unrelated data');
+      if (layout === 'unmanaged-link') {
+        mkdirSync(join(skills, '.versions'));
+        mkdirSync(join(skills, 'unrelated'));
+        symlinkSync('unrelated', join(skills, 'fixture-skill'));
+      }
+      if (layout === 'wrong-name') {
+        const version = `fixture-skill-extra-${randomUUID()}`;
+        mkdirSync(join(skills, '.versions', version), { recursive: true });
+        symlinkSync(`.versions/${version}`, join(skills, 'fixture-skill'));
+      }
+      const before = readdirSync(skills);
+      const host = fakeHost();
+      await expect(install(host.run)).rejects.toThrow(/unmarked.*tools_root/);
+      expect(readdirSync(tools)).toEqual(['skills']);
+      expect(readdirSync(skills)).toEqual(before);
+      expect(host.calls).toEqual([]);
+    }
+  );
 
   it('marks an empty root and adopts an unmarked root made by the previous installer', async () => {
     mkdirSync(tools);
